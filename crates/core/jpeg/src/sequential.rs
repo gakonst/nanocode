@@ -254,7 +254,7 @@ impl Decoder<'_> {
                 for vertical in 0..component.vertical_sample {
                     for horizontal in 0..component.horizontal_sample {
                         block.fill(0);
-                        stream.decode_block(
+                        let ac = stream.decode_block(
                             &mut self.reader,
                             dc_table,
                             ac_table,
@@ -265,7 +265,7 @@ impl Decoder<'_> {
                         if component.needed {
                             let position = stride * vertical * 8
                                 + (column * component.horizontal_sample + horizontal) * 8;
-                            idct::transform(block, channel, position, stride)?;
+                            idct::transform(block, channel, position, stride, ac)?;
                         }
                     }
                 }

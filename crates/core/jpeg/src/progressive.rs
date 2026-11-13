@@ -98,7 +98,7 @@ impl Decoder<'_> {
                 }
             }
         }
-        self.finish_progressive(&buffers, pixels)
+        self.finish_progressive(&buffers, &masks, pixels)
     }
 
     fn decode_scan(
@@ -201,7 +201,9 @@ impl Decoder<'_> {
                     }
                 }
                 self.todo = self.todo.wrapping_sub(1);
-                self.handle_restart_main(stream)?;
+                if self.todo == 0 {
+                    self.handle_restart_main(stream)?;
+                }
             }
         }
         Ok(())
@@ -257,7 +259,9 @@ impl Decoder<'_> {
                     }
                 }
                 self.todo = self.todo.wrapping_sub(1);
-                self.handle_restart_main(stream)?;
+                if self.todo == 0 {
+                    self.handle_restart_main(stream)?;
+                }
             }
         }
         Ok(())
@@ -266,6 +270,7 @@ impl Decoder<'_> {
     fn finish_progressive(
         &mut self,
         buffers: &[Vec<i16>; COMPONENTS_MAX],
+        masks: &[Vec<u64>; COMPONENTS_MAX],
         pixels: &mut [u8],
     ) -> Result<(), JpegError> {
         let mcu_height = if self.interleaved {
@@ -293,7 +298,7 @@ impl Decoder<'_> {
         let mut coefficients = [0_i32; 64];
         let mut pixels_written = 0;
         for row in 0..mcu_height {
-            for (component, buffer) in self.components.iter_mut().zip(buffers) {
+            for ((component, buffer), mask) in self.components.iter_mut().zip(buffers).zip(masks) {
                 if !component.needed {
                     continue;
                 }
@@ -307,6 +312,14 @@ impl Decoder<'_> {
                         let quantized = source
                             .get(start..start + 64)
                             .ok_or(JpegError::InvalidSlice)?;
+                        let nonzero = mask
+                            .get((row * step + start) / BLOCK_COEFFICIENTS)
+                            .ok_or(JpegError::InvalidSlice)?;
+                        let ac = if nonzero >> 1 == 0 {
+                            idct::AcCoefficients::Zero
+                        } else {
+                            idct::AcCoefficients::Unknown
+                        };
                         for ((target, &value), &factor) in coefficients
                             .iter_mut()
                             .zip(quantized)
@@ -321,6 +334,7 @@ impl Decoder<'_> {
                             &mut component.samples,
                             position,
                             stride,
+                            ac,
                         )?;
                     }
                     component.idct_position += 7 * stride;

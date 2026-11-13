@@ -6,6 +6,23 @@ const FIRST_PASS_SHIFT: u32 = 10;
 const SECOND_PASS_SHIFT: u32 = 17;
 const BLOCK_ROWS: usize = 8;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AcCoefficients {
+    Zero,
+    Present,
+    Unknown,
+}
+
+impl AcCoefficients {
+    pub(crate) const fn from_written(written: i32) -> Self {
+        if written == 0 {
+            Self::Zero
+        } else {
+            Self::Present
+        }
+    }
+}
+
 pub(crate) fn fits(output_length: usize, position: usize, stride: usize) -> bool {
     stride
         .checked_mul(BLOCK_ROWS - 1)
@@ -19,15 +36,22 @@ pub(crate) fn transform(
     output: &mut [i16],
     position: usize,
     stride: usize,
+    ac: AcCoefficients,
 ) -> Result<(), JpegError> {
     if !fits(output.len(), position, stride) {
         return Err(JpegError::LayoutOutOfBounds);
     }
-    if coefficients[1..]
-        .iter()
-        .fold(0, |combined, &coefficient| combined | coefficient)
-        == 0
-    {
+    let dc_only = match ac {
+        AcCoefficients::Zero => true,
+        AcCoefficients::Present => false,
+        AcCoefficients::Unknown => {
+            coefficients[1..]
+                .iter()
+                .fold(0, |combined, &coefficient| combined | coefficient)
+                == 0
+        }
+    };
+    if dc_only {
         let value = (coefficients[0].wrapping_add(4 + 1024) >> 3).clamp(0, 255) as i16;
         for row in 0..BLOCK_ROWS {
             let start = position + row * stride;

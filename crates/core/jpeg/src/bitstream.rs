@@ -1,5 +1,6 @@
 use crate::error::JpegError;
 use crate::huffman::{HuffmanTable, LOOKAHEAD_BITS};
+use crate::idct::AcCoefficients;
 use crate::marker::Marker;
 use crate::reader::ByteReader;
 
@@ -12,6 +13,7 @@ const REFILL_BITS_MIN: u8 = 32;
 const LONG_CODE_BITS: u8 = 16;
 const ZERO_REFILLS_MAX: u32 = 2;
 const CODE_LENGTH_LIMIT: i32 = 17;
+const BLOCK_END: usize = 64;
 
 struct Window {
     buffer: u64,
@@ -328,7 +330,7 @@ impl BitStream {
         quantization: &[i32; 64],
         block: &mut [i32; 64],
         prediction: &mut i32,
-    ) -> Result<(), JpegError> {
+    ) -> Result<AcCoefficients, JpegError> {
         let mut window = self.window.copied();
         let result = self.decode_block_window(
             &mut window,
@@ -354,19 +356,22 @@ impl BitStream {
         quantization: &[i32; 64],
         block: &mut [i32; 64],
         prediction: &mut i32,
-    ) -> Result<(), JpegError> {
+    ) -> Result<AcCoefficients, JpegError> {
         let mut stalled = self.stalled();
         self.decode_dc(window, reader, &mut stalled, dc_table, prediction)?;
         block[0] = prediction.wrapping_mul(quantization[0]);
         let mut position = 1_usize;
-        while position < 64 {
+        let mut written = 0_i32;
+        while position < BLOCK_END {
             self.refill_window(window, reader, &mut stalled);
             let peeked = window.peek_lookahead();
             let fast = ac_table.fast_ac[peeked];
             if fast != 0 {
                 position += ((fast >> 4) & 15) as usize;
                 let target = UNZIGZAG[position.min(63)] & 63;
-                block[target] = i32::from(fast >> 8).wrapping_mul(quantization[target]);
+                let coefficient = i32::from(fast >> 8).wrapping_mul(quantization[target]);
+                block[target] = coefficient;
+                written |= coefficient;
                 window.drop_bits((fast & 15) as u8);
                 position += 1;
                 continue;
@@ -379,15 +384,20 @@ impl BitStream {
                 let bits = window.get_bits(size as u8);
                 let value = extend(bits, size);
                 let target = UNZIGZAG[position & 63] & 63;
-                block[target] = value.wrapping_mul(quantization[target]);
+                let coefficient = value.wrapping_mul(quantization[target]);
+                block[target] = coefficient;
+                written |= coefficient;
                 position += 1;
             } else if run != 15 {
-                return Ok(());
+                return Ok(AcCoefficients::from_written(written));
             } else {
                 position += 16;
             }
         }
-        Ok(())
+        if position > BLOCK_END {
+            return Ok(AcCoefficients::Unknown);
+        }
+        Ok(AcCoefficients::from_written(written))
     }
 
     pub(crate) fn decode_dc_first(

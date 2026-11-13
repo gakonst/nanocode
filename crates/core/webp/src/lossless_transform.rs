@@ -8,6 +8,9 @@ const OPAQUE_ALPHA_PREDICTION: u8 = 0xff;
 const PALETTE_ENTRIES_MAX: usize = 256;
 const PALETTE_SMALL_MAX: u16 = 16;
 const COLOR_DELTA_SHIFT: u32 = 5;
+const COLOR_LANES: usize = 8;
+const GREEN_ALPHA_MASK: u32 = 0xff00_ff00;
+const COLOR_LANE_BYTES: usize = COLOR_LANES * BYTES_PER_PIXEL;
 
 pub(crate) enum Transform {
     Predictor { size_bits: u8, data: Vec<u8> },
@@ -68,81 +71,104 @@ pub(crate) fn apply_predictor(
     }
 }
 
+const LOW_SEVEN_BITS: u32 = 0x7f7f_7f7f;
+const HIGH_BITS: u32 = 0x8080_8080;
+const LOW_BITS_CLEARED: u32 = 0xfefe_fefe;
+
+#[inline(always)]
+const fn add_pixels(a: u32, b: u32) -> u32 {
+    ((a & LOW_SEVEN_BITS) + (b & LOW_SEVEN_BITS)) ^ ((a ^ b) & HIGH_BITS)
+}
+
+#[inline(always)]
+const fn average_pixels(a: u32, b: u32) -> u32 {
+    (a & b) + (((a ^ b) & LOW_BITS_CLEARED) >> 1)
+}
+
+#[inline(always)]
+const fn channels(pixel: u32) -> [u8; BYTES_PER_PIXEL] {
+    pixel.to_le_bytes()
+}
+
 fn predict_range(image: &mut [u8], start: usize, end: usize, row_bytes: usize, predictor: u8) {
+    let (previous, current) = image[..end].split_at_mut(start);
+    let above = &previous[start - row_bytes - BYTES_PER_PIXEL..end - row_bytes + BYTES_PER_PIXEL];
+    let top_left = &above[..current.len()];
+    let top = &above[BYTES_PER_PIXEL..][..current.len()];
+    let top_right = &above[2 * BYTES_PER_PIXEL..][..current.len()];
+    let mut left = [0u8; BYTES_PER_PIXEL];
+    left.copy_from_slice(&previous[start - BYTES_PER_PIXEL..]);
+    let left = u32::from_le_bytes(left);
     match predictor {
-        0 => predict_pixels(image, start, end, row_bytes, |_, _, _, _| {
-            [0, 0, 0, OPAQUE_ALPHA_PREDICTION]
-        }),
-        1 => predict_pixels(image, start, end, row_bytes, |left, _, _, _| left),
-        2 => predict_pixels(image, start, end, row_bytes, |_, _, top, _| top),
-        3 => predict_pixels(image, start, end, row_bytes, |_, _, _, top_right| top_right),
-        4 => predict_pixels(image, start, end, row_bytes, |_, top_left, _, _| top_left),
-        5 => predict_pixels(image, start, end, row_bytes, |left, _, top, top_right| {
+        0 => {
+            for pixel in current.as_chunks_mut::<BYTES_PER_PIXEL>().0.iter_mut() {
+                pixel[ALPHA_OFFSET] = pixel[ALPHA_OFFSET].wrapping_add(OPAQUE_ALPHA_PREDICTION);
+            }
+        }
+        1 => predict_serial(current, above, left, |left, _, _, _| left),
+        2 => add_bytes(current, top),
+        3 => add_bytes(current, top_right),
+        4 => add_bytes(current, top_left),
+        5 => predict_serial(current, above, left, |left, _, top, top_right| {
             average_pixels(average_pixels(left, top_right), top)
         }),
-        6 => predict_pixels(image, start, end, row_bytes, |left, top_left, _, _| {
+        6 => predict_serial(current, above, left, |left, top_left, _, _| {
             average_pixels(left, top_left)
         }),
-        7 => predict_pixels(image, start, end, row_bytes, |left, _, top, _| {
+        7 => predict_serial(current, above, left, |left, _, top, _| {
             average_pixels(left, top)
         }),
-        8 => predict_pixels(image, start, end, row_bytes, |_, top_left, top, _| {
-            average_pixels(top_left, top)
+        8 => add_averages(current, top_left, top),
+        9 => add_averages(current, top, top_right),
+        10 => predict_serial(current, above, left, |left, top_left, top, top_right| {
+            average_pixels(
+                average_pixels(left, top_left),
+                average_pixels(top, top_right),
+            )
         }),
-        9 => predict_pixels(image, start, end, row_bytes, |_, _, top, top_right| {
-            average_pixels(top, top_right)
-        }),
-        10 => predict_pixels(
-            image,
-            start,
-            end,
-            row_bytes,
-            |left, top_left, top, top_right| {
-                average_pixels(
-                    average_pixels(left, top_left),
-                    average_pixels(top, top_right),
-                )
-            },
-        ),
-        11 => predict_pixels(image, start, end, row_bytes, select),
-        12 => predict_pixels(image, start, end, row_bytes, |left, top_left, top, _| {
-            core::array::from_fn(|channel| {
+        11 => predict_serial(current, above, left, select),
+        12 => predict_serial(current, above, left, |left, top_left, top, _| {
+            let (left, top_left, top) = (channels(left), channels(top_left), channels(top));
+            u32::from_le_bytes(core::array::from_fn(|channel| {
                 clamp_add_subtract_full(
                     i16::from(left[channel]),
                     i16::from(top[channel]),
                     i16::from(top_left[channel]),
                 )
-            })
+            }))
         }),
-        13 => predict_pixels(image, start, end, row_bytes, |left, top_left, top, _| {
-            core::array::from_fn(|channel| {
-                clamp_add_subtract_half(
-                    (i16::from(left[channel]) + i16::from(top[channel])) / 2,
-                    i16::from(top_left[channel]),
-                )
-            })
+        13 => predict_serial(current, above, left, |left, top_left, top, _| {
+            let (average, top_left) = (channels(average_pixels(left, top)), channels(top_left));
+            u32::from_le_bytes(core::array::from_fn(|channel| {
+                clamp_add_subtract_half(i16::from(average[channel]), i16::from(top_left[channel]))
+            }))
         }),
         _ => {}
     }
 }
 
-fn average_pixels(a: [u8; BYTES_PER_PIXEL], b: [u8; BYTES_PER_PIXEL]) -> [u8; BYTES_PER_PIXEL] {
-    core::array::from_fn(|channel| average2(a[channel], b[channel]))
+#[inline(always)]
+fn add_bytes(current: &mut [u8], neighbours: &[u8]) {
+    for (value, &neighbour) in current.iter_mut().zip(neighbours) {
+        *value = value.wrapping_add(neighbour);
+    }
 }
 
-fn select(
-    left: [u8; BYTES_PER_PIXEL],
-    top_left: [u8; BYTES_PER_PIXEL],
-    top: [u8; BYTES_PER_PIXEL],
-    _: [u8; BYTES_PER_PIXEL],
-) -> [u8; BYTES_PER_PIXEL] {
-    let mut left_distance = 0i16;
-    let mut top_distance = 0i16;
+#[inline(always)]
+fn add_averages(current: &mut [u8], first: &[u8], second: &[u8]) {
+    for ((value, &first), &second) in current.iter_mut().zip(first).zip(second) {
+        *value = value.wrapping_add(average2(first, second));
+    }
+}
+
+fn select(left: u32, top_left: u32, top: u32, _: u32) -> u32 {
+    let (left_channels, top_left_channels, top_channels) =
+        (channels(left), channels(top_left), channels(top));
+    let mut left_distance = 0u16;
+    let mut top_distance = 0u16;
     for channel in 0..BYTES_PER_PIXEL {
-        let predict =
-            i16::from(left[channel]) + i16::from(top[channel]) - i16::from(top_left[channel]);
-        left_distance += (predict - i16::from(left[channel])).abs();
-        top_distance += (predict - i16::from(top[channel])).abs();
+        left_distance += u16::from(top_channels[channel].abs_diff(top_left_channels[channel]));
+        top_distance += u16::from(left_channels[channel].abs_diff(top_left_channels[channel]));
     }
     if left_distance < top_distance {
         left
@@ -152,40 +178,32 @@ fn select(
 }
 
 #[inline(always)]
-fn predict_pixels(
-    image: &mut [u8],
-    start: usize,
-    end: usize,
-    row_bytes: usize,
-    prediction: impl Fn(
-        [u8; BYTES_PER_PIXEL],
-        [u8; BYTES_PER_PIXEL],
-        [u8; BYTES_PER_PIXEL],
-        [u8; BYTES_PER_PIXEL],
-    ) -> [u8; BYTES_PER_PIXEL],
+fn predict_serial(
+    current: &mut [u8],
+    above: &[u8],
+    mut left: u32,
+    prediction: impl Fn(u32, u32, u32, u32) -> u32,
 ) {
-    let (previous, current) = image[..end].split_at_mut(start);
-    let above = previous[start - row_bytes - BYTES_PER_PIXEL..end - row_bytes + BYTES_PER_PIXEL]
-        .as_chunks::<BYTES_PER_PIXEL>()
-        .0;
-    let mut left = [0u8; BYTES_PER_PIXEL];
-    left.copy_from_slice(&previous[start - BYTES_PER_PIXEL..]);
+    let above = above.as_chunks::<BYTES_PER_PIXEL>().0;
     for (pixel, neighbours) in current
         .as_chunks_mut::<BYTES_PER_PIXEL>()
         .0
         .iter_mut()
         .zip(above.windows(3))
     {
-        let predicted = prediction(left, neighbours[0], neighbours[1], neighbours[2]);
-        for (value, predicted) in pixel.iter_mut().zip(predicted) {
-            *value = value.wrapping_add(predicted);
-        }
-        left = *pixel;
+        let predicted = prediction(
+            left,
+            u32::from_le_bytes(neighbours[0]),
+            u32::from_le_bytes(neighbours[1]),
+            u32::from_le_bytes(neighbours[2]),
+        );
+        left = add_pixels(u32::from_le_bytes(*pixel), predicted);
+        *pixel = left.to_le_bytes();
     }
 }
 
-const fn color_delta(transform: u8, color: u8) -> u32 {
-    ((transform as i8 as i32) * (color as i8 as i32)) as u32 >> COLOR_DELTA_SHIFT
+const fn color_delta(transform: u8, color: u8) -> u8 {
+    ((transform as i8 as i16 * color as i8 as i16) >> COLOR_DELTA_SHIFT) as u8
 }
 
 pub(crate) fn apply_color(image: &mut [u8], width: u16, size_bits: u8, data: &[u8]) {
@@ -199,14 +217,39 @@ pub(crate) fn apply_color(image: &mut [u8], width: u16, size_bits: u8, data: &[u
         {
             let (red_to_blue, green_to_blue, green_to_red) =
                 (transform[0], transform[1], transform[2]);
-            for pixel in block.as_chunks_mut::<BYTES_PER_PIXEL>().0.iter_mut() {
+            let (lanes, rest) = block.as_chunks_mut::<COLOR_LANE_BYTES>();
+            for lane in lanes {
+                let pixels: [u32; COLOR_LANES] = core::array::from_fn(|index| {
+                    u32::from_le_bytes([
+                        lane[index * BYTES_PER_PIXEL],
+                        lane[index * BYTES_PER_PIXEL + 1],
+                        lane[index * BYTES_PER_PIXEL + 2],
+                        lane[index * BYTES_PER_PIXEL + 3],
+                    ])
+                });
+                let mut transformed = [0u32; COLOR_LANES];
+                for index in 0..COLOR_LANES {
+                    let pixel = pixels[index];
+                    let green = (pixel >> 8) as u8;
+                    let red = (pixel as u8).wrapping_add(color_delta(green_to_red, green));
+                    let blue = ((pixel >> 16) as u8)
+                        .wrapping_add(color_delta(green_to_blue, green))
+                        .wrapping_add(color_delta(red_to_blue, red));
+                    transformed[index] =
+                        (pixel & GREEN_ALPHA_MASK) | u32::from(red) | (u32::from(blue) << 16);
+                }
+                for (index, pixel) in transformed.into_iter().enumerate() {
+                    lane[index * BYTES_PER_PIXEL..][..BYTES_PER_PIXEL]
+                        .copy_from_slice(&pixel.to_le_bytes());
+                }
+            }
+            for pixel in rest.as_chunks_mut::<BYTES_PER_PIXEL>().0.iter_mut() {
                 let green = pixel[1];
-                let red = u32::from(pixel[0]) + color_delta(green_to_red, green);
-                let blue = u32::from(pixel[2])
-                    + color_delta(green_to_blue, green)
-                    + color_delta(red_to_blue, red as u8);
-                pixel[0] = red as u8;
-                pixel[2] = blue as u8;
+                let red = pixel[0].wrapping_add(color_delta(green_to_red, green));
+                pixel[0] = red;
+                pixel[2] = pixel[2]
+                    .wrapping_add(color_delta(green_to_blue, green))
+                    .wrapping_add(color_delta(red_to_blue, red));
             }
         }
     }

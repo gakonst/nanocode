@@ -67,12 +67,7 @@ impl Verifier {
         }
         let mut root_store = self.extra_roots.clone();
 
-        #[cfg(all(
-            unix,
-            not(target_os = "android"),
-            not(target_vendor = "apple"),
-            not(target_arch = "wasm32"),
-        ))]
+        #[cfg(all(unix, not(target_vendor = "apple"), not(target_arch = "wasm32"),))]
         {
             root_store
                 .roots
@@ -160,7 +155,6 @@ impl ServerCertVerifier for Verifier {
     }
 }
 
-
 fn map_webpki_errors(err: TlsError) -> TlsError {
     match &err {
         TlsError::InvalidCertificate(CertificateError::InvalidPurpose)
@@ -173,12 +167,7 @@ fn map_webpki_errors(err: TlsError) -> TlsError {
     }
 }
 
-#[cfg(all(
-    unix,
-    not(target_os = "android"),
-    not(target_vendor = "apple"),
-    not(target_arch = "wasm32"),
-))]
+#[cfg(all(unix, not(target_vendor = "apple"), not(target_arch = "wasm32"),))]
 pub mod system {
     use nanocode_sys::SwapOption;
     use std::{

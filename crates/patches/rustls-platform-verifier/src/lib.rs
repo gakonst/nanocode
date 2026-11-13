@@ -5,21 +5,9 @@ use std::sync::Arc;
 use rustls::{client::WantsClientCert, ClientConfig, ConfigBuilder, WantsVerifier};
 
 mod verification;
-pub use verification::Verifier;
-#[cfg(all(
-    unix,
-    not(target_os = "android"),
-    not(target_vendor = "apple"),
-    not(target_arch = "wasm32"),
-))]
+#[cfg(all(unix, not(target_vendor = "apple"), not(target_arch = "wasm32")))]
 pub use verification::system_roots;
-
-// Build the Android module when generating docs so that
-// the Android-specific functions are included regardless of
-// the host.
-#[cfg(any(all(doc, docsrs), target_os = "android"))]
-#[cfg_attr(docsrs, doc(cfg(target_os = "android")))]
-pub mod android;
+pub use verification::Verifier;
 
 /// Extension trait to help configure [`ClientConfig`]s with the platform verifier.
 pub trait BuilderVerifierExt {

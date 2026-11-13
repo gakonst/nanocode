@@ -2,6 +2,8 @@
 
 #[cfg(all(target_vendor = "apple", not(target_os = "macos")))]
 pub mod apple;
+#[cfg(all(target_vendor = "apple", not(target_os = "macos")))]
+pub mod security;
 mod atomic;
 mod inline;
 #[cfg(any(unix, windows))]

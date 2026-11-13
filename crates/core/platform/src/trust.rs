@@ -194,13 +194,20 @@ mod platform {
     #[cfg(target_os = "aix")]
     const CERTIFICATE_DIRECTORIES: &[&str] = &["/var/ssl/certs"];
 
+    #[cfg(target_os = "android")]
+    const CERTIFICATE_DIRECTORIES: &[&str] = &[
+        "/apex/com.android.conscrypt/cacerts",
+        "/system/etc/security/cacerts",
+    ];
+
     #[cfg(not(any(
         target_os = "linux",
         target_os = "freebsd",
         target_os = "illumos",
         target_os = "solaris",
         target_os = "netbsd",
-        target_os = "aix"
+        target_os = "aix",
+        target_os = "android"
     )))]
     const CERTIFICATE_DIRECTORIES: &[&str] = &["/etc/ssl/certs"];
 

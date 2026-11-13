@@ -1,26 +1,13 @@
 #[cfg(any(windows, target_vendor = "apple"))]
 use std::sync::Arc;
 
-#[cfg(all(
-    any(unix, target_arch = "wasm32"),
-    not(target_os = "android"),
-    not(target_vendor = "apple"),
-))]
+#[cfg(all(any(unix, target_arch = "wasm32"), not(target_vendor = "apple")))]
 mod others;
 
-#[cfg(all(
-    any(unix, target_arch = "wasm32"),
-    not(target_os = "android"),
-    not(target_vendor = "apple"),
-))]
+#[cfg(all(any(unix, target_arch = "wasm32"), not(target_vendor = "apple")))]
 pub use others::Verifier;
 
-#[cfg(all(
-    unix,
-    not(target_os = "android"),
-    not(target_vendor = "apple"),
-    not(target_arch = "wasm32"),
-))]
+#[cfg(all(unix, not(target_vendor = "apple"), not(target_arch = "wasm32")))]
 pub use others::system::roots as system_roots;
 
 #[cfg(all(target_vendor = "apple", not(target_os = "macos")))]
@@ -34,12 +21,6 @@ mod macos;
 
 #[cfg(target_os = "macos")]
 pub use macos::Verifier;
-
-#[cfg(target_os = "android")]
-pub(crate) mod android;
-
-#[cfg(target_os = "android")]
-pub use android::Verifier;
 
 #[cfg(windows)]
 mod windows;
@@ -96,5 +77,3 @@ fn invalid_certificate(reason: impl Into<String>) -> rustls::Error {
 // See https://github.com/rustls/rustls-platform-verifier/issues/126#issuecomment-2306232794.
 const ALLOWED_EKUS: &[windows_sys::core::PCSTR] =
     &[windows_sys::Win32::Security::Cryptography::szOID_PKIX_KP_SERVER_AUTH];
-#[cfg(target_os = "android")]
-pub const ALLOWED_EKUS: &[&std::ffi::CStr] = &[c"1.3.6.1.5.5.7.3.1"];

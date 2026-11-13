@@ -1,9 +1,6 @@
 use std::{
     collections::{HashMap, VecDeque},
-    sync::{
-        Arc, OnceLock,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::Arc,
     time::Duration,
 };
 
@@ -35,27 +32,11 @@ pub fn set_interrupt_checks(checks: u64) {
     INTERRUPT_CHECKS.set(checks.max(1));
 }
 
-const SPLITMIX_INCREMENT: u64 = 0x9E37_79B9_7F4A_7C15;
-const SPLITMIX_FIRST: u64 = 0xBF58_476D_1CE4_E5B9;
-const SPLITMIX_SECOND: u64 = 0x94D0_49BB_1331_11EB;
-
 fn random_seed() -> Result<u64, String> {
-    static ENTROPY: OnceLock<u64> = OnceLock::new();
-    static CELLS: AtomicU64 = AtomicU64::new(0);
-    let entropy = match ENTROPY.get() {
-        Some(entropy) => *entropy,
-        None => {
-            let mut seed = [0; 8];
-            nanocode_platform::fill_random(&mut seed)
-                .map_err(|error| format!("embedded Code Mode has no randomness: {error}"))?;
-            *ENTROPY.get_or_init(|| u64::from_le_bytes(seed))
-        }
-    };
-    let cell = CELLS.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
-    let mut mixed = entropy.wrapping_add(cell.wrapping_mul(SPLITMIX_INCREMENT));
-    mixed = (mixed ^ (mixed >> 30)).wrapping_mul(SPLITMIX_FIRST);
-    mixed = (mixed ^ (mixed >> 27)).wrapping_mul(SPLITMIX_SECOND);
-    Ok(mixed ^ (mixed >> 31))
+    let mut seed = [0; size_of::<u64>()];
+    nanocode_platform::fill_random(&mut seed)
+        .map_err(|error| format!("embedded Code Mode has no randomness: {error}"))?;
+    Ok(u64::from_le_bytes(seed))
 }
 
 #[cfg(not(target_family = "wasm"))]

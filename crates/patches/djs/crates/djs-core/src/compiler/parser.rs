@@ -322,12 +322,12 @@ impl<'a, 'h> Parser<'a, 'h> {
             Goal::Module => FuncKind::Module,
         };
         let atom_undefined = crate::heap::atoms::UNDEFINED;
-        let atom_this = heap.atom_str("this")?;
+        let atom_this = crate::heap::atoms::THIS;
         let atom_arguments = crate::heap::atoms::ARGUMENTS;
         // Not an identifier, so it cannot collide with a user binding.
-        let atom_new_target = heap.atom_str("new.target")?;
-        let atom_home = heap.atom_str("<home>")?;
-        let atom_active = heap.atom_str("<active>")?;
+        let atom_new_target = crate::heap::atoms::NEW_TARGET;
+        let atom_home = crate::heap::atoms::HOME;
+        let atom_active = crate::heap::atoms::ACTIVE;
         let mut p = Parser {
             lx,
             tok,
@@ -406,7 +406,7 @@ impl<'a, 'h> Parser<'a, 'h> {
         }
         // The prelude's completion value is never used.
         if kind == FuncKind::Eval || (kind == FuncKind::Script && !opts.privileged) {
-            let atom = p.heap.atom_str("<completion>")?;
+            let atom = crate::heap::atoms::COMPLETION;
             let v = p.f.add_var(atom, VarKind::Internal, BODY_SCOPE);
             p.f.vars[v as usize].init_end = 0;
             p.completion = Some(atom);

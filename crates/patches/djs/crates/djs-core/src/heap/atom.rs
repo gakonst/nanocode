@@ -245,6 +245,13 @@ well_known! {
         RAW_JSON = "rawJSON",
         PREPARE_STACK_TRACE = "prepareStackTrace",
         STACK_TRACE_LIMIT = "stackTraceLimit",
+        THIS = "this",
+        NEW_TARGET = "new.target",
+        HOME = "<home>",
+        ACTIVE = "<active>",
+        COMPLETION = "<completion>",
+        STATE = "<state>",
+        TEMP = "<temp>",
     }
     symbols {
         SYM_ITERATOR = "Symbol.iterator",

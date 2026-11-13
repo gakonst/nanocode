@@ -500,7 +500,7 @@ pub(super) fn finish(
     let mut next_builtin = 0;
     // The debug name of construct temporaries (D2732), which bind integer atoms.
     let temp_name = if funcs.iter().any(|f| !f.temps.is_empty()) {
-        heap.atom_str("<temp>")?
+        crate::heap::atoms::TEMP
     } else {
         Atom::NULL
     };

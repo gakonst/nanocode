@@ -481,7 +481,7 @@ impl Parser<'_, '_> {
         if !is_async && !is_gen {
             return Ok(());
         }
-        let atom = self.heap.atom_str("<state>")?;
+        let atom = crate::heap::atoms::STATE;
         let v = self.f.add_var(atom, VarKind::Internal, BODY_SCOPE);
         self.f.state_var = Some(v);
         if is_async && !is_gen {

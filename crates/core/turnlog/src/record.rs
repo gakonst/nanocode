@@ -123,39 +123,6 @@ pub fn encode(records: &[Record]) -> Result<String, StoreError> {
     Ok(body)
 }
 
-pub fn split<'a>(
-    records: impl IntoIterator<Item = &'a Record>,
-    limit: Option<usize>,
-) -> Result<Vec<(String, usize)>, StoreError> {
-    let mut parts = Vec::new();
-    let mut body = String::new();
-    let mut count = 0;
-    for record in records {
-        let line = serde_json::to_string(record).map_err(|error| {
-            StoreError::NotCommitted(format!("encode turn log record: {error}"))
-        })?;
-        if let Some(limit) = limit {
-            if line.len() > limit {
-                return Err(StoreError::NotCommitted(format!(
-                    "a turn log record of {} bytes exceeds the row limit of {limit} bytes",
-                    line.len()
-                )));
-            }
-            if count > 0 && body.len() + 1 + line.len() > limit {
-                parts.push((std::mem::take(&mut body), count));
-                count = 0;
-            }
-        }
-        if count > 0 {
-            body.push('\n');
-        }
-        body.push_str(&line);
-        count += 1;
-    }
-    parts.push((body, count));
-    Ok(parts)
-}
-
 pub fn decode(body: &str) -> Result<Vec<Record>, StoreError> {
     serde_json::Deserializer::from_str(body)
         .into_iter::<Record>()

@@ -23,40 +23,27 @@ use crate::{
 pub struct SimHost(pub Arc<Disk>);
 
 impl LogHost for SimHost {
-    fn append<'a>(
+    fn load<'a>(
         &'a self,
         scope: &'a str,
-        body: &'a str,
-    ) -> StoreFuture<'a, Result<u64, StoreError>> {
-        let seq = self.0.with(|rows| rows.append(scope, body.to_owned()));
-        Box::pin(async move { Ok(seq) })
-    }
-
-    fn scan<'a>(
-        &'a self,
-        scope: &'a str,
-        after: u64,
     ) -> StoreFuture<'a, Result<Vec<(u64, String)>, StoreError>> {
-        let rows = self.0.with(|rows| rows.scan(scope, after));
+        let rows = self.0.with(|rows| rows.tload(scope));
         Box::pin(async move { Ok(rows) })
     }
 
-    fn snapshot<'a>(
+    fn append<'a>(
         &'a self,
         scope: &'a str,
-    ) -> StoreFuture<'a, Result<Option<(u64, String)>, StoreError>> {
-        let snap = self.0.with(|rows| rows.snapshot(scope));
-        Box::pin(async move { Ok(snap) })
-    }
-
-    fn put_snapshot<'a>(
-        &'a self,
-        scope: &'a str,
-        seq: u64,
-        body: &'a str,
+        rows: &'a [(u64, String)],
     ) -> StoreFuture<'a, Result<(), StoreError>> {
-        self.0.with(|rows| rows.stage(scope, seq, body.to_owned()));
-        Box::pin(async move { Ok(()) })
+        let inserted = self.0.with(|disk| disk.insert(scope, rows));
+        Box::pin(async move {
+            if inserted {
+                Ok(())
+            } else {
+                Err(StoreError::Fenced)
+            }
+        })
     }
 }
 

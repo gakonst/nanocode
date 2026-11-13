@@ -866,6 +866,12 @@ impl Sim {
         }
     }
 
+    fn turnlog_rows(&self, scope: &str) -> Vec<nanocode_turnlog::Row> {
+        let committed = self.disk.with(|rows| rows.committed(scope));
+        nanocode_turnlog::rows(&committed)
+            .unwrap_or_else(|error| panic!("a committed turn log row does not decode: {error}"))
+    }
+
     fn judge_observed(&mut self) {
         let mut durable: BTreeMap<(String, EventId), String> = BTreeMap::new();
         let policy = self.options.policy;
@@ -874,6 +880,21 @@ impl Sim {
             for record in seen(policy, *seq, body) {
                 if let Seen::Event { id, text } = record {
                     durable.insert((scope.clone(), id), text);
+                }
+            }
+        }
+        let scopes = self.disk.with(|rows| {
+            rows.tlog
+                .keys()
+                .map(|(scope, _)| scope.clone())
+                .collect::<BTreeSet<_>>()
+        });
+        for scope in scopes {
+            for row in self.turnlog_rows(&scope) {
+                for record in seen(policy, row.seq, &row.plain) {
+                    if let Seen::Event { id, text } = record {
+                        durable.insert((scope.clone(), id), text);
+                    }
                 }
             }
         }
@@ -1073,6 +1094,7 @@ impl Sim {
         self.disk.with(|rows| {
             rows.appends.clear();
             rows.staged.clear();
+            rows.tappends.clear();
         });
         self.stats.crashes += 1;
         self.trace(&format!("down: {cause}"));
@@ -1357,13 +1379,14 @@ impl Sim {
             return false;
         };
         let tick = std::mem::take(&mut object.tick);
-        let (appends, staged) = self.disk.with(|rows| {
+        let (appends, staged, tappends) = self.disk.with(|rows| {
             (
                 std::mem::take(&mut rows.appends),
                 std::mem::take(&mut rows.staged),
+                std::mem::take(&mut rows.tappends),
             )
         });
-        if !tick.writes() && appends.is_empty() && staged.is_empty() {
+        if !tick.writes() && appends.is_empty() && staged.is_empty() && tappends.is_empty() {
             self.release(tick.outputs, true);
             return true;
         }
@@ -1376,7 +1399,7 @@ impl Sim {
             self.drop_tick(tick, "commit failed");
             return false;
         }
-        self.apply(&tick, &appends, &staged);
+        self.apply(&tick, &appends, &staged, &tappends);
         let after = if self.rng.crash.chance(self.shape.crash_after_ppm) {
             Some("crash after commit")
         } else if self.rng.faults.chance(self.profile.after_ppm) {
@@ -1401,7 +1424,7 @@ impl Sim {
                 files: tick.files.clone(),
                 ..Tick::default()
             };
-            self.apply(&partial, &[], &[]);
+            self.apply(&partial, &[], &[], &[]);
         }
         self.release(tick.outputs, false);
         self.down(cause);
@@ -1412,6 +1435,7 @@ impl Sim {
         tick: &Tick,
         appends: &[(u64, String, String)],
         staged: &[(String, u64, String)],
+        tappends: &[(String, u64, String)],
     ) {
         let rows: Vec<String> = appends
             .iter()
@@ -1425,7 +1449,26 @@ impl Sim {
             for (scope, seq, body) in staged {
                 rows.snaps.insert(scope.clone(), (*seq, body.clone()));
             }
+            for (scope, seq, body) in tappends {
+                rows.tlog.insert((scope.clone(), *seq), body.clone());
+            }
         });
+        let fresh: BTreeSet<(String, u64)> = tappends
+            .iter()
+            .map(|(scope, seq, _)| (scope.clone(), *seq))
+            .collect();
+        let touched: BTreeSet<String> = fresh.iter().map(|(scope, _)| scope.clone()).collect();
+        for scope in touched {
+            for row in self.turnlog_rows(&scope) {
+                if fresh.contains(&(scope.clone(), row.seq)) {
+                    self.observe_row(row.seq, &scope, &row.plain);
+                }
+            }
+        }
+        for (_, _, body) in tappends {
+            self.stats.rows_appended += 1;
+            self.stats.bytes += u64::try_from(body.len()).expect("a body length fits in u64");
+        }
         for (seq, scope, body) in appends {
             self.stats.rows_appended += 1;
             self.stats.bytes += u64::try_from(body.len()).expect("a body length fits in u64");

@@ -2176,6 +2176,8 @@ dependencies = [
 name = "nanocode-turnlog"
 version = "0.7.0"
 dependencies = [
+ "base64 0.22.1",
+ "nanocode-compression",
  "nanocode-durability-core",
  "nanocode-sync",
  "serde",

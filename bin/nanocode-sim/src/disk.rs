@@ -12,6 +12,8 @@ pub struct Rows {
     pub reads: u64,
     pub snaps: BTreeMap<String, (u64, String)>,
     pub staged: Vec<(String, u64, String)>,
+    pub tappends: Vec<(String, u64, String)>,
+    pub tlog: BTreeMap<(String, u64), String>,
 }
 
 fn count(len: usize) -> u64 {
@@ -60,11 +62,53 @@ impl Rows {
         self.staged.push((scope.to_owned(), seq, body));
     }
 
+    pub fn insert(&mut self, scope: &str, rows: &[(u64, String)]) -> bool {
+        let taken = rows.iter().any(|(seq, _)| {
+            self.tlog.contains_key(&(scope.to_owned(), *seq))
+                || self
+                    .tappends
+                    .iter()
+                    .any(|(owner, pending, _)| owner == scope && pending == seq)
+        });
+        if !taken {
+            self.tappends.extend(
+                rows.iter()
+                    .map(|(seq, body)| (scope.to_owned(), *seq, body.clone())),
+            );
+        }
+        !taken
+    }
+
+    pub fn committed(&self, scope: &str) -> Vec<(u64, String)> {
+        self.tlog
+            .range((scope.to_owned(), 0)..=(scope.to_owned(), u64::MAX))
+            .map(|((_, seq), body)| (*seq, body.clone()))
+            .collect()
+    }
+
+    pub fn tload(&mut self, scope: &str) -> Vec<(u64, String)> {
+        let mut rows = self.committed(scope);
+        rows.extend(
+            self.tappends
+                .iter()
+                .filter(|(owner, ..)| owner == scope)
+                .map(|(_, seq, body)| (*seq, body.clone())),
+        );
+        let start = rows
+            .iter()
+            .rposition(|(_, body)| body.starts_with('s'))
+            .unwrap_or(0);
+        let rows = rows.split_off(start);
+        self.reads += count(rows.len());
+        rows
+    }
+
     pub fn scopes(&self) -> BTreeSet<String> {
         self.log
             .values()
             .map(|(scope, _)| scope.clone())
             .chain(self.snaps.keys().cloned())
+            .chain(self.tlog.keys().map(|(scope, _)| scope.clone()))
             .collect()
     }
 }

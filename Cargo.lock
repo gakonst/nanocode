@@ -643,6 +643,7 @@ dependencies = [
  "nanocode-tempo",
  "nanocode-tui",
  "psh",
+ "ring",
  "serde",
  "serde_json",
  "tokio",

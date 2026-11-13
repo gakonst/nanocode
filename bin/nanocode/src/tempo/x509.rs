@@ -1,7 +1,9 @@
 use std::net::IpAddr;
 use std::str::FromStr;
 
-use nanocode_tempo::{SigningKey, sha256};
+use nanocode_tempo::sha256;
+use ring::rand::SystemRandom;
+use ring::signature::{ECDSA_P256_SHA256_ASN1_SIGNING, EcdsaKeyPair, KeyPair as _};
 
 use std::fmt;
 
@@ -16,7 +18,6 @@ const TAG_GENERALIZED_TIME: u8 = 0x18;
 const TAG_SEQUENCE: u8 = 0x30;
 const TAG_SET: u8 = 0x31;
 const TAG_EXPLICIT_VERSION: u8 = 0xa0;
-const TAG_EXPLICIT_PUBLIC_KEY: u8 = 0xa1;
 const TAG_EXPLICIT_EXTENSIONS: u8 = 0xa3;
 const TAG_KEY_IDENTIFIER: u8 = 0x80;
 const TAG_DNS_NAME: u8 = 0x82;
@@ -36,12 +37,6 @@ const KEY_IDENTIFIER_BYTES: usize = 20;
 const NO_UNUSED_BITS: u8 = 0;
 
 const CERTIFICATE_VERSION_3: u8 = 2;
-const PKCS8_VERSION: u8 = 0;
-const EC_PRIVATE_KEY_VERSION: u8 = 1;
-const UNCOMPRESSED_POINT: u8 = 0x04;
-const SCALAR_BYTES: usize = 32;
-const POINT_BYTES: usize = 1 + 2 * SCALAR_BYTES;
-const KEY_GENERATION_ATTEMPTS_MAX: usize = 100;
 
 const KEY_USAGE_CERT_SIGN_CRL_SIGN: u8 = 0b0000_0110;
 const KEY_USAGE_UNUSED_BITS: u8 = 1;
@@ -202,45 +197,23 @@ impl From<nanocode_tempo::Error> for CertificateFault {
 }
 
 pub(crate) struct KeyPair {
-    key: SigningKey,
-    point: [u8; POINT_BYTES],
+    key: EcdsaKeyPair,
     pkcs8: Vec<u8>,
+    random: SystemRandom,
 }
 
 impl KeyPair {
     pub(crate) fn generate() -> Result<Self, CertificateFault> {
-        for _ in 0..KEY_GENERATION_ATTEMPTS_MAX {
-            let mut secret = [0u8; SCALAR_BYTES];
-            nanocode_platform::fill_random(&mut secret).map_err(|error| CertificateFault(error.to_string()))?;
-            if let Ok(key) = SigningKey::p256(&secret) {
-                return Ok(Self::from_key(key, &secret));
-            }
-        }
-        Err(CertificateFault(format!(
-            "no valid P-256 private key in {KEY_GENERATION_ATTEMPTS_MAX} attempts"
-        )))
-    }
-
-    fn from_key(key: SigningKey, secret: &[u8; SCALAR_BYTES]) -> Self {
-        let (x, y) = key.public_key();
-        let mut point = [0u8; POINT_BYTES];
-        point[0] = UNCOMPRESSED_POINT;
-        point[1..=SCALAR_BYTES].copy_from_slice(x);
-        point[1 + SCALAR_BYTES..].copy_from_slice(y);
-        let private = sequence(&[
-            &small_integer(EC_PRIVATE_KEY_VERSION),
-            &octet_string(secret),
-            &constructed(
-                TAG_EXPLICIT_PUBLIC_KEY,
-                &[&bit_string(NO_UNUSED_BITS, &point)],
-            ),
-        ]);
-        let pkcs8 = sequence(&[
-            &small_integer(PKCS8_VERSION),
-            &Self::algorithm(),
-            &octet_string(&private),
-        ]);
-        Self { key, point, pkcs8 }
+        let random = SystemRandom::new();
+        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &random)
+            .map_err(|error| CertificateFault(error.to_string()))?;
+        let key = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, pkcs8.as_ref(), &random)
+            .map_err(|error| CertificateFault(error.to_string()))?;
+        Ok(Self {
+            key,
+            pkcs8: pkcs8.as_ref().to_vec(),
+            random,
+        })
     }
 
     fn algorithm() -> Vec<u8> {
@@ -252,21 +225,21 @@ impl KeyPair {
     }
 
     fn subject_public_key_info(&self) -> Vec<u8> {
-        sequence(&[&Self::algorithm(), &bit_string(NO_UNUSED_BITS, &self.point)])
+        sequence(&[&Self::algorithm(), &bit_string(NO_UNUSED_BITS, self.key.public_key().as_ref())])
     }
 
     fn serial(&self) -> Vec<u8> {
-        let mut serial = sha256(self.point)[..SERIAL_BYTES].to_vec();
+        let mut serial = sha256(self.key.public_key().as_ref())[..SERIAL_BYTES].to_vec();
         serial[0] &= SERIAL_SIGN_MASK;
         unsigned_integer(&serial)
     }
 
     fn sign(&self, message: &[u8]) -> Result<Vec<u8>, CertificateFault> {
-        let signature = self.key.sign_prehash(&sha256(message))?;
-        Ok(sequence(&[
-            &unsigned_integer(&signature.r),
-            &unsigned_integer(&signature.s),
-        ]))
+        let signature = self
+            .key
+            .sign(&self.random, message)
+            .map_err(|error| CertificateFault(error.to_string()))?;
+        Ok(signature.as_ref().to_vec())
     }
 }
 

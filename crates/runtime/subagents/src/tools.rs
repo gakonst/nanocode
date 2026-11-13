@@ -11,7 +11,6 @@ use super::{
         forward_events,
     },
 };
-use futures_util::future::join_all;
 use nanocode_agent_core::usage::{UsdAmount, usd_number};
 use nanocode_agent_core::{
     AgentHandle, ClaudeModel, ForkRequest, HarnessFamily, Model, ModelSelection, ReasoningMode,
@@ -640,7 +639,11 @@ pub async fn start_agents_observed(
                 .launch_initial_turn(&root_session_id, id, prompt, capacity)
                 .await
         });
-    if let Some(error) = join_all(launches).await.into_iter().find_map(Result::err) {
+    if let Some(error) = nanocode_sync::join_in_order(launches)
+        .await
+        .into_iter()
+        .find_map(Result::err)
+    {
         return Err(startup.fail(error).await.into());
     }
     startup.commit().await?;

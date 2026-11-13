@@ -8,7 +8,7 @@ use std::{
     task::{Context, Poll, Waker},
 };
 
-use futures_util::{Stream, task::AtomicWaker};
+use futures_util::{Stream, StreamExt, task::AtomicWaker};
 
 pub struct InOrder<F> {
     parent: Arc<AtomicWaker>,
@@ -108,4 +108,41 @@ impl<F: Future> Stream for InOrder<F> {
     fn size_hint(&self) -> (usize, Option<usize>) {
         (self.entries.len(), Some(self.entries.len()))
     }
+}
+
+pub async fn join_in_order<F: Future>(futures: impl IntoIterator<Item = F>) -> Vec<F::Output> {
+    let mut pending = InOrder::new();
+    for (at, future) in futures.into_iter().enumerate() {
+        pending.push(async move { (at, future.await) });
+    }
+    let mut outputs = std::iter::repeat_with(|| None)
+        .take(pending.len())
+        .collect::<Vec<_>>();
+    while let Some((at, output)) = pending.next().await {
+        outputs[at] = Some(output);
+    }
+    outputs
+        .into_iter()
+        .map(|output| output.expect("every joined future finished"))
+        .collect()
+}
+
+pub async fn try_join_in_order<F, T, E>(futures: impl IntoIterator<Item = F>) -> Result<Vec<T>, E>
+where
+    F: Future<Output = Result<T, E>>,
+{
+    let mut pending = InOrder::new();
+    for (at, future) in futures.into_iter().enumerate() {
+        pending.push(async move { (at, future.await) });
+    }
+    let mut outputs = std::iter::repeat_with(|| None)
+        .take(pending.len())
+        .collect::<Vec<_>>();
+    while let Some((at, output)) = pending.next().await {
+        outputs[at] = Some(output?);
+    }
+    Ok(outputs
+        .into_iter()
+        .map(|output| output.expect("every joined future finished"))
+        .collect())
 }

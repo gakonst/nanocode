@@ -859,7 +859,7 @@ impl<H: Sql + ?Sized> SqlStore<H> {
                 .map(|encoded| [statement(dialect, &RECORDS, vec![encoded])])
                 .collect::<Vec<_>>();
             let host = &*self.host;
-            futures_util::future::try_join_all(
+            nanocode_sync::try_join_in_order(
                 statements
                     .iter()
                     .map(|statement| run_checked(host, SqlAccess::Read, "read_records", statement)),

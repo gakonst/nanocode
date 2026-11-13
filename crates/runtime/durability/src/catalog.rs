@@ -617,7 +617,7 @@ mod store {
         pub async fn list(&self) -> Result<Vec<SessionSummary>> {
             let Some(listed) = self.store.clone().list_summaries(usize::MAX).await? else {
                 let ids = self.store.clone().list_states(usize::MAX).await?;
-                let mut sessions: Vec<_> = futures_util::future::try_join_all(
+                let mut sessions: Vec<_> = nanocode_sync::try_join_in_order(
                     ids.iter()
                         .filter(|id| !is_auxiliary_state(id))
                         .map(|id| self.summary(id)),

@@ -13,7 +13,6 @@ use super::{
     platform::{self, Task, timeout_at},
     task_tree::TaskTree,
 };
-use futures_util::future::join_all;
 use nanocode_agent_core::usage::{UsdAmount, usd_number};
 use nanocode_agent_core::{
     Agent, AgentEvents, AgentHandle, AgentUsage, ExecutionPolicyDisposition, ModelSelection,
@@ -8723,7 +8722,8 @@ impl Registry {
             .call(|state| state.scopes.keys().cloned().collect::<Vec<_>>())
             .await;
         roots.sort_unstable();
-        let released = join_all(roots.iter().map(|root| self.release_scope(root))).await;
+        let released =
+            nanocode_sync::join_in_order(roots.iter().map(|root| self.release_scope(root))).await;
         for (root, result) in roots.iter().zip(released) {
             if let Err(error) = result {
                 tracing::warn!(%root, %error, "could not stop subagents at shutdown");
@@ -8921,14 +8921,17 @@ impl Registry {
                 return Ok(());
             }
             let interruption = async {
-                join_all(
+                nanocode_sync::join_in_order(
                     harnesses
                         .into_iter()
                         .map(|harness| async move { harness.interrupt().await }),
                 )
                 .await;
                 if let Some(registry) = self.shared() {
-                    join_all(asleep.iter().map(|id| registry.wake(root_session_id, *id))).await;
+                    nanocode_sync::join_in_order(
+                        asleep.iter().map(|id| registry.wake(root_session_id, *id)),
+                    )
+                    .await;
                 }
             };
             timeout_at(deadline, interruption).await.map_err(|_| {
@@ -8955,7 +8958,7 @@ impl Registry {
         deadline: Instant,
     ) -> std::io::Result<()> {
         let closing = async move {
-            let results = join_all(
+            let results = nanocode_sync::join_in_order(
                 harnesses
                     .into_iter()
                     .map(|harness| async move { harness.close().await }),
@@ -8980,7 +8983,7 @@ impl Registry {
         if tasks.is_empty() {
             return Ok(());
         }
-        let completion = join_all(tasks.iter_mut());
+        let completion = nanocode_sync::join_in_order(tasks.iter_mut());
         match timeout_at(deadline, completion).await {
             Ok(results) => results
                 .into_iter()

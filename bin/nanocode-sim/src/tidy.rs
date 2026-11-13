@@ -18,6 +18,7 @@ const SIMULATED: &[&str] = &[
 
 const BYPASSES_HOST: &str = "bypasses nanocode-platform's host";
 const WAKE_ORDER: &str = "yields its futures in the order they were woken, which tokio's watch and HashMap iteration draw at random; use nanocode_sync::InOrder";
+const JOIN_ORDER: &str = "polls in the order its futures were woken (join_all does past 30 futures, through FuturesOrdered); use nanocode_sync::join_in_order or try_join_in_order";
 const UNBIASED: &str = "draws its first branch from tokio's thread RNG; start it with biased;";
 
 const BANNED: &[(&str, &str)] = &[
@@ -30,6 +31,8 @@ const BANNED: &[(&str, &str)] = &[
     ("tokio::spawn", BYPASSES_HOST),
     ("Handle::try_current", BYPASSES_HOST),
     ("FuturesUnordered", WAKE_ORDER),
+    ("FuturesOrdered", JOIN_ORDER),
+    ("join_all", JOIN_ORDER),
 ];
 
 const SELECT: &str = "select!";

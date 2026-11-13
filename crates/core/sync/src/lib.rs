@@ -25,7 +25,7 @@ mod wakes;
 mod weighed;
 
 pub use armed::Armed;
-pub use in_order::InOrder;
+pub use in_order::{InOrder, join_in_order, try_join_in_order};
 #[cfg(not(target_family = "wasm"))]
 pub use lanes::{Bounds, Lanes, together};
 #[cfg(not(target_family = "wasm"))]

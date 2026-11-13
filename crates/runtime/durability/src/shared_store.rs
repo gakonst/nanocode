@@ -975,7 +975,7 @@ async fn run_group<S: StateStore + ?Sized>(store: &mut S, group: Vec<Grouped>) {
             }
         }
     }
-    let contents = futures_util::future::join_all(
+    let contents = nanocode_sync::join_in_order(
         writes
             .iter_mut()
             .map(|(_, _, content)| content.take())

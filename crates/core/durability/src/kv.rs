@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use futures_util::future::try_join_all;
 use nanocode_platform::{MaybeSend, MaybeSync};
 
 use crate::{
@@ -247,7 +246,7 @@ impl<B: KeyValue + ?Sized> KeyValueStore<B> {
         let revision = expected_revision.checked_add(1).ok_or_else(|| {
             StoreError::NotCommitted("key-value durability revision overflow".to_owned())
         })?;
-        try_join_all(
+        nanocode_sync::try_join_in_order(
             records
                 .iter()
                 .filter(|record| !record.value.is_empty())

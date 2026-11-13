@@ -200,6 +200,10 @@ const SESSION: Group = Group::new(&[
     Argument::flag("no_subagents")
         .long("no-subagents")
         .help("Disable subagent tools"),
+    Argument::flag("subagents")
+        .long("subagents")
+        .conflicts(&["no_subagents"])
+        .help("Offer subagent tools to models that get the harness tools directly too (off for them by default)"),
 ]);
 
 const GATEWAY: Group = Group::named(
@@ -536,6 +540,7 @@ pub struct SessionArgs {
     pub home: Option<PathBuf>,
     pub no_mouse: bool,
     pub no_subagents: bool,
+    pub subagents: bool,
     pub gateway: GatewayArgs,
     pub remote: RemoteArgs,
 }
@@ -582,6 +587,7 @@ impl SessionArgs {
             home: matches.path("home"),
             no_mouse: matches.flag("no_mouse"),
             no_subagents: matches.flag("no_subagents"),
+            subagents: matches.flag("subagents"),
             gateway: GatewayArgs::from_matches(matches),
             remote: RemoteArgs::from_matches(matches),
         }
@@ -605,6 +611,7 @@ impl SessionArgs {
             home: self.home.or(root.home),
             no_mouse: self.no_mouse || root.no_mouse,
             no_subagents: self.no_subagents || root.no_subagents,
+            subagents: self.subagents || root.subagents,
             gateway: GatewayArgs {
                 gateway: self.gateway.gateway.or(root.gateway.gateway),
                 cloudflare_account: self

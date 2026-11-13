@@ -392,12 +392,19 @@ impl ModelClients {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Subagents {
+    Off,
+    NativeModels,
+    AllModels,
+}
+
 #[derive(Clone)]
 pub struct HostConfig {
     pub workspace: PathBuf,
     pub store: Option<SessionStore>,
     pub archiver: Option<nanocode_store_jsonl::JsonlArchiver>,
-    pub subagents: bool,
+    pub subagents: Subagents,
     pub runners: Vec<Runner>,
     pub runner_servers: Vec<RunnerServerConfig>,
     pub tab: Option<String>,
@@ -666,6 +673,7 @@ impl Host {
                 _ => None,
             })
             .direct_tools_for(|request| !native_model(&request.model))
+            .direct_subagents(config.subagents == Subagents::AllModels)
             .configure(move |builder| {
                 let builder = match context_window {
                     Some(tokens) => builder.context_window_tokens(tokens),
@@ -690,6 +698,7 @@ impl Host {
                 .filter(|_| route(request) == Some(Route::Tempo))
         })
         .direct_tools_for(|request| !native_model(&request.model))
+        .direct_subagents(config.subagents == Subagents::AllModels)
         .headless(config.headless)
         .configure(move |builder| {
             let builder = match max_output {
@@ -733,7 +742,7 @@ impl Host {
             Some(store) => builder.durability(store.clone()),
             None => builder.durability(nanocode::durability::MemoryStore::new()?),
         };
-        if !config.subagents {
+        if config.subagents == Subagents::Off {
             builder = builder.without_subagents();
         }
         let runtime = builder

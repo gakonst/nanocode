@@ -18,6 +18,7 @@ pub struct CodexHarness {
     configure: Option<Hook>,
     client_for: Option<Route>,
     direct_tools_for: Option<Direct>,
+    direct_subagents: bool,
 }
 
 impl CodexHarness {
@@ -29,6 +30,7 @@ impl CodexHarness {
             configure: None,
             client_for: None,
             direct_tools_for: None,
+            direct_subagents: false,
         }
     }
 
@@ -85,6 +87,12 @@ impl CodexHarness {
         self.direct_tools_for = Some(Arc::new(direct_tools_for));
         self
     }
+
+    #[must_use]
+    pub const fn direct_subagents(mut self, enabled: bool) -> Self {
+        self.direct_subagents = enabled;
+        self
+    }
 }
 
 impl From<OpenAi> for CodexHarness {
@@ -136,11 +144,14 @@ impl RuntimeBackend for CodexHarness {
             .direct_tools_for
             .as_ref()
             .is_some_and(|direct_tools_for| direct_tools_for(&spec));
+        let direct_subagents = self.direct_subagents;
         Box::pin(async move {
             let remote = settings
                 .tools
                 .as_ref()
                 .is_some_and(AgentTools::has_code_mode_host);
+            let subagents = subagents
+                .filter(|_| !direct || remote || direct_subagents || spec.parent.is_some());
             let fold_notice = !remote
                 && configure.is_none()
                 && spec.checkpoint.is_none()

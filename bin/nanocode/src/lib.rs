@@ -356,7 +356,11 @@ async fn prepare(
         workspace,
         store,
         archiver,
-        subagents: !args.no_subagents,
+        subagents: match (args.no_subagents, args.subagents) {
+            (true, _) => host::Subagents::Off,
+            (false, false) => host::Subagents::NativeModels,
+            (false, true) => host::Subagents::AllModels,
+        },
         runners: runner_configs.runners,
         runner_servers: runner_configs.servers,
         tab: runner_configs.tab,

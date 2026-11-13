@@ -165,6 +165,16 @@ impl Model {
     }
 
     #[must_use]
+    pub const fn uses_responses_lite(self) -> bool {
+        !matches!(self, Self::Custom(_))
+    }
+
+    #[must_use]
+    pub const fn supports_verbosity(self) -> bool {
+        !matches!(self, Self::Custom(_))
+    }
+
+    #[must_use]
     pub const fn supports_reasoning_effort_updates(self) -> bool {
         matches!(
             self,

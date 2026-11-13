@@ -917,7 +917,8 @@ pub(crate) struct ResponseCreate<'a> {
     stream: bool,
     include: [&'static str; 1],
     prompt_cache_key: &'a str,
-    text: TextControls<'a>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    text: Option<TextControls<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     service_tier: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1055,7 +1056,7 @@ impl<'a> ResponseCreate<'a> {
             input: request_input,
             tool_choice: "auto",
 
-            parallel_tool_calls: false,
+            parallel_tool_calls: !policy.model.uses_responses_lite(),
             reasoning: ReasoningControls {
                 mode: policy
                     .model
@@ -1064,16 +1065,17 @@ impl<'a> ResponseCreate<'a> {
                     .flatten(),
                 effort: policy.thinking.as_str(),
                 summary: "auto",
-                context: "all_turns",
+                context: policy.model.uses_responses_lite().then_some("all_turns"),
             },
             store: store_responses,
             stream: true,
             include: ["reasoning.encrypted_content"],
             prompt_cache_key: profile.prompt_cache_key(),
             text: TextControls {
-                verbosity: "low",
+                verbosity: policy.model.supports_verbosity().then_some("low"),
                 format: config.strict_json_schema.as_ref(),
-            },
+            }
+            .present(),
 
             service_tier: policy.service_tier.request_value(policy.model),
             generate,
@@ -1141,14 +1143,25 @@ struct ReasoningControls {
     mode: Option<&'static str>,
     effort: &'static str,
     summary: &'static str,
-    context: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    context: Option<&'static str>,
 }
 
 #[derive(Clone, Copy, Serialize)]
 struct TextControls<'a> {
-    verbosity: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    verbosity: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     format: Option<&'a StrictJsonSchema>,
+}
+
+impl<'a> TextControls<'a> {
+    const fn present(self) -> Option<Self> {
+        match (self.verbosity, self.format) {
+            (None, None) => None,
+            _ => Some(self),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Serialize)]

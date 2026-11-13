@@ -371,6 +371,16 @@ pub struct Spawned {
 pub type NativePathFn = fn(&[u8]) -> io::Result<std::path::PathBuf>;
 
 /// Facts about the process and the machine that bash reports in variables (D1301):
+/// The CPU time a process has used in user and in system mode, as `getrusage` counts
+/// it: the shell's own, and that of the children it has waited for.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CpuTimes {
+    pub user: Duration,
+    pub system: Duration,
+    pub children_user: Duration,
+    pub children_system: Duration,
+}
+
 /// `UID`, `EUID`, `GROUPS`, `PPID`, `HOSTNAME`, `OSTYPE`, `MACHTYPE`, `HOSTTYPE`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HostInfo {
@@ -616,6 +626,11 @@ pub trait Host {
     /// `SystemTime`; the JS host supplies `Date.now()`).
     fn now(&self) -> Duration {
         Duration::ZERO
+    }
+    /// The CPU time used so far (`time`, `times`). The default is none: a host
+    /// without processes of its own has no such clock.
+    fn cpu_times(&self) -> CpuTimes {
+        CpuTimes::default()
     }
     /// Completes after `duration`.
     fn sleep(&self, duration: Duration) -> HostFuture<()>;

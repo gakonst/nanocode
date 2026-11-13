@@ -403,6 +403,22 @@ fn open_fifo(p: Vec<u8>, opts: OpenOptions) -> HostFuture<io::Result<Rc<dyn Host
     }))
 }
 
+/// The user and system time `getrusage` reports for this process or for the children
+/// it has waited for.
+fn rusage(who: libc::c_int) -> (Duration, Duration) {
+    // SAFETY: `rusage` is plain integers, for which all zeroes is a value.
+    let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+    // SAFETY: `usage` is a `rusage` this call may write.
+    if unsafe { libc::getrusage(who, &mut usage) } != 0 {
+        return (Duration::ZERO, Duration::ZERO);
+    }
+    let time = |t: libc::timeval| {
+        Duration::from_secs(u64::try_from(t.tv_sec).unwrap_or(0))
+            + Duration::from_micros(u64::try_from(t.tv_usec).unwrap_or(0))
+    };
+    (time(usage.ru_utime), time(usage.ru_stime))
+}
+
 impl Host for UnixHost {
     fn native_paths(&self) -> Option<psh_engine::host::NativePathFn> {
         Some(|p| Ok(path(p)))
@@ -638,6 +654,17 @@ impl Host for UnixHost {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
+    }
+
+    fn cpu_times(&self) -> psh_engine::host::CpuTimes {
+        let (user, system) = rusage(libc::RUSAGE_SELF);
+        let (children_user, children_system) = rusage(libc::RUSAGE_CHILDREN);
+        psh_engine::host::CpuTimes {
+            user,
+            system,
+            children_user,
+            children_system,
+        }
     }
 
     fn sleep(&self, duration: Duration) -> HostFuture<()> {

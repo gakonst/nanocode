@@ -517,8 +517,8 @@ pub(super) async fn enable(vp: &mut Vp, args: &[Vec<u8>]) -> R {
     out(vp, "enable", &buf).await
 }
 
-/// `times`: the shell's and its children's user and system times. The host has no
-/// clock for them yet, so all are zero.
+/// `times`: the shell's and its children's user and system times, zero on a host
+/// without that clock.
 pub(super) async fn times(vp: &mut Vp, args: &[Vec<u8>]) -> R {
     if let Some(a) = args.get(1)
         && a.len() > 1
@@ -530,7 +530,18 @@ pub(super) async fn times(vp: &mut Vp, args: &[Vec<u8>]) -> R {
         vp.error_raw(b"times: usage: times\n").await;
         return Ok(2);
     }
-    out(vp, "times", b"0m0.000s 0m0.000s\n0m0.000s 0m0.000s\n").await
+    let cpu = vp.core.host.cpu_times();
+    let mut text = Vec::new();
+    for (time, end) in [
+        (cpu.user, b' '),
+        (cpu.system, b'\n'),
+        (cpu.children_user, b' '),
+        (cpu.children_system, b'\n'),
+    ] {
+        crate::timing::clock(&mut text, 3, true, time);
+        text.push(end);
+    }
+    out(vp, "times", &text).await
 }
 
 /// `caller [expr]`: where the current function (or frame `expr`) was called from.

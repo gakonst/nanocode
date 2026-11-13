@@ -42,6 +42,7 @@ mod pipe;
 mod sched;
 mod signals;
 mod state;
+mod timing;
 #[cfg(any(unix, windows))]
 pub mod std_host;
 pub mod testhost;

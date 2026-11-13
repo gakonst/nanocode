@@ -1350,10 +1350,17 @@ impl<'a> P<'a> {
                     self.pos += 4;
                     let mut end = self.pos;
                     self.skip_blanks();
-                    let posix = self.run() == b"-p";
+                    let mut posix = self.run() == b"-p";
                     if posix {
                         self.pos += 2;
                         end = self.pos;
+                        self.skip_blanks();
+                    }
+                    // `--` ends the options, and bash's grammar takes it for `-p` too.
+                    if self.run() == b"--" {
+                        self.pos += 2;
+                        end = self.pos;
+                        posix = true;
                     }
                     time = Some(Time {
                         span: sp(s, end),

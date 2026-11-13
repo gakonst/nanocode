@@ -1048,3 +1048,43 @@ fn a_program_writes_through_a_file_the_host_cannot_give_it() {
     assert_eq!(o.stderr, "cat: no such file\n[c]\n");
     assert_eq!(o.status, 0);
 }
+
+#[test]
+fn time_reports_what_its_pipeline_took() {
+    // The test host's clocks stand still: the lines are bash's, the times zero.
+    let o = run("time echo hi");
+    assert_eq!(o.stdout, "hi\n");
+    assert_eq!(o.stderr, "\nreal\t0m0.000s\nuser\t0m0.000s\nsys\t0m0.000s\n");
+    let o = run("time -p echo hi | cat; echo $?");
+    assert_eq!(o.stdout, "hi\n0\n");
+    assert_eq!(o.stderr, "real 0.00\nuser 0.00\nsys 0.00\n");
+    // The pipeline's own redirections do not take the report; the group's do.
+    let o = run("time -p false 2>/dev/null; echo $?; { time ! false; } 2>/dev/null; echo $?");
+    assert_eq!(o.stdout, "1\n0\n");
+    assert_eq!(o.stderr, "real 0.00\nuser 0.00\nsys 0.00\n");
+    let o = run("TIMEFORMAT='%R %1U %lS %P %%'; time true; TIMEFORMAT=; time true; time");
+    assert_eq!(o.stderr, "0.000 0.0 0m0.000s 0.00 %\n");
+    let o = run("TIMEFORMAT=%Q; time echo ran");
+    assert_eq!(o.stdout, "ran\n");
+    assert!(
+        o.stderr
+            .ends_with("TIMEFORMAT: `Q': invalid format character\n"),
+        "{}",
+        o.stderr
+    );
+    // bash reports before an exit inside the pipeline, and not for a return.
+    let o = run("f() { time -p return 4; }; f; echo $?; time -p exit 3");
+    assert_eq!(o.stdout, "4\n");
+    assert_eq!(
+        (o.status, o.stderr.as_str()),
+        (3, "real 0.00\nuser 0.00\nsys 0.00\n")
+    );
+    // A job reports too, and `--` is bash's `-p`.
+    let o = run("time -p true & wait; time -- echo x");
+    assert_eq!(o.stdout, "x\n");
+    assert_eq!(
+        o.stderr,
+        "real 0.00\nuser 0.00\nsys 0.00\n".repeat(2)
+    );
+    check("times", "0m0.000s 0m0.000s\n0m0.000s 0m0.000s\n");
+}

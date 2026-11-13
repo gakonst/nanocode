@@ -1569,11 +1569,11 @@ dependencies = [
 name = "rustls-platform-verifier"
 version = "0.7.0"
 dependencies = [
- "log",
  "nanocode-platform",
  "nanocode-sys",
  "rustls",
  "rustls-webpki",
+ "tracing",
  "webpki-root-certs",
  "windows-sys 0.61.2",
 ]

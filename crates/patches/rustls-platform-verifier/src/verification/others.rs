@@ -10,8 +10,6 @@ use rustls::{
     SignatureScheme,
 };
 
-use super::log_server_cert;
-
 /// A TLS certificate verifier that uses the system's root store and WebPKI.
 #[derive(Debug)]
 pub struct Verifier {
@@ -107,15 +105,13 @@ impl ServerCertVerifier for Verifier {
         ocsp_response: &[u8],
         now: pki_types::UnixTime,
     ) -> Result<ServerCertVerified, TlsError> {
-        log_server_cert(end_entity);
-
         self.inner()?
             .verify_server_cert(end_entity, intermediates, server_name, ocsp_response, now)
             .map_err(map_webpki_errors)
             // This only contains information from the system or other public
             // bits of the TLS handshake, so it can't leak anything.
             .map_err(|e| {
-                log::error!("failed to verify TLS certificate: {}", e);
+                tracing::error!("failed to verify TLS certificate: {}", e);
                 e
             })
     }
@@ -201,12 +197,12 @@ pub mod system {
         let mut store = rustls::RootCertStore::empty();
         let (added, ignored) = store.add_parsable_certificates(result.certificates);
         if ignored > 0 {
-            log::warn!("{ignored} platform CA root certificates were ignored due to errors");
+            tracing::warn!("{ignored} platform CA root certificates were ignored due to errors");
         }
         for error in result.errors {
-            log::warn!("Error loading CA root certificate: {error}");
+            tracing::warn!("Error loading CA root certificate: {error}");
         }
-        log::debug!("Loaded {added} CA root certificates from the system");
+        tracing::debug!("Loaded {added} CA root certificates from the system");
         let roots = Arc::new(store);
         ROOTS.store(Some(Arc::new(Loaded {
             at: Instant::now(),

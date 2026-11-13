@@ -55,7 +55,7 @@ use windows_sys::Win32::{
     },
 };
 
-use super::{log_server_cert, ALLOWED_EKUS};
+use super::ALLOWED_EKUS;
 
 // The `windows-sys` definition for `CERT_CHAIN_PARA` does not take old OS versions
 // into account so we define it ourselves for better OS backwards compat.
@@ -625,8 +625,6 @@ impl ServerCertVerifier for Verifier {
         ocsp_response: &[u8],
         now: pki_types::UnixTime,
     ) -> Result<rustls::client::danger::ServerCertVerified, TlsError> {
-        log_server_cert(end_entity);
-
         let name = server_name.to_str();
 
         let intermediate_certs: Vec<&[u8]> = intermediates.iter().map(|c| c.as_ref()).collect();
@@ -648,7 +646,7 @@ impl ServerCertVerifier for Verifier {
             Err(e) => {
                 // SAFETY:
                 // Errors are our own custom errors, WinAPI errors, or static strings.
-                log::error!("failed to verify TLS certificate: {}", e);
+                tracing::error!("failed to verify TLS certificate: {}", e);
                 Err(e)
             }
         }

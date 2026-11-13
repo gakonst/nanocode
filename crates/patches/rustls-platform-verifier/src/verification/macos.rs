@@ -15,7 +15,7 @@ use rustls::{
     SignatureScheme,
 };
 
-use super::{invalid_certificate, log_server_cert};
+use super::invalid_certificate;
 
 const TRUST_VARIABLE: &str = "NANOCODE_TLS_TRUST";
 const KEYCHAINS: [&str; 2] = [
@@ -83,14 +83,14 @@ fn webpki(
     }
     let (added, ignored) = store.add_parsable_certificates(system);
     if ignored > 0 {
-        log::warn!("{ignored} platform CA root certificates were ignored due to errors");
+        tracing::warn!("{ignored} platform CA root certificates were ignored due to errors");
     }
     if store.is_empty() {
         return Err(TlsError::General(
             "No CA certificates were loaded from the system".to_owned(),
         ));
     }
-    log::debug!("Loaded {added} CA root certificates from the system keychains");
+    tracing::debug!("Loaded {added} CA root certificates from the system keychains");
     WebPkiServerVerifier::builder_with_provider(store.into(), crypto_provider.clone())
         .build()
         .map_err(|error| TlsError::Other(OtherError(Arc::new(error))))
@@ -102,9 +102,9 @@ fn keychain_roots() -> Vec<pki_types::CertificateDer<'static>> {
         match fs::read(path) {
             Ok(bytes) => match keychain_certificates(&bytes) {
                 Some(found) => certificates.extend(found),
-                None => log::warn!("{path} is not a readable keychain"),
+                None => tracing::warn!("{path} is not a readable keychain"),
             },
-            Err(error) => log::warn!("Error reading {path}: {error}"),
+            Err(error) => tracing::warn!("Error reading {path}: {error}"),
         }
     }
     certificates
@@ -219,7 +219,6 @@ impl ServerCertVerifier for Verifier {
         ocsp_response: &[u8],
         now: pki_types::UnixTime,
     ) -> Result<ServerCertVerified, TlsError> {
-        log_server_cert(end_entity);
         let result = match &self.trust {
             Trust::Files(roots) => roots
                 .verify_server_cert(end_entity, intermediates, server_name, ocsp_response, now)
@@ -240,7 +239,7 @@ impl ServerCertVerifier for Verifier {
                     .map(|()| ServerCertVerified::assertion())
             }
         };
-        result.inspect_err(|error| log::error!("failed to verify TLS certificate: {error}"))
+        result.inspect_err(|error| tracing::error!("failed to verify TLS certificate: {error}"))
     }
 
     fn verify_tls12_signature(

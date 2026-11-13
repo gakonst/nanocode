@@ -8,7 +8,6 @@ use rustls::{
     CertificateError, DigitallySignedStruct, Error as TlsError, OtherError, SignatureScheme,
 };
 
-use super::log_server_cert;
 use crate::verification::invalid_certificate;
 
 const ERR_SEC_CREATE_CHAIN_FAILED: isize = -25318;
@@ -103,13 +102,12 @@ impl ServerCertVerifier for Verifier {
         ocsp_response: &[u8],
         now: pki_types::UnixTime,
     ) -> Result<rustls::client::danger::ServerCertVerified, TlsError> {
-        log_server_cert(end_entity);
         let server = server_name.to_str();
         let ocsp_data = (!ocsp_response.is_empty()).then_some(ocsp_response);
         match self.verify_certificate(end_entity, intermediates, &server, ocsp_data, now) {
             Ok(()) => Ok(rustls::client::danger::ServerCertVerified::assertion()),
             Err(e) => {
-                log::error!("failed to verify TLS certificate: {}", e);
+                tracing::error!("failed to verify TLS certificate: {}", e);
                 Err(e)
             }
         }

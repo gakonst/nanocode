@@ -382,8 +382,8 @@ impl MemberKind {
     }
 }
 
-bitflags::bitflags! {
-    #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+nanocode_flags::flags! {
+    #[derive(Copy, Clone, PartialEq, Eq)]
     #[repr(transparent)]
     pub struct PyMemberFlags: i32 {
         const READONLY = 1;

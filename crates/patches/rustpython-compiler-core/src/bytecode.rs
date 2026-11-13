@@ -7,7 +7,6 @@ use crate::{
     {OneIndexed, SourceLocation},
 };
 use alloc::{borrow::ToOwned, boxed::Box, collections::BTreeSet, fmt, string::String, vec::Vec};
-use bitflags::bitflags;
 use core::{
     cell::UnsafeCell,
     hash, mem,
@@ -15,6 +14,7 @@ use core::{
     sync::atomic::{AtomicU8, AtomicU16, AtomicUsize, Ordering},
 };
 use rustpython_wtf8::iteration::Itertools;
+use nanocode_flags::flags;
 use nanocode_numeric::BigInt;
 use nanocode_numeric::Complex64;
 use nanocode_numeric::Zero;
@@ -518,8 +518,8 @@ pub struct CodeObject<C: Constant = ConstantData> {
     pub exceptiontable: Box<[u8]>,
 }
 
-bitflags! {
-    #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+flags! {
+    #[derive(Copy, Clone, PartialEq, Eq)]
     pub struct CodeFlags: u32 {
         const OPTIMIZED = 0x0001;
         const NEWLOCALS = 0x0002;

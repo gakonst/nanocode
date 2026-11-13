@@ -7,7 +7,7 @@
 
 use std::fmt;
 
-use bitflags::bitflags;
+use nanocode_flags::flags;
 
 use crate::str::{Quote, TripleQuotes};
 use crate::str_prefix::{
@@ -734,8 +734,8 @@ impl fmt::Display for TokenKind {
     }
 }
 
-bitflags! {
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+flags! {
+    #[derive(Clone, Copy, PartialEq, Eq)]
     pub struct TokenFlags: u16 {
         /// The token is a string with double quotes (`"`).
         const DOUBLE_QUOTES = 1 << 0;

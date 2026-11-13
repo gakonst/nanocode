@@ -12,19 +12,19 @@ use crate::{
     sliceable::SequenceIndexOp,
 };
 use alloc::borrow::Cow;
-use bitflags::bitflags;
 use core::{fmt::Debug, ops::Range};
+use nanocode_flags::flags;
 use rustpython_common::atomic::AtomicCell;
 use rustpython_common::wtf8::iteration::Itertools;
 
-bitflags! {
+flags! {
     /// Capabilities a consumer asks a buffer exporter for, the `flags` argument of
     /// `bf_getbuffer` and of `__buffer__` (`PyBUF_*`).
     ///
     /// The composite requests are supersets of the simpler ones, so
     /// [`contains`](Self::contains) answers the `REQ_*` questions an exporter asks:
     /// `flags.contains(BufferFlags::C_CONTIGUOUS)` is `REQ_C_CONTIGUOUS(flags)`.
-    #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+    #[derive(Copy, Clone, PartialEq, Eq)]
     pub struct BufferFlags: u32 {
         const WRITABLE = 0x0001;
         const FORMAT = 0x0004;

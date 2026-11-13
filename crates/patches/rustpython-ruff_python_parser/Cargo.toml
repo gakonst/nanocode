@@ -45,8 +45,8 @@ harness = false
 name = "generate_inline_tests"
 path = "tests/generate_inline_tests.rs"
 
-[dependencies.bitflags]
-version = "2.5.0"
+[dependencies.nanocode-flags]
+path = "../../core/flags"
 
 [dependencies.memchr]
 version = "2.7.1"

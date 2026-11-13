@@ -11,7 +11,7 @@
  * See the sre.c file for information on usage and redistribution.
  */
 
-use bitflags::bitflags;
+use nanocode_flags::flags;
 
 pub const SRE_MAGIC: usize = 20230612;
 
@@ -209,8 +209,8 @@ impl TryFrom<u32> for SreCatCode {
     }
 }
 
-bitflags! {
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+flags! {
+#[derive(PartialEq, Eq, Clone, Copy)]
     pub struct SreFlag: u16 {
         const IGNORECASE = 2;
         const LOCALE = 4;
@@ -223,7 +223,7 @@ bitflags! {
     }
 }
 
-bitflags! {
+flags! {
     #[derive(Clone, Copy)]
     pub struct SreInfo: u32 {
         const PREFIX = 1;

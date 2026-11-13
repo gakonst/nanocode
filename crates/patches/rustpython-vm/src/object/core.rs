@@ -287,11 +287,11 @@ pub(super) unsafe fn try_clear_obj<T: PyPayload>(x: *mut PyObject, out: &mut Vec
     x.payload.try_clear(out);
 }
 
-bitflags::bitflags! {
+nanocode_flags::flags! {
     /// GC bits for free-threading support (like ob_gc_bits in Py_GIL_DISABLED)
     /// These bits are stored in a separate atomic field for lock-free access.
     /// See Include/internal/pycore_gc.h
-    #[derive(Copy, Clone, Debug, Default)]
+    #[derive(Copy, Clone, Default)]
     pub(crate) struct GcBits: u8 {
         /// Tracked by the GC
         const TRACKED = 1 << 0;

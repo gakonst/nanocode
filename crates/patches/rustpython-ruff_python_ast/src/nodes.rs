@@ -13,7 +13,7 @@ use std::ops::{Deref, DerefMut};
 use std::slice::{Iter, IterMut};
 use std::sync::OnceLock;
 
-use bitflags::bitflags;
+use nanocode_flags::flags;
 
 use ruff_text_size::{Ranged, TextLen, TextRange, TextSize};
 
@@ -941,7 +941,7 @@ impl std::fmt::Display for DisplayFlags<'_> {
     }
 }
 
-bitflags! {
+flags! {
     #[derive(Default, Copy, Clone, PartialEq, Eq, Hash)]
     struct InterpolatedStringFlagsInner: u8 {
         /// The f-string uses double quotes (`"`) for its opener and closer.
@@ -1572,8 +1572,8 @@ enum StringLiteralValueInner {
     Concatenated(Box<ConcatenatedStringLiteral>),
 }
 
-bitflags! {
-    #[derive(Debug, Default, Copy, Clone, PartialEq, Eq, Hash)]
+flags! {
+    #[derive(Default, Copy, Clone, PartialEq, Eq, Hash)]
     struct StringLiteralFlagsInner: u8 {
         /// The string uses double quotes (e.g. `"foo"`).
         /// If this flag is not set, the string uses single quotes (`'foo'`).
@@ -2011,7 +2011,7 @@ enum BytesLiteralValueInner {
     Concatenated(Vec<BytesLiteral>),
 }
 
-bitflags! {
+flags! {
     #[derive(Default, Copy, Clone, PartialEq, Eq, Hash)]
     struct BytesLiteralFlagsInner: u8 {
         /// The bytestring uses double quotes (e.g. `b"foo"`).
@@ -2230,7 +2230,7 @@ impl From<BytesLiteral> for Expr {
     }
 }
 
-bitflags! {
+flags! {
     /// Flags that can be queried to obtain information
     /// regarding the prefixes and quotes used for a string literal.
     ///
@@ -2239,7 +2239,7 @@ bitflags! {
     /// of the `*_PREFIX` flags. As such, the recommended way to set the
     /// prefix flags is by calling the `as_flags()` method on the
     /// `StringPrefix` enum.
-    #[derive(Default, Debug, Copy, Clone, PartialEq, Eq, Hash)]
+    #[derive(Default, Copy, Clone, PartialEq, Eq, Hash)]
     struct AnyStringFlagsInner: u16 {
         /// The string uses double quotes (`"`).
         /// If this flag is not set, the string uses single quotes (`'`).

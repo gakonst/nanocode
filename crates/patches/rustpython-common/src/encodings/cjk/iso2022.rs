@@ -36,16 +36,16 @@ const CHARSET_JISX0213_2: u8 = b'P' | CHARSET_DBCS;
 const CHARSET_JISX0213_2004_1: u8 = b'Q' | CHARSET_DBCS;
 const CHARSET_JISX0208_O: u8 = b'@' | CHARSET_DBCS;
 
-bitflags::bitflags! {
-    #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+nanocode_flags::flags! {
+    #[derive(Copy, Clone, PartialEq, Eq)]
     struct Iso2022StateFlags: u8 {
         const SHIFTED = 0x01;
         const ESCTHROUGHOUT = 0x02;
     }
 }
 
-bitflags::bitflags! {
-    #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+nanocode_flags::flags! {
+    #[derive(Copy, Clone, PartialEq, Eq)]
     struct Iso2022ConfigFlags: u8 {
         const NO_SHIFT = 0x01;
         const USE_G2 = 0x02;

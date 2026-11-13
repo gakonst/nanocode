@@ -12,7 +12,7 @@ use crate::{
     error::{CodegenError, CodegenErrorType},
 };
 use alloc::{borrow::Cow, fmt};
-use bitflags::bitflags;
+use nanocode_flags::flags;
 use ruff_python_ast::{self as ast, name::Name};
 use ruff_text_size::{Ranged, TextRange};
 use rustpython_compiler_core::{PositionEncoding, SourceFile, SourceLocation};
@@ -296,8 +296,8 @@ impl From<SymbolScope> for i32 {
     }
 }
 
-bitflags! {
-    #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+flags! {
+    #[derive(Copy, Clone, PartialEq, Eq)]
     pub struct SymbolFlags: u16 {
         const DEF_GLOBAL   = 1;
         const DEF_LOCAL    = 2;

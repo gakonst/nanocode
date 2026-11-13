@@ -9,9 +9,9 @@ use crate::{
     function::{IntoPyNativeFn, PyNativeFn},
 };
 
-bitflags::bitflags! {
+nanocode_flags::flags! {
     // METH_XXX flags in CPython
-    #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+    #[derive(Copy, Clone, PartialEq, Eq)]
     pub struct PyMethodFlags: u32 {
         const VARARGS = 0x0001;
         const KEYWORDS = 0x0002;

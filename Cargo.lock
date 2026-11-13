@@ -798,6 +798,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "nanocode-flags"
+version = "0.7.0"
+
+[[package]]
 name = "nanocode-gif"
 version = "0.7.0"
 
@@ -1589,10 +1593,10 @@ dependencies = [
 name = "rustpython-codegen"
 version = "0.6.0"
 dependencies = [
- "bitflags",
  "indexmap",
  "log",
  "memchr",
+ "nanocode-flags",
  "nanocode-numeric",
  "rustpython-common",
  "rustpython-compiler-core",
@@ -1607,10 +1611,10 @@ dependencies = [
 name = "rustpython-common"
 version = "0.6.0"
 dependencies = [
- "bitflags",
  "libc",
  "memchr",
  "nanocode-compression",
+ "nanocode-flags",
  "nanocode-numeric",
  "nanocode-platform",
  "nanocode-sys",
@@ -1635,8 +1639,8 @@ dependencies = [
 name = "rustpython-compiler-core"
 version = "0.6.0"
 dependencies = [
- "bitflags",
  "nanocode-compression",
+ "nanocode-flags",
  "nanocode-numeric",
  "rustpython-ruff_source_file",
  "rustpython-wtf8",
@@ -1704,8 +1708,8 @@ dependencies = [
 name = "rustpython-ruff_python_ast"
 version = "0.16.5"
 dependencies = [
- "bitflags",
  "memchr",
+ "nanocode-flags",
  "rustpython-ruff_python_trivia",
  "rustpython-ruff_source_file",
  "rustpython-ruff_text_size",
@@ -1715,8 +1719,8 @@ dependencies = [
 name = "rustpython-ruff_python_parser"
 version = "0.16.5"
 dependencies = [
- "bitflags",
  "memchr",
+ "nanocode-flags",
  "nanocode-sys",
  "rustpython-ruff_python_ast",
  "rustpython-ruff_python_trivia",
@@ -1751,7 +1755,7 @@ version = "0.16.5"
 name = "rustpython-sre_engine"
 version = "0.6.0"
 dependencies = [
- "bitflags",
+ "nanocode-flags",
  "rustpython-unicode",
  "rustpython-wtf8",
 ]
@@ -1792,12 +1796,12 @@ dependencies = [
 name = "rustpython-vm"
 version = "0.6.0"
 dependencies = [
- "bitflags",
  "indexmap",
  "itoa",
  "libc",
  "log",
  "memchr",
+ "nanocode-flags",
  "nanocode-numeric",
  "nanocode-platform",
  "rustpython-codegen",

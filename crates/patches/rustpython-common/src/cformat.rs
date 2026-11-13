@@ -1,13 +1,13 @@
 //! Implementation of Printf-Style string formatting
 //! as per the [Python Docs](https://docs.python.org/3/library/stdtypes.html#printf-style-string-formatting).
 use alloc::fmt;
-use bitflags::bitflags;
 use core::{
     cmp,
     iter::{Enumerate, Peekable},
     str::FromStr,
 };
 use crate::wtf8::iteration::Itertools;
+use nanocode_flags::flags;
 use nanocode_numeric::{BigInt, Sign};
 use nanocode_numeric::Signed;
 use rustpython_literal::{float, format::Case};
@@ -139,8 +139,8 @@ impl From<CFormatQuantity> for CFormatPrecision {
     }
 }
 
-bitflags! {
-    #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+flags! {
+    #[derive(Copy, Clone, PartialEq, Eq)]
     pub struct CConversionFlags: u32 {
         const ALTERNATE_FORM = 0b0000_0001;
         const ZERO_PAD = 0b0000_0010;

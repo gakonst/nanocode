@@ -38,8 +38,8 @@ path = "src/lib.rs"
 [dependencies.rustpython-common]
 version = "0.6.0"
 
-[dependencies.bitflags]
-version = "2.11.0"
+[dependencies.nanocode-flags]
+path = "../../core/flags"
 
 [dependencies.indexmap]
 version = "2.14.0"

@@ -34,6 +34,7 @@ members = [
     "crates/core/mcp-http",
     "crates/core/platform",
     "crates/core/numeric",
+    "crates/core/flags",
     "crates/core/python",
     "crates/core/schema",
     "crates/core/shell",
@@ -130,6 +131,7 @@ nanocode-python = { version = "0.7.0", path = "crates/core/python" }
 nanocode-machine = { version = "0.7.0", path = "crates/core/machine" }
 nanocode-sync = { version = "0.7.0", path = "crates/core/sync" }
 nanocode-sys = { version = "0.7.0", path = "crates/core/sys" }
+nanocode-flags = { version = "0.7.0", path = "crates/core/flags" }
 nanocode-tempo = { version = "0.7.0", path = "crates/core/tempo" }
 nanocode-schema = { version = "0.7.0", path = "crates/core/schema" }
 nanocode-shell = { version = "0.7.0", path = "crates/core/shell" }

@@ -26,13 +26,13 @@ impl CompileStart {
     }
 }
 
-bitflags::bitflags! {
+nanocode_flags::flags! {
     /// `PyCF_*` compiler flags together with the `__future__` `CO_FUTURE_*`
     /// bits, mirroring `PyCompilerFlags.cf_flags`.
     ///
     /// Caveat emptor: these flags are undocumented on purpose and depending on
     /// their effect outside the standard library is **unsupported**.
-    #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+    #[derive(Copy, Clone, PartialEq, Eq)]
     pub(crate) struct CompilerFlags: i32 {
         const SOURCE_IS_UTF8 = 0x0100;
         const DONT_IMPLY_DEDENT = 0x0200;

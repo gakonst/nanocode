@@ -87,8 +87,8 @@ wasmbind = [
 name = "rustpython_vm"
 path = "src/lib.rs"
 
-[dependencies.bitflags]
-version = "2.11.0"
+[dependencies.nanocode-flags]
+path = "../../core/flags"
 
 [dependencies.flame]
 version = "0.2.2"

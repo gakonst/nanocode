@@ -26,8 +26,8 @@ use rustpython_host_env::ctypes::{
 // Stored in TypeDataSlot of heap types (PyType::init_type_data/get_type_data)
 
 // Flag constants
-bitflags::bitflags! {
-    #[derive(Default, Copy, Clone, Debug, PartialEq, Eq)]
+nanocode_flags::flags! {
+    #[derive(Default, Copy, Clone, PartialEq, Eq)]
     pub struct StgInfoFlags: u32 {
         // Function calling convention flags
         /// Standard call convention (Windows)

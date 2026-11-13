@@ -1,6 +1,6 @@
 use std::ops::Deref;
 
-use bitflags::bitflags;
+use nanocode_flags::flags;
 
 use ruff_python_ast::name::Name;
 use ruff_python_ast::token::TokenKind;
@@ -3164,8 +3164,8 @@ pub(super) enum StarredExpressionPrecedence {
 #[derive(Default, Debug, Copy, Clone, PartialEq, Eq)]
 pub(super) struct ExpressionContext(ExpressionContextFlags);
 
-bitflags! {
-    #[derive(Default, Debug, Copy, Clone, PartialEq, Eq)]
+flags! {
+    #[derive(Default, Copy, Clone, PartialEq, Eq)]
     struct ExpressionContextFlags: u8 {
         /// This flag is set when the `in` keyword should be excluded from a comparison expression.
         /// It is to avoid ambiguity in `for ... in ...` statements.

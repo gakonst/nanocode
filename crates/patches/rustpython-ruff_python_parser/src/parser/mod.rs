@@ -2,7 +2,7 @@ use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::str::FromStr;
 
-use bitflags::bitflags;
+use nanocode_flags::flags;
 use ruff_python_ast::name::Name;
 use ruff_python_ast::token::TokenKind;
 use ruff_python_ast::{
@@ -1731,7 +1731,7 @@ impl RecoveryContextKind {
 #[derive(Debug, Copy, Clone, Default, PartialEq, Eq)]
 struct RecoveryContext(u32);
 
-bitflags! {
+flags! {
     impl RecoveryContext: u32 {
         const MODULE_STATEMENTS = 1 << 0;
         const BLOCK_STATEMENTS = 1 << 1;

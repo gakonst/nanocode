@@ -19,9 +19,9 @@ fn elapsed_secs(
     }
 }
 
-bitflags::bitflags! {
+nanocode_flags::flags! {
     /// GC debug flags (see Include/internal/pycore_gc.h)
-    #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+    #[derive(Copy, Clone, Default, PartialEq, Eq)]
     pub struct GcDebugFlags: u32 {
         /// Print collection statistics
         const STATS         = 1 << 0;

@@ -46,8 +46,8 @@ serde = [
 name = "ruff_python_ast"
 path = "src/lib.rs"
 
-[dependencies.bitflags]
-version = "2.5.0"
+[dependencies.nanocode-flags]
+path = "../../core/flags"
 
 [dependencies.memchr]
 version = "2.7.1"

@@ -63,8 +63,8 @@ zlib = [
 name = "rustpython_common"
 path = "src/lib.rs"
 
-[dependencies.bitflags]
-version = "2.11.0"
+[dependencies.nanocode-flags]
+path = "../../core/flags"
 
 [dependencies.crossbeam-utils]
 version = "0.8.21"

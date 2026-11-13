@@ -39,8 +39,8 @@ resolver = "2"
 name = "rustpython_sre_engine"
 path = "src/lib.rs"
 
-[dependencies.bitflags]
-version = "2.11.0"
+[dependencies.nanocode-flags]
+path = "../../core/flags"
 
 [dependencies.rustpython-unicode]
 version = "0.6.0"

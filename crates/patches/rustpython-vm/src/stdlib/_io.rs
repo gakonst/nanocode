@@ -968,8 +968,8 @@ mod _io {
         buffer_size: isize,
     }
 
-    bitflags::bitflags! {
-        #[derive(Copy, Clone, Debug, PartialEq, Default)]
+    nanocode_flags::flags! {
+        #[derive(Copy, Clone, PartialEq, Default)]
         struct BufferedFlags: u8 {
             const DETACHED = 1 << 0;
             const WRITABLE = 1 << 1;
@@ -4550,8 +4550,8 @@ mod _io {
         seennl: SeenNewline,
     }
 
-    bitflags! {
-        #[derive(Debug, PartialEq, Eq, Copy, Clone)]
+    nanocode_flags::flags! {
+        #[derive(PartialEq, Eq, Copy, Clone)]
         struct SeenNewline: u8 {
             const LF = 1;
             const CR = 2;

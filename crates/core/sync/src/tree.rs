@@ -5,42 +5,119 @@ use std::{
     sync::Arc,
 };
 
-const NODE_ITEMS_MIN: usize = 8;
-const NODE_ITEMS_MAX: usize = 2 * NODE_ITEMS_MIN + 1;
-const HEIGHT_MAX: usize = usize::BITS as usize;
+use nanocode_sys::InlineVec;
 
-pub(crate) struct Node<T> {
-    items: Vec<T>,
-    children: Vec<Child<T>>,
+const NODE_ITEMS_MIN: usize = 5;
+const NODE_ITEMS_MAX: usize = 16;
+const NODE_ITEM_SLOTS: usize = NODE_ITEMS_MAX + 1;
+const NODE_CHILD_SLOTS: usize = NODE_ITEM_SLOTS + 1;
+const HEIGHT_MAX: usize = usize::BITS as usize;
+const BRANCHLESS_SEARCH_ITEM_BYTES_MAX: usize = 16;
+
+const _: () = assert!(2 * NODE_ITEMS_MIN <= NODE_ITEMS_MAX);
+const _: () = assert!(NODE_CHILD_SLOTS <= u8::MAX as usize);
+
+pub(crate) type Entries<T> = InlineVec<T, NODE_ITEM_SLOTS>;
+type Children<T> = InlineVec<Child<T>, NODE_CHILD_SLOTS>;
+
+pub(crate) struct Leaf<T> {
+    entries: Entries<T>,
+}
+
+pub(crate) struct Branch<T> {
+    entries: Entries<T>,
+    children: Children<T>,
+}
+
+enum Link<T> {
+    Leaf(Arc<Leaf<T>>),
+    Branch(Arc<Branch<T>>),
 }
 
 struct Child<T> {
     count: usize,
-    node: Arc<Node<T>>,
+    node: Link<T>,
+}
+
+impl<T> Clone for Link<T> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Leaf(leaf) => Self::Leaf(Arc::clone(leaf)),
+            Self::Branch(branch) => Self::Branch(Arc::clone(branch)),
+        }
+    }
 }
 
 impl<T> Clone for Child<T> {
     fn clone(&self) -> Self {
         Self {
             count: self.count,
-            node: Arc::clone(&self.node),
+            node: self.node.clone(),
         }
     }
 }
 
-impl<T: Clone> Clone for Node<T> {
-    fn clone(&self) -> Self {
-        let mut items = Vec::with_capacity(NODE_ITEMS_MAX + 1);
-        items.extend(self.items.iter().cloned());
-        let children = if self.children.is_empty() {
-            Vec::new()
-        } else {
-            let mut children = Vec::with_capacity(NODE_ITEMS_MAX + 2);
-            children.extend(self.children.iter().cloned());
-            children
-        };
-        Self { items, children }
+fn unique_leaf<T: Clone>(leaf: &mut Arc<Leaf<T>>) -> &mut Leaf<T> {
+    if Arc::strong_count(leaf) > 1 {
+        let shared = &**leaf;
+        let copy = nanocode_sys::new_arc_with(
+            || Leaf {
+                entries: InlineVec::new(),
+            },
+            |fresh| fresh.entries.extend_cloned(&shared.entries),
+        );
+        *leaf = copy;
     }
+    let Some(unique) = Arc::get_mut(leaf) else {
+        panic!("a copied leaf has one owner")
+    };
+    unique
+}
+
+fn unique_branch<T: Clone>(branch: &mut Arc<Branch<T>>) -> &mut Branch<T> {
+    if Arc::strong_count(branch) > 1 {
+        let shared = &**branch;
+        let copy = nanocode_sys::new_arc_with(
+            || Branch {
+                entries: InlineVec::new(),
+                children: InlineVec::new(),
+            },
+            |fresh| {
+                fresh.entries.extend_cloned(&shared.entries);
+                fresh.children.extend_cloned(&shared.children);
+            },
+        );
+        *branch = copy;
+    }
+    let Some(unique) = Arc::get_mut(branch) else {
+        panic!("a copied branch has one owner")
+    };
+    unique
+}
+
+fn search<T>(entries: &[T], mut order: impl FnMut(&T) -> Ordering) -> Result<usize, usize> {
+    if !std::mem::needs_drop::<T>() && size_of::<T>() <= BRANCHLESS_SEARCH_ITEM_BYTES_MAX {
+        return entries.binary_search_by(order);
+    }
+    let mut low = 0;
+    let mut high = entries.len();
+    for _ in 0..=usize::BITS {
+        if low >= high {
+            return Err(low);
+        }
+        let middle = low + (high - low) / 2;
+        match order(&entries[middle]) {
+            Ordering::Less => low = middle + 1,
+            Ordering::Greater => high = middle,
+            Ordering::Equal => return Ok(middle),
+        }
+    }
+    panic!("a binary search halves its range each step")
+}
+
+const fn pair_mut<T>(items: &mut [T], left: usize) -> (&mut T, &mut T) {
+    let (before, after) = items.split_at_mut(left + 1);
+    (&mut before[left], &mut after[0])
 }
 
 pub(crate) enum Place {
@@ -49,11 +126,32 @@ pub(crate) enum Place {
 }
 
 pub(crate) trait Locate<T> {
-    fn locate(&mut self, node: &Node<T>) -> Place;
+    fn locate(&mut self, entries: &Entries<T>) -> Place;
 }
 
 pub(crate) trait Slot<T> {
-    fn slot(&mut self, node: &Node<T>, item: &T) -> Place;
+    fn slot(&mut self, entries: &Entries<T>, item: &T) -> Place;
+}
+
+pub(crate) struct Path {
+    steps: [u8; HEIGHT_MAX],
+    len: usize,
+    next: usize,
+}
+
+impl<T> Locate<T> for Path {
+    fn locate(&mut self, entries: &Entries<T>) -> Place {
+        assert!(self.next < self.len);
+        let step = usize::from(self.steps[self.next]);
+        self.next += 1;
+        if self.next == self.len {
+            assert!(step < entries.len());
+            Place::Found(step)
+        } else {
+            assert!(step <= entries.len());
+            Place::Below(step)
+        }
+    }
 }
 
 pub(crate) struct ByKey<'a, Q: ?Sized, F> {
@@ -67,11 +165,8 @@ where
     Q: Ord + ?Sized,
     F: Fn(&T) -> &K,
 {
-    fn locate(&mut self, node: &Node<T>) -> Place {
-        match node
-            .items
-            .binary_search_by(|item| (self.project)(item).borrow().cmp(self.key))
-        {
+    fn locate(&mut self, entries: &Entries<T>) -> Place {
+        match search(entries, |item| (self.project)(item).borrow().cmp(self.key)) {
             Ok(index) => Place::Found(index),
             Err(index) => Place::Below(index),
         }
@@ -85,292 +180,357 @@ where
     K: Ord,
     F: Fn(&T) -> &K,
 {
-    fn slot(&mut self, node: &Node<T>, item: &T) -> Place {
+    fn slot(&mut self, entries: &Entries<T>, item: &T) -> Place {
         let key = (self.0)(item);
-        match node
-            .items
-            .binary_search_by(|existing| (self.0)(existing).cmp(key))
-        {
+        match search(entries, |existing| (self.0)(existing).cmp(key)) {
             Ok(index) => Place::Found(index),
             Err(index) => Place::Below(index),
         }
     }
 }
 
-pub(crate) struct At(pub(crate) usize);
-
-impl<T> Locate<T> for At {
-    fn locate(&mut self, node: &Node<T>) -> Place {
-        if node.is_leaf() {
-            assert!(self.0 < node.items.len());
-            return Place::Found(self.0);
-        }
-        for (index, child) in node.children.iter().enumerate() {
-            match self.0.cmp(&child.count) {
-                Ordering::Less => return Place::Below(index),
-                Ordering::Equal => return Place::Found(index),
-                Ordering::Greater => self.0 -= child.count + 1,
-            }
-        }
-        panic!("position beyond the subtree's count")
-    }
-}
-
 enum Grown<T> {
     Replaced(T),
     Added,
-    Split(T, Node<T>),
+    Split(T, Link<T>),
 }
 
-impl<T> Node<T> {
-    fn count(&self) -> usize {
-        self.items.len() + self.children.iter().map(|child| child.count).sum::<usize>()
-    }
+type Parts<'a, T> = (&'a mut Entries<T>, Option<&'a mut Children<T>>);
 
-    const fn is_leaf(&self) -> bool {
-        self.children.is_empty()
-    }
-}
-
-impl<T: Clone> Node<T> {
-    fn leaf(item: T) -> Self {
-        let mut items = Vec::with_capacity(NODE_ITEMS_MAX + 1);
-        items.push(item);
-        Self {
-            items,
-            children: Vec::new(),
+impl<T> Link<T> {
+    fn entries(&self) -> &Entries<T> {
+        match self {
+            Self::Leaf(leaf) => &leaf.entries,
+            Self::Branch(branch) => &branch.entries,
         }
     }
 
-    fn split(&mut self, rightmost: bool) -> (T, Self) {
-        assert!(self.items.len() > NODE_ITEMS_MAX);
-        let middle = if rightmost {
-            self.items.len() - 2
-        } else {
-            self.items.len() / 2
-        };
-        let mut items = Vec::with_capacity(NODE_ITEMS_MAX + 1);
-        items.extend(self.items.drain(middle + 1..));
-        let Some(median) = self.items.pop() else {
-            panic!("a full node has a median")
-        };
-        let children = if self.is_leaf() {
-            Vec::new()
-        } else {
-            let mut children = Vec::with_capacity(NODE_ITEMS_MAX + 2);
-            children.extend(self.children.drain(middle + 1..));
-            children
-        };
-        (median, Self { items, children })
+    fn children(&self) -> Option<&Children<T>> {
+        match self {
+            Self::Leaf(_) => None,
+            Self::Branch(branch) => Some(&branch.children),
+        }
     }
 
-    fn adopt(&mut self, index: usize, median: T, right: Self) {
-        let right_count = right.count();
-        self.children[index].count -= right_count + 1;
-        self.items.insert(index, median);
-        self.children.insert(
-            index + 1,
-            Child {
-                count: right_count,
-                node: Arc::new(right),
-            },
-        );
+    fn count(&self) -> usize {
+        self.entries().len()
+            + self
+                .children()
+                .map_or(0, |children| children.iter().map(|child| child.count).sum())
+    }
+
+    fn assemble(entries: Entries<T>, children: Option<Children<T>>) -> Self {
+        match children {
+            None => Self::Leaf(Arc::new(Leaf { entries })),
+            Some(children) => Self::Branch(Arc::new(Branch { entries, children })),
+        }
+    }
+}
+
+impl<T> Branch<T> {
+    const fn frame(&self, index: usize) -> Frame<'_, T> {
+        Frame {
+            entries: &self.entries,
+            children: &self.children,
+            index,
+        }
+    }
+}
+
+fn child<T>(children: &Children<T>, index: usize) -> &Link<T> {
+    &children[index].node
+}
+
+impl<T: Clone> Link<T> {
+    fn parts_mut(&mut self) -> Parts<'_, T> {
+        match self {
+            Self::Leaf(leaf) => (&mut unique_leaf(leaf).entries, None),
+            Self::Branch(branch) => {
+                let branch = unique_branch(branch);
+                (&mut branch.entries, Some(&mut branch.children))
+            }
+        }
     }
 
     fn insert(&mut self, item: T, slot: &mut impl Slot<T>, rightmost: bool) -> Grown<T> {
-        let index = match slot.slot(self, &item) {
+        let (entries, children) = self.parts_mut();
+        let index = match slot.slot(entries, &item) {
             Place::Found(index) => {
-                return Grown::Replaced(std::mem::replace(&mut self.items[index], item));
+                return Grown::Replaced(std::mem::replace(&mut entries[index], item));
             }
             Place::Below(index) => index,
         };
-        if self.is_leaf() {
-            self.items.insert(index, item);
-        } else {
-            let last = index + 1 == self.children.len();
-            let child = &mut self.children[index];
-            match Arc::make_mut(&mut child.node).insert(item, slot, rightmost && last) {
-                Grown::Replaced(old) => return Grown::Replaced(old),
-                Grown::Added => {
-                    child.count += 1;
-                    return Grown::Added;
-                }
-                Grown::Split(median, right) => {
-                    child.count += 1;
-                    self.adopt(index, median, right);
+        let children = match children {
+            None => {
+                entries.insert(index, item);
+                None
+            }
+            Some(children) => {
+                let last = index + 1 == children.len();
+                let child = &mut children[index];
+                match child.node.insert(item, slot, rightmost && last) {
+                    Grown::Replaced(old) => return Grown::Replaced(old),
+                    Grown::Added => {
+                        child.count += 1;
+                        return Grown::Added;
+                    }
+                    Grown::Split(median, right) => {
+                        child.count += 1;
+                        adopt(entries, children, index, median, right);
+                        Some(children)
+                    }
                 }
             }
-        }
-        if self.items.len() > NODE_ITEMS_MAX {
-            let at_end = index + 1 == self.items.len();
-            let (median, right) = self.split(rightmost && at_end);
+        };
+        if entries.len() > NODE_ITEMS_MAX {
+            let at_end = index + 1 == entries.len();
+            let (median, right) = split(entries, children, rightmost && at_end);
             return Grown::Split(median, right);
         }
         Grown::Added
     }
 
     fn push_last(&mut self, item: T) -> Option<(T, Self)> {
-        if self.is_leaf() {
-            self.items.push(item);
-        } else {
-            let index = self.children.len() - 1;
-            let child = &mut self.children[index];
-            let grown = Arc::make_mut(&mut child.node).push_last(item);
-            child.count += 1;
-            if let Some((median, right)) = grown {
-                self.adopt(index, median, right);
+        let (entries, children) = self.parts_mut();
+        let children = match children {
+            None => {
+                entries.push(item);
+                None
             }
-        }
-        if self.items.len() > NODE_ITEMS_MAX {
-            return Some(self.split(true));
+            Some(children) => {
+                let index = children.len() - 1;
+                let child = &mut children[index];
+                let grown = child.node.push_last(item);
+                child.count += 1;
+                if let Some((median, right)) = grown {
+                    adopt(entries, children, index, median, right);
+                }
+                Some(children)
+            }
+        };
+        if entries.len() > NODE_ITEMS_MAX {
+            return Some(split(entries, children, true));
         }
         None
     }
 
     fn remove(&mut self, locate: &mut impl Locate<T>) -> T {
-        match locate.locate(self) {
-            Place::Found(index) if self.is_leaf() => self.items.remove(index),
-            Place::Found(index) => {
-                let child = &mut self.children[index];
-                let predecessor = Arc::make_mut(&mut child.node).remove_last();
+        let (entries, children) = self.parts_mut();
+        match (locate.locate(entries), children) {
+            (Place::Found(index), None) => entries.remove(index),
+            (Place::Found(index), Some(children)) => {
+                let child = &mut children[index];
+                let predecessor = child.node.remove_last();
                 child.count -= 1;
-                let old = std::mem::replace(&mut self.items[index], predecessor);
-                self.rebalance(index);
+                let old = std::mem::replace(&mut entries[index], predecessor);
+                rebalance(entries, children, index);
                 old
             }
-            Place::Below(index) => {
-                assert!(!self.is_leaf());
-                let child = &mut self.children[index];
-                let old = Arc::make_mut(&mut child.node).remove(locate);
+            (Place::Below(_), None) => panic!("a removed item is in the tree"),
+            (Place::Below(index), Some(children)) => {
+                let child = &mut children[index];
+                let old = child.node.remove(locate);
                 child.count -= 1;
-                self.rebalance(index);
+                rebalance(entries, children, index);
                 old
             }
         }
     }
 
     fn remove_first(&mut self) -> T {
-        if self.is_leaf() {
-            assert!(!self.items.is_empty());
-            return self.items.remove(0);
-        }
-        let child = &mut self.children[0];
-        let first = Arc::make_mut(&mut child.node).remove_first();
+        let (entries, children) = self.parts_mut();
+        let Some(children) = children else {
+            assert!(!entries.is_empty());
+            return entries.remove(0);
+        };
+        let child = &mut children[0];
+        let first = child.node.remove_first();
         child.count -= 1;
-        self.rebalance(0);
+        rebalance(entries, children, 0);
         first
     }
 
     fn remove_last(&mut self) -> T {
-        if self.is_leaf() {
-            let Some(last) = self.items.pop() else {
+        let (entries, children) = self.parts_mut();
+        let Some(children) = children else {
+            let Some(last) = entries.pop() else {
                 panic!("a non-root node holds items")
             };
             return last;
-        }
-        let index = self.children.len() - 1;
-        let child = &mut self.children[index];
-        let last = Arc::make_mut(&mut child.node).remove_last();
+        };
+        let index = children.len() - 1;
+        let child = &mut children[index];
+        let last = child.node.remove_last();
         child.count -= 1;
-        self.rebalance(index);
+        rebalance(entries, children, index);
         last
-    }
-
-    fn rebalance(&mut self, index: usize) {
-        if self.children[index].node.items.len() >= NODE_ITEMS_MIN {
-            return;
-        }
-        let held = self.children[index].node.items.len();
-        if index > 0 && self.children[index - 1].node.items.len() > NODE_ITEMS_MIN {
-            let lent = Self::lent(self.children[index - 1].node.items.len(), held);
-            for _ in 0..lent {
-                self.rotate_right(index);
-            }
-        } else if index + 1 < self.children.len()
-            && self.children[index + 1].node.items.len() > NODE_ITEMS_MIN
-        {
-            let lent = Self::lent(self.children[index + 1].node.items.len(), held);
-            for _ in 0..lent {
-                self.rotate_left(index);
-            }
-        } else if index > 0 {
-            self.merge(index - 1);
-        } else {
-            self.merge(index);
-        }
-    }
-
-    fn lent(lender: usize, held: usize) -> usize {
-        assert!(lender > NODE_ITEMS_MIN);
-        assert!(held < NODE_ITEMS_MIN);
-        ((lender - held) / 2).min(lender - NODE_ITEMS_MIN)
-    }
-
-    fn rotate_right(&mut self, index: usize) {
-        let (before, after) = self.children.split_at_mut(index);
-        let left = &mut before[index - 1];
-        let right = &mut after[0];
-        let left_node = Arc::make_mut(&mut left.node);
-        let Some(borrowed) = left_node.items.pop() else {
-            panic!("a lending sibling holds items")
-        };
-        let moved_child = left_node.children.pop();
-        let separator = std::mem::replace(&mut self.items[index - 1], borrowed);
-        let right_node = Arc::make_mut(&mut right.node);
-        right_node.items.insert(0, separator);
-        let moved = 1 + moved_child.as_ref().map_or(0, |child| child.count);
-        if let Some(child) = moved_child {
-            right_node.children.insert(0, child);
-        }
-        left.count -= moved;
-        right.count += moved;
-    }
-
-    fn rotate_left(&mut self, index: usize) {
-        let (before, after) = self.children.split_at_mut(index + 1);
-        let left = &mut before[index];
-        let right = &mut after[0];
-        let right_node = Arc::make_mut(&mut right.node);
-        let borrowed = right_node.items.remove(0);
-        let moved_child = if right_node.is_leaf() {
-            None
-        } else {
-            Some(right_node.children.remove(0))
-        };
-        let separator = std::mem::replace(&mut self.items[index], borrowed);
-        let left_node = Arc::make_mut(&mut left.node);
-        left_node.items.push(separator);
-        let moved = 1 + moved_child.as_ref().map_or(0, |child| child.count);
-        if let Some(child) = moved_child {
-            left_node.children.push(child);
-        }
-        left.count += moved;
-        right.count -= moved;
-    }
-
-    fn merge(&mut self, index: usize) {
-        let separator = self.items.remove(index);
-        let right = self.children.remove(index + 1);
-        let left = &mut self.children[index];
-        let left_node = Arc::make_mut(&mut left.node);
-        left_node.items.push(separator);
-        match Arc::try_unwrap(right.node) {
-            Ok(right_node) => {
-                left_node.items.extend(right_node.items);
-                left_node.children.extend(right_node.children);
-            }
-            Err(shared) => {
-                left_node.items.extend(shared.items.iter().cloned());
-                left_node.children.extend(shared.children.iter().cloned());
-            }
-        }
-        assert!(left_node.items.len() <= NODE_ITEMS_MAX);
-        left.count += 1 + right.count;
     }
 }
 
+fn split<T>(
+    entries: &mut Entries<T>,
+    children: Option<&mut Children<T>>,
+    rightmost: bool,
+) -> (T, Link<T>) {
+    assert!(entries.len() > NODE_ITEMS_MAX);
+    let middle = if rightmost {
+        entries.len() - 2
+    } else {
+        entries.len() / 2
+    };
+    let right = entries.split_off(middle + 1);
+    let Some(median) = entries.pop() else {
+        panic!("a full node has a median")
+    };
+    let right_children = children.map(|children| children.split_off(middle + 1));
+    (median, Link::assemble(right, right_children))
+}
+
+fn adopt<T>(
+    entries: &mut Entries<T>,
+    children: &mut Children<T>,
+    index: usize,
+    median: T,
+    right: Link<T>,
+) {
+    let right_count = right.count();
+    children[index].count -= right_count + 1;
+    entries.insert(index, median);
+    children.insert(
+        index + 1,
+        Child {
+            count: right_count,
+            node: right,
+        },
+    );
+}
+
+fn held<T>(children: &Children<T>, index: usize) -> usize {
+    child(children, index).entries().len()
+}
+
+fn rebalance<T: Clone>(entries: &mut Entries<T>, children: &mut Children<T>, index: usize) {
+    let held_here = held(children, index);
+    if held_here >= NODE_ITEMS_MIN {
+        return;
+    }
+    let left = index.checked_sub(1).map(|left| held(children, left));
+    let right = (index + 1 < children.len()).then(|| held(children, index + 1));
+    match (left, right) {
+        (Some(left), _) if left + 1 + held_here <= NODE_ITEMS_MAX => {
+            merge(entries, children, index - 1);
+        }
+        (_, Some(right)) if held_here + 1 + right <= NODE_ITEMS_MAX => {
+            merge(entries, children, index);
+        }
+        (Some(left), _) if left > NODE_ITEMS_MIN => {
+            shift_right(entries, children, index, lent(left, held_here));
+        }
+        (_, Some(right)) if right > NODE_ITEMS_MIN => {
+            shift_left(entries, children, index, lent(right, held_here));
+        }
+        _ => panic!("a short node has a sibling to merge with or borrow from"),
+    }
+}
+
+fn lent(lender: usize, held: usize) -> usize {
+    assert!(lender > NODE_ITEMS_MIN);
+    assert!(held < NODE_ITEMS_MIN);
+    ((lender - held) / 2).min(lender - NODE_ITEMS_MIN)
+}
+
+fn shift_right<T: Clone>(
+    entries: &mut Entries<T>,
+    children: &mut Children<T>,
+    index: usize,
+    lent: usize,
+) {
+    assert!(index > 0);
+    let separator = &mut entries[index - 1];
+    let (left, right) = pair_mut(children, index - 1);
+    let (left_entries, mut left_children) = left.node.parts_mut();
+    let (right_entries, mut right_children) = right.node.parts_mut();
+    assert!(left_children.is_some() == right_children.is_some());
+    let mut moved = 0;
+    for _ in 0..lent {
+        let Some(borrowed) = left_entries.pop() else {
+            panic!("a lending sibling holds items")
+        };
+        let lowered = std::mem::replace(separator, borrowed);
+        right_entries.insert(0, lowered);
+        moved += 1;
+        if let (Some(from), Some(to)) =
+            (left_children.as_deref_mut(), right_children.as_deref_mut())
+        {
+            let Some(child) = from.pop() else {
+                panic!("a lending branch holds children")
+            };
+            moved += child.count;
+            to.insert(0, child);
+        }
+    }
+    left.count -= moved;
+    right.count += moved;
+}
+
+fn shift_left<T: Clone>(
+    entries: &mut Entries<T>,
+    children: &mut Children<T>,
+    index: usize,
+    lent: usize,
+) {
+    let separator = &mut entries[index];
+    let (left, right) = pair_mut(children, index);
+    let (left_entries, mut left_children) = left.node.parts_mut();
+    let (right_entries, mut right_children) = right.node.parts_mut();
+    assert!(left_children.is_some() == right_children.is_some());
+    let mut moved = 0;
+    for _ in 0..lent {
+        let borrowed = right_entries.remove(0);
+        let lowered = std::mem::replace(separator, borrowed);
+        left_entries.push(lowered);
+        moved += 1;
+        if let (Some(to), Some(from)) =
+            (left_children.as_deref_mut(), right_children.as_deref_mut())
+        {
+            let child = from.remove(0);
+            moved += child.count;
+            to.push(child);
+        }
+    }
+    left.count += moved;
+    right.count -= moved;
+}
+
+fn merge<T: Clone>(entries: &mut Entries<T>, children: &mut Children<T>, index: usize) {
+    let separator = entries.remove(index);
+    let right = children.remove(index + 1);
+    let left = &mut children[index];
+    let (left_entries, left_children) = left.node.parts_mut();
+    left_entries.push(separator);
+    match (right.node, left_children) {
+        (Link::Leaf(leaf), None) => match Arc::try_unwrap(leaf) {
+            Ok(leaf) => left_entries.append(leaf.entries),
+            Err(shared) => left_entries.extend_cloned(&shared.entries),
+        },
+        (Link::Branch(branch), Some(left_children)) => match Arc::try_unwrap(branch) {
+            Ok(branch) => {
+                left_entries.append(branch.entries);
+                left_children.append(branch.children);
+            }
+            Err(shared) => {
+                left_entries.extend_cloned(&shared.entries);
+                left_children.extend_cloned(&shared.children);
+            }
+        },
+        _ => panic!("siblings sit at one height"),
+    }
+    assert!(left_entries.len() <= NODE_ITEMS_MAX);
+    left.count += 1 + right.count;
+}
+
 pub(crate) struct Tree<T> {
-    root: Option<Arc<Node<T>>>,
+    root: Option<Link<T>>,
     count: usize,
 }
 
@@ -381,6 +541,31 @@ impl<T> Clone for Tree<T> {
             count: self.count,
         }
     }
+}
+
+fn below<T, K, Q>(
+    entries: &Entries<T>,
+    key: &Q,
+    inclusive: bool,
+    project: &impl Fn(&T) -> &K,
+) -> usize
+where
+    K: Borrow<Q>,
+    Q: Ord + ?Sized,
+{
+    entries.partition_point(|item| match project(item).borrow().cmp(key) {
+        Ordering::Less => true,
+        Ordering::Equal => inclusive,
+        Ordering::Greater => false,
+    })
+}
+
+fn counted<T>(children: &Children<T>, below: usize) -> usize {
+    children
+        .iter()
+        .take(below)
+        .map(|child| child.count)
+        .sum::<usize>()
 }
 
 impl<T> Tree<T> {
@@ -396,12 +581,69 @@ impl<T> Tree<T> {
     }
 
     pub(crate) fn find(&self, mut locate: impl Locate<T>) -> Option<&T> {
-        let mut node = self.root.as_deref()?;
+        let mut link = self.root.as_ref()?;
         for _ in 0..HEIGHT_MAX {
-            match locate.locate(node) {
-                Place::Found(index) => return Some(&node.items[index]),
-                Place::Below(_) if node.is_leaf() => return None,
-                Place::Below(index) => node = &node.children[index].node,
+            match link {
+                Link::Leaf(leaf) => {
+                    return match locate.locate(&leaf.entries) {
+                        Place::Found(index) => Some(&leaf.entries[index]),
+                        Place::Below(_) => None,
+                    };
+                }
+                Link::Branch(branch) => match locate.locate(&branch.entries) {
+                    Place::Found(index) => return Some(&branch.entries[index]),
+                    Place::Below(index) => link = child(&branch.children, index),
+                },
+            }
+        }
+        panic!("tree deeper than {HEIGHT_MAX} levels")
+    }
+
+    pub(crate) fn path(&self, mut locate: impl Locate<T>) -> Option<Path> {
+        let mut path = Path {
+            steps: [0; HEIGHT_MAX],
+            len: 0,
+            next: 0,
+        };
+        let mut link = self.root.as_ref()?;
+        for _ in 0..HEIGHT_MAX {
+            let place = locate.locate(link.entries());
+            let (Place::Found(step) | Place::Below(step)) = place;
+            let Ok(step) = u8::try_from(step) else {
+                panic!("a node holds fewer than {} children", u8::MAX)
+            };
+            path.steps[path.len] = step;
+            path.len += 1;
+            match (place, link) {
+                (Place::Found(_), _) => return Some(path),
+                (Place::Below(_), Link::Leaf(_)) => return None,
+                (Place::Below(index), Link::Branch(branch)) => {
+                    link = child(&branch.children, index);
+                }
+            }
+        }
+        panic!("tree deeper than {HEIGHT_MAX} levels")
+    }
+
+    pub(crate) fn first(&self) -> Option<&T> {
+        let mut link = self.root.as_ref()?;
+        for _ in 0..HEIGHT_MAX {
+            match link {
+                Link::Leaf(leaf) => return Some(&leaf.entries[0]),
+                Link::Branch(branch) => link = child(&branch.children, 0),
+            }
+        }
+        panic!("tree deeper than {HEIGHT_MAX} levels")
+    }
+
+    pub(crate) fn last(&self) -> Option<&T> {
+        let mut link = self.root.as_ref()?;
+        for _ in 0..HEIGHT_MAX {
+            match link {
+                Link::Leaf(leaf) => return Some(&leaf.entries[leaf.entries.len() - 1]),
+                Link::Branch(branch) => {
+                    link = child(&branch.children, branch.children.len() - 1);
+                }
             }
         }
         panic!("tree deeper than {HEIGHT_MAX} levels")
@@ -413,26 +655,51 @@ impl<T> Tree<T> {
         Q: Ord + ?Sized,
     {
         let mut rank = 0;
-        let Some(mut node) = self.root.as_deref() else {
+        let Some(mut link) = self.root.as_ref() else {
             return 0;
         };
         for _ in 0..HEIGHT_MAX {
-            let below = node
-                .items
-                .partition_point(|item| match project(item).borrow().cmp(key) {
-                    Ordering::Less => true,
-                    Ordering::Equal => inclusive,
-                    Ordering::Greater => false,
-                });
-            rank += below;
-            if node.is_leaf() {
-                return rank;
+            match link {
+                Link::Leaf(leaf) => return rank + below(&leaf.entries, key, inclusive, project),
+                Link::Branch(branch) => {
+                    let below = below(&branch.entries, key, inclusive, project);
+                    rank += below + counted(&branch.children, below);
+                    link = child(&branch.children, below);
+                }
             }
-            rank += node.children[..below]
-                .iter()
-                .map(|child| child.count)
-                .sum::<usize>();
-            node = &node.children[below].node;
+        }
+        panic!("tree deeper than {HEIGHT_MAX} levels")
+    }
+
+    fn seek_key<'a, K, Q>(
+        &'a self,
+        key: &Q,
+        inclusive: bool,
+        project: &impl Fn(&T) -> &K,
+        items: &mut Items<'a, T>,
+    ) -> usize
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
+        let mut rank = 0;
+        let Some(mut link) = self.root.as_ref() else {
+            return 0;
+        };
+        for _ in 0..HEIGHT_MAX {
+            match link {
+                Link::Leaf(leaf) => {
+                    let below = below(&leaf.entries, key, inclusive, project);
+                    items.front_leaf = &leaf.entries[below..];
+                    return rank + below;
+                }
+                Link::Branch(branch) => {
+                    let below = below(&branch.entries, key, inclusive, project);
+                    rank += below + counted(&branch.children, below);
+                    items.front.push(branch.frame(below));
+                    link = child(&branch.children, below);
+                }
+            }
         }
         panic!("tree deeper than {HEIGHT_MAX} levels")
     }
@@ -446,25 +713,30 @@ impl<T> Tree<T> {
         K: Borrow<Q>,
         Q: Ord + ?Sized,
     {
+        let mut items = self.items(0, self.count);
         let start = match range.start_bound() {
             Bound::Unbounded => 0,
-            Bound::Included(key) => self.rank(key, false, &project),
-            Bound::Excluded(key) => self.rank(key, true, &project),
+            Bound::Included(key) => self.seek_key(key, false, &project, &mut items),
+            Bound::Excluded(key) => self.seek_key(key, true, &project, &mut items),
         };
         let end = match range.end_bound() {
             Bound::Unbounded => self.count,
             Bound::Included(key) => self.rank(key, true, &project),
             Bound::Excluded(key) => self.rank(key, false, &project),
         };
-        self.items(start, end.max(start))
+        items.start = start;
+        items.end = end.max(start);
+        items
     }
 
     pub(crate) fn items(&self, start: usize, end: usize) -> Items<'_, T> {
         assert!(start <= end);
         assert!(end <= self.count);
         Items {
-            root: self.root.as_deref(),
+            root: self.root.as_ref(),
+            front_leaf: &[],
             front: Vec::new(),
+            back_leaf: &[],
             back: Vec::new(),
             start,
             end,
@@ -474,45 +746,52 @@ impl<T> Tree<T> {
 
 impl<T: Clone> Tree<T> {
     pub(crate) fn find_mut(&mut self, mut locate: impl Locate<T>) -> Option<&mut T> {
-        let mut node = Arc::make_mut(self.root.as_mut()?);
+        let mut link = self.root.as_mut()?;
         for _ in 0..HEIGHT_MAX {
-            match locate.locate(node) {
-                Place::Found(index) => return Some(&mut node.items[index]),
-                Place::Below(_) if node.is_leaf() => return None,
-                Place::Below(index) => node = Arc::make_mut(&mut node.children[index].node),
+            let (entries, children) = link.parts_mut();
+            match (locate.locate(entries), children) {
+                (Place::Found(index), _) => return Some(&mut entries[index]),
+                (Place::Below(_), None) => return None,
+                (Place::Below(index), Some(children)) => link = &mut children[index].node,
             }
         }
         panic!("tree deeper than {HEIGHT_MAX} levels")
     }
 
-    fn grow(&mut self, median: T, right: Node<T>) {
-        let Some(root) = self.root.as_mut() else {
+    fn grow(&mut self, median: T, right: Link<T>) {
+        let Some(root) = self.root.take() else {
             panic!("a split needs a root")
         };
         let right_count = right.count();
         let left_count = self.count - right_count - 1;
-        let mut items = Vec::with_capacity(NODE_ITEMS_MAX + 1);
-        items.push(median);
-        let mut children = Vec::with_capacity(NODE_ITEMS_MAX + 2);
+        let mut entries = InlineVec::new();
+        entries.push(median);
+        let mut children = InlineVec::new();
         children.push(Child {
             count: left_count,
-            node: Arc::clone(root),
+            node: root,
         });
         children.push(Child {
             count: right_count,
-            node: Arc::new(right),
+            node: right,
         });
-        *root = Arc::new(Node { items, children });
+        self.root = Some(Link::Branch(Arc::new(Branch { entries, children })));
+    }
+
+    fn single(item: T) -> Link<T> {
+        let mut entries = InlineVec::new();
+        entries.push(item);
+        Link::Leaf(Arc::new(Leaf { entries }))
     }
 
     pub(crate) fn insert(&mut self, item: T, mut slot: impl Slot<T>) -> Option<T> {
         let Some(root) = self.root.as_mut() else {
             assert!(self.count == 0);
-            self.root = Some(Arc::new(Node::leaf(item)));
+            self.root = Some(Self::single(item));
             self.count = 1;
             return None;
         };
-        match Arc::make_mut(root).insert(item, &mut slot, true) {
+        match root.insert(item, &mut slot, true) {
             Grown::Replaced(old) => return Some(old),
             Grown::Added => self.count += 1,
             Grown::Split(median, right) => {
@@ -526,11 +805,11 @@ impl<T: Clone> Tree<T> {
     pub(crate) fn push(&mut self, item: T) {
         let Some(root) = self.root.as_mut() else {
             assert!(self.count == 0);
-            self.root = Some(Arc::new(Node::leaf(item)));
+            self.root = Some(Self::single(item));
             self.count = 1;
             return;
         };
-        let grown = Arc::make_mut(root).push_last(item);
+        let grown = root.push_last(item);
         self.count += 1;
         if let Some((median, right)) = grown {
             self.grow(median, right);
@@ -541,9 +820,9 @@ impl<T: Clone> Tree<T> {
         let Some(root) = self.root.as_mut() else {
             panic!("a removal had a root")
         };
-        let root_node = Arc::make_mut(root);
-        if root_node.items.is_empty() {
-            self.root = root_node.children.pop().map(|child| child.node);
+        let (entries, children) = root.parts_mut();
+        if entries.is_empty() {
+            self.root = children.and_then(InlineVec::pop).map(|child| child.node);
         }
         self.count -= 1;
         assert!(self.count > 0 || self.root.is_none());
@@ -554,19 +833,17 @@ impl<T: Clone> Tree<T> {
         let Some(root) = self.root.as_mut() else {
             panic!("removal from an empty tree")
         };
-        let removed = Arc::make_mut(root).remove(&mut locate);
+        let removed = root.remove(&mut locate);
         self.shrink(removed)
     }
 
     pub(crate) fn pop_first(&mut self) -> Option<T> {
-        let root = self.root.as_mut()?;
-        let removed = Arc::make_mut(root).remove_first();
+        let removed = self.root.as_mut()?.remove_first();
         Some(self.shrink(removed))
     }
 
     pub(crate) fn pop_last(&mut self) -> Option<T> {
-        let root = self.root.as_mut()?;
-        let removed = Arc::make_mut(root).remove_last();
+        let removed = self.root.as_mut()?.remove_last();
         Some(self.shrink(removed))
     }
 
@@ -593,11 +870,25 @@ impl<T: Clone> Tree<T> {
     }
 }
 
-type Frame<'a, T> = (&'a Node<T>, usize);
+struct Frame<'a, T> {
+    entries: &'a Entries<T>,
+    children: &'a Children<T>,
+    index: usize,
+}
+
+impl<T> Clone for Frame<'_, T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<T> Copy for Frame<'_, T> {}
 
 pub struct Items<'a, T> {
-    root: Option<&'a Node<T>>,
+    root: Option<&'a Link<T>>,
+    front_leaf: &'a [T],
     front: Vec<Frame<'a, T>>,
+    back_leaf: &'a [T],
     back: Vec<Frame<'a, T>>,
     start: usize,
     end: usize,
@@ -607,7 +898,9 @@ impl<T> Clone for Items<'_, T> {
     fn clone(&self) -> Self {
         Self {
             root: self.root,
+            front_leaf: self.front_leaf,
             front: self.front.clone(),
+            back_leaf: self.back_leaf,
             back: self.back.clone(),
             start: self.start,
             end: self.end,
@@ -616,36 +909,33 @@ impl<T> Clone for Items<'_, T> {
 }
 
 impl<'a, T> Items<'a, T> {
-    fn root(&self) -> &'a Node<T> {
+    fn root(&self) -> &'a Link<T> {
         let Some(root) = self.root else {
             panic!("a non-empty range has a root")
         };
         root
     }
 
-    fn seek(&mut self, position: usize, back: bool) {
-        let mut node = self.root();
+    fn seek_front(&mut self, position: usize) {
+        let mut link = self.root();
         let mut position = position;
-        let stack = if back {
-            &mut self.back
-        } else {
-            &mut self.front
-        };
-        let after = usize::from(back);
         'descend: for _ in 0..HEIGHT_MAX {
-            if node.is_leaf() {
-                stack.push((node, position + after));
-                return;
-            }
-            for (index, child) in node.children.iter().enumerate() {
+            let branch = match link {
+                Link::Leaf(leaf) => {
+                    self.front_leaf = &leaf.entries[position..];
+                    return;
+                }
+                Link::Branch(branch) => branch,
+            };
+            for (index, child) in branch.children.iter().enumerate() {
                 match position.cmp(&child.count) {
                     Ordering::Less => {
-                        stack.push((node, index));
-                        node = &child.node;
+                        self.front.push(branch.frame(index));
+                        link = &child.node;
                         continue 'descend;
                     }
                     Ordering::Equal => {
-                        stack.push((node, index + after));
+                        self.front.push(branch.frame(index));
                         return;
                     }
                     Ordering::Greater => position -= child.count + 1,
@@ -656,53 +946,99 @@ impl<'a, T> Items<'a, T> {
         panic!("tree deeper than {HEIGHT_MAX} levels")
     }
 
-    fn step_front(&mut self) -> &'a T {
-        let Some(top) = self.front.last_mut() else {
-            panic!("a front cursor inside the range")
-        };
-        let (node, index) = *top;
-        top.1 = index + 1;
-        if node.is_leaf() {
-            while let Some(&(node, index)) = self.front.last() {
-                if index < node.items.len() {
-                    break;
+    fn seek_back(&mut self, position: usize) {
+        let mut link = self.root();
+        let mut position = position;
+        'descend: for _ in 0..HEIGHT_MAX {
+            let branch = match link {
+                Link::Leaf(leaf) => {
+                    self.back_leaf = &leaf.entries[..=position];
+                    return;
                 }
-                self.front.pop();
+                Link::Branch(branch) => branch,
+            };
+            for (index, child) in branch.children.iter().enumerate() {
+                match position.cmp(&child.count) {
+                    Ordering::Less => {
+                        self.back.push(branch.frame(index));
+                        link = &child.node;
+                        continue 'descend;
+                    }
+                    Ordering::Equal => {
+                        self.back.push(branch.frame(index + 1));
+                        return;
+                    }
+                    Ordering::Greater => position -= child.count + 1,
+                }
             }
-        } else {
-            let mut below: &'a Node<T> = &node.children[index + 1].node;
-            self.front.push((below, 0));
-            while !below.is_leaf() {
-                below = &below.children[0].node;
-                self.front.push((below, 0));
+            panic!("position beyond the subtree's count")
+        }
+        panic!("tree deeper than {HEIGHT_MAX} levels")
+    }
+
+    fn descend_front(&mut self, mut link: &'a Link<T>) {
+        for _ in 0..HEIGHT_MAX {
+            match link {
+                Link::Leaf(leaf) => {
+                    self.front_leaf = &leaf.entries;
+                    return;
+                }
+                Link::Branch(branch) => {
+                    self.front.push(branch.frame(0));
+                    link = child(&branch.children, 0);
+                }
             }
         }
-        &node.items[index]
+        panic!("tree deeper than {HEIGHT_MAX} levels")
+    }
+
+    fn descend_back(&mut self, mut link: &'a Link<T>) {
+        for _ in 0..HEIGHT_MAX {
+            match link {
+                Link::Leaf(leaf) => {
+                    self.back_leaf = &leaf.entries;
+                    return;
+                }
+                Link::Branch(branch) => {
+                    let last = branch.children.len() - 1;
+                    self.back.push(branch.frame(last));
+                    link = child(&branch.children, last);
+                }
+            }
+        }
+        panic!("tree deeper than {HEIGHT_MAX} levels")
+    }
+
+    fn step_front(&mut self) -> &'a T {
+        for _ in 0..HEIGHT_MAX {
+            let Some(top) = self.front.last_mut() else {
+                panic!("a front cursor inside the range")
+            };
+            let frame = *top;
+            if frame.index < frame.entries.len() {
+                top.index += 1;
+                self.descend_front(child(frame.children, frame.index + 1));
+                return &frame.entries[frame.index];
+            }
+            self.front.pop();
+        }
+        panic!("tree deeper than {HEIGHT_MAX} levels")
     }
 
     fn step_back(&mut self) -> &'a T {
-        let Some(top) = self.back.last_mut() else {
-            panic!("a back cursor inside the range")
-        };
-        let (node, end) = *top;
-        let index = end - 1;
-        top.1 = index;
-        if node.is_leaf() {
-            while let Some(&(_, end)) = self.back.last() {
-                if end > 0 {
-                    break;
-                }
-                self.back.pop();
+        for _ in 0..HEIGHT_MAX {
+            let Some(top) = self.back.last_mut() else {
+                panic!("a back cursor inside the range")
+            };
+            let frame = *top;
+            if frame.index > 0 {
+                top.index -= 1;
+                self.descend_back(child(frame.children, frame.index - 1));
+                return &frame.entries[frame.index - 1];
             }
-        } else {
-            let mut below: &'a Node<T> = &node.children[index].node;
-            self.back.push((below, below.items.len()));
-            while !below.is_leaf() {
-                below = &below.children[below.children.len() - 1].node;
-                self.back.push((below, below.items.len()));
-            }
+            self.back.pop();
         }
-        &node.items[index]
+        panic!("tree deeper than {HEIGHT_MAX} levels")
     }
 
     const fn remaining(&self) -> usize {
@@ -717,12 +1053,19 @@ impl<'a, T> Iterator for Items<'a, T> {
         if self.start >= self.end {
             return None;
         }
-        if self.front.is_empty() {
-            self.seek(self.start, false);
-        }
-        let item = self.step_front();
         self.start += 1;
-        Some(item)
+        if let Some((item, rest)) = self.front_leaf.split_first() {
+            self.front_leaf = rest;
+            return Some(item);
+        }
+        if self.front.is_empty() {
+            self.seek_front(self.start - 1);
+            if let Some((item, rest)) = self.front_leaf.split_first() {
+                self.front_leaf = rest;
+                return Some(item);
+            }
+        }
+        Some(self.step_front())
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -735,12 +1078,19 @@ impl<'a, T> DoubleEndedIterator for Items<'a, T> {
         if self.start >= self.end {
             return None;
         }
-        if self.back.is_empty() {
-            self.seek(self.end - 1, true);
-        }
-        let item = self.step_back();
         self.end -= 1;
-        Some(item)
+        if let Some((item, rest)) = self.back_leaf.split_last() {
+            self.back_leaf = rest;
+            return Some(item);
+        }
+        if self.back.is_empty() {
+            self.seek_back(self.end);
+            if let Some((item, rest)) = self.back_leaf.split_last() {
+                self.back_leaf = rest;
+                return Some(item);
+            }
+        }
+        Some(self.step_back())
     }
 }
 
@@ -752,18 +1102,22 @@ pub struct Owned<T> {
     items: std::vec::IntoIter<T>,
 }
 
-fn drain<T: Clone>(node: Arc<Node<T>>, out: &mut Vec<T>, depth: usize) {
+fn drain<T: Clone>(link: Link<T>, out: &mut Vec<T>, depth: usize) {
     assert!(depth < HEIGHT_MAX);
-    let (items, children) = match Arc::try_unwrap(node) {
-        Ok(node) => (node.items, node.children),
-        Err(shared) => (shared.items.clone(), shared.children.clone()),
+    let (entries, children) = match link {
+        Link::Leaf(leaf) => {
+            let entries = Arc::try_unwrap(leaf)
+                .map_or_else(|shared| shared.entries.clone(), |leaf| leaf.entries);
+            out.extend(entries);
+            return;
+        }
+        Link::Branch(branch) => match Arc::try_unwrap(branch) {
+            Ok(branch) => (branch.entries, branch.children),
+            Err(shared) => (shared.entries.clone(), shared.children.clone()),
+        },
     };
-    if children.is_empty() {
-        out.extend(items);
-        return;
-    }
     let mut children = children.into_iter();
-    for item in items {
+    for item in entries {
         let Some(child) = children.next() else {
             panic!("a branch has one more child than items")
         };
@@ -783,6 +1137,12 @@ impl<T: Clone> Owned<T> {
             drain(root, &mut items, 0);
         }
         assert!(items.len() == tree.count);
+        Self::from_items(items)
+    }
+}
+
+impl<T> Owned<T> {
+    pub(crate) fn from_items(items: Vec<T>) -> Self {
         Self {
             items: items.into_iter(),
         }

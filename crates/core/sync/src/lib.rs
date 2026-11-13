@@ -13,6 +13,7 @@ mod reentry;
 #[cfg(not(target_family = "wasm"))]
 mod session;
 mod shared;
+mod spine;
 #[cfg(not(target_family = "wasm"))]
 mod splice;
 mod tree;

@@ -69,11 +69,11 @@ impl<K, V> OrdMap<K, V> {
     }
 
     pub fn get_min(&self) -> Option<&(K, V)> {
-        self.tree.items(0, self.tree.len()).next()
+        self.tree.first()
     }
 
     pub fn get_max(&self) -> Option<&(K, V)> {
-        self.tree.items(0, self.tree.len()).next_back()
+        self.tree.last()
     }
 }
 
@@ -139,13 +139,11 @@ impl<K: Ord + Clone, V: Clone> OrdMap<K, V> {
         K: Borrow<Q>,
         Q: Ord + ?Sized,
     {
-        if !self.contains_key(key) {
-            return None;
-        }
-        Some(self.tree.remove(ByKey {
+        let path = self.tree.path(ByKey {
             key,
             project: entry_key,
-        }))
+        })?;
+        Some(self.tree.remove(path))
     }
 
     pub fn get_mut<Q>(&mut self, key: &Q) -> Option<&mut V>
@@ -153,15 +151,11 @@ impl<K: Ord + Clone, V: Clone> OrdMap<K, V> {
         K: Borrow<Q>,
         Q: Ord + ?Sized,
     {
-        if !self.contains_key(key) {
-            return None;
-        }
-        self.tree
-            .find_mut(ByKey {
-                key,
-                project: entry_key,
-            })
-            .map(|entry| &mut entry.1)
+        let path = self.tree.path(ByKey {
+            key,
+            project: entry_key,
+        })?;
+        self.tree.find_mut(path).map(|entry| &mut entry.1)
     }
 
     pub const fn entry(&mut self, key: K) -> Entry<'_, K, V> {
@@ -193,13 +187,24 @@ pub struct Entry<'a, K, V> {
 
 impl<'a, K: Ord + Clone, V: Clone> Entry<'a, K, V> {
     pub fn or_insert_with(self, value: impl FnOnce() -> V) -> &'a mut V {
-        if !self.map.contains_key(&self.key) {
-            self.map.insert(self.key.clone(), value());
-        }
-        let Some(value) = self.map.get_mut(&self.key) else {
-            panic!("an entry holds its key after insertion")
+        let locate = || ByKey {
+            key: &self.key,
+            project: entry_key,
         };
-        value
+        let path = match self.map.tree.path(locate()) {
+            Some(path) => path,
+            None => {
+                self.map.insert(self.key.clone(), value());
+                let Some(path) = self.map.tree.path(locate()) else {
+                    panic!("an entry holds its key after insertion")
+                };
+                path
+            }
+        };
+        let Some(entry) = self.map.tree.find_mut(path) else {
+            panic!("a found path leads to an entry")
+        };
+        &mut entry.1
     }
 
     pub fn or_insert(self, value: V) -> &'a mut V {
@@ -446,11 +451,11 @@ impl<A> OrdSet<A> {
     }
 
     pub fn get_min(&self) -> Option<&A> {
-        self.iter().next()
+        self.tree.first()
     }
 
     pub fn get_max(&self) -> Option<&A> {
-        self.iter().next_back()
+        self.tree.last()
     }
 }
 
@@ -494,13 +499,11 @@ impl<A: Ord + Clone> OrdSet<A> {
         A: Borrow<Q>,
         Q: Ord + ?Sized,
     {
-        if !self.contains(value) {
-            return None;
-        }
-        Some(self.tree.remove(ByKey {
+        let path = self.tree.path(ByKey {
             key: value,
             project: itself,
-        }))
+        })?;
+        Some(self.tree.remove(path))
     }
 
     pub fn remove_min(&mut self) -> Option<A> {

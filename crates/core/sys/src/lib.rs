@@ -3,6 +3,7 @@
 #[cfg(all(target_vendor = "apple", not(target_os = "macos")))]
 pub mod apple;
 mod atomic;
+mod inline;
 mod swap;
 #[cfg(unix)]
 pub mod unix;
@@ -12,4 +13,5 @@ pub mod certificate_store;
 pub mod trust_settings;
 
 pub use atomic::{AtomicArc, AtomicBox, AtomicStatic};
+pub use inline::{InlineVec, OwnedItems, new_arc_with};
 pub use swap::{AsRaw, Enclosed, Guard, Pointer, Swap, SwapOption, Swapped};

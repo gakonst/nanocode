@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish.workspace = true
-description = "The one Nanocode crate with unsafe code: owned atomic pointers, a lock-free Arc swap and system calls"
+description = "The one Nanocode crate with unsafe code: owned atomic pointers, a lock-free Arc swap, fixed-capacity inline vectors and system calls"
 autotests = false
 autobenches = false
 

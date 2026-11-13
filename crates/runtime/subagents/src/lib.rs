@@ -29,9 +29,9 @@ pub use model::{
 };
 pub use runtime::{
     AgentDirectoryEntry, AgentSummary, COMPLETION_INSTRUCTIONS_LEAD, CompletionPrompt,
-    CompletionStatus, MessageReceipt, ParentResolver, Registry, Restoration, RunningSubagents,
-    SessionReleased, SubagentActivity, SubagentCompletion, SubagentControl, channel,
-    completion_continuation_prompt, parse_completion_prompt,
+    CompletionStatus, MessageReceipt, ParentResolver, PendingTurnResolver, Registry, Restoration,
+    RunningSubagents, SessionReleased, SubagentActivity, SubagentCompletion, SubagentControl,
+    channel, completion_continuation_prompt, parse_completion_prompt,
 };
 pub use tools::{
     AgentStartReport, AgentTask, AgentToolResult, install_tools, start_agent, start_agent_with,

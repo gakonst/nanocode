@@ -48,6 +48,7 @@ pub struct Policy {
 }
 
 pub struct OneLog {
+    durable_settles: Atom<bool>,
     effects: Atom<Effects>,
     log: nanocode_turnlog::TurnLog,
     owners: Atom<BTreeMap<String, OwnerToken>>,
@@ -250,6 +251,7 @@ impl OneLog {
             })
             .await;
         Ok(Arc::new(Self {
+            durable_settles: Atom::new(false),
             effects: Atom::new(Effects::builtin().merged(policy.effects)),
             log,
             owners: Atom::default(),
@@ -261,6 +263,10 @@ impl OneLog {
     #[must_use]
     pub fn scope(&self) -> &str {
         self.log.scope()
+    }
+
+    pub fn settle_durably(&self) {
+        self.durable_settles.set(true);
     }
 
     pub fn declare(&self, tool: impl Into<String>, class: EffectClass) {
@@ -1392,7 +1398,9 @@ impl StateStore for OneLogStore {
                 commit.payload,
                 commit.records,
             )?;
-            if commit.settle == Settle::Durable && lease.fold().recovering() {
+            if commit.settle == Settle::Durable
+                && (lease.fold().recovering() || *self.0.durable_settles.get())
+            {
                 lease.commit(Point::Progress).await?;
             }
             Ok(Committed {

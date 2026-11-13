@@ -630,6 +630,7 @@ pub struct Registry {
     parent_resolver: Atom<Option<ParentResolver>>,
 
     session_released: Atom<Option<SessionReleased>>,
+    pending_turns: Atom<Option<PendingTurnResolver>>,
 
     pub(super) spawn_policy: Atom<crate::SpawnPolicy>,
 }
@@ -643,6 +644,18 @@ struct JournalClaims {
 pub type ParentResolver = Arc<dyn Fn(&str) -> Option<Agent> + Send + Sync>;
 
 pub type SessionReleased = Arc<dyn Fn(&str) + Send + Sync>;
+
+pub type PendingTurnResolver = Arc<
+    dyn Fn(
+            &str,
+        ) -> Option<
+            durable::SubagentStoreFuture<
+                'static,
+                std::io::Result<Option<(String, serde_json::Value)>>,
+            >,
+        > + Send
+        + Sync,
+>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CompletionStatus {
@@ -2877,6 +2890,7 @@ impl Registry {
             running_roots: Atom::default(),
             parent_resolver: Atom::default(),
             session_released: Atom::default(),
+            pending_turns: Atom::default(),
             spawn_policy: Atom::default(),
         }
     }
@@ -2887,6 +2901,10 @@ impl Registry {
 
     pub fn set_session_released(&self, released: SessionReleased) {
         self.session_released.set(Some(released));
+    }
+
+    pub fn set_pending_turn_resolver(&self, resolver: PendingTurnResolver) {
+        self.pending_turns.set(Some(resolver));
     }
 
     pub(crate) fn continues_root(&self) -> bool {
@@ -6102,6 +6120,11 @@ impl Registry {
         root: &str,
         session_id: &str,
     ) -> std::io::Result<Option<(String, serde_json::Value)>> {
+        if let Some(pending) =
+            Option::clone(&self.pending_turns.get()).and_then(|resolver| resolver(session_id))
+        {
+            return pending.await;
+        }
         match self.store_for(root) {
             Some(store) => store.pending_turn(session_id).await,
             None => Ok(None),

@@ -4,6 +4,7 @@ pub use nanocode_agent_core::*;
 pub use nanocode_durability as durability;
 mod handoff;
 mod one_log;
+mod remote;
 mod router;
 mod runtime;
 mod session_events;
@@ -15,6 +16,7 @@ pub use handoff::{
     Base, Missing, ResumeError, Settled, Unresumable, base_checkpoint, settle_pending,
 };
 pub use one_log::{OneLog, OneLogJournals, OneLogStore, Policy};
+pub use remote::{ChildHost, ChildSpec, ChildToolCall, RemoteChildren};
 pub use router::{
     CheckpointFormats, Harness, HarnessBuilder, HarnessRequest, NoFormats, session_store,
 };

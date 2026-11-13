@@ -264,6 +264,7 @@ struct Request {
 struct Requests {
     requests: HashMap<String, Request>,
     turns: HashMap<String, String>,
+    usage: HashMap<String, nanocode_agent_core::TurnUsage>,
 }
 
 impl Requests {
@@ -291,6 +292,7 @@ impl Requests {
     }
 
     fn finished(&mut self, id: &str) {
+        self.usage.remove(id);
         if let Some(request) = self.requests.get_mut(id) {
             request.cancelled = false;
         }
@@ -1346,11 +1348,16 @@ impl<L: TurnLog + ?Sized> TurnInbox<L> {
         };
         match self.execute(id, prompt, cancel, Run::Inbox).await {
             DurableOutcome::Completed(message) => {
-                let ok = serde_json::json!({"ok": {
+                let mut ok = serde_json::json!({"ok": {
                     "session_id": self.session_id(),
                     "model": self.model,
                     "message": message,
                 }});
+                if let Some(usage) = self.shared.state.read(|state| state.usage.get(id).cloned()) {
+                    ok["ok"]["usage"] = serde_json::to_value(usage).map_err(|error| {
+                        InboxError::Agent(NanocodeError::InvalidRequest(error.to_string()))
+                    })?;
+                }
                 self.finish(id, TurnState::Completed, fields(ok)).await
             }
             DurableOutcome::Failed(error) => {
@@ -1455,7 +1462,13 @@ impl<L: TurnLog + ?Sized> TurnInbox<L> {
             let control = turn.control();
             ignore_inactive(control.cancel().await)?;
         }
-        let message = turn.result().await?.into_final_message();
+        let result = turn.result().await?;
+        if let Some(usage) = &result.usage {
+            self.shared.state.update(|state| {
+                state.usage.insert(id.to_owned(), usage.clone());
+            });
+        }
+        let message = result.into_final_message();
         self.agent.flush().await?;
         Ok(message)
     }

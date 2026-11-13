@@ -27,9 +27,15 @@ pub struct HarnessBuilder<D = NoFormats> {
     thinking_defaults: HashMap<HarnessFamily, Thinking>,
 
     recovery_store: Option<crate::durability::SessionStore>,
+    remote: Option<Arc<crate::RemoteChildren>>,
 }
 
 impl<D: CheckpointFormats> HarnessBuilder<D> {
+    pub(crate) fn remote_children(mut self, remote: Arc<crate::RemoteChildren>) -> Self {
+        self.remote = Some(remote);
+        self
+    }
+
     pub(crate) fn recovery_store(mut self, store: crate::durability::SessionStore) -> Self {
         self.recovery_store = Some(store);
         self
@@ -68,6 +74,7 @@ impl<D: CheckpointFormats> HarnessBuilder<D> {
                 thinking_defaults: self.thinking_defaults,
 
                 recovery_store: self.recovery_store,
+                remote: self.remote,
                 children: None,
             }),
         }
@@ -85,6 +92,7 @@ impl<D: CheckpointFormats> HarnessBuilder<D> {
                 thinking_defaults: self.thinking_defaults,
 
                 recovery_store: self.recovery_store,
+                remote: self.remote,
                 children: Some(children),
             }),
         }
@@ -213,6 +221,7 @@ struct Router {
     thinking_defaults: HashMap<HarnessFamily, Thinking>,
 
     recovery_store: Option<crate::durability::SessionStore>,
+    remote: Option<Arc<crate::RemoteChildren>>,
 
     children: Option<std::sync::Weak<crate::runtime::Ownership>>,
 }
@@ -369,6 +378,11 @@ impl AgentFactory for RoutedFactory {
                     if options.selected_provider().is_none()
                         && resolve_family(&parent, &options) == parent.harness_family()
                     {
+                        if let Some(remote) = &inner.remote {
+                            return Arc::clone(remote)
+                                .spawn(parent, options, host_context)
+                                .await;
+                        }
                         return parent
                             .spawn_native_with_host_context(options, host_context)
                             .await;
@@ -396,6 +410,7 @@ impl AgentFactory for RoutedFactory {
         host_context: Option<Arc<str>>,
     ) -> BackendFuture<nanocode_agent_core::Result<Vec<(Agent, AgentEvents)>>> {
         let inner = Arc::clone(&self.inner);
+        let remote = inner.remote.clone();
         Box::pin(async move {
             inner
                 .tracked(async move {
@@ -404,6 +419,34 @@ impl AgentFactory for RoutedFactory {
                         resolve_family(&parent, &SpawnOptions::new()),
                         parent.harness_family()
                     );
+                    if let Some(remote) = &remote {
+                        let spawned = futures_util::future::join_all((0..count).map(|_| {
+                            Arc::clone(remote).spawn(
+                                parent.clone(),
+                                SpawnOptions::new(),
+                                host_context.clone(),
+                            )
+                        }))
+                        .await;
+                        let mut children = Vec::with_capacity(count);
+                        let mut failed = None;
+                        for child in spawned {
+                            match child {
+                                Ok(child) => children.push(child),
+                                Err(error) => failed = failed.or(Some(error)),
+                            }
+                        }
+                        if let Some(error) = failed {
+                            for (child, _) in &children {
+                                let _ = child.shutdown().await;
+                            }
+                            return Err(error);
+                        }
+                        for (child, _) in &children {
+                            observer(child.session_id());
+                        }
+                        return Ok(children);
+                    }
                     parent
                         .spawn_many_native_with_host_context(
                             count,
@@ -429,6 +472,11 @@ impl AgentFactory for RoutedFactory {
                 .tracked_one(async move {
                     parent.ensure_available().await?;
                     checkpoint.validate()?;
+                    if let Some(remote) = &inner.remote
+                        && crate::RemoteChildren::is_remote(&checkpoint)
+                    {
+                        return Arc::clone(remote).restore(checkpoint, host_context).await;
+                    }
 
                     let (checkpoint, provider) = match &inner.recovery_store {
                         Some(store) => store

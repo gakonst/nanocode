@@ -95,6 +95,7 @@ pub struct RuntimeBuilder<B, D> {
 #[derive(Clone, Default)]
 struct Assembly {
     backends: Vec<Arc<dyn RuntimeBackend>>,
+    child_host: Option<Arc<dyn crate::ChildHost>>,
     durability:
         Option<std::result::Result<crate::durability::SessionStore, Arc<crate::durability::Error>>>,
     harness: Option<HarnessFamily>,
@@ -154,6 +155,12 @@ impl<B, D: RuntimeDefaults> RuntimeBuilder<B, D> {
     pub const fn max_subagents(mut self, limit: usize) -> Self {
         self.data.max_subagents = Some(limit);
         self.data.subagents_disabled = false;
+        self
+    }
+
+    #[must_use]
+    pub fn child_host(mut self, host: impl crate::ChildHost) -> Self {
+        self.data.child_host = Some(Arc::new(host));
         self
     }
 
@@ -452,6 +459,18 @@ fn assemble(
         *recipe = host_recipe(recipe.clone(), services.clone());
     }
     let mut router = Harness::builder();
+    let remote = match (data.child_host, &subagents) {
+        (None, _) => None,
+        (Some(host), Some(registry)) => Some(crate::RemoteChildren::new(host, registry)),
+        (Some(_), None) => {
+            return Err(NanocodeError::InvalidRequest(
+                "a child host requires subagents".into(),
+            ));
+        }
+    };
+    if let Some(remote) = &remote {
+        router = router.remote_children(Arc::clone(remote));
+    }
 
     if let Some(store) = &durability {
         router = router.recovery_store(store.clone());
@@ -466,8 +485,13 @@ fn assemble(
         router = router.default_settings(model, thinking);
     }
     services.activate();
+    let harness = router.build_tracked(Arc::downgrade(&ownership));
+    if let Some(remote) = &remote {
+        remote.set_spawn_factory(harness.spawn_factory());
+    }
     let inner = Arc::new(RuntimeState {
-        harness: router.build_tracked(Arc::downgrade(&ownership)),
+        harness,
+        remote,
         recipes,
         model,
         thinking,
@@ -848,6 +872,7 @@ struct RuntimeState {
     model: ModelSelection,
     thinking: Thinking,
     ownership: Arc<Ownership>,
+    remote: Option<Arc<crate::RemoteChildren>>,
     services: Arc<dyn HostServices>,
 
     durability: Option<crate::durability::SessionStore>,
@@ -894,6 +919,11 @@ impl AgentRuntime {
     #[must_use]
     pub fn spawn_factory(&self) -> Arc<dyn AgentFactory> {
         self.inner.harness.spawn_factory()
+    }
+
+    #[must_use]
+    pub fn remote_children(&self) -> Option<&Arc<crate::RemoteChildren>> {
+        self.inner.remote.as_ref()
     }
 
     #[must_use]
@@ -1815,6 +1845,9 @@ impl<D: RuntimeDefaults> Runtime<D> {
     }
     pub fn spawn_factory(&self) -> Arc<dyn AgentFactory> {
         self.inner.spawn_factory()
+    }
+    pub fn remote_children(&self) -> Option<&Arc<crate::RemoteChildren>> {
+        self.inner.remote_children()
     }
     pub fn subagents(&self) -> Option<&nanocode_subagents::SubagentControl> {
         self.inner.subagents()

@@ -1,7 +1,7 @@
 use super::data::BIG5_ASTRAL_POINTERS;
 use super::{
     ASCII_END, AsciiRun, BIG5, BMP_BYTES_MAX, Decoded, DecoderResult, EUC_KR, JIS0208,
-    SCALAR_BYTES_MAX, Transcode, WORD_BYTES, WORD_HIGH_BITS, copy_ascii_run,
+    SCALAR_BYTES_MAX, Transcode, WORD_BYTES, WORD_HIGH_BITS, copy_ascii_run, put_scalar,
 };
 
 const PUNCTUATION_END: u8 = 60;
@@ -73,6 +73,69 @@ impl<K: TwoByte> TwoByteDecoder<K> {
         true
     }
 
+    fn characters(&self, transcode: &mut Transcode<'_, '_>) -> bool {
+        let source = transcode.source;
+        let destination = &mut *transcode.destination;
+        let mut read = transcode.read;
+        let mut written = transcode.written;
+        let mut strict = true;
+        while read < source.len() && destination.len() - written >= K::ROOM_BYTES {
+            let byte = source[read];
+            if byte < ASCII_END {
+                let limit =
+                    (destination.len() - written - K::ROOM_BYTES + 1).min(source.len() - read);
+                let run = if limit >= WORD_BYTES && ascii_word(source, read) {
+                    copy_ascii_run(
+                        &source[read..read + limit],
+                        &mut destination[written..written + limit],
+                    )
+                } else {
+                    destination[written] = byte;
+                    1
+                };
+                if strict
+                    && (!K::PUNCTUATION_FAST
+                        || source[read..read + run]
+                            .iter()
+                            .any(|&ascii| ascii >= PUNCTUATION_END))
+                {
+                    strict = false;
+                }
+                read += run;
+                written += run;
+                continue;
+            }
+            match self.kind.lead(byte) {
+                Lead::Restart(scalar) => {
+                    written += put_scalar(destination, written, scalar);
+                    read += 1;
+                    strict = false;
+                }
+                Lead::Pending(lead) => {
+                    let Some(&trail) = source.get(read + 1) else {
+                        break;
+                    };
+                    match self.kind.trail(lead, trail) {
+                        Trail::Scalar(scalar) => {
+                            written += put_scalar(destination, written, scalar)
+                        }
+                        Trail::Pair(first, second) => {
+                            written += put_scalar(destination, written, first);
+                            written += put_scalar(destination, written, second);
+                        }
+                        Trail::Malformed | Trail::MalformedBeforeAscii => break,
+                    }
+                    read += 2;
+                    strict = true;
+                }
+                Lead::Malformed => break,
+            }
+        }
+        transcode.read = read;
+        transcode.written = written;
+        strict
+    }
+
     pub(super) fn decode(&mut self, transcode: &mut Transcode<'_, '_>, last: bool) -> Decoded {
         if let Some(lead) = self.lead {
             if !transcode.has_input() {
@@ -116,6 +179,9 @@ impl<K: TwoByte> TwoByteDecoder<K> {
                             return transcode.end(DecoderResult::Malformed);
                         }
                     }
+                }
+                if !self.characters(transcode) {
+                    continue 'run;
                 }
                 if !transcode.has_input() {
                     return transcode.end(DecoderResult::InputEmpty);
@@ -350,11 +416,12 @@ impl TwoByte for Big5 {
     }
 
     fn trail(&self, lead: u8, byte: u8) -> Trail {
-        let offset = match byte {
-            0x40..=0x7E => 0x40,
-            0xA1..=0xFE => 0x62,
-            _ => return malformed_trail(byte),
-        };
+        let low = (0x40..=0x7E).contains(&byte);
+        let high = (0xA1..=0xFE).contains(&byte);
+        if !(low | high) {
+            return malformed_trail(byte);
+        }
+        let offset = 0x40 + 0x22 * u8::from(high);
         let pointer = usize::from(lead - 0x81) * BIG5_TRAIL_COUNT + usize::from(byte - offset);
         let Some(low_bits) = BIG5.get(pointer) else {
             return match BIG5_COMBINATIONS
@@ -414,12 +481,13 @@ impl TwoByte for ShiftJis {
     }
 
     fn trail(&self, lead: u8, byte: u8) -> Trail {
-        let offset = match byte {
-            0x40..=0x7E => 0x40,
-            0x80..=0xFC => 0x41,
-            _ => return malformed_trail(byte),
-        };
-        let lead_offset = if lead < 0xA0 { 0x81 } else { 0xC1 };
+        let low = (0x40..=0x7E).contains(&byte);
+        let high = (0x80..=0xFC).contains(&byte);
+        if !(low | high) {
+            return malformed_trail(byte);
+        }
+        let offset = 0x40 + u8::from(high);
+        let lead_offset = 0x81 + 0x40 * u8::from(lead >= 0xA0);
         let pointer =
             usize::from(lead - lead_offset) * SHIFT_JIS_TRAIL_COUNT + usize::from(byte - offset);
         if SHIFT_JIS_PRIVATE_USE_POINTERS.contains(&pointer) {

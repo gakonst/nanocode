@@ -536,31 +536,7 @@ impl Transcode<'_, '_> {
     }
 
     fn write_scalar(&mut self, scalar: u32) {
-        let at = self.written;
-        let destination = &mut *self.destination;
-        if scalar < 0x80 {
-            destination[at] = scalar as u8;
-            self.written += 1;
-        } else if scalar < 0x800 {
-            destination[at] = 0xC0 | (scalar >> 6) as u8;
-            destination[at + 1] = 0x80 | (scalar & 0x3F) as u8;
-            self.written += 2;
-        } else if scalar < 0x1_0000 {
-            destination[at] = 0xE0 | (scalar >> 12) as u8;
-            destination[at + 1] = 0x80 | ((scalar >> 6) & 0x3F) as u8;
-            destination[at + 2] = 0x80 | (scalar & 0x3F) as u8;
-            self.written += 3;
-        } else {
-            assert!(
-                scalar <= SCALAR_MAX,
-                "writing {scalar:#x} as a scalar value"
-            );
-            destination[at] = 0xF0 | (scalar >> 18) as u8;
-            destination[at + 1] = 0x80 | ((scalar >> 12) & 0x3F) as u8;
-            destination[at + 2] = 0x80 | ((scalar >> 6) & 0x3F) as u8;
-            destination[at + 3] = 0x80 | (scalar & 0x3F) as u8;
-            self.written += 4;
-        }
+        self.written += put_scalar(self.destination, self.written, scalar);
     }
 
     fn copy_ascii(&mut self, room: usize) -> AsciiRun {
@@ -582,6 +558,36 @@ impl Transcode<'_, '_> {
             return AsciiRun::Stopped(self.end(DecoderResult::OutputFull));
         }
         AsciiRun::NonAscii(self.next())
+    }
+}
+
+fn put_scalar(destination: &mut [u8], at: usize, scalar: u32) -> usize {
+    if scalar < 0x80 {
+        destination[at] = scalar as u8;
+        1
+    } else if scalar < 0x800 {
+        destination[at..at + 2]
+            .copy_from_slice(&[0xC0 | (scalar >> 6) as u8, 0x80 | (scalar & 0x3F) as u8]);
+        2
+    } else if scalar < 0x1_0000 {
+        destination[at..at + 3].copy_from_slice(&[
+            0xE0 | (scalar >> 12) as u8,
+            0x80 | ((scalar >> 6) & 0x3F) as u8,
+            0x80 | (scalar & 0x3F) as u8,
+        ]);
+        3
+    } else {
+        assert!(
+            scalar <= SCALAR_MAX,
+            "writing {scalar:#x} as a scalar value"
+        );
+        destination[at..at + 4].copy_from_slice(&[
+            0xF0 | (scalar >> 18) as u8,
+            0x80 | ((scalar >> 12) & 0x3F) as u8,
+            0x80 | ((scalar >> 6) & 0x3F) as u8,
+            0x80 | (scalar & 0x3F) as u8,
+        ]);
+        4
     }
 }
 

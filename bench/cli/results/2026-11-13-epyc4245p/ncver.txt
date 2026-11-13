@@ -1,0 +1,1 @@
+nc: nanocode 4be51211a05d40d6723e14f19b93f52c2ea36e6d built with scripts/build-cli.sh (dist, non-PIE, BOLT 19 -icf=1)

@@ -8,6 +8,8 @@ pub mod confine;
 #[path = "confine_other.rs"]
 pub mod confine;
 pub mod egress;
+#[cfg(target_os = "linux")]
+mod landlock;
 pub mod run;
 
 pub const SYSTEM: [&str; 7] = [

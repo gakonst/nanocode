@@ -1,7 +1,9 @@
-use crate::SYSTEM;
-use landlock::{
-    ABI, Access, AccessFs, AccessNet, CompatLevel, Compatible, NetPort, PathBeneath, Ruleset,
-    RulesetAttr, RulesetCreated, RulesetCreatedAttr, Scope, path_beneath_rules,
+use crate::{
+    SYSTEM,
+    landlock::{
+        Abi, Created, FS_IOCTL_DEV, FS_READ_DIR, FS_READ_FILE, FS_WRITE_FILE, Kind,
+        NET_BIND_TCP, NET_CONNECT_TCP, Ruleset, SCOPE_ABSTRACT_UNIX_SOCKET, SCOPE_SIGNAL,
+    },
 };
 use seccompiler::{
     BpfProgram, SeccompAction, SeccompCmpArgLen, SeccompCmpOp, SeccompCondition, SeccompFilter,
@@ -21,7 +23,7 @@ use std::{
 };
 use tokio::process::Command;
 
-const ABI: ABI = ABI::V6;
+const ABI: Abi = Abi::V6;
 
 pub const ARGUMENT: &str = "tool-sandbox";
 
@@ -84,13 +86,12 @@ pub fn check() -> io::Result<()> {
     Ok(())
 }
 
-fn ruleset() -> io::Result<RulesetCreated> {
-    Ruleset::default()
-        .set_compatibility(CompatLevel::HardRequirement)
-        .handle_access(AccessFs::from_all(ABI))
-        .and_then(|ruleset| ruleset.handle_access(AccessNet::BindTcp | AccessNet::ConnectTcp))
-        .and_then(|ruleset| ruleset.scope(Scope::AbstractUnixSocket | Scope::Signal))
-        .and_then(|ruleset| ruleset.create())
+fn ruleset() -> io::Result<Created> {
+    Ruleset::new()
+        .handle(Kind::Fs, ABI.fs_all())
+        .and_then(|ruleset| ruleset.handle(Kind::Net, NET_BIND_TCP | NET_CONNECT_TCP))
+        .and_then(|ruleset| ruleset.handle(Kind::Scope, SCOPE_ABSTRACT_UNIX_SOCKET | SCOPE_SIGNAL))
+        .and_then(Ruleset::create)
         .map_err(|error| other(format!("Landlock ABI 6 (Linux 6.12) is required: {error}")))
 }
 
@@ -176,19 +177,18 @@ fn filter() -> io::Result<BpfProgram> {
 }
 
 fn confine(policy: &Policy, own: &File) -> io::Result<()> {
-    let read = AccessFs::from_read(ABI);
-    let device = AccessFs::ReadFile | AccessFs::WriteFile | AccessFs::IoctlDev;
-    ruleset()?
-        .add_rules(path_beneath_rules(SYSTEM, read))
-        .and_then(|ruleset| ruleset.add_rules(path_beneath_rules(&policy.read, read)))
-        .and_then(|ruleset| ruleset.add_rules(path_beneath_rules(["/"], AccessFs::ReadDir)))
-        .and_then(|ruleset| ruleset.add_rule(PathBeneath::new(own, AccessFs::ReadFile)))
-        .and_then(|ruleset| ruleset.add_rules(path_beneath_rules(DEVICES, device)))
-        .and_then(|ruleset| {
-            ruleset.add_rules(path_beneath_rules([&policy.write], AccessFs::from_all(ABI)))
-        })
-        .and_then(|ruleset| ruleset.add_rule(NetPort::new(policy.port, AccessNet::ConnectTcp)))
-        .and_then(|ruleset| ruleset.restrict_self())
+    let read = ABI.fs_read();
+    let device = FS_READ_FILE | FS_WRITE_FILE | FS_IOCTL_DEV;
+    let ruleset = ruleset()?;
+    ruleset
+        .add_paths(SYSTEM, read)
+        .and_then(|()| ruleset.add_paths(&policy.read, read))
+        .and_then(|()| ruleset.add_paths(["/"], FS_READ_DIR))
+        .and_then(|()| ruleset.add_path_beneath(own, FS_READ_FILE))
+        .and_then(|()| ruleset.add_paths(DEVICES, device))
+        .and_then(|()| ruleset.add_paths([&policy.write], ABI.fs_all()))
+        .and_then(|()| ruleset.add_port(policy.port, NET_CONNECT_TCP))
+        .and_then(|()| ruleset.restrict_self())
         .map_err(other)?;
     seccompiler::apply_filter(&filter()?).map_err(other)?;
     Ok(())

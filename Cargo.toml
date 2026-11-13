@@ -112,7 +112,6 @@ nanocode-computer-repl = { version = "0.7.0", path = "crates/integrations/comput
 nanocode-tools = { version = "0.7.0", path = "crates/core/tools" }
 nanocode-tool-contracts = { version = "0.7.0", path = "crates/core/tool-contracts" }
 nanocode-store-jsonl = { version = "0.7.0", path = "crates/integrations/store-jsonl" }
-landlock = "0.4.4"
 libc = "0.2"
 log = { version = "0.4.33", default-features = false }
 base64 = "0.22.1"

@@ -1,3 +1,5 @@
+#[cfg(target_os = "linux")]
+pub mod confine;
 mod host;
 
 pub use host::*;

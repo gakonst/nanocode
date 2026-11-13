@@ -2371,10 +2371,16 @@ impl Driver {
         }
         let assigned = match committed.first_event {
             None if events.is_empty() => Some(0..0),
-            Some(first) if first > 0 && !events.is_empty() => u64::try_from(events.len())
-                .ok()
-                .and_then(|count| first.checked_add(count))
-                .map(|end| first..end),
+            Some(first)
+                if first > 0
+                    && !events.is_empty()
+                    && self.next_event.is_none_or(|next| first >= next) =>
+            {
+                u64::try_from(events.len())
+                    .ok()
+                    .and_then(|count| first.checked_add(count))
+                    .map(|end| first..end)
+            }
             Some(_) | None => None,
         };
         let Some(assigned) = assigned else {

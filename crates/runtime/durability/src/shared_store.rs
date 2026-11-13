@@ -131,6 +131,11 @@ impl LatestWrite {
                             staged.push_back(record.clone());
                         }
                     }
+                    assert_eq!(
+                        staged.len(),
+                        keys.len(),
+                        "a latest write stages each record key once"
+                    );
                     Ok(())
                 }
                 Latest::Taken => Err(()),
@@ -374,7 +379,16 @@ async fn drive_grouped<S: StateStore>(
             match store.pipeline_handle() {
                 Some(mut handle) => {
                     groups += 1;
-                    in_flight.extend(group_states.iter().cloned());
+                    assert!(
+                        groups <= writers,
+                        "grouped writers never exceed the store's"
+                    );
+                    for state in &group_states {
+                        assert!(
+                            in_flight.insert(state.clone()),
+                            "two in-flight groups never write one state"
+                        );
+                    }
                     let completion = Completion(finished.clone(), group_states);
                     spawn_operation(async move {
                         run_grouped(&mut *handle, group).await;
@@ -397,6 +411,7 @@ async fn drive_grouped<S: StateStore>(
                 .is_some_and(|request| command_state(&request.command).is_none())
             && let Some(request) = queued.pop_front()
         {
+            assert!(barriers > 0, "a queued read is counted as a barrier");
             barriers -= 1;
             scanned = 0;
             skipped.clear();
@@ -416,11 +431,16 @@ async fn drive_grouped<S: StateStore>(
             biased;
             Some(completed) = completions.recv(), if operations + groups > 0 => {
                 if completed.is_empty() {
+                    assert!(operations > 0, "a finished operation was counted as running");
                     operations -= 1;
                 } else {
+                    assert!(groups > 0, "a finished group was counted as running");
                     groups -= 1;
                     for state in completed {
-                        in_flight.remove(&state);
+                        assert!(
+                            in_flight.remove(&state),
+                            "a finished group's states were in flight"
+                        );
                         if let Some(grouped) = held.remove(&state) {
                             states.insert(state);
                             forming.push(grouped);
@@ -986,6 +1006,11 @@ async fn run_group<S: StateStore + ?Sized>(store: &mut S, group: Vec<Grouped>) {
         drop(acquisition.result.send(Ok(owned)));
     }
     let count = commits.len();
+    assert_eq!(
+        answers.len(),
+        count,
+        "every grouped commit has one answer waiting"
+    );
     if count == 0 {
         return;
     }

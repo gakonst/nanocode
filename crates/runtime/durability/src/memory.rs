@@ -94,7 +94,11 @@ impl Tables {
                 StoreError::NotCommitted("in-memory durability owner fence overflow".to_owned())
             })?;
         let owner = OwnerToken::new(owner_id, fence);
-        self.owners.insert(state_id.clone(), owner.clone());
+        let previous = self.owners.insert(state_id.clone(), owner.clone());
+        assert!(
+            previous.is_none_or(|previous| previous.fence() < fence),
+            "an acquire grants a fence past the previous owner's"
+        );
         Ok(OwnedState {
             owner,
             state: self.states.get(&state_id).cloned().unwrap_or_default(),
@@ -165,14 +169,18 @@ impl Tables {
         }
         state.payload = Some(payload);
         state.revision = revision;
-        let appended = !events.is_empty();
-        self.events.entry(state_id.to_owned()).or_default().extend(
-            (first_event..).zip(events).map(|(seq, event)| StoredEvent {
-                seq,
-                revision,
-                event,
-            }),
+        let count = u64::try_from(events.len()).expect("an event count fits in u64");
+        let stored = self.events.entry(state_id.to_owned()).or_default();
+        stored.extend((first_event..).zip(events).map(|(seq, event)| StoredEvent {
+            seq,
+            revision,
+            event,
+        }));
+        assert!(
+            count == 0 || stored.last().map(|last| last.seq) == Some(first_event + count - 1),
+            "a commit's events take consecutive sequence numbers from its first"
         );
+        let appended = count > 0;
         match summary {
             SummaryUpdate::Unchanged => {}
             SummaryUpdate::Set(summary) => {

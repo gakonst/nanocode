@@ -94,6 +94,7 @@ type Pending = Arc<nanocode_sync::Atom<nanocode_sync::Map<String, Arc<str>>>>;
 type DeferredKeys = Arc<nanocode_sync::Slot<Vec<String>>>;
 
 struct InFlight {
+    expected: u64,
     write: Option<Arc<LatestWrite>>,
     deferred: Option<DeferredKeys>,
     done: oneshot::Receiver<Result<u64, StoreError>>,
@@ -189,11 +190,14 @@ impl Fenced {
         }
         let staged_keys = keys.collect();
         let write = Arc::new(latest_write(payload, staged));
+        let expected = self.next;
+        let next = self.next_revision()?;
         let done = store
-            .replace_latest(state_id, &owner, self.next, Arc::clone(&write))
+            .replace_latest(state_id, &owner, expected, Arc::clone(&write))
             .map_err(std::io::Error::other)?;
-        self.next = self.next.saturating_add(1);
+        self.queue(expected, next);
         self.inflight.push_back(InFlight {
+            expected,
             write: Some(write),
             deferred: None,
             done,
@@ -261,8 +265,10 @@ impl Fenced {
             filled.put(known.into_iter().map(|(key, _)| key).collect());
             Ok((payload, staged))
         });
+        let expected = self.next;
+        let next = self.next_revision()?;
         let replaced = store
-            .replace_deferred(state_id, &owner, self.next, content)
+            .replace_deferred(state_id, &owner, expected, content)
             .map_err(std::io::Error::other)?;
         let (settle, done) = oneshot::channel();
         crate::shared_store::spawn_operation(async move {
@@ -277,8 +283,9 @@ impl Fenced {
             });
             let _ = settle.send(result);
         });
-        self.next = self.next.saturating_add(1);
+        self.queue(expected, next);
         self.inflight.push_back(InFlight {
+            expected,
             write: None,
             deferred: Some(keys),
             done,
@@ -286,6 +293,23 @@ impl Fenced {
             pending: Vec::new(),
         });
         Ok(fill)
+    }
+
+    fn next_revision(&self) -> std::io::Result<u64> {
+        self.next
+            .checked_add(1)
+            .ok_or_else(|| std::io::Error::other("subagent journal revision overflow"))
+    }
+
+    fn queue(&mut self, expected: u64, next: u64) {
+        if let Some(last) = self.inflight.back() {
+            assert_eq!(
+                last.expected.checked_add(1),
+                Some(expected),
+                "pipelined journal writes name consecutive revisions"
+            );
+        }
+        self.next = next;
     }
 
     async fn drain(&mut self) {
@@ -302,6 +326,15 @@ impl Fenced {
         if let Some(pending) = entry.deferred.take().and_then(|keys| keys.take()) {
             entry.pending.extend(pending);
         }
+        let result = result.and_then(|revision| {
+            if Some(revision) == entry.expected.checked_add(1) {
+                return Ok(revision);
+            }
+            Err(StoreError::Backend(format!(
+                "the store committed journal revision {revision} over revision {}",
+                entry.expected
+            )))
+        });
         match result {
             Ok(revision) => {
                 if let Some((owner, _)) = self.owner.take() {

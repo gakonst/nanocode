@@ -19,7 +19,6 @@ rustdoc-args = ["-D", "warnings"]
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 nanocode-arguments.workspace = true
 http.workspace = true
-log.workspace = true
 nanocode-http.workspace = true
 nanocode-platform.workspace = true
 nanocode-sync.workspace = true

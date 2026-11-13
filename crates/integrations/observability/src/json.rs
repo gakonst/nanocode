@@ -14,7 +14,6 @@ use tracing_core::{
 
 use crate::{
     format::{Fields, SpanFields, current_scope, event_meta, write_timestamp},
-    log_bridge,
     subscriber::{Context, SpanRef},
 };
 
@@ -50,8 +49,7 @@ pub(crate) fn format_event(
 ) -> fmt::Result {
     let mut timestamp = String::new();
     write_timestamp(&mut timestamp)?;
-    let normalized = log_bridge::normalize(event);
-    let meta = event_meta(event, &normalized);
+    let meta = event_meta(event);
     let has_current = current_scope(context, event).is_some();
     let serialized = (|| {
         let mut serializer = Serializer::new(WriteAdaptor(writer));
@@ -235,7 +233,6 @@ impl Visit for JsonVisitor<'_> {
 
     fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
         match field.name() {
-            name if name.starts_with("log.") => {}
             name if name.starts_with("r#") => {
                 self.values
                     .insert(&name[2..], Value::from(format!("{value:?}")));

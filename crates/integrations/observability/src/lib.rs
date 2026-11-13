@@ -11,7 +11,6 @@ pub mod filter;
 pub mod format;
 mod json;
 mod layer;
-mod log_bridge;
 mod metrics;
 mod model;
 mod otlp;
@@ -455,10 +454,6 @@ impl Resource {
 pub fn init(registry: Registry) -> Result<(), ObservabilityError> {
     tracing::dispatcher::set_global_default(tracing::Dispatch::new(registry))
         .map_err(|_| ObservabilityError::Subscriber)?;
-    log::set_logger(&log_bridge::LOG_BRIDGE).map_err(|_| ObservabilityError::Subscriber)?;
-    log::set_max_level(log_bridge::log_level_filter(
-        tracing::level_filters::LevelFilter::current(),
-    ));
     Ok(())
 }
 

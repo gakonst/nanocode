@@ -10,7 +10,6 @@ use crate::{
         ErrorSourceList, EscapeGuard, FmtLevel, SpanFields, current_scope, event_meta,
         level_style, write_timestamp,
     },
-    log_bridge,
     style::Style,
     subscriber::Context,
 };
@@ -21,8 +20,7 @@ pub(crate) fn format_event(
     event: &Event<'_>,
     ansi: bool,
 ) -> fmt::Result {
-    let normalized = log_bridge::normalize(event);
-    let meta = event_meta(event, &normalized);
+    let meta = event_meta(event);
     writer.push_str("  ");
     if ansi {
         let dimmed = Style::new().dimmed();
@@ -180,7 +178,6 @@ impl Visit for PrettyVisitor<'_> {
                 style.prefix(),
                 EscapeGuard(value)
             )),
-            name if name.starts_with("log.") => self.result = Ok(()),
             name if name.starts_with("r#") => self.write_padded(&format_args!(
                 "{}{}{}: {:?}",
                 bold.prefix(),

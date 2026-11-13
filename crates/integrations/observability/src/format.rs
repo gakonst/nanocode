@@ -14,7 +14,7 @@ use tracing_core::{
 };
 
 use crate::{
-    json, log_bridge, pretty,
+    json, pretty,
     style::{Color, Style},
     subscriber::{Context, Layer, Scope, SpanRef},
 };
@@ -318,26 +318,13 @@ pub(crate) struct EventMeta<'a> {
     pub(crate) line: Option<u32>,
 }
 
-pub(crate) fn event_meta<'a>(
-    event: &'a Event<'a>,
-    normalized: &'a Option<log_bridge::Normalized>,
-) -> EventMeta<'a> {
-    match normalized {
-        Some(normalized) => EventMeta {
-            target: normalized.target.as_deref().unwrap_or("log"),
-            level: *event.metadata().level(),
-            file: normalized.file.as_deref(),
-            line: normalized.line,
-        },
-        None => {
-            let metadata = event.metadata();
-            EventMeta {
-                target: metadata.target(),
-                level: *metadata.level(),
-                file: metadata.file(),
-                line: metadata.line(),
-            }
-        }
+pub(crate) fn event_meta<'a>(event: &'a Event<'a>) -> EventMeta<'a> {
+    let metadata = event.metadata();
+    EventMeta {
+        target: metadata.target(),
+        level: *metadata.level(),
+        file: metadata.file(),
+        line: metadata.line(),
     }
 }
 
@@ -361,8 +348,7 @@ fn format_compact(
     writer: &mut String,
     event: &Event<'_>,
 ) -> fmt::Result {
-    let normalized = log_bridge::normalize(event);
-    let meta = event_meta(event, &normalized);
+    let meta = event_meta(event);
     write_timestamp(writer)?;
     writer.push(' ');
     write!(writer, "{} ", FmtLevel::new(meta.level, false))?;
@@ -457,9 +443,6 @@ impl Visit for DefaultVisitor<'_> {
             return;
         }
         let name = field.name();
-        if name.starts_with("log.") {
-            return;
-        }
         self.maybe_pad();
         self.result = match name {
             "message" => write!(self.writer, "{:?}", EscapeGuard(value)),

@@ -191,7 +191,7 @@ def main():
     with open(os.path.join(work, "main.rs"), "w") as main_rs:
         main_rs.write('fn main() {\n    println!("hello");\n}\n')
     env = {key: value for key, value in os.environ.items() if key in ("PATH", "LANG", "LLVM_PROFILE_FILE")}
-    env.update({"HOME": scratch, "TERM": "xterm-256color", "AI_GATEWAY_API_KEY": "training", "NANOCODE_TELEMETRY": "off", "NANOCODE_NO_TEMPO_TOOLS": "true"})
+    env.update({"HOME": scratch, "TERM": "xterm-256color", "AI_GATEWAY_API_KEY": "training", "NANOCODE_TELEMETRY": "off"})
     if flavor(binary) == "lite":
         home = os.path.join(scratch, ".nc-lite")
         session = ["--home", home, "--base-url", base, "-m", "luna"]

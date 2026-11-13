@@ -261,14 +261,14 @@ pub fn send_descriptor(socket: impl AsFd, descriptor: BorrowedFd<'_>) -> io::Res
     message.msg_iov = &raw mut slice;
     message.msg_iovlen = 1;
     message.msg_control = control.as_mut_ptr().cast();
-    message.msg_controllen = space;
+    message.msg_controllen = space.try_into().expect("the space fits");
     let header = unsafe { libc::CMSG_FIRSTHDR(&raw const message) };
     assert!(!header.is_null(), "the control buffer holds one header");
     let descriptor_bytes = u32::try_from(size_of::<RawFd>()).expect("a descriptor fits");
     unsafe {
         (*header).cmsg_level = libc::SOL_SOCKET;
         (*header).cmsg_type = libc::SCM_RIGHTS;
-        (*header).cmsg_len = libc::CMSG_LEN(descriptor_bytes) as usize;
+        (*header).cmsg_len = libc::CMSG_LEN(descriptor_bytes).try_into().expect("the length fits");
         libc::CMSG_DATA(header).cast::<RawFd>().write_unaligned(descriptor.as_raw_fd());
     }
     let sent = unsafe { libc::sendmsg(raw(&socket), &raw const message, 0) };
@@ -291,7 +291,7 @@ pub fn receive_descriptor(socket: impl AsFd) -> io::Result<Option<OwnedFd>> {
     message.msg_iov = &raw mut slice;
     message.msg_iovlen = 1;
     message.msg_control = control.as_mut_ptr().cast();
-    message.msg_controllen = space;
+    message.msg_controllen = space.try_into().expect("the space fits");
     let received = unsafe { libc::recvmsg(raw(&socket), &raw mut message, libc::MSG_CMSG_CLOEXEC) };
     if received < 0 {
         return Err(io::Error::last_os_error());
@@ -301,7 +301,8 @@ pub fn receive_descriptor(socket: impl AsFd) -> io::Result<Option<OwnedFd>> {
     while !header.is_null() {
         let (level, kind, length) = unsafe { ((*header).cmsg_level, (*header).cmsg_type, (*header).cmsg_len) };
         let data_offset = unsafe { libc::CMSG_DATA(header).offset_from(header.cast::<u8>()) };
-        let data_bytes = length
+        let data_bytes = usize::try_from(length)
+            .expect("the length fits")
             .checked_sub(usize::try_from(data_offset).expect("data follows its header"))
             .expect("a control message is at least its header");
         if level == libc::SOL_SOCKET && kind == libc::SCM_RIGHTS {

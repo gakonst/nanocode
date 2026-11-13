@@ -190,13 +190,11 @@ pub fn run_with(clients: ModelClients) -> ExitCode {
         runtime.duration_ms = tracing::field::Empty
     );
     let runtime_started = std::time::Instant::now();
-    let headless = matches!(cli.command, Some(Command::Exec(_) | Command::Sessions(_)));
     let runtime = match startup.in_scope(|| {
-        let mut builder = tokio::runtime::Builder::new_multi_thread();
-        if headless {
-            builder.worker_threads(1);
-        }
-        builder.enable_all().build()
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
     }) {
         Ok(runtime) => runtime,
         Err(error) => {

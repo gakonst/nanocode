@@ -4,6 +4,17 @@ const ANTHROPIC_BASE_URL: &str = "NANOCODE_ANTHROPIC_BASE_URL";
 const BASE_URL: &str = "NANOCODE_OPENAI_BASE_URL";
 const MODELS_URL: &str = "NANOCODE_MODELS_URL";
 const LIST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+const ANTHROPIC_CREDENTIALS: [(&str, AnthropicCredential); 4] = [
+    ("NANOCODE_ANTHROPIC_API_KEY", AnthropicCredential::ApiKey),
+    ("NANOCODE_ANTHROPIC_AUTH_TOKEN", AnthropicCredential::Bearer),
+    ("ANTHROPIC_API_KEY", AnthropicCredential::ApiKey),
+    ("ANTHROPIC_AUTH_TOKEN", AnthropicCredential::Bearer),
+];
+
+enum AnthropicCredential {
+    ApiKey,
+    Bearer,
+}
 
 fn env(name: &str) -> Option<String> {
     std::env::var(name)
@@ -51,17 +62,36 @@ fn anthropic(clients: ModelClients) -> Result<ModelClients, String> {
     let Some(base) = env(ANTHROPIC_BASE_URL).filter(|_| !clients.supplies_claude()) else {
         return Ok(clients);
     };
-    let key = env("NANOCODE_ANTHROPIC_API_KEY")
-        .or_else(|| env("ANTHROPIC_API_KEY"))
-        .ok_or_else(|| {
-            format!("{ANTHROPIC_BASE_URL} needs NANOCODE_ANTHROPIC_API_KEY or ANTHROPIC_API_KEY")
-        })?;
+    let Some((name, credential, value)) = ANTHROPIC_CREDENTIALS
+        .iter()
+        .find_map(|(name, credential)| env(name).map(|value| (*name, credential, value)))
+    else {
+        return Err(format!(
+            "{ANTHROPIC_BASE_URL} needs NANOCODE_ANTHROPIC_API_KEY, NANOCODE_ANTHROPIC_AUTH_TOKEN, ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN"
+        ));
+    };
     let url = format!("{}/messages", base.trim_end_matches('/'));
     nanocode::codex::transport::install_default_rustls_crypto_provider();
     let http = nanocode_http::client();
-    Ok(clients.claude(move || {
-        nanocode::claude::ClaudeClient::new(http.clone(), url.clone(), key.clone())
-    }))
+    match credential {
+        AnthropicCredential::ApiKey => Ok(clients.claude(move || {
+            nanocode::claude::ClaudeClient::new(http.clone(), url.clone(), value.clone())
+        })),
+        AnthropicCredential::Bearer => {
+            let mut headers = http::header::HeaderMap::new();
+            let mut value = http::header::HeaderValue::from_str(&format!("Bearer {value}"))
+                .map_err(|error| format!("{name}: {error}"))?;
+            value.set_sensitive(true);
+            headers.insert(http::header::AUTHORIZATION, value);
+            Ok(clients.claude(move || {
+                nanocode::claude::ClaudeClient::with_auth_headers(
+                    http.clone(),
+                    url.clone(),
+                    headers.clone(),
+                )
+            }))
+        }
+    }
 }
 
 fn fetch_models(url: &str, key: Option<&str>) -> Result<Vec<String>, String> {

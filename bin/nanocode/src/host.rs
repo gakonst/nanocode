@@ -71,11 +71,22 @@ impl Route {
 }
 
 pub fn follows_harness(route: Route, model: &ModelSelection) -> bool {
-    route == Route::Tempo
+    route != Route::Boundless
         && model.as_claude().is_none()
         && model
             .as_codex()
             .is_none_or(|model| !Model::ALL.contains(&model))
+}
+
+fn model_limit(name: &str) -> Result<Option<u64>> {
+    match std::env::var(name) {
+        Ok(value) => value
+            .trim()
+            .parse()
+            .map(Some)
+            .map_err(|error| format!("{name}: {error}").into()),
+        Err(_) => Ok(None),
+    }
 }
 
 pub fn on_harness(model: &ModelSelection, family: &nanocode::HarnessFamily) -> ModelSelection {
@@ -635,6 +646,11 @@ impl Host {
         let route = |request: &nanocode::HarnessRequest| {
             Route::of(request.options.selected_provider()).ok()
         };
+        let context_window = model_limit("NANOCODE_CONTEXT_WINDOW")?;
+        let max_output = model_limit("NANOCODE_MAX_OUTPUT_TOKENS")?
+            .map(u32::try_from)
+            .transpose()
+            .map_err(|error| format!("NANOCODE_MAX_OUTPUT_TOKENS: {error}"))?;
         let hand = std::sync::Arc::new(nanocode_sync::Atom::new(None::<nanocode::HandDescription>));
         let described = std::sync::Arc::clone(&hand);
         let codex = CodexHarness::new(openai)
@@ -644,6 +660,10 @@ impl Host {
                 _ => None,
             })
             .configure(move |builder| {
+                let builder = match context_window {
+                    Some(tokens) => builder.context_window_tokens(tokens),
+                    None => builder,
+                };
                 Ok(match &*described.get() {
                     Some(hand) => builder.execution_environment(codex_environment(hand)),
                     None => builder,
@@ -664,9 +684,14 @@ impl Host {
         })
         .headless(config.headless)
         .configure(move |builder| {
-            let builder = match builder.knows_max_tokens() {
-                true => builder,
-                false => builder.max_tokens(Tempo::OUTPUT_TOKENS),
+            let builder = match max_output {
+                Some(tokens) => builder.max_tokens(tokens),
+                None if builder.knows_max_tokens() => builder,
+                None => builder.max_tokens(Tempo::OUTPUT_TOKENS),
+            };
+            let builder = match context_window {
+                Some(tokens) => builder.context_window_tokens(tokens),
+                None => builder,
             };
             Ok(match &*described.get() {
                 Some(hand) => builder.environment(claude_environment(hand)),

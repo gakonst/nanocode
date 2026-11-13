@@ -454,6 +454,11 @@ impl ModelRun {
     pub(crate) fn preconnect(
         &mut self,
     ) -> Option<crate::agent::execution::ExecutionFuture<'static, ()>> {
+        if self.session.is_none()
+            && let Ok(workspace) = self.context_source.resolve_workspace(None)
+        {
+            drop(self.attempt_factory(&tool_runtime(&workspace, &self.config, &self.tools)));
+        }
         let factory = ResponsesAttemptFactory::new(
             RequestProfile::new(
                 self.provider_session_id.to_string(),

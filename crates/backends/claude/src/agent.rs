@@ -5967,6 +5967,15 @@ impl State {
             }
         }
     }
+    fn prewarm(&self) {
+        if self.kept_context.is_some() {
+            return;
+        }
+        if let Some(system) = self.current_system() {
+            drop(self.wire_cache.system_fingerprint(Some(&system)));
+        }
+        drop(self.wire_cache.tools_fingerprint(&self.available_tools()));
+    }
     fn available_tools(&self) -> Vec<ClaudeToolSpec> {
         self.system_context();
         match self.kept_prefix.get().as_ref() {
@@ -8586,7 +8595,9 @@ impl LifecycleBackend for Driver {
     }
     fn preconnect(&self) -> BackendFuture<Result<()>> {
         let client = self.state.client.clone();
+        let state = self.state.clone();
         Box::pin(async move {
+            state.prewarm();
             client
                 .preconnect()
                 .await

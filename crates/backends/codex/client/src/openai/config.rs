@@ -101,6 +101,26 @@ pub struct ModelConfig {
     pub additional_instructions: Option<Arc<str>>,
 }
 
+const SKILLS_SECTION_HEADING: &str = "# Using skills";
+const SKILL_CATALOG_HEADING: &str = "### Available skills";
+
+fn without_section(prompt: &str, heading: &str) -> String {
+    let mut kept = String::with_capacity(prompt.len());
+    let mut skipping = false;
+    for line in prompt.split_inclusive('\n') {
+        let text = line.trim_end_matches(['\n', '\r']);
+        if text.starts_with("# ") {
+            skipping = text == heading;
+        }
+        if !skipping {
+            kept.push_str(line);
+        }
+    }
+    let trimmed = kept.trim_end().len();
+    kept.truncate(trimmed);
+    kept
+}
+
 impl ModelConfig {
     pub(crate) fn wire_model_id(&self, model: Model) -> Cow<'static, str> {
         prefixed_model_id(self.model_id_prefix.as_deref(), model)
@@ -145,7 +165,7 @@ impl ModelConfig {
             Model::Luna => LUNA_SYSTEM_PROMPT,
             _ => ASTRA_SYSTEM_PROMPT,
         });
-        if self.system_prompt.is_none()
+        let base = if self.system_prompt.is_none()
             && matches!(self.model, Model::Kimi | Model::Mimo | Model::Custom(_))
         {
             Cow::Owned(base.replacen(
@@ -155,6 +175,20 @@ impl ModelConfig {
             ))
         } else {
             Cow::Borrowed(base)
+        };
+        if self.system_prompt.is_none()
+            && matches!(
+                self.model,
+                Model::Glm53 | Model::Kimi | Model::Mimo | Model::Custom(_)
+            )
+            && !self
+                .additional_instructions
+                .as_deref()
+                .is_some_and(|instructions| instructions.contains(SKILL_CATALOG_HEADING))
+        {
+            Cow::Owned(without_section(&base, SKILLS_SECTION_HEADING))
+        } else {
+            base
         }
     }
 

@@ -71,6 +71,7 @@ pub(crate) struct Held {
     token: String,
     claims: Claims,
     received: i64,
+    owner: Option<String>,
 }
 
 impl Held {
@@ -80,7 +81,17 @@ impl Held {
             token: token.to_owned(),
             received: received.unwrap_or(claims.issued),
             claims,
+            owner: None,
         })
+    }
+
+    fn owned_by(mut self, owner: &str) -> Self {
+        self.owner = Some(owner.to_owned());
+        self
+    }
+
+    fn serves(&self, email: Option<&str>) -> bool {
+        email.is_none_or(|email| self.owner.as_deref().is_none_or(|owner| owner == email))
     }
 
     fn margin(&self) -> i64 {
@@ -122,7 +133,7 @@ pub(crate) struct Identity {
     issuers: Vec<String>,
     email: Atom<Option<String>>,
     held: Atom<BTreeMap<String, Held>>,
-    flight: SingleFlight<(String, Result<(), String>)>,
+    flight: SingleFlight<(String, Result<Option<String>, String>)>,
     answers: UnboundedSender<Answer>,
     inbox: Slot<UnboundedReceiver<Answer>>,
     payments: Payments,
@@ -194,6 +205,8 @@ impl Identity {
         let answer = Answer::parse(text);
         if let Answer::Email(email) = &answer {
             drop(self.email.set(Some(email.clone())));
+            self.held
+                .update(|held| held.retain(|_, entry| entry.owner.as_deref() == Some(email)));
         }
         drop(self.answers.send(answer));
     }
@@ -210,9 +223,14 @@ impl Identity {
         let origin = url.origin().ascii_serialization();
         let paid = paid(request.headers());
         let now = now_seconds();
+        let email = self.email.read(Clone::clone);
         let tokens: Vec<String> = self.held.read(|held| {
             held.values()
-                .filter(|entry| entry.claims.audience == origin && entry.usable(now, paid))
+                .filter(|entry| {
+                    entry.claims.audience == origin
+                        && entry.usable(now, paid)
+                        && entry.serves(email.as_deref())
+                })
                 .map(|entry| entry.token.clone())
                 .collect()
         });
@@ -346,20 +364,25 @@ impl Identity {
                     (key.to_owned(), outcome)
                 })
                 .await;
+            if ran == key {
+                return outcome;
+            }
             if let Some(entry) = self
                 .held(key)
                 .filter(|entry| Some(&entry.token) != rejected.as_ref())
             {
                 return Ok(Some(entry.token));
             }
-            if ran == key {
-                return outcome.map(|()| None);
-            }
         }
     }
 
     fn held(&self, key: &str) -> Option<Held> {
-        self.held.read(|held| held.get(key).cloned())
+        let email = self.email.read(Clone::clone);
+        self.held.read(|held| {
+            held.get(key)
+                .filter(|entry| entry.serves(email.as_deref()))
+                .cloned()
+        })
     }
 
     async fn acquire(
@@ -368,11 +391,12 @@ impl Identity {
         issuer: &str,
         audience: &str,
         rejected: Option<&str>,
-    ) -> Result<(), String> {
+    ) -> Result<Option<String>, String> {
         if let Some(entry) = self.recall(key, rejected).await {
+            let token = entry.token.clone();
             self.held
                 .update(|held| held.insert(key.to_owned(), entry.clone()));
-            return Ok(());
+            return Ok(Some(token));
         }
         let mut lent = Lent {
             inbox: self.inbox.take(),
@@ -396,7 +420,7 @@ impl Identity {
                         Some(Answer::Code(_)) => self.notice(
                             "an email pass needs an email address first: /pass <email>".to_owned(),
                         ),
-                        Some(Answer::Decline) | None => return Ok(()),
+                        Some(Answer::Decline) | None => return Ok(None),
                     }
                 }
             }
@@ -430,7 +454,7 @@ impl Identity {
                     Some(Answer::Email(_)) => self.notice(format!(
                         "the code went to {email}: /pass <code>; the new address is used for the next email pass"
                     )),
-                    Some(Answer::Decline) | None => return Ok(()),
+                    Some(Answer::Decline) | None => return Ok(None),
                 }
             };
             let verified = post(
@@ -452,7 +476,7 @@ impl Identity {
                 }
                 Err(error) => return Err(error),
             };
-            let entry = Held::decode(&token, Some(now_seconds()))?;
+            let entry = Held::decode(&token, Some(now_seconds()))?.owned_by(&email);
             if entry.claims.key() != key {
                 return Err("the issuer returned an attestation for another audience".to_owned());
             }
@@ -464,7 +488,7 @@ impl Identity {
                     "email pass for {audience} verified, kept for this session only: {error}"
                 )),
             }
-            return Ok(());
+            return Ok(Some(token));
         }
         Err(format!(
             "the code was rejected {CODE_ATTEMPTS} times{failure}"
@@ -531,7 +555,7 @@ fn read_pass(path: &Path) -> Result<(Held, String), String> {
     let bytes = fs::read(path).map_err(|error| error.kind().to_string())?;
     let stored: Stored =
         serde_json::from_slice(&bytes).map_err(|_| "the stored email pass is malformed")?;
-    let entry = Held::decode(&stored.token, Some(stored.received))?;
+    let entry = Held::decode(&stored.token, Some(stored.received))?.owned_by(&stored.email);
     let directory = path
         .parent()
         .ok_or("the stored email pass has no directory")?;
@@ -1229,5 +1253,112 @@ mod tests {
     fn nothing_loads_from_a_missing_directory() {
         let directory = directory("missing");
         assert!(load(&directory, &[ISSUER.to_owned()], None, now_seconds()).is_empty());
+    }
+
+    fn identity(email: Option<&str>, held: Vec<Held>) -> Identity {
+        let (answers, inbox) = mpsc::unbounded_channel();
+        Identity {
+            issuers: vec![ISSUER.to_owned()],
+            email: Atom::new(email.map(str::to_owned)),
+            held: Atom::new(
+                held.into_iter()
+                    .map(|entry| (entry.claims.key(), entry))
+                    .collect(),
+            ),
+            flight: SingleFlight::default(),
+            answers,
+            inbox: Slot::new(Some(inbox)),
+            payments: Payments::new(nanocode_tempo::Address::ZERO, Vec::new(), None),
+            asker: Asker::Pass,
+            passes: None,
+        }
+    }
+
+    fn pass(owner: Option<&str>) -> Held {
+        let now = now_seconds();
+        let entry =
+            Held::decode(&attestation(AUDIENCE, ISSUER, now, now + 3_600), Some(now)).unwrap();
+        match owner {
+            Some(owner) => entry.owned_by(owner),
+            None => entry,
+        }
+    }
+
+    fn sent(identity: &Identity) -> Option<String> {
+        let mut request = Request::new(
+            reqwest::Method::POST,
+            Url::parse(&format!("{AUDIENCE}/v1/chat/completions")).unwrap(),
+        );
+        identity.prove(&mut request);
+        request
+            .headers()
+            .get(ATTESTATION_HEADER)
+            .map(|value| value.to_str().unwrap().to_owned())
+    }
+
+    #[test]
+    fn a_new_address_drops_the_passes_of_the_old_one() {
+        let old = pass(Some("old@example.com"));
+        let identity = identity(Some("old@example.com"), vec![old.clone()]);
+        assert_eq!(sent(&identity), Some(old.token));
+
+        identity.answer("/pass new@example.com");
+
+        assert_eq!(sent(&identity), None);
+        assert!(identity.held(&old.claims.key()).is_none());
+    }
+
+    #[test]
+    fn a_new_address_drops_a_pass_given_on_the_command_line() {
+        let seeded = pass(None);
+        let identity = identity(None, vec![seeded.clone()]);
+        assert_eq!(sent(&identity), Some(seeded.token));
+
+        identity.answer("/pass new@example.com");
+
+        assert_eq!(sent(&identity), None);
+    }
+
+    #[test]
+    fn a_pass_verified_for_the_old_address_after_the_switch_is_not_reused() {
+        let identity = identity(Some("new@example.com"), Vec::new());
+        let late = pass(Some("old@example.com"));
+        let key = late.claims.key();
+        identity
+            .held
+            .update(|held| held.insert(key.clone(), late.clone()));
+
+        assert_eq!(sent(&identity), None);
+        assert!(identity.held(&key).is_none());
+    }
+
+    #[test]
+    fn the_same_address_or_a_code_keeps_the_pass() {
+        let held = pass(Some("me@example.com"));
+        let identity = identity(Some("me@example.com"), vec![held.clone()]);
+
+        identity.answer("/pass me@example.com");
+        identity.answer("/pass 123456");
+
+        assert_eq!(sent(&identity), Some(held.token));
+    }
+
+    #[test]
+    fn a_stored_pass_remembers_its_address() {
+        let directory = directory("owner");
+        let entry = stored(
+            &directory,
+            AUDIENCE,
+            now_seconds(),
+            now_seconds() + 3_600,
+            "me@example.com",
+        );
+
+        let (read, owner) = read_pass(&pass_path(&directory, &entry.claims.key())).unwrap();
+
+        fs::remove_dir_all(&directory).unwrap();
+        assert_eq!(owner, "me@example.com");
+        assert!(read.serves(Some("me@example.com")));
+        assert!(!read.serves(Some("other@example.com")));
     }
 }

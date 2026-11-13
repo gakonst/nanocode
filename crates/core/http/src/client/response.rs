@@ -3,9 +3,9 @@ use std::{collections::VecDeque, fmt, pin::Pin, sync::Arc, time::Duration};
 use bytes::Bytes;
 use futures_util::{FutureExt, Stream, StreamExt, stream::BoxStream};
 use http::{HeaderMap, StatusCode, Version, header::CONTENT_LENGTH};
+use nanocode_url::Url;
 use serde::de::DeserializeOwned;
 use tokio::time::{Instant, timeout_at};
-use url::Url;
 
 use super::{
     Error, Result,

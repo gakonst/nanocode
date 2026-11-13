@@ -5,9 +5,9 @@ use std::{
     str::FromStr,
 };
 
+use nanocode_url::Url;
 use serde_json::Value;
 use std::collections::{HashMap, hash_map::DefaultHasher};
-use url::Url;
 
 use crate::CompileError;
 

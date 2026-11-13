@@ -1,7 +1,7 @@
 use std::{error::Error as StdError, fmt, io};
 
 use http::StatusCode;
-use url::Url;
+use nanocode_url::Url;
 
 use super::body::BoxError;
 

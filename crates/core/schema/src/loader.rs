@@ -4,9 +4,9 @@ use std::{
     error::Error,
 };
 
+use nanocode_url::Url;
 use serde_json::Value;
 use std::sync::LazyLock;
-use url::Url;
 
 use crate::{
     UrlPtr,

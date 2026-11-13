@@ -25,6 +25,7 @@ members = [
     "crates/core/http",
     "crates/core/zstd",
     "crates/core/digest",
+    "crates/core/url",
     "crates/core/arguments",
     "crates/core/webp",
     "crates/core/compression",
@@ -163,7 +164,7 @@ tokio-rustls = { version = "0.26.4", default-features = false }
 tracing = { version = "0.1.44", default-features = false, features = ["std"] }
 tracing-core = { version = "0.1.36", default-features = false, features = ["std"] }
 unicode-normalization = { path = "crates/core/unicode-normalization" }
-url = "2.5.7"
+nanocode-url = { version = "0.7.0", path = "crates/core/url" }
 nanocode-zstd = { version = "0.7.0", path = "crates/core/zstd" }
 nanocode-digest = { version = "0.7.0", path = "crates/core/digest" }
 nanocode-x509 = { version = "0.7.0", path = "crates/core/x509" }

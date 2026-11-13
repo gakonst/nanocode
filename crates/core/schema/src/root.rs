@@ -2,8 +2,8 @@ use std::collections::{HashMap, HashSet};
 
 use crate::{compiler::CompileError, draft::*, util::*};
 
+use nanocode_url::Url;
 use serde_json::Value;
-use url::Url;
 
 pub(crate) struct Root {
     pub(crate) draft: &'static Draft,

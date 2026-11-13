@@ -36,7 +36,7 @@ tracing.workspace = true
 nanocode-tls.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "net", "sync", "time", "rt"] }
 nanocode-websocket.workspace = true
-url.workspace = true
+nanocode-url.workspace = true
 nanocode-compression.workspace = true
 nanocode-zstd.workspace = true
 

@@ -17,8 +17,8 @@ use http::{
         REFERER, TRANSFER_ENCODING, USER_AGENT,
     },
 };
+use nanocode_url::Url;
 use tokio::time::{Instant, timeout, timeout_at};
-use url::Url;
 
 pub use body::{Body, BoxError, ChunkStream};
 pub use error::{Error, Result, TimedOut};
@@ -277,7 +277,10 @@ impl Client {
         Box::pin(async move { client.run(request).await })
     }
 
-    pub fn preconnect<U: IntoUrl>(&self, url: U) -> Pin<Box<dyn Future<Output = Result<()>> + Send>> {
+    pub fn preconnect<U: IntoUrl>(
+        &self,
+        url: U,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send>> {
         let client = self.clone();
         let url = url.into_url();
         Box::pin(async move {

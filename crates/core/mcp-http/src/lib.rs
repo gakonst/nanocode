@@ -47,8 +47,8 @@ pub fn same_origin_redirect_policy(
         }
         let secure_destination = attempt.url().scheme() == "https"
             || match attempt.url().host() {
-                Some(url::Host::Ipv4(_) | url::Host::Ipv6(_)) => true,
-                Some(url::Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
+                Some(nanocode_url::Host::Ipv4(_) | nanocode_url::Host::Ipv6(_)) => true,
+                Some(nanocode_url::Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
                 None => false,
             };
         if !secure_destination {

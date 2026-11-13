@@ -2193,7 +2193,7 @@ async fn web_fetch_with_source<P: crate::tools::web::ApprovedWebFetchSource>(
         return Err("invalid WebFetch prompt or URL".into());
     }
     fn public_url(url: &str) -> bool {
-        let Ok(parsed) = url::Url::parse(url) else {
+        let Ok(parsed) = nanocode_url::Url::parse(url) else {
             return false;
         };
         matches!(parsed.scheme(), "https" | "http")
@@ -2225,7 +2225,7 @@ async fn web_fetch_with_source<P: crate::tools::web::ApprovedWebFetchSource>(
     {
         return Err("approved WebFetch source returned an invalid page".into());
     }
-    let href = url::Url::parse(&page.final_url)
+    let href = nanocode_url::Url::parse(&page.final_url)
         .map_err(|_| "approved WebFetch source returned an invalid URL")?
         .to_string();
     let content_type = web_fetch_content_type(&page.content_type);

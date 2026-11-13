@@ -1,0 +1,19 @@
+[package]
+name = "nanocode-url"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "WHATWG URL parsing, serialization and form encoding"
+autotests = false
+autobenches = false
+
+[lints]
+workspace = true
+
+[lib]
+test = false
+doctest = false
+bench = false

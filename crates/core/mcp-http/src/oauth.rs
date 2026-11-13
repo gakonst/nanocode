@@ -410,7 +410,7 @@ fn authorization_issuer(metadata: &AuthorizationMetadata) -> Result<Option<Strin
         .as_deref()
         .filter(|issuer| !issuer.trim().is_empty())
         .map(|issuer| {
-            url::Url::parse(issuer).map_err(|error| {
+            nanocode_url::Url::parse(issuer).map_err(|error| {
                 format!("OAuth authorization server issuer is invalid: {error}")
             })?;
             Ok(issuer.to_owned())
@@ -422,15 +422,15 @@ fn validate_authorization_server_endpoints(
     metadata: &AuthorizationMetadata,
     any_origin: bool,
 ) -> Result<(), String> {
-    let authorization_endpoint = url::Url::parse(&metadata.authorization_endpoint)
+    let authorization_endpoint = nanocode_url::Url::parse(&metadata.authorization_endpoint)
         .map_err(|error| format!("OAuth authorization endpoint is invalid: {error}"))?;
-    let token_endpoint = url::Url::parse(&metadata.token_endpoint)
+    let token_endpoint = nanocode_url::Url::parse(&metadata.token_endpoint)
         .map_err(|error| format!("OAuth token endpoint is invalid: {error}"))?;
     let issuer = metadata
         .issuer
         .as_deref()
         .filter(|issuer| !issuer.trim().is_empty())
-        .map(url::Url::parse)
+        .map(nanocode_url::Url::parse)
         .transpose()
         .map_err(|error| format!("OAuth authorization server issuer is invalid: {error}"))?;
     let issuer_bound_callbacks = metadata

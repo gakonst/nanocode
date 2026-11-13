@@ -28,6 +28,6 @@ pub use coding::*;
 pub use flate::{FlateCoding, decode_body};
 pub use http::{Method, StatusCode, Version, header};
 #[cfg(not(target_family = "wasm"))]
-pub use sender::{BoundedError, ClientSender, bounded_text, client_error, execute, retryable};
+pub use nanocode_url::Url;
 #[cfg(not(target_family = "wasm"))]
-pub use url::Url;
+pub use sender::{BoundedError, ClientSender, bounded_text, client_error, execute, retryable};

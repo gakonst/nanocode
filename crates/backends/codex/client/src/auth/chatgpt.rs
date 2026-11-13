@@ -15,6 +15,7 @@ use super::{
 use nanocode_digest::Sha256;
 use nanocode_sync::{SingleFlight, Swap};
 use nanocode_sys::base64::URL_SAFE_NO_PAD;
+use nanocode_url::Url;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -22,7 +23,6 @@ use tokio::{
     time::{Duration, timeout},
 };
 use tracing::Instrument;
-use url::Url;
 
 const AUTH_ISSUER: &str = "https://auth.openai.com";
 const AUTH_API_BASE_URL: &str = "https://auth.openai.com/api/accounts";
@@ -1297,7 +1297,7 @@ async fn exchange_code(
     redirect_uri: &str,
     code_verifier: &str,
 ) -> Result<StoredCredentials, ChatGptAuthError> {
-    let body = url::form_urlencoded::Serializer::new(String::new())
+    let body = nanocode_url::form::Serializer::new(String::new())
         .append_pair("grant_type", "authorization_code")
         .append_pair("code", code)
         .append_pair("redirect_uri", redirect_uri)

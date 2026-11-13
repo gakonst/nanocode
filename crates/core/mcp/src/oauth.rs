@@ -4,11 +4,11 @@ use std::{
     ops::RangeInclusive,
 };
 
-use nanocode_sys::base64::{STANDARD, URL_SAFE_NO_PAD};
 use nanocode_digest::Sha256;
+use nanocode_sys::base64::{STANDARD, URL_SAFE_NO_PAD};
+use nanocode_url::{Url, form};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
-use url::{Url, form_urlencoded};
 
 pub const DISCOVERY_PROTOCOL_VERSION: &str = "2024-11-05";
 pub const PKCE_VERIFIER_BYTES: usize = 32;
@@ -714,8 +714,8 @@ fn token_request(
     let mut authorization = None;
     match (&client.client_secret, client.secret_in_body) {
         (Some(secret), false) => {
-            let id: String = form_urlencoded::byte_serialize(client.client_id.as_bytes()).collect();
-            let secret: String = form_urlencoded::byte_serialize(secret.as_bytes()).collect();
+            let id = form::byte_serialize(client.client_id.as_bytes());
+            let secret = form::byte_serialize(secret.as_bytes());
             authorization = Some(format!(
                 "Basic {}",
                 STANDARD.encode(format!("{id}:{secret}"))
@@ -735,7 +735,7 @@ fn token_request(
         params.push(("resource", resource.to_owned()));
     }
     TokenRequest {
-        body: form_urlencoded::Serializer::new(String::new())
+        body: form::Serializer::new(String::new())
             .extend_pairs(params)
             .finish(),
         authorization,

@@ -86,7 +86,7 @@ fn idle_turns(
 }
 
 fn url(value: &str) -> Result<String, Error> {
-    let parsed = url::Url::parse(value)?;
+    let parsed = nanocode_url::Url::parse(value)?;
     if !["http", "https"].contains(&parsed.scheme())
         || parsed.host().is_none()
         || !parsed.username().is_empty()
@@ -98,7 +98,7 @@ fn url(value: &str) -> Result<String, Error> {
 }
 
 fn site(value: &str) -> String {
-    url::Url::parse(value)
+    nanocode_url::Url::parse(value)
         .ok()
         .and_then(|u| u.host_str().map(str::to_string))
         .unwrap_or_else(|| "the page".into())

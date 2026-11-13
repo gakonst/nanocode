@@ -2188,7 +2188,7 @@ impl ClaudeClient {
             && !self
                 .gzip_rejected
                 .load(std::sync::atomic::Ordering::Relaxed)
-            && url::Url::parse(&self.endpoint)
+            && nanocode_url::Url::parse(&self.endpoint)
                 .is_ok_and(|endpoint| endpoint.host_str() == Some(FIRST_PARTY_HOST))
     }
 

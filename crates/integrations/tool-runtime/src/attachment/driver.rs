@@ -8,6 +8,7 @@ use std::{
 use nanocode_sync::Atom;
 
 use futures_util::{SinkExt, StreamExt};
+use nanocode_url::Url;
 use nanocode_websocket::{
     CloseCode, CloseFrame, Connector, IntoClientRequest, Message, Utf8Bytes,
     client_async_tls_with_config,
@@ -15,7 +16,6 @@ use nanocode_websocket::{
 use serde_json::{Value, json};
 use tokio::sync::{mpsc, watch};
 use tracing::Instrument as _;
-use url::Url;
 
 use super::protocol::{
     self, AttachmentCall, CommandStatus, DiagnosticStage, EndpointFrame, ReceiptTiming, RunnerFrame,

@@ -17,7 +17,7 @@ nanocode-agent-types.workspace = true
 nanocode-platform.workspace = true
 nanocode-home.workspace = true
 nanocode-sys.workspace = true
-url.workspace = true
+nanocode-url.workspace = true
 futures-util.workspace = true
 nanocode-http.workspace = true
 tokio = { workspace = true, features = ["time"] }

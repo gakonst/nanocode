@@ -4,8 +4,8 @@ use http::{
     HeaderMap, HeaderName, HeaderValue, Method,
     header::{AUTHORIZATION, CONTENT_TYPE, Entry, OccupiedEntry},
 };
+use nanocode_url::Url;
 use serde::Serialize;
-use url::Url;
 
 use super::{Body, Client, Error, Pending, Result};
 

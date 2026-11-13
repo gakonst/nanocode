@@ -3,9 +3,9 @@ use std::{
     str::FromStr,
 };
 
+use nanocode_url::Url;
 use serde_json::{Map, Value};
 use std::sync::LazyLock;
-use url::Url;
 
 use crate::{SchemaIndex, Schemas, compiler::*, root::Resource, util::*};
 

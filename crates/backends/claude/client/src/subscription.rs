@@ -1,12 +1,12 @@
 use std::{fmt, sync::Arc};
 
-use nanocode_sys::base64::URL_SAFE_NO_PAD;
 use http::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 use nanocode_digest::Sha256;
 use nanocode_platform::UNIX_EPOCH;
 use nanocode_sync::SingleFlight;
+use nanocode_sys::base64::URL_SAFE_NO_PAD;
+use nanocode_url::Url;
 use serde::{Deserialize, Serialize};
-use url::Url;
 
 use crate::{ClaudeAuthFuture, ClaudeAuthProvider, ClaudeAuthUnavailable};
 

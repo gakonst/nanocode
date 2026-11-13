@@ -1,8 +1,8 @@
 use std::{cmp::Ordering, collections::HashMap, error::Error, fmt::Display};
 
 use crate::ecma::Regex;
+use nanocode_url::Url;
 use serde_json::{Map, Value};
-use url::Url;
 
 use crate::{content::*, draft::*, ecma, formats::*, root::*, roots::*, util::*, *};
 

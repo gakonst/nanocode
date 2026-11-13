@@ -1,11 +1,11 @@
 use crate::{ContentBlock, Message, Role};
-use nanocode_sys::base64::STANDARD;
 use nanocode_agent_core::{
     NanocodeError, Result,
     input::{Prompt, PromptInput, PromptMessageRole, UserInput},
 };
 use nanocode_durability::BlobUrl;
 use nanocode_image::{ImageHistory, prepare_base64_images};
+use nanocode_sys::base64::STANDARD;
 use serde_json::json;
 
 const MAX_IMAGE_BYTES: usize = 5 * 1024 * 1024;
@@ -215,7 +215,8 @@ pub(crate) fn image_source(value: &str) -> Result<(serde_json::Value, usize)> {
         if value.len() > 8192 {
             return Err(invalid("Claude image URL exceeds 8192 bytes"));
         }
-        let url = url::Url::parse(value).map_err(|_| invalid("invalid Claude image URL"))?;
+        let url =
+            nanocode_url::Url::parse(value).map_err(|_| invalid("invalid Claude image URL"))?;
         if url.scheme() != "https"
             || url.host_str().is_none()
             || !url.username().is_empty()

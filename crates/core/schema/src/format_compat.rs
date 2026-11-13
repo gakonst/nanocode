@@ -1,5 +1,91 @@
 use crate::unicode::{GeneralCategory, get_general_category};
+
 use std::net::{Ipv4Addr, Ipv6Addr};
+use std::ops::RangeInclusive;
+
+use unicode_normalization::UnicodeNormalization;
+
+const ACE_PREFIX: &str = "xn--";
+const IDN_FULL_STOPS: [char; 4] = ['.', '\u{3002}', '\u{FF0E}', '\u{FF61}'];
+const VIRAMAS: [char; 50] = [
+    '\u{094D}',
+    '\u{09CD}',
+    '\u{0A4D}',
+    '\u{0ACD}',
+    '\u{0B4D}',
+    '\u{0BCD}',
+    '\u{0C4D}',
+    '\u{0CCD}',
+    '\u{0D4D}',
+    '\u{0DCA}',
+    '\u{0E3A}',
+    '\u{0F84}',
+    '\u{1039}',
+    '\u{1714}',
+    '\u{1734}',
+    '\u{17D2}',
+    '\u{1A60}',
+    '\u{1B44}',
+    '\u{1BAA}',
+    '\u{1BF2}',
+    '\u{1BF3}',
+    '\u{2D7F}',
+    '\u{A806}',
+    '\u{A8C4}',
+    '\u{A953}',
+    '\u{ABED}',
+    '\u{10A3F}',
+    '\u{11046}',
+    '\u{1107F}',
+    '\u{110B9}',
+    '\u{11133}',
+    '\u{111C0}',
+    '\u{11235}',
+    '\u{112EA}',
+    '\u{1134D}',
+    '\u{11442}',
+    '\u{114C2}',
+    '\u{115BF}',
+    '\u{1163F}',
+    '\u{116B6}',
+    '\u{1172B}',
+    '\u{11839}',
+    '\u{119E0}',
+    '\u{11A34}',
+    '\u{11A47}',
+    '\u{11A99}',
+    '\u{11C3F}',
+    '\u{11D44}',
+    '\u{11D45}',
+    '\u{11D97}',
+];
+const IDN_IGNORED: [char; 5] = ['\u{AD}', '\u{34F}', '\u{200B}', '\u{2060}', '\u{FEFF}'];
+const IDN_VARIATION_SELECTORS: RangeInclusive<char> = '\u{FE00}'..='\u{FE0F}';
+const ZERO_WIDTH_NON_JOINER: char = '\u{200C}';
+const RIGHT_TO_LEFT: [RangeInclusive<char>; 7] = [
+    '\u{590}'..='\u{8FF}',
+    '\u{FB1D}'..='\u{FDFF}',
+    '\u{FE70}'..='\u{FEFF}',
+    '\u{10800}'..='\u{10FFF}',
+    '\u{1E800}'..='\u{1EFFF}',
+    '\u{200F}'..='\u{200F}',
+    '\u{61C}'..='\u{61C}',
+];
+const ARABIC_LETTERS: [RangeInclusive<char>; 4] = [
+    '\u{620}'..='\u{64A}',
+    '\u{66E}'..='\u{6D3}',
+    '\u{6FA}'..='\u{6FF}',
+    '\u{750}'..='\u{77F}',
+];
+const ARABIC_NUMBERS: [RangeInclusive<char>; 6] = [
+    '\u{600}'..='\u{605}',
+    '\u{660}'..='\u{669}',
+    '\u{66B}'..='\u{66C}',
+    '\u{6DD}'..='\u{6DD}',
+    '\u{8E2}'..='\u{8E2}',
+    '\u{10E60}'..='\u{10E7E}',
+];
+const EUROPEAN_NUMBERS: [RangeInclusive<char>; 2] = ['0'..='9', '\u{6F0}'..='\u{6F9}'];
 
 pub(crate) const fn is_valid_uri_template(template: &str) -> bool {
     let bytes = template.as_bytes();
@@ -311,7 +397,7 @@ pub(crate) fn is_valid_hostname(hostname: &str) -> bool {
 
         if is_punycode_label(label) {
             let payload = std::str::from_utf8(&label[4..]).expect("ASCII label already validated");
-            let Some(decoded) = idna::punycode::decode_to_string(payload) else {
+            let Some(decoded) = nanocode_url::punycode::decode(payload) else {
                 return false;
             };
             if !validate_unicode_label(&decoded) {
@@ -354,65 +440,7 @@ fn validate_unicode_label(label: &str) -> bool {
 
     while let Some(current) = chars.next() {
         match current {
-            '\u{200D}'
-                if !previous.is_some_and(|prev| {
-                    matches!(
-                        prev,
-                        '\u{094D}'
-                            | '\u{09CD}'
-                            | '\u{0A4D}'
-                            | '\u{0ACD}'
-                            | '\u{0B4D}'
-                            | '\u{0BCD}'
-                            | '\u{0C4D}'
-                            | '\u{0CCD}'
-                            | '\u{0D4D}'
-                            | '\u{0DCA}'
-                            | '\u{0E3A}'
-                            | '\u{0F84}'
-                            | '\u{1039}'
-                            | '\u{1714}'
-                            | '\u{1734}'
-                            | '\u{17D2}'
-                            | '\u{1A60}'
-                            | '\u{1B44}'
-                            | '\u{1BAA}'
-                            | '\u{1BF2}'
-                            | '\u{1BF3}'
-                            | '\u{2D7F}'
-                            | '\u{A806}'
-                            | '\u{A8C4}'
-                            | '\u{A953}'
-                            | '\u{ABED}'
-                            | '\u{10A3F}'
-                            | '\u{11046}'
-                            | '\u{1107F}'
-                            | '\u{110B9}'
-                            | '\u{11133}'
-                            | '\u{111C0}'
-                            | '\u{11235}'
-                            | '\u{112EA}'
-                            | '\u{1134D}'
-                            | '\u{11442}'
-                            | '\u{114C2}'
-                            | '\u{115BF}'
-                            | '\u{1163F}'
-                            | '\u{116B6}'
-                            | '\u{1172B}'
-                            | '\u{11839}'
-                            | '\u{119E0}'
-                            | '\u{11A34}'
-                            | '\u{11A47}'
-                            | '\u{11A99}'
-                            | '\u{11C3F}'
-                            | '\u{11D44}'
-                            | '\u{11D45}'
-                            | '\u{11D97}'
-                    )
-                }) =>
-            {
-                return false;
-            }
+            '\u{200D}' if !previous.is_some_and(|prev| VIRAMAS.contains(&prev)) => return false,
 
             '\u{00B7}' if previous != Some('l') || chars.peek() != Some(&'l') => return false,
 
@@ -464,32 +492,152 @@ fn validate_unicode_label(label: &str) -> bool {
     true
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Direction {
+    Left,
+    Right,
+    ArabicNumber,
+    EuropeanNumber,
+    Mark,
+    Neutral,
+}
+
+fn in_ranges(ranges: &[RangeInclusive<char>], value: char) -> bool {
+    ranges.iter().any(|range| range.contains(&value))
+}
+
+fn direction(value: char) -> Direction {
+    if in_ranges(&ARABIC_NUMBERS, value) {
+        return Direction::ArabicNumber;
+    }
+    if in_ranges(&EUROPEAN_NUMBERS, value) {
+        return Direction::EuropeanNumber;
+    }
+    match get_general_category(value) {
+        GeneralCategory::NonspacingMark | GeneralCategory::EnclosingMark => Direction::Mark,
+        _ if in_ranges(&RIGHT_TO_LEFT, value) => Direction::Right,
+        GeneralCategory::Letter | GeneralCategory::SpacingMark | GeneralCategory::DecimalNumber => {
+            Direction::Left
+        }
+        GeneralCategory::Other => Direction::Neutral,
+    }
+}
+
+fn satisfies_bidi_rule(label: &str) -> bool {
+    let directions: Vec<Direction> = label.chars().map(direction).collect();
+    let Some(first) = directions.first() else {
+        return true;
+    };
+    let last = directions
+        .iter()
+        .rev()
+        .find(|direction| **direction != Direction::Mark);
+    match first {
+        Direction::Right => {
+            !directions.contains(&Direction::Left)
+                && matches!(
+                    last,
+                    Some(Direction::Right | Direction::ArabicNumber | Direction::EuropeanNumber)
+                )
+                && !(directions.contains(&Direction::ArabicNumber)
+                    && directions.contains(&Direction::EuropeanNumber))
+        }
+        Direction::Left => {
+            !directions
+                .iter()
+                .any(|direction| matches!(direction, Direction::Right | Direction::ArabicNumber))
+                && matches!(last, Some(Direction::Left | Direction::EuropeanNumber))
+        }
+        _ => false,
+    }
+}
+
+fn joins_arabic(mut chars: impl Iterator<Item = char>) -> bool {
+    chars
+        .find(|value| get_general_category(*value) != GeneralCategory::NonspacingMark)
+        .is_some_and(|value| in_ranges(&ARABIC_LETTERS, value))
+}
+
+fn valid_non_joiners(label: &[char]) -> bool {
+    label.iter().enumerate().all(|(index, value)| {
+        *value != ZERO_WIDTH_NON_JOINER
+            || index
+                .checked_sub(1)
+                .is_some_and(|previous| VIRAMAS.contains(&label[previous]))
+            || (joins_arabic(label[..index].iter().rev().copied())
+                && joins_arabic(label[index + 1..].iter().copied()))
+    })
+}
+
+fn valid_unicode_hyphens(label: &[char]) -> bool {
+    label.first() != Some(&'-')
+        && label.last() != Some(&'-')
+        && !(label.get(2) == Some(&'-') && label.get(3) == Some(&'-'))
+}
+
+fn idn_to_unicode(hostname: &str) -> String {
+    let kept: String = hostname
+        .chars()
+        .filter(|value| !IDN_IGNORED.contains(value) && !IDN_VARIATION_SELECTORS.contains(value))
+        .collect();
+    if kept.is_ascii() {
+        return kept.to_ascii_lowercase();
+    }
+    let mapped: String = kept.nfkc().flat_map(char::to_lowercase).collect();
+    mapped.nfc().collect()
+}
+
+fn idn_to_ascii(hostname: &str) -> Option<String> {
+    let mut ascii = String::with_capacity(hostname.len());
+    for (index, label) in idn_to_unicode(hostname).split(IDN_FULL_STOPS).enumerate() {
+        if index > 0 {
+            ascii.push('.');
+        }
+        if label.is_ascii() {
+            ascii.push_str(label);
+        } else {
+            ascii.push_str(ACE_PREFIX);
+            ascii.push_str(&nanocode_url::punycode::encode(label)?);
+        }
+    }
+    Some(ascii)
+}
+
 #[must_use]
 pub(crate) fn is_valid_idn_hostname(hostname: &str) -> bool {
-    use idna::uts46::{AsciiDenyList, DnsLength, Hyphens, Uts46};
-
-    let Ok(ascii_hostname) = Uts46::new().to_ascii(
-        hostname.as_bytes(),
-        AsciiDenyList::STD3,
-        Hyphens::Check,
-        DnsLength::Verify,
-    ) else {
+    let Some(ascii_hostname) = idn_to_ascii(hostname) else {
         return false;
     };
-
     if !is_valid_hostname(&ascii_hostname) {
         return false;
     }
-
-    let (unicode_hostname, _) = Uts46::new().to_unicode(
-        ascii_hostname.as_bytes(),
-        AsciiDenyList::EMPTY,
-        Hyphens::Allow,
-    );
-
-    unicode_hostname
-        .split('.')
-        .all(|label| !label.is_empty() && validate_unicode_label(label))
+    let mut labels = Vec::new();
+    for label in ascii_hostname.split('.') {
+        let unicode = match label.strip_prefix(ACE_PREFIX) {
+            Some(payload) => match nanocode_url::punycode::decode(payload) {
+                Some(decoded) if !decoded.is_ascii() && decoded.nfc().eq(decoded.chars()) => {
+                    decoded
+                }
+                _ => return false,
+            },
+            None => label.to_owned(),
+        };
+        let chars: Vec<char> = unicode.chars().collect();
+        if unicode.is_empty()
+            || !validate_unicode_label(&unicode)
+            || !valid_unicode_hyphens(&chars)
+            || !valid_non_joiners(&chars)
+        {
+            return false;
+        }
+        labels.push(unicode);
+    }
+    let bidi = labels.iter().any(|label| {
+        label
+            .chars()
+            .any(|value| matches!(direction(value), Direction::Right | Direction::ArabicNumber))
+    });
+    !bidi || labels.iter().all(|label| satisfies_bidi_rule(label))
 }
 
 #[inline]

@@ -14,9 +14,9 @@ autobenches = false
 nanocode-sys.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-url.workspace = true
+nanocode-url.workspace = true
+unicode-normalization.workspace = true
 memchr.workspace = true
-idna = "1"
 
 [lints]
 workspace = true

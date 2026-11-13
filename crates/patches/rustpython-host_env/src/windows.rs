@@ -42,7 +42,7 @@ pub const ERROR_NO_UNICODE_TRANSLATION_I32: i32 = ERROR_NO_UNICODE_TRANSLATION a
 pub const ERROR_INSUFFICIENT_BUFFER_I32: i32 = ERROR_INSUFFICIENT_BUFFER as i32;
 
 pub fn init_winsock() {
-    static WSA_INIT: parking_lot::Once = parking_lot::Once::new();
+    static WSA_INIT: std::sync::Once = std::sync::Once::new();
     WSA_INIT.call_once(|| unsafe {
         let mut wsa_data = core::mem::MaybeUninit::uninit();
         let _ = WSAStartup(0x0101, wsa_data.as_mut_ptr());

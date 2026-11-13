@@ -32,9 +32,9 @@ use libffi::{
 use libloading::Library;
 #[cfg(unix)]
 use libloading::os::unix::Library as UnixLibrary;
-#[cfg(any(unix, windows))]
-use parking_lot::{Mutex, RwLock};
 use rustpython_wtf8::{Wtf8, Wtf8Buf};
+#[cfg(any(unix, windows))]
+use std::sync::{Mutex, PoisonError, RwLock};
 #[cfg(any(unix, windows))]
 use std::{collections::HashMap, ffi::OsStr, sync::OnceLock};
 
@@ -2660,7 +2660,7 @@ impl SharedLibrary {
     }
 
     fn get_pointer(&self) -> usize {
-        let lib_lock = self.lib.lock();
+        let lib_lock = self.lib.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(l) = &*lib_lock {
             unsafe { core::mem::transmute_copy::<Library, usize>(l) }
         } else {
@@ -2669,7 +2669,7 @@ impl SharedLibrary {
     }
 
     fn lookup_data_symbol_addr(&self, symbol_name: &[u8]) -> Result<usize, LookupSymbolError> {
-        let lib_lock = self.lib.lock();
+        let lib_lock = self.lib.lock().unwrap_or_else(PoisonError::into_inner);
         let Some(lib) = &*lib_lock else {
             return Err(LookupSymbolError::LibraryClosed);
         };
@@ -2681,7 +2681,7 @@ impl SharedLibrary {
     }
 
     fn lookup_function_symbol_addr(&self, symbol_name: &[u8]) -> Result<usize, LookupSymbolError> {
-        let lib_lock = self.lib.lock();
+        let lib_lock = self.lib.lock().unwrap_or_else(PoisonError::into_inner);
         let Some(lib) = &*lib_lock else {
             return Err(LookupSymbolError::LibraryClosed);
         };
@@ -2762,7 +2762,10 @@ fn libcache() -> &'static RwLock<ExternalLibs> {
 
 #[cfg(windows)]
 pub fn open_library(name: impl AsRef<OsStr>) -> Result<usize, libloading::Error> {
-    libcache().write().open_library(name)
+    libcache()
+        .write()
+        .unwrap_or_else(PoisonError::into_inner)
+        .open_library(name)
 }
 
 /// `LoadLibraryExW` — the raw module handle `_ctypes.LoadLibrary` stores.
@@ -2864,7 +2867,10 @@ pub fn open_library_with_mode(
     name: impl AsRef<OsStr>,
     mode: i32,
 ) -> Result<usize, libloading::Error> {
-    libcache().write().open_library_with_mode(name, mode)
+    libcache()
+        .write()
+        .unwrap_or_else(PoisonError::into_inner)
+        .open_library_with_mode(name, mode)
 }
 
 #[cfg(not(unix))]
@@ -2877,7 +2883,10 @@ pub fn open_library_with_mode(
 
 #[cfg(unix)]
 pub fn insert_raw_library_handle(handle: *mut c_void) -> usize {
-    libcache().write().insert_raw_library_handle(handle)
+    libcache()
+        .write()
+        .unwrap_or_else(PoisonError::into_inner)
+        .insert_raw_library_handle(handle)
 }
 
 #[cfg(not(unix))]
@@ -2887,7 +2896,10 @@ pub fn insert_raw_library_handle(_handle: *mut c_void) -> usize {
 
 #[cfg(any(unix, windows))]
 pub fn drop_library(handle: usize) {
-    libcache().write().drop_library(handle);
+    libcache()
+        .write()
+        .unwrap_or_else(PoisonError::into_inner)
+        .drop_library(handle);
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -2898,7 +2910,7 @@ pub fn lookup_data_symbol_addr(
     handle: usize,
     symbol_name: &[u8],
 ) -> Result<usize, LookupSymbolError> {
-    let cache = libcache().read();
+    let cache = libcache().read().unwrap_or_else(PoisonError::into_inner);
     if let Some(lib) = cache.get_lib(handle) {
         return lib.lookup_data_symbol_addr(symbol_name);
     }
@@ -2916,7 +2928,7 @@ pub fn lookup_function_symbol_addr(
     handle: usize,
     symbol_name: &[u8],
 ) -> Result<usize, LookupSymbolError> {
-    let cache = libcache().read();
+    let cache = libcache().read().unwrap_or_else(PoisonError::into_inner);
     if let Some(lib) = cache.get_lib(handle) {
         return lib.lookup_function_symbol_addr(symbol_name);
     }

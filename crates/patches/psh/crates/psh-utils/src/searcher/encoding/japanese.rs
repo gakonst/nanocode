@@ -1,4 +1,4 @@
-use super::data::{JIS0208_INDEX, JIS0212_INDEX};
+use super::data::JIS0212_INDEX;
 use super::{ASCII_END, AsciiRun, BMP_BYTES_MAX, Decoded, DecoderResult, Transcode};
 
 const ROW_CELLS: usize = 94;
@@ -35,7 +35,7 @@ fn jis0208_trail(transcode: &mut Transcode<'_, '_>, lead: u8, byte: u8) -> Optio
     if !(0xA1..=0xFE).contains(&byte) {
         return Some(malformed(transcode, byte));
     }
-    match JIS0208_INDEX.get(usize::from(lead) * ROW_CELLS + usize::from(byte - 0xA1)) {
+    match super::JIS0208.get(usize::from(lead) * ROW_CELLS + usize::from(byte - 0xA1)) {
         Some(code_point) => {
             transcode.write_scalar(u32::from(code_point));
             None
@@ -346,7 +346,7 @@ impl Iso2022JpDecoder {
             return Some(transcode.end(DecoderResult::Malformed));
         }
         let pointer = usize::from(self.lead - 0x21) * ROW_CELLS + usize::from(byte - 0x21);
-        match JIS0208_INDEX.get(pointer) {
+        match super::JIS0208.get(pointer) {
             Some(code_point) => {
                 transcode.write_scalar(u32::from(code_point));
                 None

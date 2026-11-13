@@ -13,6 +13,15 @@ use self::unicode::{Utf8Decoder, Utf16Decoder};
 
 pub(crate) static UTF_8: &Encoding = data::UTF_8_ENCODING;
 
+const JIS0208_POINTERS: usize = data::JIS0208_INDEX.pointer_end - data::JIS0208_INDEX.pointer_first;
+const EUC_KR_POINTERS: usize = data::EUC_KR_INDEX.pointer_end - data::EUC_KR_INDEX.pointer_first;
+const BIG5_POINTERS: usize = data::BIG5_INDEX.pointer_end - data::BIG5_INDEX.pointer_first;
+const GB18030_POINTERS: usize = data::GB18030_INDEX.pointer_end - data::GB18030_INDEX.pointer_first;
+static JIS0208: PlainIndex<JIS0208_POINTERS> = PlainIndex::expand(&data::JIS0208_INDEX);
+static EUC_KR: PlainIndex<EUC_KR_POINTERS> = PlainIndex::expand(&data::EUC_KR_INDEX);
+static BIG5: PlainIndex<BIG5_POINTERS> = PlainIndex::expand(&data::BIG5_INDEX);
+static GB18030: PlainIndex<GB18030_POINTERS> = PlainIndex::expand(&data::GB18030_INDEX);
+
 const LABEL_WHITESPACE: [u8; 5] = [b'\t', b'\n', 0x0C, b'\r', b' '];
 const UTF_8_BOM: [u8; 3] = [0xEF, 0xBB, 0xBF];
 const UTF_16LE_BOM: [u8; 2] = [0xFF, 0xFE];
@@ -623,6 +632,49 @@ impl Index {
             return Some(self.narrow_bases[block] + u16::from(offset));
         }
         let value = self.wide[usize::from(block & !INDEX_WIDE_BLOCK) * INDEX_BLOCK_POINTERS + slot];
+        if value == INDEX_WIDE_NULL {
+            return None;
+        }
+        Some(value)
+    }
+
+    const fn value(&self, rebased: usize) -> u16 {
+        let block = self.blocks[rebased / INDEX_BLOCK_POINTERS];
+        let slot = rebased % INDEX_BLOCK_POINTERS;
+        if block & INDEX_WIDE_BLOCK == 0 {
+            let block = block as usize;
+            let offset = self.narrow_offsets[block * INDEX_BLOCK_POINTERS + slot];
+            if offset == INDEX_NARROW_NULL {
+                return INDEX_WIDE_NULL;
+            }
+            return self.narrow_bases[block] + offset as u16;
+        }
+        self.wide[(block & !INDEX_WIDE_BLOCK) as usize * INDEX_BLOCK_POINTERS + slot]
+    }
+}
+
+struct PlainIndex<const POINTERS: usize> {
+    pointer_first: usize,
+    values: [u16; POINTERS],
+}
+
+impl<const POINTERS: usize> PlainIndex<POINTERS> {
+    const fn expand(index: &Index) -> PlainIndex<POINTERS> {
+        assert!(index.pointer_end - index.pointer_first == POINTERS);
+        let mut values = [INDEX_WIDE_NULL; POINTERS];
+        let mut rebased = 0;
+        while rebased < POINTERS {
+            values[rebased] = index.value(rebased);
+            rebased += 1;
+        }
+        PlainIndex {
+            pointer_first: index.pointer_first,
+            values,
+        }
+    }
+
+    fn get(&self, pointer: usize) -> Option<u16> {
+        let value = *self.values.get(pointer.wrapping_sub(self.pointer_first))?;
         if value == INDEX_WIDE_NULL {
             return None;
         }

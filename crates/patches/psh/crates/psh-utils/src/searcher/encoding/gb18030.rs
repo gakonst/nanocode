@@ -1,4 +1,5 @@
-use super::data::{GB18030_INDEX, GB18030_RANGES_INDEX};
+use super::GB18030;
+use super::data::GB18030_RANGES_INDEX;
 use super::{
     ASCII_END, AsciiRun, BMP_BYTES_MAX, Decoded, DecoderResult, SCALAR_BYTES_MAX, Transcode,
 };
@@ -210,7 +211,7 @@ fn two_byte(transcode: &mut Transcode<'_, '_>, first: u8, second: u8) -> Option<
     };
     let pointer = offset
         .map(|offset| usize::from(first) * TWO_BYTE_TRAIL_COUNT + usize::from(second - offset));
-    if let Some(code_point) = pointer.and_then(|pointer| GB18030_INDEX.get(pointer)) {
+    if let Some(code_point) = pointer.and_then(|pointer| GB18030.get(pointer)) {
         transcode.write_scalar(u32::from(code_point));
         return None;
     }

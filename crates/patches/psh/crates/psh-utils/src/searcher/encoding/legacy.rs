@@ -1,7 +1,7 @@
-use super::data::{BIG5_ASTRAL_POINTERS, BIG5_INDEX, EUC_KR_INDEX, JIS0208_INDEX};
+use super::data::BIG5_ASTRAL_POINTERS;
 use super::{
-    ASCII_END, AsciiRun, BMP_BYTES_MAX, Decoded, DecoderResult, SCALAR_BYTES_MAX, Transcode,
-    WORD_BYTES, WORD_HIGH_BITS, copy_ascii_run,
+    ASCII_END, AsciiRun, BIG5, BMP_BYTES_MAX, Decoded, DecoderResult, EUC_KR, JIS0208,
+    SCALAR_BYTES_MAX, Transcode, WORD_BYTES, WORD_HIGH_BITS, copy_ascii_run,
 };
 
 const PUNCTUATION_END: u8 = 60;
@@ -356,7 +356,7 @@ impl TwoByte for Big5 {
             _ => return malformed_trail(byte),
         };
         let pointer = usize::from(lead - 0x81) * BIG5_TRAIL_COUNT + usize::from(byte - offset);
-        let Some(low_bits) = BIG5_INDEX.get(pointer) else {
+        let Some(low_bits) = BIG5.get(pointer) else {
             return match BIG5_COMBINATIONS
                 .iter()
                 .find(|(combination, _, _)| *combination == pointer)
@@ -365,7 +365,7 @@ impl TwoByte for Big5 {
                 None => malformed_trail(byte),
             };
         };
-        let bit = pointer - BIG5_INDEX.pointer_first;
+        let bit = pointer - BIG5.pointer_first;
         if BIG5_ASTRAL_POINTERS[bit / BIG5_POINTER_BITS] & (1 << (bit % BIG5_POINTER_BITS)) != 0 {
             return Trail::Scalar(BIG5_ASTRAL_PLANE | u32::from(low_bits));
         }
@@ -391,7 +391,7 @@ impl TwoByte for EucKr {
             return malformed_trail(byte);
         }
         let pointer = usize::from(lead - 0x81) * EUC_KR_TRAIL_COUNT + usize::from(byte - 0x41);
-        match EUC_KR_INDEX.get(pointer) {
+        match EUC_KR.get(pointer) {
             Some(code_point) => Trail::Scalar(u32::from(code_point)),
             None => malformed_trail(byte),
         }
@@ -426,7 +426,7 @@ impl TwoByte for ShiftJis {
             let private_use = pointer - SHIFT_JIS_PRIVATE_USE_POINTERS.start();
             return Trail::Scalar(SHIFT_JIS_PRIVATE_USE_FIRST + private_use as u32);
         }
-        match JIS0208_INDEX.get(pointer) {
+        match JIS0208.get(pointer) {
             Some(code_point) => Trail::Scalar(u32::from(code_point)),
             None => malformed_trail(byte),
         }

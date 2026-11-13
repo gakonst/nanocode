@@ -143,3 +143,75 @@ pub fn set_no_new_privileges() -> io::Result<()> {
         _ => Err(io::Error::last_os_error()),
     }
 }
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SocketFilter {
+    pub code: u16,
+    pub jt: u8,
+    pub jf: u8,
+    pub k: u32,
+}
+
+#[repr(C)]
+struct SocketFilterProgram {
+    length: libc::c_ushort,
+    filter: *const SocketFilter,
+}
+
+#[derive(Debug)]
+pub enum SeccompError {
+    EmptyFilter,
+    TooLong(usize),
+    NoNewPrivileges(io::Error),
+    Seccomp(io::Error),
+    ThreadSync(libc::c_long),
+}
+
+impl std::fmt::Display for SeccompError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::EmptyFilter => f.write_str("Cannot install empty filter."),
+            Self::TooLong(length) => write!(
+                f,
+                "a seccomp filter of {length} instructions does not fit the kernel's 16-bit length"
+            ),
+            Self::NoNewPrivileges(error) => write!(f, "Error calling `prctl`: {error}"),
+            Self::Seccomp(error) => write!(f, "Error calling `seccomp`: {error}"),
+            Self::ThreadSync(thread) => write!(
+                f,
+                "Seccomp filter synchronization failed in thread `{thread}`"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for SeccompError {}
+
+pub fn install_seccomp_filter(program: &[SocketFilter]) -> Result<(), SeccompError> {
+    if program.is_empty() {
+        return Err(SeccompError::EmptyFilter);
+    }
+    let length =
+        libc::c_ushort::try_from(program.len()).map_err(|_| SeccompError::TooLong(program.len()))?;
+    set_no_new_privileges().map_err(SeccompError::NoNewPrivileges)?;
+    let filter = SocketFilterProgram {
+        length,
+        filter: program.as_ptr(),
+    };
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_seccomp,
+            libc::SECCOMP_SET_MODE_FILTER,
+            libc::c_ulong::from(NO_FLAGS),
+            &raw const filter,
+        )
+    };
+    if result < 0 {
+        return Err(SeccompError::Seccomp(io::Error::last_os_error()));
+    }
+    if result > 0 {
+        return Err(SeccompError::ThreadSync(result));
+    }
+    Ok(())
+}

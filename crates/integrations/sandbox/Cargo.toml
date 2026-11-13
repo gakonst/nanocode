@@ -36,7 +36,6 @@ nanocode-platform.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 serde_json.workspace = true
-seccompiler.workspace = true
 
 [lints]
 workspace = true

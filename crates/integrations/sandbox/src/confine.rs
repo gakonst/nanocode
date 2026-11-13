@@ -4,14 +4,11 @@ use crate::{
         Abi, Created, FS_IOCTL_DEV, FS_READ_DIR, FS_READ_FILE, FS_WRITE_FILE, Kind,
         NET_BIND_TCP, NET_CONNECT_TCP, Ruleset, SCOPE_ABSTRACT_UNIX_SOCKET, SCOPE_SIGNAL,
     },
+    seccomp,
 };
-use seccompiler::{
-    BpfProgram, SeccompAction, SeccompCmpArgLen, SeccompCmpOp, SeccompCondition, SeccompFilter,
-    SeccompRule, sock_filter,
-};
+use nanocode_sys::unix::confine::SocketFilter;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeMap,
     error::Error,
     fs::File,
     io::{self, PipeWriter},
@@ -95,85 +92,8 @@ fn ruleset() -> io::Result<Created> {
         .map_err(|error| other(format!("Landlock ABI 6 (Linux 6.12) is required: {error}")))
 }
 
-fn filter() -> io::Result<BpfProgram> {
-    let argument = |index, operation, value: i32| -> io::Result<SeccompCondition> {
-        let value = u64::try_from(value).map_err(other)?;
-        SeccompCondition::new(index, SeccompCmpArgLen::Dword, operation, value).map_err(other)
-    };
-    let rule = |conditions| SeccompRule::new(conditions).map_err(other);
-    let mut socket = vec![
-        rule(vec![
-            argument(0, SeccompCmpOp::Ne, libc::AF_INET)?,
-            argument(0, SeccompCmpOp::Ne, libc::AF_INET6)?,
-        ])?,
-        rule(vec![
-            argument(2, SeccompCmpOp::Ne, 0)?,
-            argument(2, SeccompCmpOp::Ne, libc::IPPROTO_TCP)?,
-        ])?,
-    ];
-    for kind in (0..16).filter(|kind| *kind != libc::SOCK_STREAM) {
-        socket.push(rule(vec![argument(1, SeccompCmpOp::MaskedEq(0xf), kind)?])?);
-    }
-    let fast_open_mask = u64::try_from(libc::MSG_FASTOPEN).map_err(other)?;
-    let fast_open = |index| -> io::Result<Vec<SeccompRule>> {
-        Ok(vec![rule(vec![argument(
-            index,
-            SeccompCmpOp::MaskedEq(fast_open_mask),
-            libc::MSG_FASTOPEN,
-        )?])?])
-    };
-    let rules = BTreeMap::from([
-        (libc::SYS_socket, socket),
-        (libc::SYS_sendto, fast_open(3)?),
-        (libc::SYS_sendmsg, fast_open(2)?),
-        (libc::SYS_sendmmsg, fast_open(3)?),
-        (libc::SYS_io_uring_setup, Vec::new()),
-        (libc::SYS_io_uring_enter, Vec::new()),
-        (libc::SYS_io_uring_register, Vec::new()),
-        (libc::SYS_listen, Vec::new()),
-        (libc::SYS_accept, Vec::new()),
-        (libc::SYS_accept4, Vec::new()),
-        (libc::SYS_setsid, Vec::new()),
-        (libc::SYS_setpgid, Vec::new()),
-    ]);
-    let errno = u32::try_from(libc::EPERM).map_err(other)?;
-    let filter = SeccompFilter::new(
-        rules,
-        SeccompAction::Allow,
-        SeccompAction::Errno(errno),
-        std::env::consts::ARCH.try_into().map_err(other)?,
-    )
-    .map_err(other)?;
-    let mut program: BpfProgram = filter.try_into().map_err(other)?;
-    if cfg!(target_arch = "x86_64") {
-        let instruction = |code: u32, jt, jf, k| -> io::Result<sock_filter> {
-            Ok(sock_filter {
-                code: u16::try_from(code).map_err(other)?,
-                jt,
-                jf,
-                k,
-            })
-        };
-        program.splice(
-            0..0,
-            [
-                instruction(libc::BPF_LD | libc::BPF_W | libc::BPF_ABS, 0, 0, 0)?,
-                instruction(
-                    libc::BPF_JMP | libc::BPF_JGE | libc::BPF_K,
-                    0,
-                    1,
-                    0x4000_0000,
-                )?,
-                instruction(
-                    libc::BPF_RET | libc::BPF_K,
-                    0,
-                    0,
-                    libc::SECCOMP_RET_ERRNO | errno,
-                )?,
-            ],
-        );
-    }
-    Ok(program)
+fn filter() -> io::Result<Vec<SocketFilter>> {
+    seccomp::tool_filter(std::env::consts::ARCH, &seccomp::NATIVE).map_err(other)
 }
 
 fn confine(policy: &Policy, own: &File) -> io::Result<()> {
@@ -190,7 +110,7 @@ fn confine(policy: &Policy, own: &File) -> io::Result<()> {
         .and_then(|()| ruleset.add_port(policy.port, NET_CONNECT_TCP))
         .and_then(|()| ruleset.restrict_self())
         .map_err(other)?;
-    seccompiler::apply_filter(&filter()?).map_err(other)?;
+    nanocode_sys::unix::confine::install_seccomp_filter(&filter()?).map_err(other)?;
     Ok(())
 }
 

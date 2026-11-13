@@ -11,6 +11,8 @@ pub mod egress;
 #[cfg(target_os = "linux")]
 mod landlock;
 pub mod run;
+#[cfg(target_os = "linux")]
+mod seccomp;
 
 pub const SYSTEM: [&str; 7] = [
     "/usr",

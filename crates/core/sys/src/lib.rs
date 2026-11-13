@@ -18,6 +18,7 @@ pub mod sha512;
 mod stack;
 mod swap;
 pub mod teddy;
+pub mod utf8;
 #[cfg(unix)]
 pub mod unix;
 #[cfg(windows)]

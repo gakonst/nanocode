@@ -116,10 +116,7 @@ fn copy_valid_utf8(transcode: &mut Transcode<'_, '_>) {
     let source = &transcode.source[transcode.read..];
     let destination = &mut transcode.destination[transcode.written..];
     let length = source.len().min(destination.len());
-    let valid = match std::str::from_utf8(&source[..length]) {
-        Ok(_) => length,
-        Err(error) => error.valid_up_to(),
-    };
+    let valid = nanocode_sys::utf8::valid_up_to(&source[..length]);
     destination[..valid].copy_from_slice(&source[..valid]);
     transcode.read += valid;
     transcode.written += valid;

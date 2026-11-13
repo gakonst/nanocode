@@ -331,14 +331,6 @@ pub struct GatewayArgs {
 
     #[arg(
         long,
-        hide = true,
-        env = "NANOCODE_TEMPO_BOUNDLESS_URL",
-        value_name = "URL"
-    )]
-    pub tempo_boundless_url: Option<String>,
-
-    #[arg(
-        long,
         env = "NANOCODE_IDENTITY_ISSUER",
         value_name = "URL",
         value_delimiter = ',',
@@ -411,10 +403,6 @@ impl SessionArgs {
                     .tempo_tool_deposit
                     .or(root.gateway.tempo_tool_deposit),
                 no_tempo_tools: self.gateway.no_tempo_tools || root.gateway.no_tempo_tools,
-                tempo_boundless_url: self
-                    .gateway
-                    .tempo_boundless_url
-                    .or(root.gateway.tempo_boundless_url),
                 identity_issuer: match self.gateway.identity_issuer.is_empty() {
                     true => root.gateway.identity_issuer,
                     false => self.gateway.identity_issuer,

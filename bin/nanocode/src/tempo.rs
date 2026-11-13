@@ -469,6 +469,7 @@ impl Payments {
         terms: Terms,
         bypass: Vec<String>,
         policy: impl Future<Output = Policy> + Send + 'static,
+        identity: Arc<Identity>,
     ) -> Result<(Vec<(&'static str, String)>, PathBuf)> {
         nanocode::codex::transport::install_default_rustls_crypto_provider();
         let payments = self.clone();
@@ -476,7 +477,8 @@ impl Payments {
             Ok::<_, std::convert::Infallible>(payments.wallet(url, &terms))
         })?
         .bypass(bypass)
-        .events(self.events.clone());
+        .events(self.events.clone())
+        .identity(identity);
         let paying = (proxy.environment(), proxy.certificates().to_path_buf());
         std::thread::Builder::new()
             .name("nanocode-paying-proxy".to_owned())
@@ -1404,28 +1406,31 @@ impl Tempo {
             },
             ..terms
         };
-        let base = boundless_url(args);
         let boundless = Mpp::new(
-            payments.wallet(&reqwest::Url::parse(&base)?, &unsponsored),
-            (format!("{base}/responses"), None),
+            payments.wallet(&reqwest::Url::parse(BOUNDLESS)?, &unsponsored),
+            (format!("{BOUNDLESS}/responses"), None),
         )
-        .identified(identity);
+        .identified(identity.clone());
         let client = payments.client()?;
         let responses = Mpp::new(
             wallet.clone(),
             (format!("{TEMPO_GATEWAY}/v1/responses"), None),
-        );
-        let messages = Mpp::new(wallet, (format!("{TEMPO_GATEWAY}/v1/messages"), None));
+        )
+        .identified(identity.clone());
+        let messages =
+            Mpp::new(wallet, (format!("{TEMPO_GATEWAY}/v1/messages"), None)).identified(identity);
+        let (openai_client, claude_client) = (client.clone(), client.clone());
         Ok(Self {
             openai: Arc::new(move || {
                 nanocode::OpenAi::builder(nanocode::codex::OpenAiAuth::gateway_managed())
                     .api_base_url(format!("{TEMPO_GATEWAY}/v1"))
                     .transport(nanocode::codex::transport::ResponsesTransport::Https)
+                    .http_client(openai_client.clone())
                     .http_layer(responses.clone())
             }),
             claude: Arc::new(move || {
                 nanocode::claude::ClaudeClient::with_auth_headers(
-                    Default::default(),
+                    claude_client.clone(),
                     format!("{TEMPO_GATEWAY}/v1/messages"),
                     Default::default(),
                 )
@@ -1433,7 +1438,7 @@ impl Tempo {
             }),
             boundless: Arc::new(move || {
                 nanocode::OpenAi::builder(nanocode::codex::OpenAiAuth::gateway_managed())
-                    .api_base_url(base.clone())
+                    .api_base_url(BOUNDLESS)
                     .transport(nanocode::codex::transport::ResponsesTransport::Https)
                     .http_client(client.clone())
                     .http_layer(boundless.clone())
@@ -1443,7 +1448,7 @@ impl Tempo {
                 format!("{TEMPO_GATEWAY}/api/auction/models"),
                 gateway_offers,
             ),
-            catalog: Listing::remote(format!("{}/models", boundless_url(args)), boundless_offers),
+            catalog: Listing::remote(format!("{BOUNDLESS}/models"), boundless_offers),
         })
     }
 
@@ -1761,14 +1766,6 @@ fn asker(args: &GatewayArgs, exec: bool) -> Asker {
     }
 }
 
-fn boundless_url(args: &GatewayArgs) -> String {
-    args.tempo_boundless_url
-        .as_deref()
-        .unwrap_or(BOUNDLESS)
-        .trim_end_matches('/')
-        .to_owned()
-}
-
 fn tool_deposit(args: &GatewayArgs) -> u128 {
     args.tempo_tool_deposit.unwrap_or(MACH / 10)
 }
@@ -1794,6 +1791,7 @@ fn shell(
     clients: ModelClients,
     payments: &Payments,
     args: &GatewayArgs,
+    identity: Arc<Identity>,
 ) -> Result<(ModelClients, Option<PathBuf>)> {
     if OWN_PROXY_SETTINGS
         .iter()
@@ -1806,6 +1804,7 @@ fn shell(
         Terms::mainnet(Some(tool_deposit(args)))?,
         Vec::new(),
         std::future::ready(policy),
+        identity,
     ) {
         Ok((environment, certificates)) => {
             Ok((clients.tool_environment(environment), Some(certificates)))
@@ -1832,7 +1831,7 @@ pub(crate) fn apply(
         true => vec![
             format!("{TEMPO_GATEWAY}/v1/responses"),
             format!("{TEMPO_GATEWAY}/v1/messages"),
-            format!("{}/responses", boundless_url(args)),
+            format!("{BOUNDLESS}/responses"),
         ],
         false => Vec::new(),
     };
@@ -1850,7 +1849,12 @@ pub(crate) fn apply(
     }
     let mut certificates = None;
     if !args.no_tempo_tools {
-        (clients, certificates) = shell(tools(clients, &payments, args)?, &payments, args)?;
+        (clients, certificates) = shell(
+            tools(clients, &payments, args)?,
+            &payments,
+            args,
+            identity.clone(),
+        )?;
     }
     let (notices, status, panel) = (payments.clone(), payments.clone(), payments.clone());
     let clients = clients

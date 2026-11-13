@@ -2,7 +2,7 @@ use crate::{
     agent::Steer,
     tools::{
         BashExecution, BashExecutor, BashRequest, BashResult, ClaudeBash,
-        bash::DEFAULT_BACKGROUND_TIMEOUT_MS,
+        bash::{DEFAULT_BACKGROUND_TIMEOUT_MS, MAX_TIMEOUT_MS},
     },
 };
 use nanocode_agent_core::{Agent, PromptRequest, WeakAgent};
@@ -36,6 +36,8 @@ const OUTPUT_CAP_MARKER: &str = " [output truncated: exceeded 5GB disk cap] ";
 const ENDS_WITH_TURN: &str = "If it exits while you are still working you will be notified, but it is terminated when you give your final response and no notification can follow that \u{2014} so do not end your turn to wait for it; if you need its result, wait for it before giving your final response.";
 const REPORTED: &str = "Its end is reported with its exit status and last output: an exec or wait call that is waiting when it finishes returns then, and otherwise the next one reports it.";
 const SHELL_SIGNAL_STATUS: i32 = 128;
+const UPSTREAM_TIMEOUT: &str = "max 600000 for a foreground command.";
+const NESTED_TIMEOUT: &str = " A call from an exec cell without `timeout` waits the maximum instead, because the cell yields on its own clock; a command that reaches its `timeout` moves to the background and keeps running, and a `timeout` above the maximum counts as the maximum.";
 
 type Outcome = Result<BashResult, String>;
 
@@ -669,6 +671,9 @@ async fn run(
     })
 }
 impl BashExecutor for LocalBash {
+    fn nested_timeout_ms(&self) -> u64 {
+        MAX_TIMEOUT_MS
+    }
     async fn execute(&self, request: BashRequest) -> Outcome {
         let timeout = Duration::from_millis(request.timeout_ms);
         run(
@@ -914,9 +919,13 @@ struct BashTool {
 impl Tool for BashTool {
     fn definition(&self) -> ToolDefinition {
         let schema = ClaudeBash::<LocalBash>::definitions().remove(0);
+        let (before, after) = schema["description"]
+            .as_str()
+            .and_then(|description| description.split_once(UPSTREAM_TIMEOUT))
+            .expect("upstream Bash timeout sentence");
         ToolDefinition::function(
             "Bash",
-            schema["description"].as_str().unwrap_or_default(),
+            format!("{before}{UPSTREAM_TIMEOUT}{NESTED_TIMEOUT}{after}"),
             schema["input_schema"].clone(),
         )
         .with_output_schema(super::claude_output::schema("Bash"))

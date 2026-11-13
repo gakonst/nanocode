@@ -77,6 +77,10 @@ pub enum BashExecution {
 }
 
 pub trait BashExecutor: Send + Sync {
+    fn nested_timeout_ms(&self) -> u64 {
+        DEFAULT_TIMEOUT_MS
+    }
+
     fn execute_with_background(
         &self,
         request: BashRequest,
@@ -188,8 +192,11 @@ impl<E: BashExecutor> ClaudeBash<E> {
                 Some(text.to_owned())
             }
         };
+        let nested = call_id.is_some_and(|id| id.contains("/code-"));
         let (default, maximum) = if background {
             (DEFAULT_BACKGROUND_TIMEOUT_MS, MAX_BACKGROUND_TIMEOUT_MS)
+        } else if nested {
+            (self.executor.nested_timeout_ms(), MAX_TIMEOUT_MS)
         } else {
             (DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS)
         };
@@ -201,7 +208,7 @@ impl<E: BashExecutor> ClaudeBash<E> {
             return Err("timeout must be at least 1 millisecond".into());
         }
         let timeout_ms = timeout_ms.min(maximum);
-        let stream_bytes = if call_id.is_some_and(|id| id.contains("/code-")) {
+        let stream_bytes = if nested {
             NESTED_STREAM_BYTES
         } else {
             MAX_STREAM_BYTES

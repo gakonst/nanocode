@@ -721,16 +721,18 @@ pub struct OneLog {
     buffered: BTreeMap<String, Vec<Record>>,
     pending: BTreeMap<String, u64>,
     protections: Protections,
+    seals: bool,
     unsealed: BTreeSet<String>,
     written: BTreeMap<String, Written>,
 }
 
 impl OneLog {
-    pub const fn new(protections: Protections) -> Self {
+    pub const fn new(protections: Protections, seals: bool) -> Self {
         Self {
             buffered: BTreeMap::new(),
             pending: BTreeMap::new(),
             protections,
+            seals,
             unsealed: BTreeSet::new(),
             written: BTreeMap::new(),
         }
@@ -782,7 +784,7 @@ impl TurnDurability for OneLog {
         point: Point,
         state: &mut ScopeState,
     ) -> Option<Appended> {
-        let floor = self.pending.get(scope).copied();
+        let floor = self.pending.get(scope).copied().filter(|_| self.seals);
         let writes = match point {
             Point::Seal => floor.is_some(),
             _ => self.protections.writes(point, state.restarts > 0),

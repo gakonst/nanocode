@@ -53,10 +53,9 @@ default_table='
 1 canary_idempotent_reported_unknown canary --scenario turns --mutation idempotent_reported_unknown
 1 canary_recovery_skips_clientless canary --scenario turns --mutation recovery_skips_clientless
 1 canary_tick_not_atomic canary --scenario turns --mutation tick_not_atomic
+1 canary_seal_skipped canary:4000 --scenario turns --live-seqs floor --mutation seal_skipped
 '
 default_known='
-runtime did not settle
-runtime missing payload record
 runtime_kv_twice nondeterminism
 '
 discovered_weight=8
@@ -185,7 +184,7 @@ run_job() {
   message=""
   case $kind in
     pass) [ "$status" -eq 0 ] && ok=true ;;
-    canary) [ "$status" -eq 0 ] && grep -q '^MUTATION .* caught by' "$out" && ok=true ;;
+    canary*) [ "$status" -eq 0 ] && grep -q '^MUTATION .* caught by' "$out" && ok=true ;;
   esac
   if [ "$status" -eq 137 ] && ! grep -q '^RESULT' "$out"; then
     message="killed: timeout after ${job_secs_max}s or out of memory"
@@ -250,9 +249,10 @@ run() {
     while [ "${#running[@]}" -lt "$workers" ] && [ "$(now)" -lt "$deadline" ]; do
       at=$(pick)
       local count=${batch[$at]}
-      if [ "${kinds[$at]}" = canary ]; then
-        count=$canary_seeds
-      fi
+      case ${kinds[$at]} in
+        canary) count=$canary_seeds ;;
+        canary:*) count=${kinds[$at]#canary:} ;;
+      esac
       local seed
       seed=$(random_seed)
       spent[at]=$(( spent[at] + job_secs_target ))

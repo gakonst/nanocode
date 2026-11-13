@@ -1093,7 +1093,10 @@ impl Sim {
             return false;
         }
         let policy: Box<dyn TurnDurability> = match self.options.policy {
-            PolicyKind::Reference => Box::new(OneLog::new(self.options.protections)),
+            PolicyKind::Reference => Box::new(OneLog::new(
+                self.options.protections,
+                self.options.mutation != TurnMutation::SealSkipped,
+            )),
             PolicyKind::Turnlog => Box::new(TurnLogPolicy::new(
                 Arc::clone(&self.disk),
                 self.options.protections,

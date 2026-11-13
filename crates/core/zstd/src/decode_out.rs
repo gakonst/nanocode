@@ -13,6 +13,10 @@ impl<'a> DecodeOut<'a> {
         self.buf.len()
     }
 
+    pub(crate) const fn buffer_mut(&mut self) -> &mut Vec<u8> {
+        self.buf
+    }
+
     pub(crate) fn try_reserve(&mut self, additional: usize) -> Result<()> {
         self.buf
             .try_reserve(additional)
@@ -26,16 +30,6 @@ impl<'a> DecodeOut<'a> {
     pub(crate) fn append(&mut self, bytes: &[u8]) -> Result<()> {
         self.ensure_room(bytes.len())?;
         self.buf.extend_from_slice(bytes);
-        Ok(())
-    }
-
-    pub(crate) fn append_from_within(&mut self, start: usize, count: usize) -> Result<()> {
-        let end = start.checked_add(count).ok_or(Error::OutputSizeOverflow)?;
-        if end > self.len() {
-            return Err(Error::Corruption("match source exceeds available history"));
-        }
-        self.ensure_room(count)?;
-        self.buf.extend_from_within(start..end);
         Ok(())
     }
 

@@ -328,11 +328,71 @@ fn decode_and_execute_sequences_unified(
 ) -> Result<()> {
     let (mut remaining_block_bytes, mut remaining_output_bytes) =
         decode_setup(tables, out, block_size_max, limit)?;
+    let start = out.len();
+    let room = remaining_output_bytes.min(block_size_max);
+    let buffer = out.buffer_mut();
+    buffer.resize(
+        start + room.min(OUTPUT_GROWTH_BYTES_MIN) + WILD_COPY_SLACK_BYTES,
+        0,
+    );
+    let mut position = start;
+    let mut literal_cursor = 0usize;
+    let result = execute_sequences(
+        section,
+        tables,
+        buffer,
+        start,
+        start + room + WILD_COPY_SLACK_BYTES,
+        &mut position,
+        &mut literal_cursor,
+        frame_start,
+        window_size,
+        dictionary,
+        literals,
+        repeat_offsets,
+        limit,
+        &mut remaining_block_bytes,
+        &mut remaining_output_bytes,
+    );
+    assert!(
+        position <= start + room,
+        "sequences wrote {} bytes into a block of {room}",
+        position - start
+    );
+    buffer.truncate(position);
+    result?;
+    append_trailing_literals(
+        out,
+        literals.as_slice(),
+        literal_cursor,
+        &mut remaining_block_bytes,
+        &mut remaining_output_bytes,
+        limit,
+    )
+}
+#[inline(always)]
+fn execute_sequences(
+    section: &ParsedSequenceSection<'_>,
+    tables: &SequenceTablesState,
+    buffer: &mut Vec<u8>,
+    block_start: usize,
+    buffer_bytes_max: usize,
+    position: &mut usize,
+    literal_cursor: &mut usize,
+    frame_start: usize,
+    window_size: usize,
+    dictionary: Option<&[u8]>,
+    literals: DecodedLiterals<'_>,
+    repeat_offsets: &mut RepeatOffsets,
+    limit: OutputLimit,
+    remaining_block_bytes: &mut usize,
+    remaining_output_bytes: &mut usize,
+) -> Result<()> {
     let mut reader = crate::entropy::bitstream::BitDStream::new(section.bitstream)?;
     let mut literal_state = fse::init_dstate_seq(&mut reader, &tables.seq_ll);
     let mut offset_state = fse::init_dstate_seq(&mut reader, &tables.seq_of);
     let mut match_state = fse::init_dstate_seq(&mut reader, &tables.seq_ml);
-    let mut literal_cursor = 0usize;
+    let padded_literals = literals.padded();
     for index in 0..section.number_of_sequences {
         let lit_raw = tables.seq_ll.get_entry_raw(literal_state.state)?;
         let off_raw = tables.seq_of.get_entry_raw(offset_state.state)?;
@@ -362,23 +422,25 @@ fn decode_and_execute_sequences_unified(
         let match_length = (fse::raw_entry_baseline(ml_raw) + match_extra) as usize;
         let offset_value = (1u32 << offset_code) + offset_extra;
         let total = literal_length + match_length;
-        let literal_end = literal_cursor
+        let literal_end = (*literal_cursor)
             .checked_add(literal_length)
             .ok_or(Error::OutputSizeOverflow)?;
-        let literal_run =
-            literals
-                .as_slice()
-                .get(literal_cursor..literal_end)
-                .ok_or(Error::Corruption(
-                    "sequence literal length exceeds literals buffer",
-                ))?;
+        if literal_end > literals.len() {
+            return Err(Error::Corruption(
+                "sequence literal length exceeds literals buffer",
+            ));
+        }
         ensure_decode_output_room(
-            out.len(),
+            *position,
             total,
-            &mut remaining_block_bytes,
-            &mut remaining_output_bytes,
+            remaining_block_bytes,
+            remaining_output_bytes,
             limit,
         )?;
+        let needed = *position + total + WILD_COPY_SLACK_BYTES;
+        if needed > buffer.len() {
+            grow_output(buffer, block_start, needed, buffer_bytes_max);
+        }
         let [rep1, rep2, rep3] = repeat_offsets.values;
         let offset = if offset_value > 3 {
             let offset = offset_value - 3;
@@ -406,12 +468,19 @@ fn decode_and_execute_sequences_unified(
                 }
             }
         };
-        out.append(literal_run)?;
-        literal_cursor = literal_end;
-        let produced_in_frame = out.len() - frame_start;
+        copy_literals(
+            buffer,
+            *position,
+            padded_literals,
+            *literal_cursor,
+            literal_length,
+        );
+        *position += literal_length;
+        *literal_cursor = literal_end;
+        let produced_in_frame = *position - frame_start;
         if offset != 0 && offset <= produced_in_frame && offset <= window_size {
-            let match_start = out.len() - offset;
-            append_match_from_history(out, match_start, match_length)?;
+            copy_match(buffer, *position, *position - offset, match_length);
+            *position += match_length;
         } else if let Some(dictionary) = dictionary {
             let available_history = dictionary
                 .len()
@@ -422,13 +491,15 @@ fn decode_and_execute_sequences_unified(
                     "sequence offset exceeds the available history window",
                 ));
             }
-            append_match_from_dictionary_history(
-                out,
+            copy_match_from_dictionary(
+                buffer,
+                *position,
                 frame_start,
                 dictionary,
                 offset,
                 match_length,
-            )?;
+            );
+            *position += match_length;
         } else {
             return Err(Error::Corruption(
                 "sequence offset exceeds the available history window",
@@ -460,63 +531,110 @@ fn decode_and_execute_sequences_unified(
             "sequence bitstream was not fully consumed",
         ));
     }
-    append_trailing_literals(
-        out,
-        literals.as_slice(),
-        literal_cursor,
-        &mut remaining_block_bytes,
-        &mut remaining_output_bytes,
-        limit,
-    )
-}
-fn append_match_from_history(
-    out: &mut DecodeOut<'_>,
-    match_start: usize,
-    match_length: usize,
-) -> Result<()> {
-    if match_length == 0 {
-        return Ok(());
-    }
-    let offset = out
-        .len()
-        .checked_sub(match_start)
-        .filter(|offset| *offset != 0)
-        .ok_or(Error::Corruption("match source exceeds available history"))?;
-    out.ensure_room(match_length)?;
-    let out_start = out.len();
-    let mut copied = offset.min(match_length);
-    out.append_from_within(match_start, copied)?;
-    while copied < match_length {
-        let count = copied.min(match_length - copied);
-        out.append_from_within(out_start, count)?;
-        copied += count;
-    }
     Ok(())
 }
+const WILD_COPY_BYTES: usize = 16;
+const NARROW_COPY_BYTES: usize = 8;
+const WILD_COPY_SLACK_BYTES: usize = 2 * WILD_COPY_BYTES;
+const OUTPUT_GROWTH_BYTES_MIN: usize = 4096;
+#[cold]
+#[inline(never)]
+fn grow_output(buffer: &mut Vec<u8>, block_start: usize, needed: usize, buffer_bytes_max: usize) {
+    assert!(
+        needed <= buffer_bytes_max,
+        "a block needs {needed} bytes of its {buffer_bytes_max}"
+    );
+    let doubled = block_start + 2 * (buffer.len() - block_start);
+    buffer.resize(needed.max(doubled).min(buffer_bytes_max), 0);
+}
 #[inline(always)]
-fn append_match_from_dictionary_history(
-    out: &mut DecodeOut<'_>,
+fn copy_literals(
+    buffer: &mut [u8],
+    position: usize,
+    padded_literals: &[u8],
+    cursor: usize,
+    length: usize,
+) {
+    let mut copied = 0;
+    loop {
+        let chunk: [u8; WILD_COPY_BYTES] = padded_literals
+            [cursor + copied..cursor + copied + WILD_COPY_BYTES]
+            .try_into()
+            .expect("a wild copy reads one chunk");
+        buffer[position + copied..position + copied + WILD_COPY_BYTES].copy_from_slice(&chunk);
+        copied += WILD_COPY_BYTES;
+        if copied >= length {
+            return;
+        }
+    }
+}
+#[inline(always)]
+fn copy_chunks<const CHUNK_BYTES: usize>(
+    buffer: &mut [u8],
+    position: usize,
+    distance: usize,
+    start: usize,
+    length: usize,
+) {
+    assert!(
+        distance >= CHUNK_BYTES,
+        "chunk copies read behind what they write"
+    );
+    let mut copied = start;
+    while copied < length {
+        let source = position + copied - distance;
+        let chunk: [u8; CHUNK_BYTES] = buffer[source..source + CHUNK_BYTES]
+            .try_into()
+            .expect("a chunk copy reads one chunk");
+        buffer[position + copied..position + copied + CHUNK_BYTES].copy_from_slice(&chunk);
+        copied += CHUNK_BYTES;
+    }
+}
+#[inline(always)]
+fn copy_match(buffer: &mut [u8], position: usize, source: usize, length: usize) {
+    let distance = position - source;
+    assert!(distance != 0, "a match copies from behind its position");
+    if distance >= WILD_COPY_BYTES {
+        copy_chunks::<WILD_COPY_BYTES>(buffer, position, distance, 0, length);
+        return;
+    }
+    if distance >= NARROW_COPY_BYTES {
+        copy_chunks::<NARROW_COPY_BYTES>(buffer, position, distance, 0, length);
+        return;
+    }
+    let period = distance * NARROW_COPY_BYTES.div_ceil(distance);
+    let lead = length.min(period);
+    for index in position..position + lead {
+        buffer[index] = buffer[index - distance];
+    }
+    copy_chunks::<NARROW_COPY_BYTES>(buffer, position, period, lead, length);
+}
+#[inline(always)]
+fn copy_match_from_dictionary(
+    buffer: &mut [u8],
+    position: usize,
     frame_start: usize,
     dictionary: &[u8],
     offset: usize,
     match_length: usize,
-) -> Result<()> {
+) {
     if match_length == 0 {
-        return Ok(());
+        return;
     }
-    let history_len = dictionary.len() + (out.len() - frame_start);
+    let history_len = dictionary.len() + (position - frame_start);
     let source_index = history_len - offset;
     if source_index < dictionary.len() {
-        let dict_chunk_len = (dictionary.len() - source_index).min(match_length);
-        out.append(&dictionary[source_index..source_index + dict_chunk_len])?;
-        let remaining = match_length - dict_chunk_len;
+        let dictionary_bytes = (dictionary.len() - source_index).min(match_length);
+        buffer[position..position + dictionary_bytes]
+            .copy_from_slice(&dictionary[source_index..source_index + dictionary_bytes]);
+        let remaining = match_length - dictionary_bytes;
         if remaining != 0 {
-            append_match_from_history(out, frame_start, remaining)?;
+            copy_match(buffer, position + dictionary_bytes, frame_start, remaining);
         }
-        return Ok(());
+        return;
     }
     let match_start = frame_start + (source_index - dictionary.len());
-    append_match_from_history(out, match_start, match_length)
+    copy_match(buffer, position, match_start, match_length);
 }
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct OutputLimit {

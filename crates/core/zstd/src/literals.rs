@@ -31,6 +31,9 @@ impl<'a> DecodedLiterals<'a> {
         );
         Self { padded, len }
     }
+    pub(crate) const fn padded(&self) -> &'a [u8] {
+        self.padded
+    }
     pub(crate) fn as_slice(&self) -> &'a [u8] {
         &self.padded[..self.len]
     }

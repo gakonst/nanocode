@@ -1,3 +1,5 @@
+use nanocode_sys::sha1::{ROUND_CONSTANTS, Sha1Instructions};
+
 use crate::pending::{Pending, words_be};
 
 const BLOCK_BYTES: usize = 64;
@@ -6,7 +8,6 @@ const MESSAGE_WORDS: usize = 16;
 const ROUNDS_PER_FUNCTION: usize = 20;
 
 const INITIAL: [u32; 5] = [0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476, 0xc3d2e1f0];
-const ROUND_CONSTANTS: [u32; 4] = [0x5a827999, 0x6ed9eba1, 0x8f1bbcdc, 0xca62c1d6];
 
 #[derive(Clone, Debug)]
 pub struct Sha1 {
@@ -52,6 +53,13 @@ impl Sha1 {
 }
 
 fn compress(state: &mut [u32; 5], blocks: &[[u8; BLOCK_BYTES]]) {
+    match Sha1Instructions::detect() {
+        Some(instructions) => instructions.compress(state, blocks),
+        None => compress_portable(state, blocks),
+    }
+}
+
+fn compress_portable(state: &mut [u32; 5], blocks: &[[u8; BLOCK_BYTES]]) {
     for block in blocks {
         let mut words = [0u32; MESSAGE_WORDS];
         for (word, bytes) in words.iter_mut().zip(block.as_chunks::<4>().0) {

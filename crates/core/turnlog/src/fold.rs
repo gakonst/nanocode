@@ -1,6 +1,6 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-use nanocode_durability_core::StoreError;
+use nanocode_durability_core::{EncodedPayload, StoreError};
 use serde_json::value::RawValue;
 
 use crate::{EffectClass, Outcome, Record, Status};
@@ -25,6 +25,13 @@ pub struct OpenCall {
     pub input: Box<RawValue>,
     pub tool: String,
     pub turn: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Segment {
+    pub first: u64,
+    pub last: u64,
+    pub row: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -76,14 +83,27 @@ pub struct Fold {
     calls: BTreeMap<String, OpenCall>,
     cells: BTreeMap<(String, u64), Vec<Box<RawValue>>>,
     checkpoints: BTreeMap<String, Checkpoint>,
+    ends: u64,
     events: Vec<Event>,
     hosts: BTreeMap<String, Box<RawValue>>,
     index: BTreeMap<String, usize>,
     last_event: u64,
     models: BTreeMap<String, Vec<Box<RawValue>>>,
+    segment_row: u64,
+    segments: Vec<Segment>,
     seq: u64,
     stored: BTreeMap<String, String>,
     turns: Vec<Turn>,
+}
+
+#[derive(serde::Deserialize)]
+struct CellHeader {
+    origin_call_id: String,
+}
+
+#[derive(serde::Deserialize)]
+struct CellOrigin {
+    header: Option<CellHeader>,
 }
 
 fn invalid(detail: impl std::fmt::Display) -> StoreError {
@@ -156,6 +176,101 @@ impl Fold {
     #[must_use]
     pub fn events(&self) -> &[Event] {
         &self.events
+    }
+
+    #[must_use]
+    pub fn segments(&self) -> &[Segment] {
+        &self.segments
+    }
+
+    #[must_use]
+    pub const fn ends(&self) -> u64 {
+        self.ends
+    }
+
+    #[must_use]
+    pub fn hot_bytes(&self) -> usize {
+        self.events
+            .iter()
+            .map(|event| event.event.get().len())
+            .sum()
+    }
+
+    #[must_use]
+    pub const fn segment_row(&self) -> u64 {
+        self.segment_row
+    }
+
+    pub(crate) const fn start_segment(&mut self, row: u64) {
+        self.segment_row = row;
+    }
+
+    fn sealed(&self, keep: u64) -> Option<Segment> {
+        let first = self.events.first()?;
+        let last = self
+            .events
+            .iter()
+            .take_while(|event| event.seq < keep)
+            .last()?;
+        Some(Segment {
+            first: first.seq,
+            last: last.seq,
+            row: self.segment_row,
+        })
+    }
+
+    fn garbage(&self) -> BTreeSet<String> {
+        let mut holders: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+        for key in self.stored.keys() {
+            if let Some((_, content)) = key.split_once('\n')
+                && content.starts_with("b3:")
+            {
+                holders.entry(content).or_default().push(key);
+            }
+        }
+        let mut reached = BTreeSet::new();
+        let mut queue = self
+            .checkpoints
+            .values()
+            .flat_map(|checkpoint| EncodedPayload::references(&checkpoint.payload))
+            .collect::<Vec<_>>();
+        while let Some(content) = queue.pop() {
+            for key in holders.get(content).into_iter().flatten() {
+                if !reached.insert(*key) {
+                    continue;
+                }
+                match self
+                    .stored
+                    .get(*key)
+                    .and_then(|value| value.strip_prefix('='))
+                {
+                    Some(json) => queue.extend(EncodedPayload::references(json)),
+                    None => return BTreeSet::new(),
+                }
+            }
+        }
+        holders
+            .into_values()
+            .flatten()
+            .filter(|key| !reached.contains(key))
+            .map(str::to_owned)
+            .collect()
+    }
+
+    pub(crate) fn collect(&mut self) -> usize {
+        let garbage = self.garbage();
+        for key in &garbage {
+            self.stored.remove(key);
+        }
+        garbage.len()
+    }
+
+    pub(crate) fn seal(&mut self, row: u64, keep: u64) {
+        if let Some(segment) = self.sealed(keep) {
+            self.segments.push(segment);
+            self.events.retain(|event| event.seq >= keep);
+        }
+        self.segment_row = row;
     }
 
     #[must_use]
@@ -306,6 +421,7 @@ impl Fold {
                     )));
                 }
                 self.last_event = self.last_event.max(*seq);
+                self.ends = self.ends.max(*seq);
                 self.events.push(Event {
                     at: *at,
                     event: event.clone(),
@@ -317,7 +433,19 @@ impl Fold {
                 self.last_event = self.last_event.max(*seq);
             }
             Record::Forget { cell, session } => {
-                self.cells.remove(&(session.clone(), *cell));
+                let origin = self
+                    .cells
+                    .remove(&(session.clone(), *cell))
+                    .and_then(|updates| updates.into_iter().next())
+                    .and_then(|first| {
+                        serde_json::from_str::<CellOrigin>(first.get())
+                            .ok()
+                            .and_then(|update| update.header)
+                            .map(|header| format!("{}/", header.origin_call_id))
+                    });
+                if let Some(origin) = origin {
+                    self.calls.retain(|id, _| !id.starts_with(&origin));
+                }
             }
             Record::Host { key, value } => {
                 self.hosts.insert(key.clone(), value.clone());
@@ -347,6 +475,14 @@ impl Fold {
             }
             Record::Result { call_id, .. } => {
                 self.calls.remove(call_id);
+            }
+            Record::Segment { first, last, row } => {
+                self.ends = self.ends.max(*last);
+                self.segments.push(Segment {
+                    first: *first,
+                    last: *last,
+                    row: *row,
+                });
             }
             Record::Status { status, turn } => self.status(turn, status)?,
             Record::Stored { key, value } => {
@@ -425,8 +561,15 @@ impl Fold {
         Ok(())
     }
 
-    pub fn snapshot(&self) -> Result<String, StoreError> {
+    pub fn snapshot(&self, keep: u64) -> Result<String, StoreError> {
         let mut records = Vec::new();
+        for segment in self.segments.iter().copied().chain(self.sealed(keep)) {
+            records.push(Record::Segment {
+                first: segment.first,
+                last: segment.last,
+                row: segment.row,
+            });
+        }
         for (key, value) in &self.stored {
             records.push(Record::Stored {
                 key: key.clone(),
@@ -529,7 +672,7 @@ impl Fold {
                 value: value.clone(),
             });
         }
-        for event in &self.events {
+        for event in self.events.iter().filter(|event| event.seq >= keep) {
             records.push(Record::Event {
                 at: event.at,
                 event: event.event.clone(),

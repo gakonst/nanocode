@@ -13,6 +13,7 @@ const DEFAULT_MEM_LEVEL: i32 = 8;
 pub(crate) const RECORDS: char = 'r';
 pub(crate) const SNAPSHOT: char = 's';
 pub(crate) const PART: char = '+';
+pub(crate) const BOUNDARY: char = 'b';
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct History(Vec<u8>);

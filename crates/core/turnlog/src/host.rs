@@ -4,6 +4,13 @@ use nanocode_durability_core::{Sql, SqlStatement, StoreError, StoreFuture};
 use nanocode_sync::Atom;
 
 pub trait LogHost: Send + Sync {
+    fn scan<'a>(
+        &'a self,
+        scope: &'a str,
+        from: u64,
+        to: u64,
+    ) -> StoreFuture<'a, Result<Vec<(u64, String)>, StoreError>>;
+
     fn load<'a>(
         &'a self,
         scope: &'a str,
@@ -25,6 +32,10 @@ const CREATE: Dialects = [
 const LOAD: Dialects = [
     "SELECT CAST(seq AS TEXT), body FROM nanocode_log WHERE scope = ?1 AND seq >= COALESCE((SELECT MAX(seq) FROM nanocode_log WHERE scope = ?1 AND substr(body, 1, 1) = 's'), 0) ORDER BY seq",
     "SELECT CAST(seq AS TEXT), body FROM nanocode_log WHERE scope = $1::text AND seq >= COALESCE((SELECT MAX(seq) FROM nanocode_log WHERE scope = $1::text AND substr(body, 1, 1) = 's'), 0) ORDER BY seq",
+];
+const SCAN: Dialects = [
+    "SELECT CAST(seq AS TEXT), body FROM nanocode_log WHERE scope = ?1 AND seq >= CAST(?2 AS INTEGER) AND seq < CAST(?3 AS INTEGER) ORDER BY seq",
+    "SELECT CAST(seq AS TEXT), body FROM nanocode_log WHERE scope = $1::text AND seq >= CAST($2::text AS BIGINT) AND seq < CAST($3::text AS BIGINT) ORDER BY seq",
 ];
 const APPEND: Dialects = [
     "INSERT INTO nanocode_log (scope, seq, body) VALUES (?1, CAST(?2 AS INTEGER), ?3)",
@@ -62,6 +73,27 @@ fn row(cells: &[Option<String>]) -> Result<(u64, String), StoreError> {
 }
 
 impl<H: Sql + Send + Sync + ?Sized> LogHost for SqlLog<H> {
+    fn scan<'a>(
+        &'a self,
+        scope: &'a str,
+        from: u64,
+        to: u64,
+    ) -> StoreFuture<'a, Result<Vec<(u64, String)>, StoreError>> {
+        Box::pin(async move {
+            let (from, to) = (from.to_string(), to.to_string());
+            let statements = [SqlStatement {
+                sql: self.pick(&SCAN),
+                params: vec![scope, &from, &to],
+            }];
+            let rows = self.host.transaction("turn_log_scan", &statements).await?;
+            rows.first()
+                .ok_or_else(|| invalid("scan returned no result"))?
+                .iter()
+                .map(|cells| row(cells))
+                .collect()
+        })
+    }
+
     fn load<'a>(
         &'a self,
         scope: &'a str,
@@ -153,6 +185,23 @@ impl MemoryLog {
 }
 
 impl LogHost for MemoryLog {
+    fn scan<'a>(
+        &'a self,
+        scope: &'a str,
+        from: u64,
+        to: u64,
+    ) -> StoreFuture<'a, Result<Vec<(u64, String)>, StoreError>> {
+        let rows = self.memory.read(|memory| {
+            memory
+                .rows
+                .iter()
+                .filter(|((owner, seq), _)| **owner == *scope && (from..to).contains(seq))
+                .map(|((_, seq), body)| (*seq, body.to_string()))
+                .collect()
+        });
+        Box::pin(async move { Ok(rows) })
+    }
+
     fn load<'a>(
         &'a self,
         scope: &'a str,

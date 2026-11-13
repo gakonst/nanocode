@@ -36,7 +36,10 @@ impl Effects {
     #[must_use]
     pub fn builtin() -> Self {
         [
+            "Glob",
+            "Grep",
             "list_agents",
+            "LS",
             "memories__list",
             "memories__read",
             "memories__search",
@@ -44,9 +47,13 @@ impl Effects {
             "TaskGet",
             "TaskList",
             "TaskOutput",
+            "ToolSearch",
             "update_plan",
             "view_image",
             "wait_agent",
+            "web_search",
+            "WebFetch",
+            "WebSearch",
         ]
         .into_iter()
         .fold(Self::default(), |effects, tool| {

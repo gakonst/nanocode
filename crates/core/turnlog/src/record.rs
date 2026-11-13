@@ -100,6 +100,11 @@ pub enum Record {
         call_id: String,
         output: Box<RawValue>,
     },
+    Segment {
+        first: u64,
+        last: u64,
+        row: u64,
+    },
     Status {
         status: Status,
         turn: String,

@@ -3,6 +3,7 @@ use std::{
     sync::Arc,
 };
 
+use nanocode_subagents::{AgentUpdate, ScopedAgentUpdate};
 use nanocode_sync::Atom;
 use nanocode_tool_host::{
     ToolInput, ToolOutput,
@@ -19,10 +20,12 @@ use serde::Serialize;
 use serde_json::{Map, Value, json, value::RawValue};
 
 use crate::{
+    SessionEvent,
     durability::{
         Committed, OwnedState, OwnerId, OwnerToken, Settle, StateCommit, StateStore, StoreError,
         StoreFuture, StoreRecord, StoredState,
     },
+    events::AgentEventKind,
     input::Prompt,
     session_log::{
         ImportedTurn, LogEntry, LogPage, LoggedEvent, Replaced, Started, Submission, Submitted,
@@ -40,6 +43,7 @@ pub struct Policy {
     pub effects: Effects,
     pub max_row_bytes: Option<usize>,
     pub restarts: u64,
+    pub snapshot_ratio: usize,
 }
 
 pub struct OneLog {
@@ -111,6 +115,32 @@ const fn outcome(state: TurnState) -> Option<Outcome> {
         TurnState::Failed => Some(Outcome::Failed),
         TurnState::Queued | TurnState::Running => None,
     }
+}
+
+const fn telemetry(event: &SessionEvent) -> bool {
+    let kind = match event {
+        SessionEvent::Agent { event, .. } => event.kind,
+        SessionEvent::Subagent(ScopedAgentUpdate {
+            update: AgentUpdate::Event { event, .. },
+            ..
+        }) => event.kind,
+        SessionEvent::Subagent(_) => return false,
+    };
+    matches!(
+        kind,
+        AgentEventKind::ApiEvent
+            | AgentEventKind::ModelAttemptFailed
+            | AgentEventKind::ModelAttemptRetrying
+            | AgentEventKind::ModelAttemptStarted
+            | AgentEventKind::ModelCallCompleted
+            | AgentEventKind::ModelCallStarted
+            | AgentEventKind::ModelConnectionCompleted
+            | AgentEventKind::ModelConnectionFailed
+            | AgentEventKind::ModelConnectionStarted
+            | AgentEventKind::ModelWarmupCompleted
+            | AgentEventKind::ModelWarmupFailed
+            | AgentEventKind::ModelWarmupStarted
+    )
 }
 
 fn retry_of(retry: Option<&nanocode_turnlog::Retry>) -> Option<TurnRetry> {
@@ -206,7 +236,8 @@ impl OneLog {
     ) -> Result<Arc<Self>, StoreError> {
         let log = nanocode_turnlog::TurnLog::open(host, scope)
             .await?
-            .row_limit(policy.max_row_bytes);
+            .row_limit(policy.max_row_bytes)
+            .snapshot_ratio(policy.snapshot_ratio);
         let recovering = log
             .read(|fold| {
                 fold.turns()
@@ -757,7 +788,7 @@ impl OneLog {
             previous = event.seq;
         }
         let mut lease = self.log.lease().await;
-        let ends = lease.fold().events().last().map_or(0, |event| event.seq);
+        let ends = lease.fold().ends();
         if ends < after {
             return Err(StoreError::NotCommitted(format!(
                 "turn log {} ends at seq {ends}, before the seq {after} the imported events follow",
@@ -868,7 +899,7 @@ impl OneLog {
     }
 
     pub async fn page(&self, after: u64, limit: usize) -> Result<LogPage, StoreError> {
-        Ok(self.paged(None, after, limit, None).await)
+        self.paged(None, after, limit, None).await
     }
 
     pub async fn page_bounded(
@@ -877,7 +908,7 @@ impl OneLog {
         limit: usize,
         max_bytes: usize,
     ) -> Result<LogPage, StoreError> {
-        Ok(self.paged(None, after, limit, Some(max_bytes)).await)
+        self.paged(None, after, limit, Some(max_bytes)).await
     }
 
     pub async fn turn_page(
@@ -886,7 +917,7 @@ impl OneLog {
         after: u64,
         limit: usize,
     ) -> Result<LogPage, StoreError> {
-        Ok(self.paged(Some(request_id), after, limit, None).await)
+        self.paged(Some(request_id), after, limit, None).await
     }
 
     pub async fn turn_page_bounded(
@@ -896,9 +927,8 @@ impl OneLog {
         limit: usize,
         max_bytes: usize,
     ) -> Result<LogPage, StoreError> {
-        Ok(self
-            .paged(Some(request_id), after, limit, Some(max_bytes))
-            .await)
+        self.paged(Some(request_id), after, limit, Some(max_bytes))
+            .await
     }
 
     async fn paged(
@@ -907,39 +937,37 @@ impl OneLog {
         after: u64,
         limit: usize,
         max_bytes: Option<usize>,
-    ) -> LogPage {
+    ) -> Result<LogPage, StoreError> {
+        let mut events = Vec::new();
+        let mut bytes = 0;
+        let mut has_more = false;
         self.log
-            .read(|fold| {
-                let start = fold.events().partition_point(|event| event.seq <= after);
-                let mut matching = fold.events()[start..]
-                    .iter()
-                    .filter(|event| request_id.is_none_or(|id| event.turn.as_deref() == Some(id)));
-                let mut events = Vec::new();
-                let mut bytes = 0;
-                let mut has_more = false;
-                for event in matching.by_ref() {
-                    let size = event.event.get().len();
-                    if events.len() == limit
-                        || max_bytes.is_some_and(|max| !events.is_empty() && bytes + size > max)
-                    {
-                        has_more = true;
-                        break;
-                    }
-                    bytes += size;
-                    events.push(logged(
-                        event.seq,
-                        event.turn.as_deref(),
-                        event.at,
-                        event.event.clone(),
-                    ));
+            .history(after, |event| {
+                if request_id.is_some_and(|id| event.turn.as_deref() != Some(id)) {
+                    return true;
                 }
-                LogPage {
-                    next_cursor: events.last().map_or(after, |event| event.seq),
-                    has_more,
-                    events,
+                let size = event.event.get().len();
+                if events.len() == limit
+                    || max_bytes.is_some_and(|max| !events.is_empty() && bytes + size > max)
+                {
+                    has_more = true;
+                    return false;
                 }
+                bytes += size;
+                events.push(logged(
+                    event.seq,
+                    event.turn.as_deref(),
+                    event.at,
+                    event.event.clone(),
+                ));
+                true
             })
-            .await
+            .await?;
+        Ok(LogPage {
+            next_cursor: events.last().map_or(after, |event| event.seq),
+            has_more,
+            events,
+        })
     }
 
     async fn recorded(&self, recording: Recording<'_>) -> Result<Vec<LoggedEvent>, String> {
@@ -947,6 +975,15 @@ impl OneLog {
         lease.secure().await.map_err(|error| error.to_string())?;
         let mut logged_events = Vec::with_capacity(recording.events.len());
         for (event, request_id) in recording.events.iter().zip(recording.request_ids) {
+            if telemetry(event) {
+                let live = serde_json::value::to_raw_value(&Envelope {
+                    event,
+                    annotation: recording.annotation,
+                })
+                .map_err(|error| format!("encode agent event: {error}"))?;
+                logged_events.push(logged(0, request_id.as_deref(), now(), live));
+                continue;
+            }
             let stored = serde_json::value::to_raw_value(&Stored {
                 event,
                 compact: None,

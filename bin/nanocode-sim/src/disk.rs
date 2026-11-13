@@ -9,6 +9,7 @@ use nanocode_sync::Slot;
 pub struct Rows {
     pub appends: Vec<(u64, String, String)>,
     pub log: BTreeMap<u64, (String, String)>,
+    pub page_reads: u64,
     pub reads: u64,
     pub snaps: BTreeMap<String, (u64, String)>,
     pub staged: Vec<(String, u64, String)>,
@@ -84,6 +85,19 @@ impl Rows {
             .range((scope.to_owned(), 0)..=(scope.to_owned(), u64::MAX))
             .map(|((_, seq), body)| (*seq, body.clone()))
             .collect()
+    }
+
+    pub fn tscan(&mut self, scope: &str, from: u64, to: u64) -> Vec<(u64, String)> {
+        let mut rows = self.committed(scope);
+        rows.extend(
+            self.tappends
+                .iter()
+                .filter(|(owner, ..)| owner == scope)
+                .map(|(_, seq, body)| (*seq, body.clone())),
+        );
+        rows.retain(|(seq, _)| (from..to).contains(seq));
+        self.page_reads += count(rows.len());
+        rows
     }
 
     pub fn tload(&mut self, scope: &str) -> Vec<(u64, String)> {

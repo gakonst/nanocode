@@ -127,6 +127,8 @@ impl Invariant {
 #[derive(Clone, Copy, Debug)]
 pub struct TurnOptions {
     pub calm: bool,
+    pub long: Option<u64>,
+    pub snapshot_ratio: usize,
     pub mutation: TurnMutation,
     pub policy: PolicyKind,
     pub row_limit: Option<usize>,
@@ -157,6 +159,13 @@ pub struct TurnStats {
     pub brief_rows: u64,
     pub bytes: u64,
     pub cold_reads: u64,
+    pub final_bytes: u64,
+    pub final_bytes_max: u64,
+    pub final_plain: u64,
+    pub final_rows: u64,
+    pub final_rows_max: u64,
+    pub final_scopes: u64,
+    pub log_rows: u64,
     pub model_calls: u64,
     pub replayed: u64,
     pub starts: u64,
@@ -196,6 +205,17 @@ impl TurnStats {
         self.brief_rows += other.brief_rows;
         self.bytes += other.bytes;
         self.cold_reads += other.cold_reads;
+        self.final_bytes += other.final_bytes;
+        if other.final_bytes_max > self.final_bytes_max {
+            self.final_bytes_max = other.final_bytes_max;
+        }
+        self.final_plain += other.final_plain;
+        self.final_rows += other.final_rows;
+        if other.final_rows_max > self.final_rows_max {
+            self.final_rows_max = other.final_rows_max;
+        }
+        self.final_scopes += other.final_scopes;
+        self.log_rows += other.log_rows;
         self.model_calls += other.model_calls;
         self.replayed += other.replayed;
         self.starts += other.starts;
@@ -306,13 +326,22 @@ struct Shape {
 }
 
 impl Shape {
-    fn of(seed: u64, calm: bool) -> Self {
+    fn of(seed: u64, calm: bool, long: Option<u64>) -> Self {
         let mut rng = Rng::derive(seed, "turns-shape");
         let latency_ms_max = rng.range(STEP_LATENCY_MS_MIN, STEP_LATENCY_MS_MAX);
-        let window = latency_ms_max * TURN_STEPS_MAX * SESSION_TURNS_MAX;
-        let sessions = (0..rng.range(1, SESSIONS_MAX))
+        let session_turns = long.unwrap_or(SESSION_TURNS_MAX);
+        let window = latency_ms_max * TURN_STEPS_MAX * session_turns;
+        let session_count = match long {
+            Some(_) => 1,
+            None => rng.range(1, SESSIONS_MAX),
+        };
+        let sessions = (0..session_count)
             .map(|session| {
-                (0..rng.range(1, SESSION_TURNS_MAX))
+                let count = match long {
+                    Some(turns) => turns,
+                    None => rng.range(1, SESSION_TURNS_MAX),
+                };
+                (0..count)
                     .map(|turn| ClientTurn {
                         cancel_after_ms: rng
                             .chance(CANCEL_PPM)
@@ -322,7 +351,11 @@ impl Shape {
                     .collect()
             })
             .collect();
-        let clientless = (0..rng.range(0, CLIENTLESS_MAX))
+        let clientless = (0..if long.is_some() {
+            0
+        } else {
+            rng.range(0, CLIENTLESS_MAX)
+        })
             .map(|_| (ORIGINS[rng.pick(ORIGINS.len())], rng.range(0, window)))
             .collect();
         let crash_before_ppm = rng.range(0, CRASH_BEFORE_COMMIT_PPM_MAX);
@@ -695,7 +728,7 @@ struct Sim {
 
 impl Sim {
     fn new(seed: u64, options: TurnOptions) -> Self {
-        let shape = Shape::of(seed, options.calm);
+        let shape = Shape::of(seed, options.calm, options.long);
         let mut profile = Profile::of(seed);
         if options.calm {
             profile.before_ppm = 0;
@@ -826,7 +859,40 @@ impl Sim {
         if self.oracle.wrong.is_none() {
             self.judge_observed();
         }
+        if self.options.policy == PolicyKind::Turnlog {
+            self.probe_cold();
+        }
         self.tally();
+    }
+
+    fn probe_cold(&mut self) {
+        let scopes = self.disk.with(|rows| {
+            rows.tlog
+                .keys()
+                .map(|(scope, _)| scope.clone())
+                .collect::<BTreeSet<_>>()
+        });
+        self.stats.log_rows += self.disk.with(|rows| rows.tlog.len() as u64);
+        for scope in scopes {
+            let loaded = self.disk.with(|rows| rows.tload(&scope));
+            let bytes = loaded
+                .iter()
+                .map(|(_, body)| body.len() as u64)
+                .sum::<u64>();
+            let plain = nanocode_turnlog::rows(&loaded)
+                .unwrap_or_else(|error| panic!("a committed turn log row does not decode: {error}"))
+                .iter()
+                .map(|row| row.plain.len() as u64)
+                .sum::<u64>();
+            let rows = loaded.len() as u64;
+            self.stats.final_scopes += 1;
+            self.stats.final_rows += rows;
+            self.stats.final_rows_max = self.stats.final_rows_max.max(rows);
+            self.stats.final_bytes += bytes;
+            self.stats.final_bytes_max = self.stats.final_bytes_max.max(bytes);
+            self.stats.final_plain += plain;
+        }
+        self.disk.with(|rows| rows.reads = 0);
     }
 
     fn drain(&mut self) {
@@ -836,10 +902,13 @@ impl Sim {
             };
             self.now = at;
             self.ticks += 1;
-            if self.ticks > TICKS_MAX {
+            if self.ticks > TICKS_MAX * self.options.long.unwrap_or(1) {
                 self.wrong(
                     Invariant::Liveness,
-                    format!("the object did not settle within {TICKS_MAX} ticks"),
+                    format!(
+                        "the object did not settle within {} ticks",
+                        TICKS_MAX * self.options.long.unwrap_or(1)
+                    ),
                 );
                 return;
             }
@@ -1029,6 +1098,7 @@ impl Sim {
                 Arc::clone(&self.disk),
                 self.options.protections,
                 self.options.row_limit,
+                self.options.snapshot_ratio,
             )),
         };
         let mut object = Object {

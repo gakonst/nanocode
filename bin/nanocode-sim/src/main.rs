@@ -47,7 +47,7 @@ type Caught = BTreeMap<Invariant, (u64, u64, (u64, u64))>;
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: nanocode-sim --tidy | (--seed S | --seeds A..B) [--scenario store|agents|turns] [--ops N] [--twice] [--mutation {}] [--records content|slots] [--verbose]\n       turns: [--mutation {}] [--without {}]... [--live-seqs temporary|floor|gap|reuse] [--calm] [--policy reference|turnlog] [--row-limit BYTES]",
+        "usage: nanocode-sim --tidy | (--seed S | --seeds A..B) [--scenario store|agents|turns] [--ops N] [--twice] [--mutation {}] [--records content|slots] [--verbose]\n       turns: [--mutation {}] [--without {}]... [--live-seqs temporary|floor|gap|reuse] [--calm] [--policy reference|turnlog] [--row-limit BYTES] [--long TURNS] [--snapshot-ratio K]",
         Mutation::names(),
         TurnMutation::names(),
         onelog::PROTECTIONS.join("|")
@@ -76,6 +76,8 @@ fn parse_args(args: &[String]) -> Option<Args> {
     let mut mutation = None;
     let mut turns = TurnOptions {
         calm: false,
+        long: None,
+        snapshot_ratio: 2,
         mutation: TurnMutation::None,
         policy: PolicyKind::Reference,
         row_limit: None,
@@ -90,6 +92,8 @@ fn parse_args(args: &[String]) -> Option<Args> {
             "--calm" => turns.calm = true,
             "--policy" => turns.policy = PolicyKind::parse(rest.next()?)?,
             "--row-limit" => turns.row_limit = Some(rest.next()?.parse().ok()?),
+            "--long" => turns.long = Some(rest.next()?.parse().ok()?),
+            "--snapshot-ratio" => turns.snapshot_ratio = rest.next()?.parse().ok()?,
             "--without" => turns.protections = turns.protections.without(rest.next()?)?,
             "--live-seqs" => turns.protections.live_seqs = LiveSeqs::parse(rest.next()?)?,
             "--seed" | "--seeds" => seeds = Some(parse_seeds(rest.next()?)?),
@@ -145,6 +149,12 @@ fn replay(seed: u64, args: &Args) -> String {
         }
         if let Some(limit) = args.turns.row_limit {
             command.push_str(&format!(" --row-limit {limit}"));
+        }
+        if let Some(turns) = args.turns.long {
+            command.push_str(&format!(" --long {turns}"));
+        }
+        if args.turns.snapshot_ratio != 2 {
+            command.push_str(&format!(" --snapshot-ratio {}", args.turns.snapshot_ratio));
         }
         for name in args.turns.protections.off() {
             command.push_str(" --without ");

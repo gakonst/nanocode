@@ -23,6 +23,16 @@ use crate::{
 pub struct SimHost(pub Arc<Disk>);
 
 impl LogHost for SimHost {
+    fn scan<'a>(
+        &'a self,
+        scope: &'a str,
+        from: u64,
+        to: u64,
+    ) -> StoreFuture<'a, Result<Vec<(u64, String)>, StoreError>> {
+        let rows = self.0.with(|rows| rows.tscan(scope, from, to));
+        Box::pin(async move { Ok(rows) })
+    }
+
     fn load<'a>(
         &'a self,
         scope: &'a str,
@@ -69,17 +79,24 @@ pub struct TurnLogPolicy {
     host: Arc<dyn LogHost>,
     limit: Option<usize>,
     logs: BTreeMap<String, TurnLog>,
+    ratio: usize,
     protections: Protections,
     restarting: BTreeMap<String, String>,
     unsealed: BTreeSet<String>,
 }
 
 impl TurnLogPolicy {
-    pub fn new(disk: Arc<Disk>, protections: Protections, limit: Option<usize>) -> Self {
+    pub fn new(
+        disk: Arc<Disk>,
+        protections: Protections,
+        limit: Option<usize>,
+        ratio: usize,
+    ) -> Self {
         Self {
             host: Arc::new(SimHost(disk)),
             limit,
             logs: BTreeMap::new(),
+            ratio,
             protections,
             restarting: BTreeMap::new(),
             unsealed: BTreeSet::new(),
@@ -88,8 +105,9 @@ impl TurnLogPolicy {
 
     fn log(&mut self, scope: &str) -> &TurnLog {
         if !self.logs.contains_key(scope) {
-            let log =
-                refused(ready(TurnLog::open(Arc::clone(&self.host), scope))).row_limit(self.limit);
+            let log = refused(ready(TurnLog::open(Arc::clone(&self.host), scope)))
+                .row_limit(self.limit)
+                .snapshot_ratio(self.ratio);
             self.logs.insert(scope.to_owned(), log);
         }
         &self.logs[scope]
@@ -252,21 +270,22 @@ impl TurnDurability for TurnLogPolicy {
     }
 
     fn load(&mut self, _log: &mut dyn Log, scope: &str) -> ScopeState {
-        let log =
-            refused(ready(TurnLog::open(Arc::clone(&self.host), scope))).row_limit(self.limit);
+        let log = refused(ready(TurnLog::open(Arc::clone(&self.host), scope)))
+            .row_limit(self.limit)
+            .snapshot_ratio(self.ratio);
         let state = ready(log.read(|fold| {
-            let mut state = fold
-                .checkpoint(scope)
+            fold.checkpoint(scope)
                 .map_or_else(ScopeState::default, |checkpoint| {
                     ScopeState::restore(&checkpoint.payload)
-                });
-            state.events = fold
-                .events()
-                .iter()
-                .map(|event| (Some((0, event.seq)), text(&event.event)))
-                .collect();
-            state
+                })
         }));
+        let mut events = Vec::new();
+        refused(ready(log.history(0, |event| {
+            events.push((Some((0, event.seq)), text(&event.event)));
+            true
+        })));
+        let mut state = state;
+        state.events = events;
         self.logs.insert(scope.to_owned(), log);
         state
     }

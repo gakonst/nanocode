@@ -3,9 +3,6 @@
 #![doc(html_logo_url = "https://raw.githubusercontent.com/RustPython/RustPython/main/logo.png")]
 #![doc(html_root_url = "https://docs.rs/rustpython-compiler/")]
 
-#[macro_use]
-extern crate log;
-
 extern crate alloc;
 
 use alloc::{string::String, vec::Vec};

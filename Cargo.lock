@@ -1594,7 +1594,6 @@ name = "rustpython-codegen"
 version = "0.6.0"
 dependencies = [
  "indexmap",
- "log",
  "memchr",
  "nanocode-flags",
  "nanocode-numeric",
@@ -1605,6 +1604,7 @@ dependencies = [
  "rustpython-ruff_text_size",
  "rustpython-unicode",
  "rustpython-wtf8",
+ "tracing",
 ]
 
 [[package]]
@@ -1799,7 +1799,6 @@ dependencies = [
  "indexmap",
  "itoa",
  "libc",
- "log",
  "memchr",
  "nanocode-flags",
  "nanocode-numeric",
@@ -1816,6 +1815,7 @@ dependencies = [
  "rustpython-ruff_text_size",
  "rustpython-sre_engine",
  "rustpython-unicode",
+ "tracing",
  "widestring",
 ]
 

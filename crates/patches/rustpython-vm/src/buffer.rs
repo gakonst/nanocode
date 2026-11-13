@@ -618,7 +618,7 @@ impl FormatSpec {
         // Loop over all opcodes:
         for code in &self.codes {
             buffer = &mut buffer[code.pre_padding..];
-            debug!("code: {code:?}");
+            tracing::debug!("code: {code:?}");
             match code.code {
                 FormatType::Str => {
                     let (buf, rest) = buffer.split_at_mut(code.repeat);
@@ -664,7 +664,7 @@ impl FormatSpec {
         let mut items = Vec::with_capacity(self.arg_count);
         for code in &self.codes {
             data = &data[code.pre_padding..];
-            debug!("unpack code: {code:?}");
+            tracing::debug!("unpack code: {code:?}");
             match code.code {
                 FormatType::Pad => {
                     data = &data[code.repeat..];

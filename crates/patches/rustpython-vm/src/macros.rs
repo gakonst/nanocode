@@ -216,7 +216,7 @@ macro_rules! identifier_utf8(
 macro_rules! vm_trace {
     ($($arg:tt)+) => {
         #[cfg(feature = "vm-tracing-logging")]
-        trace!($($arg)+);
+        tracing::trace!($($arg)+);
     }
 }
 

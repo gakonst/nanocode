@@ -45,8 +45,9 @@ path = "../../core/flags"
 version = "2.14.0"
 features = ["std"]
 
-[dependencies.log]
-version = "0.4.30"
+[dependencies.tracing]
+version = "0.1.44"
+default-features = false
 
 [dependencies.nanocode-numeric]
 path = "../../core/numeric"

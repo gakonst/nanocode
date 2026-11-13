@@ -4254,15 +4254,15 @@ impl ExecutingFrame<'_> {
 
         #[cfg(feature = "vm-tracing-logging")]
         {
-            trace!("=======");
+            tracing::trace!("=======");
             /* TODO:
             for frame in self.frames.iter() {
                 trace!("  {:?}", frame);
             }
             */
-            trace!("  {:#?}", self);
-            trace!("  Executing opcode: {instruction:?} {arg:?}",);
-            trace!("=======");
+            tracing::trace!("  {:#?}", self);
+            tracing::trace!("  Executing opcode: {instruction:?} {arg:?}",);
+            tracing::trace!("=======");
         }
 
         #[cold]
@@ -9139,7 +9139,7 @@ impl ExecutingFrame<'_> {
             }
         };
         #[cfg(debug_assertions)]
-        debug!("Exception raised: {exception:?} with cause: {cause:?}");
+        tracing::debug!("Exception raised: {exception:?} with cause: {cause:?}");
         if let Some(cause) = cause {
             exception.set_cause(cause);
         }

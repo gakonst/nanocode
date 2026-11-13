@@ -26,8 +26,6 @@ uppercase acronyms, e.g. TextIOWrapper instead of TextIoWrapper"
 #[macro_use]
 extern crate flamer;
 
-#[macro_use]
-extern crate log;
 // extern crate env_logger;
 extern crate alloc;
 

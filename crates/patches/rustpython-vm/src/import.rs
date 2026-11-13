@@ -59,7 +59,7 @@ pub(crate) fn init_importlib_package(vm: &VirtualMachine, importlib: &PyObject) 
             Ok(())
         })();
         if zipimport_res.is_err() {
-            warn!("couldn't init zipimport")
+            tracing::warn!("couldn't init zipimport")
         }
         Ok(())
     })

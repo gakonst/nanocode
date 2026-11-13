@@ -108,8 +108,9 @@ version = "1"
 [dependencies.libc]
 version = "0.2.186"
 
-[dependencies.log]
-version = "0.4.30"
+[dependencies.tracing]
+version = "0.1.44"
+default-features = false
 
 [dependencies.nanocode-numeric]
 path = "../../core/numeric"

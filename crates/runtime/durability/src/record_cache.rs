@@ -9,35 +9,77 @@ use nanocode_sync::Atom;
 
 type Key = (Arc<str>, Arc<str>);
 
+const STALE_ORDER_PER_VALUE: usize = 1;
+
 #[derive(Clone, Default)]
 struct Records {
     used: usize,
-    values: nanocode_sync::Map<Key, Arc<str>>,
-    order: nanocode_sync::Vector<Key>,
+    inserted: u64,
+    values: nanocode_sync::Map<Key, (Arc<str>, u64)>,
+    order: nanocode_sync::Vector<(Key, u64)>,
+}
+
+fn size_of(key: &Key, value: &str) -> usize {
+    key.0.len() + key.1.len() + value.len()
 }
 
 impl Records {
     fn insert(&mut self, budget: usize, key: Key, value: Arc<str>) {
-        let size = key.0.len() + key.1.len() + value.len();
+        assert!(
+            !value.is_empty(),
+            "a record cache never holds a blank record"
+        );
+        let size = size_of(&key, &value);
         if size > budget || self.values.contains_key(&key) {
             return;
         }
         while self.used + size > budget {
-            let Some(oldest) = self.order.pop_front() else {
+            let Some((oldest, at)) = self.order.pop_front() else {
                 break;
             };
-            if let Some(evicted) = self.values.remove(&oldest) {
-                self.used -= oldest.0.len() + oldest.1.len() + evicted.len();
+            if self
+                .values
+                .get(&oldest)
+                .is_some_and(|(_, inserted)| *inserted == at)
+                && let Some((evicted, _)) = self.values.remove(&oldest)
+            {
+                self.used -= size_of(&oldest, &evicted);
             }
         }
+        assert!(
+            self.used + size <= budget,
+            "a record cache evicts until a record fits its budget"
+        );
+        self.inserted = self
+            .inserted
+            .checked_add(1)
+            .expect("a record cache counts its inserts in u64");
         self.used += size;
-        self.order.push_back(key.clone());
-        self.values.insert(key, value);
+        self.order.push_back((key.clone(), self.inserted));
+        self.values.insert(key, (value, self.inserted));
+        if self.order.len() > self.values.len() * (1 + STALE_ORDER_PER_VALUE) {
+            let values = &self.values;
+            self.order
+                .retain(|(key, at)| values.get(key).is_some_and(|(_, inserted)| inserted == at));
+        }
+        assert!(
+            self.order.len() >= self.values.len(),
+            "a record cache orders every record it holds"
+        );
+        assert!(
+            self.order.len() <= self.values.len() * (1 + STALE_ORDER_PER_VALUE),
+            "a record cache's eviction order holds at most one forgotten record per held one"
+        );
     }
 
     fn forget(&mut self, key: &Key) {
-        if let Some(removed) = self.values.remove(key) {
-            self.used -= key.0.len() + key.1.len() + removed.len();
+        if let Some((removed, _)) = self.values.remove(key) {
+            let size = size_of(key, &removed);
+            assert!(
+                self.used >= size,
+                "a record cache counts the bytes of every record it holds"
+            );
+            self.used -= size;
         }
     }
 }
@@ -64,7 +106,7 @@ impl RecordCache {
                     records
                         .values
                         .get(&(Arc::clone(&state), Arc::from(key.as_str())))
-                        .cloned()
+                        .map(|(value, _)| Arc::clone(value))
                 })
                 .collect()
         })

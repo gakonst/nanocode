@@ -33,5 +33,14 @@
       "file": "glm.md",
       "status": "Project-authored adaptation for non-OpenAI models; no upstream Codex equivalence claimed."
     }
-  ]
+  ],
+  "unknown_model_prompt": {
+    "file": "codex-unknown-model.md",
+    "use": "Model::Custom (a model Codex does not know); upstream: codex-rs models-manager model_info_from_slug -> BASE_INSTRUCTIONS",
+    "source_url": "https://raw.githubusercontent.com/openai/codex/rust-v0.162.1/codex-rs/models-manager/prompt.md",
+    "same_at": "ac9db7d8b556c7c34a73793aed34b1f980a4fe39",
+    "sha256": "ac8ae107a0d72fe3476b430afb161ea4e67da2e446d778aefc44828160559807",
+    "bytes": 20903,
+    "extraction": "The file as published, unmodified."
+  }
 }

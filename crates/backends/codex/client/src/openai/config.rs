@@ -9,6 +9,7 @@ const SOL_SYSTEM_PROMPT: &str = include_str!("../../prompts/sol.md");
 const LUNA_SYSTEM_PROMPT: &str = include_str!("../../prompts/luna.md");
 const GLM_SYSTEM_PROMPT: &str = include_str!("../../prompts/glm.md");
 const ASTRA_SYSTEM_PROMPT: &str = include_str!("../../prompts/astra.md");
+const UNKNOWN_MODEL_SYSTEM_PROMPT: &str = include_str!("../../prompts/codex-unknown-model.md");
 
 pub(crate) fn prefixed_model_id(prefix: Option<&str>, model: Model) -> Cow<'static, str> {
     let name = match model {
@@ -160,13 +161,13 @@ impl ModelConfig {
     pub fn base_system_prompt(&self) -> Cow<'_, str> {
         let base = self.system_prompt.as_deref().unwrap_or(match self.model {
             Model::Astra | Model::Terra => ASTRA_SYSTEM_PROMPT,
-            Model::Glm53 | Model::Kimi | Model::Mimo | Model::Custom(_) => GLM_SYSTEM_PROMPT,
+            Model::Glm53 | Model::Kimi | Model::Mimo => GLM_SYSTEM_PROMPT,
+            Model::Custom(_) => UNKNOWN_MODEL_SYSTEM_PROMPT,
             Model::Sol | Model::DaybreakBlue => SOL_SYSTEM_PROMPT,
             Model::Luna => LUNA_SYSTEM_PROMPT,
             _ => ASTRA_SYSTEM_PROMPT,
         });
-        let base = if self.system_prompt.is_none()
-            && matches!(self.model, Model::Kimi | Model::Mimo | Model::Custom(_))
+        let base = if self.system_prompt.is_none() && matches!(self.model, Model::Kimi | Model::Mimo)
         {
             Cow::Owned(base.replacen(
                 "powered by Z.ai GLM-5.3",
@@ -177,10 +178,7 @@ impl ModelConfig {
             Cow::Borrowed(base)
         };
         if self.system_prompt.is_none()
-            && matches!(
-                self.model,
-                Model::Glm53 | Model::Kimi | Model::Mimo | Model::Custom(_)
-            )
+            && matches!(self.model, Model::Glm53 | Model::Kimi | Model::Mimo)
             && !self
                 .additional_instructions
                 .as_deref()

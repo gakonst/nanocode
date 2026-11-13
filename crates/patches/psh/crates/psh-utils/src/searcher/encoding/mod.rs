@@ -8,7 +8,7 @@ mod unicode;
 
 use self::gb18030::Gb18030Decoder;
 use self::japanese::{EucJpDecoder, Iso2022JpDecoder};
-use self::legacy::{Big5, EucKr, ShiftJis, SingleByte, TwoByteDecoder};
+use self::legacy::{Big5, EucKr, ShiftJis, SingleByteDecoder, TwoByteDecoder};
 use self::unicode::{Utf8Decoder, Utf16Decoder};
 
 pub(crate) static UTF_8: &Encoding = data::UTF_8_ENCODING;
@@ -132,7 +132,7 @@ impl Encoding {
                 LifeCycle::AtStart(UTF_16LE_BOM[0]),
             ),
             Variant::SingleByte(table) => (
-                VariantDecoder::SingleByte(TwoByteDecoder::new(SingleByte(table))),
+                VariantDecoder::SingleByte(SingleByteDecoder::new(table)),
                 LifeCycle::Converting,
             ),
             Variant::UserDefined => (VariantDecoder::UserDefined, LifeCycle::Converting),
@@ -451,7 +451,7 @@ impl Decoder {
 enum VariantDecoder {
     Utf8(Utf8Decoder),
     Utf16(Utf16Decoder),
-    SingleByte(TwoByteDecoder<SingleByte>),
+    SingleByte(SingleByteDecoder),
     UserDefined,
     Gb18030(Gb18030Decoder),
     Big5(TwoByteDecoder<Big5>),
@@ -472,7 +472,7 @@ impl VariantDecoder {
         match self {
             VariantDecoder::Utf8(decoder) => decoder.decode(&mut transcode, last),
             VariantDecoder::Utf16(decoder) => decoder.decode(&mut transcode, last),
-            VariantDecoder::SingleByte(decoder) => decoder.decode(&mut transcode, last),
+            VariantDecoder::SingleByte(decoder) => decoder.decode(&mut transcode),
             VariantDecoder::UserDefined => legacy::decode_user_defined(&mut transcode),
             VariantDecoder::Gb18030(decoder) => decoder.decode(&mut transcode, last),
             VariantDecoder::Big5(decoder) => decoder.decode(&mut transcode, last),
@@ -558,8 +558,7 @@ impl Transcode<'_, '_> {
         let source = &self.source[self.read..];
         let destination = &mut self.destination[self.written..];
         let length = source.len().min(destination.len());
-        let ascii = ascii_prefix(&source[..length]);
-        destination[..ascii].copy_from_slice(&source[..ascii]);
+        let ascii = copy_ascii_run(source, destination);
         self.read += ascii;
         self.written += ascii;
         if ascii == length {
@@ -575,6 +574,13 @@ impl Transcode<'_, '_> {
         }
         AsciiRun::NonAscii(self.next())
     }
+}
+
+fn copy_ascii_run(source: &[u8], destination: &mut [u8]) -> usize {
+    let length = source.len().min(destination.len());
+    let ascii = ascii_prefix(&source[..length]);
+    destination[..ascii].copy_from_slice(&source[..ascii]);
+    ascii
 }
 
 fn ascii_prefix(bytes: &[u8]) -> usize {

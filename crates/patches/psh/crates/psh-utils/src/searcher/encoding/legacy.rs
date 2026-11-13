@@ -1,9 +1,14 @@
 use super::data::{BIG5_ASTRAL_POINTERS, BIG5_INDEX, EUC_KR_INDEX, JIS0208_INDEX};
 use super::{
     ASCII_END, AsciiRun, BMP_BYTES_MAX, Decoded, DecoderResult, SCALAR_BYTES_MAX, Transcode,
+    WORD_BYTES, WORD_HIGH_BITS, copy_ascii_run,
 };
 
 const PUNCTUATION_END: u8 = 60;
+const BYTE_VALUES: usize = 256;
+const ENTRY_LENGTH_SHIFT: u32 = 24;
+const STORE_BYTES: usize = 4;
+const EXACT_TAIL_BYTES: usize = STORE_BYTES - 1;
 const USER_DEFINED_OFFSET: u32 = 0xF700;
 const BIG5_TRAIL_COUNT: usize = 157;
 const BIG5_ASTRAL_PLANE: u32 = 0x2_0000;
@@ -22,7 +27,6 @@ const HALF_WIDTH_KATAKANA_FIRST: u32 = 0xFF61;
 
 pub(super) enum Lead {
     Pending(u8),
-    Continue(u32),
     Restart(u32),
     Malformed,
 }
@@ -99,7 +103,6 @@ impl<K: TwoByte> TwoByteDecoder<K> {
                         transcode.write_scalar(scalar);
                         continue 'run;
                     }
-                    Lead::Continue(scalar) => transcode.write_scalar(scalar),
                     Lead::Pending(lead) => {
                         if !transcode.has_input() {
                             if last {
@@ -143,21 +146,185 @@ impl<K: TwoByte> TwoByteDecoder<K> {
     }
 }
 
-pub(super) struct SingleByte(pub(super) &'static [u16; 128]);
+pub(super) struct SingleByteDecoder {
+    index: &'static [u16; 128],
+    utf8: Box<[u32; BYTE_VALUES]>,
+}
 
-impl TwoByte for SingleByte {
-    const ROOM_BYTES: usize = BMP_BYTES_MAX;
-    const PUNCTUATION_FAST: bool = true;
+enum Run {
+    Done,
+    Stuck,
+    Malformed,
+}
 
-    fn lead(&self, byte: u8) -> Lead {
-        match self.0[usize::from(byte - ASCII_END)] {
-            0 => Lead::Malformed,
-            mapped => Lead::Continue(u32::from(mapped)),
+struct ByteRun {
+    read: usize,
+    written: usize,
+    malformed: bool,
+}
+
+const fn utf8_entry(code_point: u32) -> u32 {
+    if code_point < 0x80 {
+        code_point | (1 << ENTRY_LENGTH_SHIFT)
+    } else if code_point < 0x800 {
+        (0xC0 | (code_point >> 6)) | ((0x80 | (code_point & 0x3F)) << 8) | (2 << ENTRY_LENGTH_SHIFT)
+    } else {
+        (0xE0 | (code_point >> 12))
+            | ((0x80 | ((code_point >> 6) & 0x3F)) << 8)
+            | ((0x80 | (code_point & 0x3F)) << 16)
+            | (3 << ENTRY_LENGTH_SHIFT)
+    }
+}
+
+const fn user_defined_table() -> [u32; BYTE_VALUES] {
+    let mut table = [0; BYTE_VALUES];
+    let mut byte = 0;
+    while byte < BYTE_VALUES {
+        let code_point = if byte < ASCII_END as usize {
+            byte as u32
+        } else {
+            USER_DEFINED_OFFSET + byte as u32
+        };
+        table[byte] = utf8_entry(code_point);
+        byte += 1;
+    }
+    table
+}
+
+static USER_DEFINED_UTF8: [u32; BYTE_VALUES] = user_defined_table();
+
+fn ascii_word(source: &[u8], at: usize) -> bool {
+    let word: [u8; WORD_BYTES] = source[at..at + WORD_BYTES]
+        .try_into()
+        .expect("a word of input bytes");
+    u64::from_ne_bytes(word) & WORD_HIGH_BITS == 0
+}
+
+fn byte_run(source: &[u8], destination: &mut [u8], table: &[u32; BYTE_VALUES]) -> ByteRun {
+    let count = source.len().min(destination.len() / BMP_BYTES_MAX);
+    let stores = count.saturating_sub(EXACT_TAIL_BYTES);
+    let mut read = 0;
+    let mut written = 0;
+    while read < stores {
+        if read + WORD_BYTES <= stores && ascii_word(source, read) {
+            let copied = copy_ascii_run(
+                &source[read..stores],
+                &mut destination[written..written + (stores - read)],
+            );
+            read += copied;
+            written += copied;
+            continue;
+        }
+        let end = (read + WORD_BYTES).min(stores);
+        for &byte in &source[read..end] {
+            let entry = table[usize::from(byte)];
+            if entry == 0 {
+                return ByteRun {
+                    read,
+                    written,
+                    malformed: true,
+                };
+            }
+            destination[written..written + STORE_BYTES].copy_from_slice(&entry.to_le_bytes());
+            written += (entry >> ENTRY_LENGTH_SHIFT) as usize;
+            read += 1;
         }
     }
+    for &byte in &source[read..count] {
+        let entry = table[usize::from(byte)];
+        if entry == 0 {
+            return ByteRun {
+                read,
+                written,
+                malformed: true,
+            };
+        }
+        let length = (entry >> ENTRY_LENGTH_SHIFT) as usize;
+        destination[written..written + length].copy_from_slice(&entry.to_le_bytes()[..length]);
+        written += length;
+        read += 1;
+    }
+    ByteRun {
+        read,
+        written,
+        malformed: false,
+    }
+}
 
-    fn trail(&self, _lead: u8, _byte: u8) -> Trail {
-        unreachable!("a single-byte encoding has no trail bytes")
+impl SingleByteDecoder {
+    pub(super) fn new(index: &'static [u16; 128]) -> SingleByteDecoder {
+        let utf8 = Box::new(std::array::from_fn(|byte| {
+            if byte < usize::from(ASCII_END) {
+                return utf8_entry(byte as u32);
+            }
+            match index[byte - usize::from(ASCII_END)] {
+                0 => 0,
+                mapped => utf8_entry(u32::from(mapped)),
+            }
+        }));
+        SingleByteDecoder { index, utf8 }
+    }
+
+    fn run(&self, transcode: &mut Transcode<'_, '_>, strict: &mut bool) -> Run {
+        let source = &transcode.source[transcode.read..];
+        let run = byte_run(
+            source,
+            &mut transcode.destination[transcode.written..],
+            &self.utf8,
+        );
+        if run.read == 0 && !run.malformed {
+            return Run::Stuck;
+        }
+        if let Some(&settled) = source[..run.read]
+            .iter()
+            .rev()
+            .find(|&&byte| byte >= PUNCTUATION_END)
+        {
+            *strict = settled >= ASCII_END;
+        }
+        transcode.read += run.read;
+        transcode.written += run.written;
+        if run.malformed {
+            transcode.read += 1;
+            return Run::Malformed;
+        }
+        Run::Done
+    }
+
+    pub(super) fn decode(&self, transcode: &mut Transcode<'_, '_>) -> Decoded {
+        let mut strict = false;
+        loop {
+            match self.run(transcode, &mut strict) {
+                Run::Done => continue,
+                Run::Malformed => return transcode.end(DecoderResult::Malformed),
+                Run::Stuck => {}
+            }
+            if !transcode.has_input() {
+                return transcode.end(DecoderResult::InputEmpty);
+            }
+            let byte = transcode.source[transcode.read];
+            let room = if byte < ASCII_END && !strict {
+                1
+            } else {
+                BMP_BYTES_MAX
+            };
+            if !transcode.has_room(room) {
+                return transcode.end(DecoderResult::OutputFull);
+            }
+            transcode.read += 1;
+            if byte < ASCII_END {
+                transcode.write_ascii(byte);
+                if byte >= PUNCTUATION_END {
+                    strict = false;
+                }
+                continue;
+            }
+            match self.index[usize::from(byte - ASCII_END)] {
+                0 => return transcode.end(DecoderResult::Malformed),
+                mapped => transcode.write_scalar(u32::from(mapped)),
+            }
+            strict = true;
+        }
     }
 }
 
@@ -266,7 +433,19 @@ impl TwoByte for ShiftJis {
     }
 }
 
+fn user_defined_run(transcode: &mut Transcode<'_, '_>) {
+    let run = byte_run(
+        &transcode.source[transcode.read..],
+        &mut transcode.destination[transcode.written..],
+        &USER_DEFINED_UTF8,
+    );
+    assert!(!run.malformed, "x-user-defined maps every byte");
+    transcode.read += run.read;
+    transcode.written += run.written;
+}
+
 pub(super) fn decode_user_defined(transcode: &mut Transcode<'_, '_>) -> Decoded {
+    user_defined_run(transcode);
     loop {
         if !transcode.has_input() {
             return transcode.end(DecoderResult::InputEmpty);

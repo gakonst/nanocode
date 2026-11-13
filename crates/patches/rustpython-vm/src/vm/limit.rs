@@ -172,6 +172,7 @@ thread_local! {
 
 static INSTALLED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
+#[inline(never)]
 fn count(delta: isize) {
     if !INSTALLED.load(core::sync::atomic::Ordering::Relaxed) {
         INSTALLED.store(true, core::sync::atomic::Ordering::Relaxed);

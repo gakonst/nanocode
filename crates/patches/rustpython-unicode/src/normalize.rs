@@ -4,8 +4,8 @@
 
 use core::str::FromStr;
 
-use icu_normalizer::{ComposingNormalizerBorrowed, DecomposingNormalizerBorrowed};
 use rustpython_wtf8::{Wtf8, Wtf8Buf, Wtf8Chunk};
+use unicode_normalization::UnicodeNormalization;
 
 /// One of the four Unicode normalization forms.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -37,26 +37,10 @@ impl FromStr for NormalizeForm {
 #[must_use]
 pub fn normalize(form: NormalizeForm, text: &Wtf8) -> Wtf8Buf {
     match form {
-        NormalizeForm::Nfc => {
-            let normalizer = ComposingNormalizerBorrowed::new_nfc();
-            text.map_utf8(|s| normalizer.normalize_iter(s.chars()))
-                .collect()
-        }
-        NormalizeForm::Nfkc => {
-            let normalizer = ComposingNormalizerBorrowed::new_nfkc();
-            text.map_utf8(|s| normalizer.normalize_iter(s.chars()))
-                .collect()
-        }
-        NormalizeForm::Nfd => {
-            let normalizer = DecomposingNormalizerBorrowed::new_nfd();
-            text.map_utf8(|s| normalizer.normalize_iter(s.chars()))
-                .collect()
-        }
-        NormalizeForm::Nfkd => {
-            let normalizer = DecomposingNormalizerBorrowed::new_nfkd();
-            text.map_utf8(|s| normalizer.normalize_iter(s.chars()))
-                .collect()
-        }
+        NormalizeForm::Nfc => text.map_utf8(UnicodeNormalization::nfc).collect(),
+        NormalizeForm::Nfkc => text.map_utf8(UnicodeNormalization::nfkc).collect(),
+        NormalizeForm::Nfd => text.map_utf8(UnicodeNormalization::nfd).collect(),
+        NormalizeForm::Nfkd => text.map_utf8(UnicodeNormalization::nfkd).collect(),
     }
 }
 
@@ -67,10 +51,10 @@ pub fn normalize(form: NormalizeForm, text: &Wtf8) -> Wtf8Buf {
 #[must_use]
 pub fn is_normalized(form: NormalizeForm, text: &Wtf8) -> bool {
     let check: fn(&str) -> bool = match form {
-        NormalizeForm::Nfc => |s| ComposingNormalizerBorrowed::new_nfc().is_normalized(s),
-        NormalizeForm::Nfkc => |s| ComposingNormalizerBorrowed::new_nfkc().is_normalized(s),
-        NormalizeForm::Nfd => |s| DecomposingNormalizerBorrowed::new_nfd().is_normalized(s),
-        NormalizeForm::Nfkd => |s| DecomposingNormalizerBorrowed::new_nfkd().is_normalized(s),
+        NormalizeForm::Nfc => |s| s.chars().eq(s.nfc()),
+        NormalizeForm::Nfkc => |s| s.chars().eq(s.nfkc()),
+        NormalizeForm::Nfd => |s| s.chars().eq(s.nfd()),
+        NormalizeForm::Nfkd => |s| s.chars().eq(s.nfkd()),
     };
     text.chunks().all(|chunk| match chunk {
         Wtf8Chunk::Utf8(s) => check(s),

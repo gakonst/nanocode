@@ -1,12 +1,12 @@
 use std::mem;
 
 use crate::{
-    decompose::Decompositions,
+    decompose::CanonicalOrder,
     lookup::{Form, compose},
 };
 
 pub struct Recompositions<I> {
-    decompositions: Decompositions<I>,
+    decompositions: CanonicalOrder<I>,
     composee: Option<char>,
     pending: Vec<(u8, char)>,
     ready: Vec<(u8, char)>,
@@ -16,7 +16,7 @@ pub struct Recompositions<I> {
 impl<I: Iterator<Item = char>> Recompositions<I> {
     pub(crate) fn new(input: I, form: Form) -> Self {
         Self {
-            decompositions: Decompositions::new(input, form),
+            decompositions: CanonicalOrder::new(input, form),
             composee: None,
             pending: Vec::new(),
             ready: Vec::new(),

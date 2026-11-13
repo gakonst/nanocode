@@ -19,10 +19,11 @@ use alloc::{
     vec::Vec,
 };
 
-use icu_properties::props::{
-    BinaryProperty, CaseIgnorable, Cased, EnumeratedProperty, GeneralCategory, Lowercase, Uppercase,
-};
 use rustpython_wtf8::{CodePoint, Wtf8, Wtf8Buf, Wtf8Chunk};
+
+use crate::properties::{
+    CASE_IGNORABLE, CASED, GeneralCategory, LOWERCASE, UPPERCASE, general_category, has,
+};
 
 include!(concat!(env!("OUT_DIR"), "/generated/case.rs"));
 
@@ -92,31 +93,31 @@ pub fn simple_fold(c: char) -> char {
 /// Whether `c` has the `Lowercase` property.
 #[must_use]
 pub fn is_lowercase(c: char) -> bool {
-    Lowercase::for_char(c)
+    has(c, LOWERCASE)
 }
 
 /// Whether `c` has the `Uppercase` property.
 #[must_use]
 pub fn is_uppercase(c: char) -> bool {
-    Uppercase::for_char(c)
+    has(c, UPPERCASE)
 }
 
 /// Whether `c` is a titlecase letter (general category `Lt`).
 #[must_use]
 pub fn is_titlecase(c: char) -> bool {
-    GeneralCategory::for_char(c) == GeneralCategory::TitlecaseLetter
+    general_category(c) == GeneralCategory::TitlecaseLetter
 }
 
 /// Whether `c` has the `Cased` property.
 #[must_use]
 pub fn is_cased(c: char) -> bool {
-    Cased::for_char(c)
+    has(c, CASED)
 }
 
 /// Whether `c` has the `Case_Ignorable` property.
 #[must_use]
 pub fn is_case_ignorable(c: char) -> bool {
-    CaseIgnorable::for_char(c)
+    has(c, CASE_IGNORABLE)
 }
 
 // String-level mappings
@@ -287,11 +288,6 @@ fn lowercase_or_sigma(ch: char, s: &str, i: usize, out: &mut FmtWriter<'_>) {
     }
 }
 
-// Handle context-sensitive sigma.
-//
-// Sigma is handled as a special case. This is more efficient than using icu4x
-// to scan the entire string with CaseMapper because CaseMapper would allocate
-// to produce a new string.
 fn handle_capital_sigma(s: &str, i: usize) -> char {
     let (left, rest) = s.split_at(i);
     let right = &rest['Σ'.len_utf8()..];

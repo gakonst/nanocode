@@ -6,6 +6,7 @@ use core::{
     fmt::{Debug, Display},
     iter::Iterator,
     num::NonZeroUsize,
+    ops::RangeInclusive,
     time::Duration,
 };
 
@@ -19,13 +20,10 @@ use std::{
     fs::{self, File},
     io::{BufRead, BufReader, BufWriter, Cursor, Lines, Read, Write},
     path::{Path, PathBuf},
-    sync::mpsc,
+    sync::{Arc, mpsc},
     thread,
 };
 
-use icu_properties::props::{
-    BidiClass, EnumeratedProperty, GeneralCategory, NamedEnumeratedProperty, NumericType,
-};
 use nanocode_compression::inflate::{InflateStatus, inflate_all};
 
 // Uncompressed size of Unihan-3.2.0.txt
@@ -314,35 +312,29 @@ fn full_data_parsers_latest() {
 fn generate_decomp(decomp_lines: Vec<(u32, String)>) {
     let mut writer = open_writer("decomp.rs");
 
-    // NOTE:
-    // This ONLY parses compatibility decomposition because Python exposes the tags. The tags are
-    // the "<square>", "<circle>", et cetera bits before the decomposition. Thus, we can save space
-    // by using icu4x's CanonicalDecomposer for non-compatibility decomposition.
     let mut decomp_ranges = Vec::new();
     let mut values = Vec::new();
     for (start, value) in decomp_lines {
-        // We're building a sparse array. Most characters don't decompose, so we don't
-        // need to literally store a row for each char.
         assert!(
             !value.is_empty(),
             "Decomp field shouldn't be empty at this point"
         );
 
-        let Some((dtype, decomp)) = value.split_once('>').map(|(dtype, decomp)| {
-            let dtype = dtype
-                .strip_prefix('<')
-                .unwrap_or_else(|| panic!("Compatibility decomp; expected <tag>\n\tgot: {value}"));
-            (
-                parse_decomp_type(dtype),
-                decomp
-                    .split_whitespace()
-                    .map(|s| u32::from_str_radix(s, 16).unwrap()),
-            )
-        }) else {
-            continue;
+        let (dtype, decomp) = match value.split_once('>') {
+            Some((dtype, decomp)) => {
+                let dtype = dtype.strip_prefix('<').unwrap_or_else(|| {
+                    panic!("Compatibility decomp; expected <tag>\n\tgot: {value}")
+                });
+                (parse_decomp_type(dtype), decomp)
+            }
+            None => (DecompositionType::Canonical, value.as_str()),
         };
 
-        decomp_ranges.extend(decomp);
+        decomp_ranges.extend(
+            decomp
+                .split_whitespace()
+                .map(|s| u32::from_str_radix(s, 16).unwrap()),
+        );
         let end = decomp_ranges.len();
 
         let value = format!("({start}, DecompositionType::{dtype:?}, {end})");
@@ -351,7 +343,7 @@ fn generate_decomp(decomp_lines: Vec<(u32, String)>) {
 
     write_slice_unordered(
         &mut writer,
-        "DECOMP_COMPAT",
+        "DECOMPOSITIONS",
         "(u32, DecompositionType, usize)",
         &mut values,
     );
@@ -691,9 +683,9 @@ fn general_category_3_2() {
                 line.line
             )),
         );
-        let id = parse_general(field);
-        if id != GeneralCategory::Unassigned {
-            let value = format!("GeneralCategory::{id:?}");
+        let id = value_index(&GENERAL_CATEGORIES, field);
+        if id != value_index(&GENERAL_CATEGORIES, GENERAL_CATEGORY_UNASSIGNED) {
+            let value = value_path("GeneralCategory", &GENERAL_CATEGORIES, id);
             values.push((line.start, line.end, value));
         }
     }
@@ -719,9 +711,10 @@ fn east_asian_width_3_2() {
                 line.line
             )),
         );
-        let id = parse_eaw(field);
-        if id != "EastAsianWidth::Neutral" {
-            values.push((line.start, line.end, id));
+        let id = value_index(&EAST_ASIAN_WIDTHS, field);
+        if id != value_index(&EAST_ASIAN_WIDTHS, EAST_ASIAN_WIDTH_NEUTRAL) {
+            let value = value_path("EastAsianWidth", &EAST_ASIAN_WIDTHS, id);
+            values.push((line.start, line.end, value));
         }
     }
 
@@ -733,7 +726,7 @@ fn east_asian_width_3_2() {
     );
 }
 
-fn bidi_class_3_2() {
+fn bidi_class_3_2(latest: &Latest) {
     let mut writer = open_writer("bidi_class_3_2.rs");
     let reader = UnicodeLineReader::from_file_name("DerivedBidiClass-3.2.0.txt", false);
 
@@ -746,14 +739,13 @@ fn bidi_class_3_2() {
                 line.line
             )),
         );
-        let id = parse_bidi(field);
+        let id = value_index(&BIDI_CLASSES, field);
         for i in line.start..=line.end {
-            let legacy = BidiClass::try_from_str(id.rsplit_once("::").unwrap().1)
-                .expect("Unicode data contains valid variants");
-            let modern = char::from_u32(i).map(BidiClass::for_char);
+            let modern = char::from_u32(i).map(|_| usize::from(latest.bidi_classes[i as usize]));
 
-            if Some(legacy) != modern {
-                values.push((line.start, line.end, id));
+            if Some(id) != modern {
+                let value = value_path("BidiClass", &BIDI_CLASSES, id);
+                values.push((line.start, line.end, value));
                 break;
             }
         }
@@ -805,21 +797,20 @@ fn combining_class_3_2() {
             )),
         );
         let id: u8 = field.parse().unwrap();
-        if id != 0 {
-            let value = format!("CanonicalCombiningClass::from_icu4c_value({id})");
-            values.push((line.start, line.end, value));
+        if id != COMBINING_CLASS_NOT_REORDERED {
+            values.push((line.start, line.end, id));
         }
     }
 
     write_slice_display(
         &mut writer,
         "COMBINING_CLASS",
-        "(u32, u32, CanonicalCombiningClass)",
+        "(u32, u32, u8)",
         &mut values,
     );
 }
 
-fn generate_numeric_type_3_2(rx: mpsc::Receiver<Vec<(u32, u32, f64)>>) {
+fn generate_numeric_type_3_2(rx: mpsc::Receiver<Vec<(u32, u32, f64)>>, latest: &Latest) {
     let mut writer = open_writer("num_type_3_2.rs");
     let reader = UnicodeLineReader::from_file_name("DerivedNumericType-3.2.0.txt", false);
 
@@ -832,28 +823,29 @@ fn generate_numeric_type_3_2(rx: mpsc::Receiver<Vec<(u32, u32, f64)>>) {
                 line.line
             )),
         );
-        let id = parse_numeric_type_str(field);
-        let differs = (line.start..=line.end).any(|c| match char::from_u32(c) {
-            Some(c) => {
-                let modern = parse_numeric_type_val(NumericType::for_char(c));
-                modern != id
-            }
-            None => true,
+        let id = value_index(&NUMERIC_TYPES, field);
+        let differs = (line.start..=line.end).any(|c| {
+            char::from_u32(c).is_none_or(|_| usize::from(latest.numeric_types[c as usize]) != id)
         });
 
         if differs {
-            values.push((line.start, line.end, id));
+            values.push((
+                line.start,
+                line.end,
+                value_path("NumericType", &NUMERIC_TYPES, id),
+            ));
         }
     }
 
-    // Extend the 3.2.0 differences with the Unihan data. It's possible that the type matters but we
-    // will treat them as Numeric for now.
     let diffs = rx.recv_timeout(Duration::from_mins(10)).unwrap();
-    values.extend(
-        diffs
-            .into_iter()
-            .map(|(start, end, _)| (start, end, "NumericType::Numeric")),
-    );
+    let numeric = value_index(&NUMERIC_TYPES, NUMERIC_TYPE_NUMERIC);
+    values.extend(diffs.into_iter().map(|(start, end, _)| {
+        (
+            start,
+            end,
+            value_path("NumericType", &NUMERIC_TYPES, numeric),
+        )
+    }));
 
     write_slice_display(
         &mut writer,
@@ -869,7 +861,6 @@ fn drive_parsers() {
         full_data_parsers_latest,
         general_category_3_2,
         east_asian_width_3_2,
-        bidi_class_3_2,
         binary_props_3_2,
         combining_class_3_2,
         generate_name_lookups,
@@ -877,114 +868,24 @@ fn drive_parsers() {
         generate_case_tables,
     ];
 
-    let mut handles = Vec::with_capacity(parsers.len() + 2);
+    let mut handles = Vec::with_capacity(parsers.len() + 4);
     for parser in parsers {
         handles.push(thread::spawn(parser));
     }
 
+    let latest = Arc::new(Latest::read());
+    let properties = Arc::clone(&latest);
+    handles.push(thread::spawn(move || generate_properties(&properties)));
+    let bidi = Arc::clone(&latest);
+    handles.push(thread::spawn(move || bidi_class_3_2(&bidi)));
     let (tx_numeric, rx_numeric) = mpsc::channel();
     handles.push(thread::spawn(move || full_data_parsers_3_2(tx_numeric)));
-    handles.push(thread::spawn(move || generate_numeric_type_3_2(rx_numeric)));
+    handles.push(thread::spawn(move || {
+        generate_numeric_type_3_2(rx_numeric, &latest)
+    }));
 
     for handle in handles {
         handle.join().unwrap();
-    }
-}
-
-fn parse_general(id: &str) -> GeneralCategory {
-    match id.trim() {
-        "Cn" => GeneralCategory::Unassigned,
-        "Lu" => GeneralCategory::UppercaseLetter,
-        "Ll" => GeneralCategory::LowercaseLetter,
-        "Lt" => GeneralCategory::TitlecaseLetter,
-        "Lm" => GeneralCategory::ModifierLetter,
-        "Lo" => GeneralCategory::OtherLetter,
-        "Mn" => GeneralCategory::NonspacingMark,
-        "Mc" => GeneralCategory::SpacingMark,
-        "Me" => GeneralCategory::EnclosingMark,
-        "Nd" => GeneralCategory::DecimalNumber,
-        "Nl" => GeneralCategory::LetterNumber,
-        "No" => GeneralCategory::OtherNumber,
-        "Zs" => GeneralCategory::SpaceSeparator,
-        "Zl" => GeneralCategory::LineSeparator,
-        "Zp" => GeneralCategory::ParagraphSeparator,
-        "Cc" => GeneralCategory::Control,
-        "Cf" => GeneralCategory::Format,
-        "Co" => GeneralCategory::PrivateUse,
-        "Cs" => GeneralCategory::Surrogate,
-        "Pd" => GeneralCategory::DashPunctuation,
-        "Ps" => GeneralCategory::OpenPunctuation,
-        "Pe" => GeneralCategory::ClosePunctuation,
-        "Pc" => GeneralCategory::ConnectorPunctuation,
-        "Pi" => GeneralCategory::InitialPunctuation,
-        "Pf" => GeneralCategory::FinalPunctuation,
-        "Po" => GeneralCategory::OtherPunctuation,
-        "Sm" => GeneralCategory::MathSymbol,
-        "Sc" => GeneralCategory::CurrencySymbol,
-        "Sk" => GeneralCategory::ModifierSymbol,
-        "So" => GeneralCategory::OtherSymbol,
-        invalid => unreachable!("Unicode data contains valid properties: {invalid}"),
-    }
-}
-
-fn parse_eaw(id: &str) -> &'static str {
-    match id.trim() {
-        "N" => "EastAsianWidth::Neutral",
-        "A" => "EastAsianWidth::Ambiguous",
-        "H" => "EastAsianWidth::Halfwidth",
-        "F" => "EastAsianWidth::Fullwidth",
-        "Na" => "EastAsianWidth::Narrow",
-        "W" => "EastAsianWidth::Wide",
-        invalid => unreachable!("Unicode data contains valid properties: {invalid}"),
-    }
-}
-
-fn parse_bidi(id: &str) -> &'static str {
-    match id.trim() {
-        "L" => "BidiClass::LeftToRight",
-        "R" => "BidiClass::RightToLeft",
-        "EN" => "BidiClass::EuropeanNumber",
-        "ES" => "BidiClass::EuropeanSeparator",
-        "ET" => "BidiClass::EuropeanTerminator",
-        "AN" => "BidiClass::ArabicNumber",
-        "CS" => "BidiClass::CommonSeparator",
-        "B" => "BidiClass::ParagraphSeparator",
-        "S" => "BidiClass::SegmentSeparator",
-        "WS" => "BidiClass::WhiteSpace",
-        "ON" => "BidiClass::OtherNeutral",
-        "LRE" => "BidiClass::LeftToRightEmbedding",
-        "LRO" => "BidiClass::LeftToRightOverride",
-        "AL" => "BidiClass::ArabicLetter",
-        "RLE" => "BidiClass::RightToLeftEmbedding",
-        "RLO" => "BidiClass::RightToLeftOverride",
-        "PDF" => "BidiClass::PopDirectionalFormat",
-        "NSM" => "BidiClass::NonspacingMark",
-        "BN" => "BidiClass::BoundaryNeutral",
-        "FSI" => "BidiClass::FirstStrongIsolate",
-        "LRI" => "BidiClass::LeftToRightIsolate",
-        "RLI" => "BidiClass::RightToLeftIsolate",
-        "PDI" => "BidiClass::PopDirectionalIsolate",
-        invalid => unreachable!("Unicode data contains valid properties: {invalid}"),
-    }
-}
-
-fn parse_numeric_type_val(val: NumericType) -> &'static str {
-    match val {
-        NumericType::None => "none",
-        NumericType::Decimal => "decimal",
-        NumericType::Digit => "digit",
-        NumericType::Numeric => "numeric",
-        _ => unreachable!("Unicode data contains valid properties"),
-    }
-}
-
-fn parse_numeric_type_str(id: &str) -> &'static str {
-    match id {
-        "none" => "NumericType::None",
-        "decimal" => "NumericType::Decimal",
-        "digit" => "NumericType::Digit",
-        "numeric" => "NumericType::Numeric",
-        invalid => unreachable!("Unicode data contains valid properties: {invalid}"),
     }
 }
 
@@ -1302,4 +1203,454 @@ fn generate_case_tables() {
     };
     write_full(&mut writer, "CASE_FULL_FOLD", &full_fold);
     write_full(&mut writer, "CASE_FULL_TITLE", &full_title);
+}
+
+const CODE_POINT_COUNT: usize = 0x11_0000;
+
+const GENERAL_CATEGORIES: [(&str, &str); 30] = [
+    ("Cn", "Unassigned"),
+    ("Lu", "Uppercase_Letter"),
+    ("Ll", "Lowercase_Letter"),
+    ("Lt", "Titlecase_Letter"),
+    ("Lm", "Modifier_Letter"),
+    ("Lo", "Other_Letter"),
+    ("Mn", "Nonspacing_Mark"),
+    ("Mc", "Spacing_Mark"),
+    ("Me", "Enclosing_Mark"),
+    ("Nd", "Decimal_Number"),
+    ("Nl", "Letter_Number"),
+    ("No", "Other_Number"),
+    ("Zs", "Space_Separator"),
+    ("Zl", "Line_Separator"),
+    ("Zp", "Paragraph_Separator"),
+    ("Cc", "Control"),
+    ("Cf", "Format"),
+    ("Co", "Private_Use"),
+    ("Cs", "Surrogate"),
+    ("Pd", "Dash_Punctuation"),
+    ("Ps", "Open_Punctuation"),
+    ("Pe", "Close_Punctuation"),
+    ("Pc", "Connector_Punctuation"),
+    ("Pi", "Initial_Punctuation"),
+    ("Pf", "Final_Punctuation"),
+    ("Po", "Other_Punctuation"),
+    ("Sm", "Math_Symbol"),
+    ("Sc", "Currency_Symbol"),
+    ("Sk", "Modifier_Symbol"),
+    ("So", "Other_Symbol"),
+];
+
+const GENERAL_CATEGORY_UNASSIGNED: &str = "Cn";
+
+const BIDI_CLASSES: [(&str, &str); 23] = [
+    ("L", "Left_To_Right"),
+    ("R", "Right_To_Left"),
+    ("EN", "European_Number"),
+    ("ES", "European_Separator"),
+    ("ET", "European_Terminator"),
+    ("AN", "Arabic_Number"),
+    ("CS", "Common_Separator"),
+    ("B", "Paragraph_Separator"),
+    ("S", "Segment_Separator"),
+    ("WS", "White_Space"),
+    ("ON", "Other_Neutral"),
+    ("LRE", "Left_To_Right_Embedding"),
+    ("LRO", "Left_To_Right_Override"),
+    ("AL", "Arabic_Letter"),
+    ("RLE", "Right_To_Left_Embedding"),
+    ("RLO", "Right_To_Left_Override"),
+    ("PDF", "Pop_Directional_Format"),
+    ("NSM", "Nonspacing_Mark"),
+    ("BN", "Boundary_Neutral"),
+    ("FSI", "First_Strong_Isolate"),
+    ("LRI", "Left_To_Right_Isolate"),
+    ("RLI", "Right_To_Left_Isolate"),
+    ("PDI", "Pop_Directional_Isolate"),
+];
+
+const EAST_ASIAN_WIDTHS: [(&str, &str); 6] = [
+    ("N", "Neutral"),
+    ("A", "Ambiguous"),
+    ("H", "Halfwidth"),
+    ("F", "Fullwidth"),
+    ("Na", "Narrow"),
+    ("W", "Wide"),
+];
+
+const EAST_ASIAN_WIDTH_NEUTRAL: &str = "N";
+
+const NUMERIC_TYPES: [(&str, &str); 4] = [
+    ("None", "None"),
+    ("De", "Decimal"),
+    ("Di", "Digit"),
+    ("Nu", "Numeric"),
+];
+
+const NUMERIC_TYPE_NUMERIC: &str = "Numeric";
+
+const BIDI_MIRRORED: &str = "Bidi_Mirrored";
+
+const FLAGS: [(&str, &str); 7] = [
+    (BIDI_MIRRORED, "BIDI_MIRRORED"),
+    ("Lowercase", "LOWERCASE"),
+    ("Uppercase", "UPPERCASE"),
+    ("Cased", "CASED"),
+    ("Case_Ignorable", "CASE_IGNORABLE"),
+    ("XID_Start", "XID_START"),
+    ("XID_Continue", "XID_CONTINUE"),
+];
+
+const COMBINING_CLASS_NOT_REORDERED: u8 = 0;
+
+const PROPERTY_BLOCK_BITS_SEARCHED: RangeInclusive<u32> = 1..=16;
+
+fn value_index(values: &[(&str, &str)], name: &str) -> usize {
+    let name = name.trim();
+    values
+        .iter()
+        .position(|&(short, long)| {
+            short.eq_ignore_ascii_case(name) || long.eq_ignore_ascii_case(name)
+        })
+        .unwrap_or_else(|| panic!("Unicode data contains valid property values: {name}"))
+}
+
+fn value_byte(values: &[(&str, &str)], name: &str) -> u8 {
+    u8::try_from(value_index(values, name)).expect("a property has fewer than 256 values")
+}
+
+fn variant_name(long: &str) -> String {
+    long.replace('_', "")
+}
+
+fn value_path(type_name: &str, values: &[(&str, &str)], index: usize) -> String {
+    format!("{type_name}::{}", variant_name(values[index].1))
+}
+
+fn read_property_file(file_name: &str, mut apply: impl FnMut(u32, u32, &[&str])) {
+    let mut text = String::new();
+    open_reader(file_name, true)
+        .read_to_string(&mut text)
+        .unwrap();
+    let missing = text
+        .lines()
+        .filter_map(|line| line.strip_prefix("# @missing:"));
+    let entries = text
+        .lines()
+        .map(|line| line.split_once('#').map_or(line, |(entry, _)| entry).trim())
+        .filter(|entry| !entry.is_empty());
+    for entry in missing.chain(entries) {
+        let mut fields = entry.split(';').map(str::trim);
+        let range = fields
+            .next()
+            .expect("a property line starts with a code point range");
+        let (start, end) = range.split_once("..").unwrap_or((range, range));
+        let start = u32::from_str_radix(start, 16).unwrap_or_else(|e| {
+            panic!("{e}: {file_name} range start should be hexadecimal: {entry}")
+        });
+        let end = u32::from_str_radix(end, 16).unwrap_or_else(|e| {
+            panic!("{e}: {file_name} range end should be hexadecimal: {entry}")
+        });
+        let values: Vec<&str> = fields.collect();
+        assert!(
+            !values.is_empty(),
+            "{file_name} line has no property value: {entry}"
+        );
+        apply(start, end, &values);
+    }
+}
+
+fn fill(values: &mut [u8], start: u32, end: u32, value: u8) {
+    values[start as usize..=end as usize].fill(value);
+}
+
+fn flag_bit(name: &str) -> u8 {
+    let index = FLAGS
+        .iter()
+        .position(|&(flag, _)| flag == name)
+        .unwrap_or_else(|| panic!("{name} is not a stored flag"));
+    1 << index
+}
+
+struct Latest {
+    general_categories: Vec<u8>,
+    bidi_classes: Vec<u8>,
+    east_asian_widths: Vec<u8>,
+    numeric_types: Vec<u8>,
+    flags: Vec<u8>,
+}
+
+impl Latest {
+    fn read() -> Self {
+        let mut latest = Self {
+            general_categories: vec![0; CODE_POINT_COUNT],
+            bidi_classes: vec![0; CODE_POINT_COUNT],
+            east_asian_widths: vec![0; CODE_POINT_COUNT],
+            numeric_types: vec![0; CODE_POINT_COUNT],
+            flags: vec![0; CODE_POINT_COUNT],
+        };
+        latest.read_unicode_data();
+        read_property_file("DerivedBidiClass.txt", |start, end, values| {
+            fill(
+                &mut latest.bidi_classes,
+                start,
+                end,
+                value_byte(&BIDI_CLASSES, values[0]),
+            );
+        });
+        read_property_file("EastAsianWidth.txt", |start, end, values| {
+            let width = value_byte(&EAST_ASIAN_WIDTHS, values[0]);
+            fill(&mut latest.east_asian_widths, start, end, width);
+        });
+        read_property_file("DerivedNumericType.txt", |start, end, values| {
+            fill(
+                &mut latest.numeric_types,
+                start,
+                end,
+                value_byte(&NUMERIC_TYPES, values[0]),
+            );
+        });
+        read_property_file("DerivedCoreProperties.txt", |start, end, values| {
+            if values[0] != BIDI_MIRRORED && FLAGS.iter().any(|&(flag, _)| flag == values[0]) {
+                let bit = flag_bit(values[0]);
+                for flags in &mut latest.flags[start as usize..=end as usize] {
+                    *flags |= bit;
+                }
+            }
+        });
+        latest
+    }
+
+    fn read_unicode_data(&mut self) {
+        let mirrored_bit = flag_bit(BIDI_MIRRORED);
+        let mut range_start = None;
+        for line in UnicodeLineReader::from_file_name("UnicodeData.txt", true) {
+            let fields: Vec<&str> = line.line.split(';').collect();
+            let name = fields[1];
+            if name.ends_with("First>") {
+                assert!(range_start.replace(line.start).is_none(), "{}", line.line);
+                continue;
+            }
+            let start = if name.ends_with("Last>") {
+                range_start.take().unwrap_or_else(|| {
+                    panic!("a Last> line follows its First> line: {}", line.line)
+                })
+            } else {
+                line.start
+            };
+            let category = value_byte(&GENERAL_CATEGORIES, fields[2]);
+            let mirrored = match fields[9] {
+                "Y" => true,
+                "N" => false,
+                other => panic!("Bidi_Mirrored should be Y or N, got {other}: {}", line.line),
+            };
+            fill(&mut self.general_categories, start, line.start, category);
+            if mirrored {
+                for flags in &mut self.flags[start as usize..=line.start as usize] {
+                    *flags |= mirrored_bit;
+                }
+            }
+        }
+        assert!(range_start.is_none(), "UnicodeData.txt ends inside a range");
+    }
+}
+
+fn value_bits(count: usize) -> u32 {
+    usize::BITS - (count - 1).leading_zeros()
+}
+
+fn index_type(count: usize) -> &'static str {
+    if count <= usize::from(u8::MAX) + 1 {
+        "u8"
+    } else if count <= usize::from(u16::MAX) + 1 {
+        "u16"
+    } else {
+        "u32"
+    }
+}
+
+fn index_bytes(count: usize) -> usize {
+    match index_type(count) {
+        "u8" => 1,
+        "u16" => 2,
+        _ => 4,
+    }
+}
+
+struct PropertyBlocks {
+    bits: u32,
+    blocks: Vec<usize>,
+    entries: Vec<usize>,
+}
+
+impl PropertyBlocks {
+    fn split(indexes: &[usize], bits: u32) -> Self {
+        let mut seen: BTreeMap<&[usize], usize> = BTreeMap::new();
+        let mut blocks = Vec::with_capacity(indexes.len() >> bits);
+        let mut entries = Vec::new();
+        for chunk in indexes.chunks(1 << bits) {
+            let next = seen.len();
+            let block = *seen.entry(chunk).or_insert_with(|| {
+                entries.extend_from_slice(chunk);
+                next
+            });
+            blocks.push(block);
+        }
+        Self {
+            bits,
+            blocks,
+            entries,
+        }
+    }
+
+    fn block_count(&self) -> usize {
+        self.entries.len() >> self.bits
+    }
+
+    fn bytes(&self, record_count: usize) -> usize {
+        self.blocks.len() * index_bytes(self.block_count())
+            + self.entries.len() * index_bytes(record_count)
+    }
+}
+
+fn write_enum(
+    writer: &mut impl Write,
+    type_name: &str,
+    values: &[(&str, &str)],
+    short_names: bool,
+) {
+    writeln!(writer, "#[derive(Clone, Copy, Debug, PartialEq, Eq)]").unwrap();
+    writeln!(writer, "pub(crate) enum {type_name} {{").unwrap();
+    for &(_, long) in values {
+        writeln!(writer, "    {},", variant_name(long)).unwrap();
+    }
+    writeln!(writer, "}}").unwrap();
+    writeln!(writer, "impl {type_name} {{").unwrap();
+    writeln!(
+        writer,
+        "    pub(crate) const ALL: [Self; {}] = [",
+        values.len()
+    )
+    .unwrap();
+    for &(_, long) in values {
+        writeln!(writer, "        Self::{},", variant_name(long)).unwrap();
+    }
+    writeln!(writer, "    ];").unwrap();
+    if short_names {
+        writeln!(
+            writer,
+            "    pub(crate) const fn short_name(self) -> &'static str {{"
+        )
+        .unwrap();
+        writeln!(writer, "        match self {{").unwrap();
+        for &(short, long) in values {
+            writeln!(
+                writer,
+                "            Self::{} => {short:?},",
+                variant_name(long)
+            )
+            .unwrap();
+        }
+        writeln!(writer, "        }}").unwrap();
+        writeln!(writer, "    }}").unwrap();
+    }
+    writeln!(writer, "}}").unwrap();
+}
+
+fn generate_properties(latest: &Latest) {
+    let fields: [(&str, &[(&str, &str)], &[u8]); 4] = [
+        (
+            "GENERAL_CATEGORY",
+            &GENERAL_CATEGORIES,
+            &latest.general_categories,
+        ),
+        ("BIDI_CLASS", &BIDI_CLASSES, &latest.bidi_classes),
+        (
+            "EAST_ASIAN_WIDTH",
+            &EAST_ASIAN_WIDTHS,
+            &latest.east_asian_widths,
+        ),
+        ("NUMERIC_TYPE", &NUMERIC_TYPES, &latest.numeric_types),
+    ];
+    let mut writer = open_writer("properties.rs");
+    write_enum(&mut writer, "GeneralCategory", &GENERAL_CATEGORIES, true);
+    write_enum(&mut writer, "BidiClass", &BIDI_CLASSES, true);
+    write_enum(&mut writer, "EastAsianWidth", &EAST_ASIAN_WIDTHS, true);
+    write_enum(&mut writer, "NumericType", &NUMERIC_TYPES, false);
+
+    let mut shift = 0;
+    let mut shifts = Vec::with_capacity(fields.len());
+    for &(name, values, _) in &fields {
+        let bits = value_bits(values.len());
+        writeln!(writer, "pub(crate) const {name}_SHIFT: u32 = {shift};").unwrap();
+        writeln!(
+            writer,
+            "pub(crate) const {name}_MASK: u32 = {};",
+            (1u32 << bits) - 1
+        )
+        .unwrap();
+        shifts.push(shift);
+        shift += bits;
+    }
+    let flags_shift = shift;
+    for (index, &(_, name)) in FLAGS.iter().enumerate() {
+        writeln!(
+            writer,
+            "pub(crate) const {name}: u32 = 1 << {};",
+            flags_shift + index as u32
+        )
+        .unwrap();
+    }
+    assert!(
+        flags_shift + FLAGS.len() as u32 <= u32::BITS,
+        "a property record fits in a u32"
+    );
+
+    let mut records: Vec<u32> = Vec::new();
+    let mut record_indexes: BTreeMap<u32, usize> = BTreeMap::new();
+    let mut indexes = Vec::with_capacity(CODE_POINT_COUNT);
+    for code in 0..CODE_POINT_COUNT {
+        let mut record = u32::from(latest.flags[code]) << flags_shift;
+        for (&(_, _, values), &shift) in fields.iter().zip(&shifts) {
+            record |= u32::from(values[code]) << shift;
+        }
+        let next = records.len();
+        let index = *record_indexes.entry(record).or_insert_with(|| {
+            records.push(record);
+            next
+        });
+        indexes.push(index);
+    }
+
+    let split = PROPERTY_BLOCK_BITS_SEARCHED
+        .map(|bits| PropertyBlocks::split(&indexes, bits))
+        .min_by_key(|split| split.bytes(records.len()))
+        .expect("at least one block size is searched");
+    writeln!(
+        writer,
+        "pub(crate) const PROPERTY_BLOCK_BITS: u32 = {};",
+        split.bits
+    )
+    .unwrap();
+    writeln!(
+        writer,
+        "pub(crate) static PROPERTY_BLOCKS: [{}; {}] = {:?};",
+        index_type(split.block_count()),
+        split.blocks.len(),
+        split.blocks
+    )
+    .unwrap();
+    writeln!(
+        writer,
+        "pub(crate) static PROPERTY_RECORD_INDEXES: [{}; {}] = {:?};",
+        index_type(records.len()),
+        split.entries.len(),
+        split.entries
+    )
+    .unwrap();
+    writeln!(
+        writer,
+        "pub(crate) static PROPERTY_RECORDS: [u32; {}] = {records:?};",
+        records.len()
+    )
+    .unwrap();
 }

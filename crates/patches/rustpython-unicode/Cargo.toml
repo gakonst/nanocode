@@ -35,17 +35,11 @@ path = "src/lib.rs"
 name = "differential"
 path = "tests/differential.rs"
 
-[dependencies.icu_normalizer]
-version = "2"
-
-[dependencies.icu_properties]
-version = "2"
-
 [dependencies.rustpython-wtf8]
 version = "0.6.0"
 
-[build-dependencies.icu_properties]
-version = "2"
+[dependencies.unicode-normalization]
+version = "0.1.25"
 
 [build-dependencies.nanocode-compression]
 path = "../../core/compression"

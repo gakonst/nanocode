@@ -6,7 +6,7 @@ rust-version.workspace = true
 publish.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Unicode NFC and NFKC normalization over Unicode Character Database tables"
+description = "Unicode NFC, NFD, NFKC and NFKD normalization over Unicode Character Database tables"
 autotests = false
 autobenches = false
 

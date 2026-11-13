@@ -15,6 +15,7 @@ pub mod data;
 pub mod identifier;
 pub mod names;
 pub mod normalize;
+mod properties;
 
 pub use data::{LookupResult, Ucd, character_name, lookup_character, lookup_name, unicode_version};
 pub use normalize::{NormalizeForm, is_normalized, normalize};

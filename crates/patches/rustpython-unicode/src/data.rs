@@ -1,7 +1,6 @@
 //! Access to the Unicode character database (`unicodedata`).
 //!
-//! Owns the generated Unicode 3.2.0 / latest tables and the
-//! `icu4x`/`unicode_names2` lookups behind them.
+//! Owns the generated Unicode 3.2.0 / latest tables.
 
 // spell-checker:ignore codep decomp DECOMP unidata
 
@@ -12,12 +11,35 @@ use alloc::{
     string::String,
 };
 
-use icu_normalizer::properties::{CanonicalDecomposition, Decomposed};
-use icu_properties::props::{
-    BidiClass, BidiMirrored, BinaryProperty, CanonicalCombiningClass, EastAsianWidth,
-    EnumeratedProperty, GeneralCategory, NamedEnumeratedProperty, NumericType,
-};
 use rustpython_wtf8::CodePoint;
+
+use crate::properties::{self, BidiClass, EastAsianWidth, GeneralCategory, NumericType};
+
+const COMBINING_CLASS_NOT_REORDERED: u8 = 0;
+const HANGUL_SYLLABLE_FIRST: u32 = 0xAC00;
+const HANGUL_LEADING_FIRST: u32 = 0x1100;
+const HANGUL_VOWEL_FIRST: u32 = 0x1161;
+const HANGUL_TRAILING_BASE: u32 = 0x11A7;
+const HANGUL_LEADING_COUNT: u32 = 19;
+const HANGUL_VOWEL_COUNT: u32 = 21;
+const HANGUL_TRAILING_COUNT: u32 = 28;
+const HANGUL_VOWEL_TRAILING_COUNT: u32 = HANGUL_VOWEL_COUNT * HANGUL_TRAILING_COUNT;
+const HANGUL_SYLLABLE_COUNT: u32 = HANGUL_LEADING_COUNT * HANGUL_VOWEL_TRAILING_COUNT;
+
+fn hangul_decomposition(code: u32) -> Option<(u32, u32)> {
+    let syllable = code
+        .checked_sub(HANGUL_SYLLABLE_FIRST)
+        .filter(|syllable| *syllable < HANGUL_SYLLABLE_COUNT)?;
+    let trailing = syllable % HANGUL_TRAILING_COUNT;
+    if trailing == 0 {
+        let leading = HANGUL_LEADING_FIRST + syllable / HANGUL_VOWEL_TRAILING_COUNT;
+        let vowel =
+            HANGUL_VOWEL_FIRST + (syllable % HANGUL_VOWEL_TRAILING_COUNT) / HANGUL_TRAILING_COUNT;
+        Some((leading, vowel))
+    } else {
+        Some((code - trailing, HANGUL_TRAILING_BASE + trailing))
+    }
+}
 
 include!(concat!(env!("OUT_DIR"), "/generated/algo_names.rs"));
 include!(concat!(env!("OUT_DIR"), "/generated/name_lookups.rs"));
@@ -36,6 +58,7 @@ include!(concat!(env!("OUT_DIR"), "/generated/num_type_3_2.rs"));
 
 #[derive(Clone, Copy)]
 enum DecompositionType {
+    Canonical,
     Compat,
     Circle,
     Final,
@@ -55,24 +78,25 @@ enum DecompositionType {
 }
 
 impl DecompositionType {
-    const fn type_tag(self) -> &'static str {
+    const fn type_tag(self) -> Option<&'static str> {
         match self {
-            Self::Compat => "compat",
-            Self::Circle => "circle",
-            Self::Final => "final",
-            Self::Font => "font",
-            Self::Fraction => "fraction",
-            Self::Initial => "initial",
-            Self::Isolated => "isolated",
-            Self::Medial => "medial",
-            Self::Narrow => "narrow",
-            Self::Nobreak => "noBreak",
-            Self::Small => "small",
-            Self::Square => "square",
-            Self::Sub => "sub",
-            Self::Super => "super",
-            Self::Vertical => "vertical",
-            Self::Wide => "wide",
+            Self::Canonical => None,
+            Self::Compat => Some("compat"),
+            Self::Circle => Some("circle"),
+            Self::Final => Some("final"),
+            Self::Font => Some("font"),
+            Self::Fraction => Some("fraction"),
+            Self::Initial => Some("initial"),
+            Self::Isolated => Some("isolated"),
+            Self::Medial => Some("medial"),
+            Self::Narrow => Some("narrow"),
+            Self::Nobreak => Some("noBreak"),
+            Self::Small => Some("small"),
+            Self::Square => Some("square"),
+            Self::Sub => Some("sub"),
+            Self::Super => Some("super"),
+            Self::Vertical => Some("vertical"),
+            Self::Wide => Some("wide"),
         }
     }
 }
@@ -292,7 +316,7 @@ impl Ucd {
             return GeneralCategory::Surrogate.short_name();
         };
         if self.modern {
-            Some(GeneralCategory::for_char(c))
+            Some(properties::general_category(c))
         } else {
             cold_path();
             lookup_table(GENERAL_CATEGORY, c)
@@ -306,16 +330,14 @@ impl Ucd {
         c.to_char()
             .and_then(|c| {
                 if self.modern {
-                    Some(BidiClass::for_char(c))
+                    Some(properties::bidi_class(c))
                 } else {
                     cold_path();
                     lookup_table(BIDI_CLASS_DIFF, c)
-                        .or_else(|| membership_3_2(c as u32).then(|| BidiClass::for_char(c)))
+                        .or_else(|| membership_3_2(c as u32).then(|| properties::bidi_class(c)))
                 }
             })
-            .as_ref()
-            .map(BidiClass::short_name)
-            .unwrap_or_default()
+            .map_or("", BidiClass::short_name)
     }
 
     #[must_use]
@@ -323,7 +345,7 @@ impl Ucd {
         c.to_char()
             .and_then(|c| {
                 if self.modern {
-                    Some(EastAsianWidth::for_char(c))
+                    Some(properties::east_asian_width(c))
                 } else {
                     cold_path();
                     // CPython overrides characters in the PUA for 3.2.0.
@@ -346,7 +368,7 @@ impl Ucd {
     pub fn mirrored(&self, c: CodePoint) -> i32 {
         c.to_char().map_or(0, |c| {
             (if self.modern {
-                BidiMirrored::for_char(c)
+                properties::has(c, properties::BIDI_MIRRORED)
             } else {
                 cold_path();
                 let c = c as u32;
@@ -370,14 +392,13 @@ impl Ucd {
         c.to_char()
             .and_then(|c| {
                 if self.modern {
-                    Some(CanonicalCombiningClass::for_char(c))
+                    Some(unicode_normalization::combining_class(c))
                 } else {
                     cold_path();
                     lookup_table(COMBINING_CLASS, c)
                 }
             })
-            .unwrap_or(CanonicalCombiningClass::NotReordered)
-            .to_icu4c_value()
+            .unwrap_or(COMBINING_CLASS_NOT_REORDERED)
     }
 
     #[must_use]
@@ -399,36 +420,30 @@ impl Ucd {
         {
             format!("{original:04X}")
         } else if let Ok(i) =
-            DECOMP_COMPAT.binary_search_by_key(&(ch as u32), |&(codep, _, _)| codep)
+            DECOMPOSITIONS.binary_search_by_key(&(ch as u32), |&(codep, _, _)| codep)
         {
-            // Compatibility decomposition
-            // `icu4x` doesn't expose a non-recursive, compatibility decomposer so we
-            // have to do it manually for now.
-            let tag = DECOMP_COMPAT[i].1.type_tag();
-            let end = DECOMP_COMPAT[i].2;
+            let (_, kind, end) = DECOMPOSITIONS[i];
             let start = i
                 .checked_sub(1)
-                .map(|i| DECOMP_COMPAT[i].2)
+                .map(|i| DECOMPOSITIONS[i].2)
                 .unwrap_or_default();
 
-            let decomp = &DECOMP_RANGE[start..end];
-            let cap = decomp.len() * 10 + decomp.len() + tag.len() + 1;
-            let mut out = String::with_capacity(cap);
-
-            write!(out, "<{tag}>").unwrap();
-            for ch in decomp {
-                write!(out, " {ch:04X}").unwrap();
+            let mut out = String::new();
+            if let Some(tag) = kind.type_tag() {
+                write!(out, "<{tag}>").unwrap();
+            }
+            for ch in &DECOMP_RANGE[start..end] {
+                if !out.is_empty() {
+                    out.push(' ');
+                }
+                write!(out, "{ch:04X}").unwrap();
             }
 
             out
+        } else if let Some((first, second)) = hangul_decomposition(ch as u32) {
+            format!("{first:04X} {second:04X}")
         } else {
-            // Canonical decomposition
-            let decomposed = CanonicalDecomposition::new().decompose(ch);
-            match decomposed {
-                Decomposed::Default => String::new(),
-                Decomposed::Singleton(ch) => format!("{:04X}", ch as u32),
-                Decomposed::Expansion(l, r) => format!("{:04X} {:04X}", l as u32, r as u32),
-            }
+            String::new()
         }
     }
 
@@ -436,10 +451,10 @@ impl Ucd {
         let ch = ch.to_char()?;
 
         let actual = if self.modern {
-            NumericType::for_char(ch)
+            properties::numeric_type(ch)
         } else {
             cold_path();
-            lookup_table(NUMERIC_TYPE_DIFF, ch).unwrap_or_else(|| NumericType::for_char(ch))
+            lookup_table(NUMERIC_TYPE_DIFF, ch).unwrap_or_else(|| properties::numeric_type(ch))
         };
 
         expected.contains(&actual).then_some(ch)
@@ -470,7 +485,11 @@ impl Ucd {
     /// The numeric value of `c` (`unicodedata.numeric`), if it has one.
     #[must_use]
     pub fn numeric(&self, c: CodePoint) -> Option<f64> {
-        let expected = &NumericType::ALL_VALUES[1..];
+        let expected = &[
+            NumericType::Decimal,
+            NumericType::Digit,
+            NumericType::Numeric,
+        ];
         self.numeric_type_matches(c, expected).and_then(|ch| {
             lookup_property_diff(NUMERIC_VALUES, NUMERIC_VALUES_DIFF, ch, self.modern)
         })

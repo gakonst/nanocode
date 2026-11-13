@@ -31,7 +31,7 @@ impl Form {
     }
 }
 
-pub(crate) fn combining_class(character: char) -> u8 {
+pub fn combining_class(character: char) -> u8 {
     let code = u32::from(character);
     let block = (code >> COMBINING_CLASS_BLOCK_BITS) as usize;
     match COMBINING_CLASS_BLOCKS.get(block) {

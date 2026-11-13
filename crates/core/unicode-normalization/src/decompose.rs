@@ -2,7 +2,23 @@ use std::iter::Fuse;
 
 use crate::lookup::{Form, combining_class, decompose};
 
-pub(crate) struct Decompositions<I> {
+pub struct Decompositions<I>(CanonicalOrder<I>);
+
+impl<I: Iterator<Item = char>> Decompositions<I> {
+    pub(crate) fn new(input: I, form: Form) -> Self {
+        Self(CanonicalOrder::new(input, form))
+    }
+}
+
+impl<I: Iterator<Item = char>> Iterator for Decompositions<I> {
+    type Item = char;
+
+    fn next(&mut self) -> Option<char> {
+        self.0.next().map(|(_, character)| character)
+    }
+}
+
+pub(crate) struct CanonicalOrder<I> {
     input: Fuse<I>,
     form: Form,
     buffer: Vec<(u8, char)>,
@@ -10,7 +26,7 @@ pub(crate) struct Decompositions<I> {
     ready_end: usize,
 }
 
-impl<I: Iterator<Item = char>> Decompositions<I> {
+impl<I: Iterator<Item = char>> CanonicalOrder<I> {
     pub(crate) fn new(input: I, form: Form) -> Self {
         Self {
             input: input.fuse(),
@@ -49,7 +65,7 @@ impl<I: Iterator<Item = char>> Decompositions<I> {
     }
 }
 
-impl<I: Iterator<Item = char>> Iterator for Decompositions<I> {
+impl<I: Iterator<Item = char>> Iterator for CanonicalOrder<I> {
     type Item = (u8, char);
 
     fn next(&mut self) -> Option<(u8, char)> {

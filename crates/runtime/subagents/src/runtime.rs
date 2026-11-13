@@ -553,6 +553,12 @@ pub(super) enum SubmissionOutcome {
 }
 
 #[derive(Clone)]
+struct RestoredWork {
+    messages: Vec<AgentMessage>,
+    unstarted: Vec<AgentId>,
+}
+
+#[derive(Clone)]
 enum RestorationState {
     Loading,
     Resuming,
@@ -603,6 +609,8 @@ pub struct Registry {
     journal_version: std::sync::atomic::AtomicU32,
 
     deferred_resume: Atom<nanocode_sync::Map<String, imbl::OrdSet<AgentId>>>,
+
+    deferred_work: Atom<nanocode_sync::Map<String, RestoredWork>>,
 
     wait_reported: Atom<AgentMap<u64>>,
 
@@ -2806,6 +2814,7 @@ impl Registry {
             manual_resume: std::sync::atomic::AtomicBool::new(false),
             journal_version: std::sync::atomic::AtomicU32::new(durable::JOURNAL_VERSION),
             deferred_resume: Atom::default(),
+            deferred_work: Atom::default(),
             wait_reported: Atom::default(),
             idle_waits: Atom::default(),
             this: std::sync::OnceLock::new(),
@@ -2954,9 +2963,19 @@ impl Registry {
                         .await;
                 }
             }
-            registry.redeliver_messages(&root, pending).await;
-            for id in unstarted {
-                registry.enqueue_unstarted(&root, id);
+            let work = RestoredWork {
+                messages: pending,
+                unstarted,
+            };
+            if registry
+                .manual_resume
+                .load(std::sync::atomic::Ordering::SeqCst)
+            {
+                registry.deferred_work.update(|deferred| {
+                    deferred.insert(root.clone(), work.clone());
+                });
+            } else {
+                registry.start_restored_work(&root, work).await;
             }
             let resolver = Option::clone(&registry.parent_resolver.get());
             if registry.needs_root_watch(&root).await
@@ -8037,6 +8056,22 @@ impl Registry {
             .await;
     }
 
+    async fn start_restored_work(self: &Arc<Self>, root_session_id: &str, work: RestoredWork) {
+        self.redeliver_messages(root_session_id, work.messages)
+            .await;
+        for id in work.unstarted {
+            self.enqueue_unstarted(root_session_id, id);
+        }
+    }
+
+    fn take_deferred_work(&self, root_session_id: &str) -> Option<RestoredWork> {
+        let mut work = None;
+        self.deferred_work.update(|deferred| {
+            work = deferred.remove(root_session_id);
+        });
+        work
+    }
+
     async fn pending_messages(&self, root_session_id: &str) -> Vec<AgentMessage> {
         let root = root_session_id.to_owned();
         self.state
@@ -9301,32 +9336,64 @@ impl SubagentControl {
                 .map(|ids| ids.into_iter().collect())
                 .unwrap_or_default();
         });
-        if ids.is_empty() {
-            return Ok(Vec::new());
+        let work = self.registry.take_deferred_work(root_session_id);
+        let results = if ids.is_empty() {
+            Vec::new()
+        } else {
+            self.registry.pending_resume.update(|pending| {
+                pending
+                    .entry(root_session_id.to_owned())
+                    .or_default()
+                    .extend(ids.iter().copied());
+            });
+            self.registry.changed();
+            self.registry.resume_interrupted(root_session_id).await
+        };
+        if let Some(work) = work {
+            self.registry
+                .start_restored_work(root_session_id, work)
+                .await;
         }
-        self.registry.pending_resume.update(|pending| {
-            pending
-                .entry(root_session_id.to_owned())
-                .or_default()
-                .extend(ids.iter().copied());
-        });
-        self.registry.changed();
-        Ok(self.registry.resume_interrupted(root_session_id).await)
+        Ok(results)
     }
 
     pub async fn discard_restored(&self, root_session_id: &str) -> std::io::Result<()> {
         self.registry.await_restored(root_session_id).await?;
-        let mut ids = Vec::new();
+        let mut ids = std::collections::BTreeSet::new();
         self.registry.deferred_resume.update(|deferred| {
             ids = deferred
                 .remove(root_session_id)
                 .map(|ids| ids.into_iter().collect())
                 .unwrap_or_default();
         });
-        if ids.is_empty() {
-            return Ok(());
+        let messages = match self.registry.take_deferred_work(root_session_id) {
+            Some(work) => {
+                ids.extend(work.unstarted);
+                ids.extend(work.messages.iter().map(|message| message.to));
+                work.messages
+            }
+            None => Vec::new(),
+        };
+        let closed = if ids.is_empty() {
+            Ok(())
+        } else {
+            self.registry
+                .close_batch(root_session_id, ids.into_iter().collect())
+                .await
+        };
+        for message in messages {
+            self.registry
+                .message_failed(
+                    root_session_id,
+                    message.id,
+                    format!(
+                        "message {} was discarded with restored agent {}",
+                        message.id, message.to
+                    ),
+                )
+                .await;
         }
-        self.registry.close_batch(root_session_id, ids).await
+        closed
     }
 
     pub fn runtime_id(&self) -> SubagentRuntimeId {

@@ -585,7 +585,7 @@ impl Tabs {
         if action == "close" {
             ext.rpc(
                 "attach",
-                json!({"session_id":session_id,"turn_id":turn,"tabId":tab}),
+                json!({"session_id":session_id,"turn_id":turn,"tabId":tab,"networkPolicy":{"constraints":[]}}),
             )?;
             let result = ext.cdp(&session_id, turn, tab, "Page.close", json!({}));
             let _ = ext.rpc(
@@ -602,7 +602,7 @@ impl Tabs {
         let result = (|| {
             ext.rpc(
                 "attach",
-                json!({"session_id":session_id,"turn_id":turn,"tabId":tab}),
+                json!({"session_id":session_id,"turn_id":turn,"tabId":tab,"networkPolicy":{"constraints":[]}}),
             )?;
             ext.cdp(
                 &session_id,

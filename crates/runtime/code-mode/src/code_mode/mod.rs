@@ -1022,7 +1022,7 @@ impl CodeModeRuntime {
             &cell,
             observation,
             started_at,
-            ObservationMode::YieldAfter(yield_after, preempt),
+            ObservationMode::Started(yield_after, preempt),
             Some(output_token_budget),
             Some(&cell.origin_call_id),
             observer,
@@ -1756,6 +1756,7 @@ impl Preemption {
 }
 
 enum ObservationMode {
+    Started(Duration, Preemption),
     YieldAfter(Duration, Preemption),
     Terminate,
 }
@@ -1871,12 +1872,23 @@ async fn observe_updates(
     observer: &mut dyn CodeModeObserver,
 ) -> (CodeModeExecution, bool) {
     let tools = cell.tools.as_ref();
-    let (yield_after, terminating, mut preempt) = match mode {
-        ObservationMode::YieldAfter(yield_after, preempt) => {
-            (Some(yield_after), false, Some(preempt))
+    let (yield_after, terminating, mut preempt, started) = match mode {
+        ObservationMode::Started(yield_after, preempt) => {
+            (Some(yield_after), false, Some(preempt), true)
         }
-        ObservationMode::Terminate => (None, true, None),
+        ObservationMode::YieldAfter(yield_after, preempt) => {
+            (Some(yield_after), false, Some(preempt), false)
+        }
+        ObservationMode::Terminate => (None, true, None, false),
     };
+    let mut notice = (!terminating).then(|| tools.session_notice(&cell.session_id));
+    if started
+        && notice
+            .as_mut()
+            .is_some_and(|notice| notice.as_mut().now_or_never().is_some())
+    {
+        notice = None;
+    }
     let yield_deadline =
         yield_after.and_then(|yield_after| nanocode_platform::now().checked_add(yield_after));
     let mut yield_timer =
@@ -1910,6 +1922,17 @@ async fn observe_updates(
                     None => std::future::pending().await,
                 }
             }, if !preempted => {
+                preempt_remaining = Some(observation.updates.len() + observation.replay.len());
+                continue;
+            }
+
+            () = async {
+                match notice.as_mut() {
+                    Some(notice) => notice.as_mut().await,
+                    None => std::future::pending().await,
+                }
+            }, if !preempted => {
+                notice = None;
                 preempt_remaining = Some(observation.updates.len() + observation.replay.len());
                 continue;
             }

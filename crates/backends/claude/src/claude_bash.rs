@@ -7,7 +7,7 @@ use crate::{
 };
 use nanocode_agent_core::{Agent, PromptRequest, WeakAgent};
 use nanocode_process_contracts::{ForegroundExecutor, LastActivity, OutputSink};
-use nanocode_sync::{Atom, Signal};
+use nanocode_sync::{Atom, Signal, Slot};
 use nanocode_tool_host::{
     SessionEnvironment, Tool, ToolContext, ToolDefinition, ToolInput, ToolOutput, ToolResult,
     ToolsBuilder, contract::RunningTask,
@@ -34,7 +34,8 @@ const DEADLINE_NOTE: &str = "If the work in progress still needs it, start it ag
 const OUTPUT_CAP_BYTES: u64 = 5 * 1024 * 1024 * 1024;
 const OUTPUT_CAP_MARKER: &str = " [output truncated: exceeded 5GB disk cap] ";
 const ENDS_WITH_TURN: &str = "If it exits while you are still working you will be notified, but it is terminated when you give your final response and no notification can follow that \u{2014} so do not end your turn to wait for it; if you need its result, wait for it before giving your final response.";
-const REPORTED: &str = "Its end is reported with the result of the first exec or wait call that returns after it finishes; nothing interrupts you before then.";
+const REPORTED: &str = "Its end is reported with its exit status and last output: an exec or wait call that is waiting when it finishes returns then, and otherwise the next one reports it.";
+const SHELL_SIGNAL_STATUS: i32 = 128;
 
 type Outcome = Result<BashResult, String>;
 
@@ -84,6 +85,8 @@ struct Job {
     call_id: Option<String>,
     owner: Option<String>,
     output: Option<PathBuf>,
+    oom_kills: Option<u64>,
+    notice: Slot<String>,
 }
 impl Job {
     fn status(&self) -> &'static str {
@@ -126,17 +129,18 @@ impl Job {
         text.push_str(trailing);
         text
     }
-    fn completion_notification(&self, outcome: &Outcome) -> String {
+    async fn completion_notification(&self, outcome: &Outcome) -> String {
+        let ending = self.ending(outcome).await;
         if self.expired.load(Ordering::SeqCst) {
             return self.notification(
                 Some("killed"),
                 "was stopped after reaching its background time limit",
                 &format!("\n<note>{DEADLINE_NOTE}</note>"),
-                "",
+                &ending,
             );
         }
         if self.capped.is_fired() {
-            return self.notification(Some("killed"), "was stopped", "", "");
+            return self.notification(Some("killed"), "was stopped", "", &ending);
         }
         let (status, summary) = match outcome {
             Ok(result) if result.exit_code == 0 => {
@@ -144,12 +148,96 @@ impl Job {
             }
             Ok(result) => (
                 "failed",
-                format!("failed with exit code {}", result.exit_code),
+                match signal_name(result.exit_code) {
+                    Some(signal) => format!(
+                        "failed with exit code {}, a shell's status for a command that {signal} ended",
+                        result.exit_code
+                    ),
+                    None => format!("failed with exit code {}", result.exit_code),
+                },
             ),
             Err(_) => ("failed", "failed".to_owned()),
         };
-        self.notification(Some(status), &summary, "", "")
+        self.notification(Some(status), &summary, "", &ending)
     }
+    async fn memory_kills(&self) -> Option<String> {
+        let (before, after) = (self.oom_kills?, oom_kills().await?);
+        (after > before).then(|| {
+            format!(
+                "The kernel killed {} process(es) in this machine's memory group for lack of memory while the command ran: oom_kill in memory.events went from {before} to {after}.",
+                after - before
+            )
+        })
+    }
+    async fn ending(&self, outcome: &Outcome) -> String {
+        let mut text = String::new();
+        let killed =
+            matches!(outcome, Ok(result) if signal_name(result.exit_code) == Some("SIGKILL"));
+        match self.memory_kills().await {
+            Some(kills) => text.push_str(&format!("\n{kills}")),
+            None if killed && self.oom_kills.is_none() => text.push_str(
+                "\nThe kernel also sends SIGKILL to a process when memory runs out; this machine's memory events cannot be read, so whether that happened here is a guess.",
+            ),
+            None => {}
+        }
+        let Some(path) = &self.output else {
+            return text;
+        };
+        let Ok(metadata) = tokio::fs::metadata(path).await else {
+            return text;
+        };
+        let Some(tail) = tail(path, metadata.len()).await else {
+            return text;
+        };
+        let (lines, cut) = match tail.split_once('\n') {
+            Some((_, lines)) if metadata.len() > STALL_TAIL_BYTES => (lines, true),
+            _ => (tail.as_str(), metadata.len() > STALL_TAIL_BYTES),
+        };
+        if lines.trim().is_empty() {
+            text.push_str("\nThe command printed nothing.");
+        } else if cut {
+            text.push_str(&format!(
+                "\nLast output (the end of {} bytes, all in the output file):\n{}",
+                metadata.len(),
+                lines.trim_end()
+            ));
+        } else {
+            text.push_str(&format!("\nOutput:\n{}", lines.trim_end()));
+        }
+        text
+    }
+}
+fn signal_name(exit_code: i32) -> Option<&'static str> {
+    Some(match exit_code.checked_sub(SHELL_SIGNAL_STATUS)? {
+        1 => "SIGHUP",
+        2 => "SIGINT",
+        3 => "SIGQUIT",
+        4 => "SIGILL",
+        6 => "SIGABRT",
+        8 => "SIGFPE",
+        9 => "SIGKILL",
+        11 => "SIGSEGV",
+        13 => "SIGPIPE",
+        14 => "SIGALRM",
+        15 => "SIGTERM",
+        _ => return None,
+    })
+}
+async fn oom_kills() -> Option<u64> {
+    nanocode_platform::spawn_blocking(|| {
+        let groups = std::fs::read_to_string("/proc/self/cgroup").ok()?;
+        let group = groups.lines().find_map(|line| line.strip_prefix("0::"))?;
+        let events =
+            std::fs::read_to_string(format!("/sys/fs/cgroup{group}/memory.events")).ok()?;
+        events
+            .lines()
+            .find_map(|line| line.strip_prefix("oom_kill "))?
+            .trim()
+            .parse()
+            .ok()
+    })
+    .await
+    .ok()?
 }
 struct Finished(Arc<Signal>);
 impl Drop for Finished {
@@ -326,13 +414,6 @@ fn route(binding: Binding, id: String, text: String) {
         }
     }));
 }
-fn sleeps(command: &str) -> bool {
-    command
-        .trim_start()
-        .split(|ch: char| ch.is_whitespace() || ";&|()".contains(ch))
-        .next()
-        == Some("sleep")
-}
 fn whole_duration(milliseconds: u64) -> String {
     let minutes = milliseconds / 60_000;
     match (minutes / 60, minutes % 60) {
@@ -340,6 +421,13 @@ fn whole_duration(milliseconds: u64) -> String {
         (hours, 0) => format!("{hours}h"),
         (hours, minutes) => format!("{hours}h {minutes}m"),
     }
+}
+fn sleeps(command: &str) -> bool {
+    command
+        .trim_start()
+        .split(|ch: char| ch.is_whitespace() || ";&|()".contains(ch))
+        .next()
+        == Some("sleep")
 }
 #[derive(Clone, Copy)]
 enum Watch {
@@ -402,6 +490,7 @@ pub(super) struct Jobs {
     agent: Atom<Option<Binding>>,
     owners: Atom<BTreeMap<String, String>>,
     subagents: Option<Subagents>,
+    ended: watch::Sender<u64>,
 }
 struct Subagents {
     list: Arc<dyn Tool>,
@@ -440,8 +529,25 @@ impl Jobs {
             }
         }
     }
-    fn watch(&self, job: Arc<Job>) -> Watch {
+    fn watch(self: &Arc<Self>, job: Arc<Job>) -> Watch {
         let Some(binding) = self.agent.read(Clone::clone) else {
+            let jobs = Arc::downgrade(self);
+            let (result, written) = (job.result.clone(), Arc::clone(&job.written));
+            let job = Arc::downgrade(&job);
+            drop(nanocode_platform::spawn_task(async move {
+                let outcome = settled(result).await;
+                written.wait().await;
+                let Some(job) = job.upgrade() else {
+                    return;
+                };
+                if job.result.borrow().is_none() {
+                    return;
+                }
+                job.notice.put(job.completion_notification(&outcome).await);
+                if let Some(jobs) = jobs.upgrade() {
+                    jobs.ended.send_modify(|ended| *ended += 1);
+                }
+            }));
             return Watch::Reported;
         };
         let watch = if binding.ends_with_turn {
@@ -466,37 +572,42 @@ impl Jobs {
             {
                 return;
             }
-            route(
-                binding,
-                job.id.clone(),
-                job.completion_notification(&outcome),
-            );
+            let text = job.completion_notification(&outcome).await;
+            route(binding, job.id.clone(), text);
         }));
         watch
     }
-    fn notices(&self, session_id: &str) -> Vec<String> {
+    fn reportable(&self, session_id: &str) -> Vec<Arc<Job>> {
         if self.agent.read(Option::is_some) {
             return Vec::new();
         }
-        let jobs = self
-            .entries
-            .read(|entries| entries.jobs.values().cloned().collect::<Vec<_>>());
-        let mut notices = Vec::new();
-        for job in jobs {
-            if job.owner.as_deref() != Some(session_id)
-                || job.phase.get() != Phase::Background
-                || !job.written.is_fired()
-            {
-                continue;
-            }
-            let Some(outcome) = job.result.borrow().clone() else {
-                continue;
-            };
-            if job.phase.advance(Phase::Delivered) != Phase::Delivered {
-                notices.push(job.completion_notification(&outcome));
+        self.entries.read(|entries| {
+            entries
+                .jobs
+                .values()
+                .filter(|job| {
+                    job.owner.as_deref() == Some(session_id)
+                        && job.phase.get() == Phase::Background
+                        && !job.notice.is_empty()
+                })
+                .cloned()
+                .collect()
+        })
+    }
+    async fn noticed(&self, session_id: &str) {
+        let mut ended = self.ended.subscribe();
+        while self.reportable(session_id).is_empty() {
+            if ended.changed().await.is_err() {
+                std::future::pending::<()>().await;
             }
         }
-        notices
+    }
+    fn notices(&self, session_id: &str) -> Vec<String> {
+        self.reportable(session_id)
+            .into_iter()
+            .filter(|job| job.phase.advance(Phase::Delivered) != Phase::Delivered)
+            .filter_map(|job| job.notice.take())
+            .collect()
     }
     fn forget(&self, id: &str) {
         self.entries.update(|entries| {
@@ -575,6 +686,7 @@ impl BashExecutor for LocalBash {
         background: bool,
     ) -> Result<BashExecution, String> {
         let timeout = Duration::from_millis(request.timeout_ms);
+        let max_stderr = request.max_stderr_bytes;
         let session = request
             .session
             .as_ref()
@@ -598,6 +710,7 @@ impl BashExecutor for LocalBash {
             file,
             activity: Arc::clone(&activity),
         };
+        let oom_kills = oom_kills().await;
         let (sender, receiver) = watch::channel(None);
         let (arm, armed) = oneshot::channel::<Duration>();
         let expired = Arc::new(AtomicBool::new(false));
@@ -660,6 +773,8 @@ impl BashExecutor for LocalBash {
                 call_id,
                 owner,
                 output,
+                oom_kills,
+                notice: Slot::default(),
             });
             self.jobs
                 .entries
@@ -687,8 +802,22 @@ impl BashExecutor for LocalBash {
             None
         } else {
             match tokio::time::timeout(timeout, completion(&job)).await {
-                Ok(result) => {
+                Ok(mut result) => {
                     self.jobs.forget(&id);
+                    if let (Ok(result), Some(kills)) = (&mut result, job.memory_kills().await) {
+                        let line = format!("[{kills}]\n");
+                        let room = max_stderr.saturating_sub(line.len() + 1);
+                        if result.stderr.len() > room {
+                            result
+                                .stderr
+                                .truncate(result.stderr.floor_char_boundary(room));
+                            result.truncated = true;
+                        }
+                        if !result.stderr.is_empty() && !result.stderr.ends_with('\n') {
+                            result.stderr.push('\n');
+                        }
+                        result.stderr.push_str(&line);
+                    }
                     return match result {
                         Ok(result) if result.truncated => Ok(kept(&job, result).await),
                         result => {
@@ -743,7 +872,9 @@ async fn kept(job: &Job, result: BashResult) -> BashExecution {
     }
 }
 async fn completion(job: &Job) -> Outcome {
-    let mut receiver = job.result.clone();
+    settled(job.result.clone()).await
+}
+async fn settled(mut receiver: watch::Receiver<Option<Outcome>>) -> Outcome {
     loop {
         if let Some(result) = receiver.borrow_and_update().clone() {
             return result;
@@ -859,6 +990,12 @@ pub(super) struct JobNotices(pub(super) Arc<Jobs>);
 impl nanocode_tool_host::CodeModeToolPolicy for JobNotices {
     fn session_notices(&self, session_id: &str) -> Vec<String> {
         self.0.notices(session_id)
+    }
+    fn session_notice<'a>(
+        &'a self,
+        session_id: &'a str,
+    ) -> nanocode_tool_host::embedded::HostFuture<'a, ()> {
+        Box::pin(self.0.noticed(session_id))
     }
 }
 struct TaskStopTool {

@@ -916,4 +916,18 @@ impl nanocode_code_mode::CodeModeToolset for ToolRegistry {
             .flat_map(|policy| policy.session_notices(session_id))
             .collect()
     }
+
+    fn session_notice<'a>(&'a self, session_id: &'a str) -> crate::embedded::HostFuture<'a, ()> {
+        let waits: Vec<_> = self
+            .policies
+            .iter()
+            .map(|policy| policy.session_notice(session_id))
+            .collect();
+        Box::pin(async move {
+            if waits.is_empty() {
+                std::future::pending::<()>().await;
+            }
+            futures_util::future::select_all(waits).await;
+        })
+    }
 }

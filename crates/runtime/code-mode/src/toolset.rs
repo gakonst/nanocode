@@ -54,4 +54,8 @@ pub trait CodeModeToolset: Send + Sync {
     fn session_notices(&self, _session_id: &str) -> Vec<String> {
         Vec::new()
     }
+
+    fn session_notice<'a>(&'a self, _session_id: &'a str) -> HostFuture<'a, ()> {
+        Box::pin(std::future::pending())
+    }
 }

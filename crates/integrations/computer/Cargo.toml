@@ -27,12 +27,9 @@ core-foundation-sys.workspace = true
 libc.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
-atspi-common = { workspace = true }
-atspi-proxies = { workspace = true }
 futures-util.workspace = true
 nanocode-jpeg.workspace = true
-x11rb = { workspace = true }
-zbus = { workspace = true }
+nanocode-sys.workspace = true
 
 [lints.rust]
 unsafe_code = "deny"

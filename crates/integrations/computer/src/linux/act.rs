@@ -1,16 +1,15 @@
-use super::atspi::{
-    self, Element, children, extents, interfaces, parent, proxy, role, states, timed,
+use super::{
+    a11y::{Interfaces, Role, States},
+    atspi::{
+        self, ACCESSIBLE, COMPONENT, COORD_TYPE_SCREEN, EDITABLE_TEXT, Element, SELECTION, TEXT,
+        VALUE, children, extents, interfaces, parent, proxy, role, states, timed,
+    },
+    dbus::{Bus, Error},
+    wire::Value,
 };
 use crate::{Direction, Press, Selection};
-use atspi_common::{CoordType, Interface, Role, ScrollType, State};
-use atspi_proxies::{
-    accessible::AccessibleProxy, action::ActionProxy, component::ComponentProxy,
-    editable_text::EditableTextProxy, selection::SelectionProxy, text::TextProxy,
-    value::ValueProxy,
-};
 use std::{future::Future, time::Duration};
 use tokio::time::timeout;
-use zbus::Connection;
 
 const ACTION: Duration = Duration::from_secs(5);
 const GONE: &str = "That element is gone, so nothing ran. Read the app again with get_app_state.";
@@ -25,12 +24,16 @@ const KEPT: &str = "Chose it for type_text, which now types into it; its window 
 const CLICK: [&str; 2] = ["click", "press"];
 const PRIMARY: [&str; 4] = ["activate", "toggle", "jump", "open"];
 const MENU: [&str; 4] = ["popup", "menu", "showmenu", "contextmenu"];
+const SCROLL_TOP_EDGE: u32 = 2;
+const SCROLL_BOTTOM_EDGE: u32 = 3;
+const SCROLL_LEFT_EDGE: u32 = 4;
+const SCROLL_RIGHT_EDGE: u32 = 5;
 
-async fn acted<T>(work: impl Future<Output = zbus::Result<T>>) -> Result<T, String> {
+async fn acted<T>(work: impl Future<Output = Result<T, Error>>) -> Result<T, String> {
     match timeout(ACTION, work).await {
         Err(_) => Err(SLOW.into()),
         Ok(Ok(value)) => Ok(value),
-        Ok(Err(zbus::Error::MethodError(name, _, _))) => {
+        Ok(Err(Error::Method(name))) => {
             let name = name.as_str();
             Err(
                 if name.ends_with("UnknownMethod")
@@ -89,17 +92,21 @@ pub fn chosen(actions: &[String], wanted: &[&str]) -> Option<usize> {
 }
 
 async fn perform_at(
-    bus: &Connection,
+    bus: &Bus,
     element: &Element,
     index: usize,
     what: &str,
 ) -> Result<String, String> {
-    let action = proxy::<ActionProxy>(bus, element).await.ok_or(GONE)?;
-    done(acted(action.do_action(index as i32)).await?, what)
+    let action = proxy(bus, element).ok_or(GONE)?;
+    let index = Value::I32(index as i32);
+    done(
+        acted(action.call(atspi::ACTION, "DoAction", &[index])).await?,
+        what,
+    )
 }
 
 pub async fn press(
-    bus: &Connection,
+    bus: &Bus,
     element: &Element,
     press: Press,
     grab: bool,
@@ -115,7 +122,7 @@ pub async fn press(
         };
     }
     let (interfaces, role) = tokio::join!(interfaces(bus, element), role(bus, element));
-    if !grab && role == Some(Role::ComboBox) {
+    if !grab && role == Some(Role::COMBO_BOX) {
         let names: Vec<String> = options(bus, element)
             .await
             .into_iter()
@@ -126,11 +133,11 @@ pub async fn press(
             list(&names)
         ));
     }
-    let entry = interfaces.contains(Interface::EditableText)
-        || interfaces.contains(Interface::Text)
-            && matches!(role, Some(Role::Entry | Role::PasswordText));
+    let entry = interfaces.contains(Interfaces::EDITABLE_TEXT)
+        || interfaces.contains(Interfaces::TEXT)
+            && matches!(role, Some(Role::ENTRY | Role::PASSWORD_TEXT));
     if entry && !grab {
-        if !interfaces.contains(Interface::EditableText) {
+        if !interfaces.contains(Interfaces::EDITABLE_TEXT) {
             return Err(FRONT.into());
         }
         caret_to_end(bus, element).await;
@@ -140,8 +147,11 @@ pub async fn press(
         return perform_at(bus, element, index, "Clicked").await;
     }
     if entry {
-        let component = proxy::<ComponentProxy>(bus, element).await.ok_or(GONE)?;
-        done(acted(component.grab_focus()).await?, "Focused it")?;
+        let component = proxy(bus, element).ok_or(GONE)?;
+        done(
+            acted(component.call(COMPONENT, "GrabFocus", &[])).await?,
+            "Focused it",
+        )?;
         caret_to_end(bus, element).await;
         return Ok("Focused it.".into());
     }
@@ -157,32 +167,33 @@ pub async fn press(
     ))
 }
 
-async fn caret_to_end(bus: &Connection, element: &Element) {
-    if let Some(text) = proxy::<TextProxy>(bus, element).await
-        && let Some(count) = timed(text.character_count()).await
+async fn caret_to_end(bus: &Bus, element: &Element) {
+    if let Some(text) = proxy(bus, element)
+        && let Some(count) = timed(text.get::<i32>(TEXT, "CharacterCount")).await
     {
-        timed(text.set_caret_offset(count)).await;
+        timed(text.call::<bool>(TEXT, "SetCaretOffset", &[Value::I32(count)])).await;
     }
 }
 
-async fn select_in_parent(bus: &Connection, element: &Element) -> Option<Result<String, String>> {
+async fn select_in_parent(bus: &Bus, element: &Element) -> Option<Result<String, String>> {
     let parent = parent(bus, element).await?;
     if !interfaces(bus, &parent)
         .await
-        .contains(Interface::Selection)
+        .contains(Interfaces::SELECTION)
     {
         return None;
     }
-    let accessible = proxy::<AccessibleProxy>(bus, element).await?;
-    let index = timed(accessible.get_index_in_parent()).await?;
-    let selection = proxy::<SelectionProxy>(bus, &parent).await?;
-    Some(match acted(selection.select_child(index)).await {
+    let accessible = proxy(bus, element)?;
+    let index: i32 = timed(accessible.call(ACCESSIBLE, "GetIndexInParent", &[])).await?;
+    let selection = proxy(bus, &parent)?;
+    let chosen = selection.call(SELECTION, "SelectChild", &[Value::I32(index)]);
+    Some(match acted(chosen).await {
         Ok(ok) => done(ok, "Selected"),
         Err(why) => Err(why),
     })
 }
 
-pub async fn perform(bus: &Connection, element: &Element, wanted: &str) -> Result<String, String> {
+pub async fn perform(bus: &Bus, element: &Element, wanted: &str) -> Result<String, String> {
     let actions = atspi::actions(bus, element).await;
     let normal = normal(wanted);
     match chosen(&actions, &[normal.as_str()]) {
@@ -198,18 +209,18 @@ pub async fn perform(bus: &Connection, element: &Element, wanted: &str) -> Resul
     }
 }
 
-async fn options(bus: &Connection, element: &Element) -> Vec<(Element, String)> {
+async fn options(bus: &Bus, element: &Element) -> Vec<(Element, String)> {
     let mut found = Vec::new();
     let (kids, _) = children(bus, element, -1).await;
     for kid in kids {
-        let nested = if matches!(role(bus, &kid).await, Some(Role::Menu | Role::List)) {
+        let nested = if matches!(role(bus, &kid).await, Some(Role::MENU | Role::LIST)) {
             children(bus, &kid, -1).await.0
         } else {
             vec![kid]
         };
         for item in nested {
-            if let Some(accessible) = proxy::<AccessibleProxy>(bus, &item).await
-                && let Some(name) = timed(accessible.name()).await
+            if let Some(accessible) = proxy(bus, &item)
+                && let Some(name) = timed(accessible.get::<String>(ACCESSIBLE, "Name")).await
                 && !name.trim().is_empty()
             {
                 found.push((item, name.trim().to_owned()));
@@ -220,9 +231,9 @@ async fn options(bus: &Connection, element: &Element) -> Vec<(Element, String)> 
 }
 
 async fn choose(
-    bus: &Connection,
+    bus: &Bus,
     element: &Element,
-    interfaces: atspi_common::InterfaceSet,
+    interfaces: Interfaces,
     wanted: &str,
 ) -> Result<String, String> {
     let options = options(bus, element).await;
@@ -238,7 +249,7 @@ async fn choose(
         ));
     };
     let done = format!("Chose {name}");
-    let list = if interfaces.contains(Interface::Selection) {
+    let list = if interfaces.contains(Interfaces::SELECTION) {
         Some(element.clone())
     } else {
         parent(bus, item).await.filter(|list| list != element)
@@ -246,11 +257,12 @@ async fn choose(
     if let Some(list) = list
         && self::interfaces(bus, &list)
             .await
-            .contains(Interface::Selection)
-        && let Some(accessible) = proxy::<AccessibleProxy>(bus, item).await
-        && let Some(index) = timed(accessible.get_index_in_parent()).await
-        && let Some(selection) = proxy::<SelectionProxy>(bus, &list).await
-        && acted(selection.select_child(index)).await == Ok(true)
+            .contains(Interfaces::SELECTION)
+        && let Some(accessible) = proxy(bus, item)
+        && let Some(index) =
+            timed(accessible.call::<i32>(ACCESSIBLE, "GetIndexInParent", &[])).await
+        && let Some(selection) = proxy(bus, &list)
+        && acted(selection.call(SELECTION, "SelectChild", &[Value::I32(index)])).await == Ok(true)
     {
         return Ok(format!("{done}."));
     }
@@ -261,36 +273,33 @@ async fn choose(
     }
 }
 
-pub async fn set_value(
-    bus: &Connection,
-    element: &Element,
-    wanted: &str,
-) -> Result<String, String> {
+pub async fn set_value(bus: &Bus, element: &Element, wanted: &str) -> Result<String, String> {
     let (interfaces, role) = tokio::join!(interfaces(bus, element), role(bus, element));
-    if role == Some(Role::ComboBox) && !interfaces.contains(Interface::EditableText) {
+    if role == Some(Role::COMBO_BOX) && !interfaces.contains(Interfaces::EDITABLE_TEXT) {
         return choose(bus, element, interfaces, wanted).await;
     }
-    if interfaces.contains(Interface::Value)
+    if interfaces.contains(Interfaces::VALUE)
         && let Ok(number) = wanted.trim().parse::<f64>()
     {
-        let value = proxy::<ValueProxy>(bus, element).await.ok_or(GONE)?;
-        acted(value.set_current_value(number)).await?;
+        let value = proxy(bus, element).ok_or(GONE)?;
+        acted(value.set(VALUE, "CurrentValue", Value::F64(number))).await?;
         return Ok("Set the value.".into());
     }
-    if !interfaces.contains(Interface::EditableText) {
-        return Err(if matches!(role, Some(Role::Entry | Role::PasswordText)) {
+    if !interfaces.contains(Interfaces::EDITABLE_TEXT) {
+        return Err(if matches!(role, Some(Role::ENTRY | Role::PASSWORD_TEXT)) {
             NOT_SETTABLE.into()
         } else {
             UNSUPPORTED.into()
         });
     }
-    let editable = proxy::<EditableTextProxy>(bus, element).await.ok_or(GONE)?;
+    let editable = proxy(bus, element).ok_or(GONE)?;
+    let contents = [Value::Str(wanted.into())];
     done(
-        acted(editable.set_text_contents(wanted)).await?,
+        acted(editable.call(EDITABLE_TEXT, "SetTextContents", &contents)).await?,
         "Set the value",
     )?;
     caret_to_end(bus, element).await;
-    if role == Some(Role::PasswordText) {
+    if role == Some(Role::PASSWORD_TEXT) {
         return Ok("Set the value.".into());
     }
     Ok(match atspi::text(bus, element, i32::MAX).await {
@@ -301,75 +310,88 @@ pub async fn set_value(
     })
 }
 
-pub async fn value(bus: &Connection, element: &Element) -> Option<String> {
+pub async fn value(bus: &Bus, element: &Element) -> Option<String> {
     let (interfaces, role) = tokio::join!(interfaces(bus, element), role(bus, element));
-    if role == Some(Role::PasswordText) || !interfaces.contains(Interface::Text) {
+    if role == Some(Role::PASSWORD_TEXT) || !interfaces.contains(Interfaces::TEXT) {
         return None;
     }
     atspi::text(bus, element, i32::MAX).await
 }
 
 pub async fn select(
-    bus: &Connection,
+    bus: &Bus,
     element: &Element,
     value: &str,
     selection: Selection,
 ) -> Result<String, String> {
     let (start, end) = selection.chars(value);
     let (start, end) = (start as i32, end as i32);
-    let text = proxy::<TextProxy>(bus, element).await.ok_or(GONE)?;
+    let text = proxy(bus, element).ok_or(GONE)?;
     if start == end {
         return done(
-            acted(text.set_caret_offset(start)).await?,
+            acted(text.call(TEXT, "SetCaretOffset", &[Value::I32(start)])).await?,
             "Moved the cursor",
         );
     }
-    let selections = timed(text.get_n_selections()).await.unwrap_or(0);
+    let selections: i32 = timed(text.call(TEXT, "GetNSelections", &[]))
+        .await
+        .unwrap_or(0);
     let ok = if selections > 0 {
-        acted(text.set_selection(0, start, end)).await?
+        let range = [Value::I32(0), Value::I32(start), Value::I32(end)];
+        acted(text.call(TEXT, "SetSelection", &range)).await?
     } else {
-        acted(text.add_selection(start, end)).await?
+        let range = [Value::I32(start), Value::I32(end)];
+        acted(text.call(TEXT, "AddSelection", &range)).await?
     };
     done(ok, "Selected text")
 }
 
-pub async fn type_text(bus: &Connection, element: &Element, typed: &str) -> Result<bool, String> {
+pub async fn type_text(bus: &Bus, element: &Element, typed: &str) -> Result<bool, String> {
     if !interfaces(bus, element)
         .await
-        .contains(Interface::EditableText)
+        .contains(Interfaces::EDITABLE_TEXT)
     {
         return Ok(false);
     }
-    let text = proxy::<TextProxy>(bus, element).await.ok_or(GONE)?;
-    let editable = proxy::<EditableTextProxy>(bus, element).await.ok_or(GONE)?;
+    let text = proxy(bus, element).ok_or(GONE)?;
     let (selections, caret, count) = tokio::join!(
-        timed(text.get_n_selections()),
-        timed(text.caret_offset()),
-        timed(text.character_count()),
+        timed(text.call::<i32>(TEXT, "GetNSelections", &[])),
+        timed(text.get::<i32>(TEXT, "CaretOffset")),
+        timed(text.get::<i32>(TEXT, "CharacterCount")),
     );
     let mut caret = caret.filter(|&caret| caret >= 0).or(count).unwrap_or(0);
     if selections.unwrap_or(0) > 0
-        && let Some((start, end)) = timed(text.get_selection(0)).await
+        && let Some((start, end)) =
+            timed(text.call::<(i32, i32)>(TEXT, "GetSelection", &[Value::I32(0)])).await
         && start != end
     {
+        let range = [Value::I32(start.min(end)), Value::I32(start.max(end))];
         done(
-            acted(editable.delete_text(start.min(end), start.max(end))).await?,
+            acted(text.call(EDITABLE_TEXT, "DeleteText", &range)).await?,
             "",
         )?;
         caret = start.min(end);
     }
     let length = i32::try_from(typed.len())
         .map_err(|_| "That text is too long to type, so nothing was typed.")?;
-    done(acted(editable.insert_text(caret, typed, length)).await?, "")?;
+    let inserted = [
+        Value::I32(caret),
+        Value::Str(typed.into()),
+        Value::I32(length),
+    ];
+    done(
+        acted(text.call(EDITABLE_TEXT, "InsertText", &inserted)).await?,
+        "",
+    )?;
     let moved = caret + typed.chars().count() as i32;
-    timed(text.set_caret_offset(moved)).await;
+    timed(text.call::<bool>(TEXT, "SetCaretOffset", &[Value::I32(moved)])).await;
     Ok(true)
 }
 
-pub async fn focused(bus: &Connection, element: &Element) -> bool {
+pub async fn focused(bus: &Bus, element: &Element) -> bool {
     states(bus, element)
         .await
-        .is_some_and(|states| states.contains(State::Focused))
+        .is_some_and(|states| states.contains(States::FOCUSED))
 }
 
 pub fn moved(current: f64, minimum: f64, maximum: f64, sign: f64, pages: f64) -> f64 {
@@ -378,7 +400,7 @@ pub fn moved(current: f64, minimum: f64, maximum: f64, sign: f64, pages: f64) ->
 }
 
 pub async fn scroll(
-    bus: &Connection,
+    bus: &Bus,
     element: &Element,
     direction: Direction,
     pages: f64,
@@ -387,11 +409,11 @@ pub async fn scroll(
     let mut pane = None;
     for _ in 0..12 {
         match role(bus, &area).await {
-            Some(Role::ScrollPane) => {
+            Some(Role::SCROLL_PANE) => {
                 pane = Some(area);
                 break;
             }
-            Some(Role::Application) | None => break,
+            Some(Role::APPLICATION) | None => break,
             Some(_) => match parent(bus, &area).await {
                 Some(parent) => area = parent,
                 None => break,
@@ -407,13 +429,13 @@ pub async fn scroll(
     };
     let (bars, _) = children(bus, &pane, -1).await;
     for bar in bars {
-        if role(bus, &bar).await != Some(Role::ScrollBar) {
+        if role(bus, &bar).await != Some(Role::SCROLL_BAR) {
             continue;
         }
         let states = states(bus, &bar).await.unwrap_or_default();
-        let upright = if states.contains(State::Vertical) {
+        let upright = if states.contains(States::VERTICAL) {
             true
-        } else if states.contains(State::Horizontal) {
+        } else if states.contains(States::HORIZONTAL) {
             false
         } else {
             extents(bus, &bar)
@@ -423,33 +445,36 @@ pub async fn scroll(
         if upright != vertical {
             continue;
         }
-        let value = proxy::<ValueProxy>(bus, &bar).await.ok_or(GONE)?;
+        let value = proxy(bus, &bar).ok_or(GONE)?;
         let (current, minimum, maximum) = tokio::join!(
-            timed(value.current_value()),
-            timed(value.minimum_value()),
-            timed(value.maximum_value()),
+            timed(value.get::<f64>(VALUE, "CurrentValue")),
+            timed(value.get::<f64>(VALUE, "MinimumValue")),
+            timed(value.get::<f64>(VALUE, "MaximumValue")),
         );
         let (Some(current), Some(minimum), Some(maximum)) = (current, minimum, maximum) else {
             continue;
         };
-        acted(value.set_current_value(moved(current, minimum, maximum, sign, pages))).await?;
+        let to = Value::F64(moved(current, minimum, maximum, sign, pages));
+        acted(value.set(VALUE, "CurrentValue", to)).await?;
         return Ok(format!("Scrolled {}.", direction.name()));
     }
-    let component = proxy::<ComponentProxy>(bus, element).await.ok_or(NOTHING)?;
+    let component = proxy(bus, element).ok_or(NOTHING)?;
     let edge = match direction {
-        Direction::Up => ScrollType::TopEdge,
-        Direction::Down => ScrollType::BottomEdge,
-        Direction::Left => ScrollType::LeftEdge,
-        Direction::Right => ScrollType::RightEdge,
+        Direction::Up => SCROLL_TOP_EDGE,
+        Direction::Down => SCROLL_BOTTOM_EDGE,
+        Direction::Left => SCROLL_LEFT_EDGE,
+        Direction::Right => SCROLL_RIGHT_EDGE,
     };
-    match timed(component.scroll_to(edge)).await {
+    match timed(component.call::<bool>(COMPONENT, "ScrollTo", &[Value::U32(edge)])).await {
         Some(true) => Ok(format!("Scrolled {}.", direction.name())),
         _ => Err(NOTHING.into()),
     }
 }
 
-pub async fn center(bus: &Connection, element: &Element) -> Option<(i32, i32)> {
-    let component = proxy::<ComponentProxy>(bus, element).await?;
-    let (x, y, width, height) = timed(component.get_extents(CoordType::Screen)).await?;
+pub async fn center(bus: &Bus, element: &Element) -> Option<(i32, i32)> {
+    let component = proxy(bus, element)?;
+    let screen = [Value::U32(COORD_TYPE_SCREEN)];
+    let (x, y, width, height) =
+        timed(component.call::<(i32, i32, i32, i32)>(COMPONENT, "GetExtents", &screen)).await?;
     (width > 0 && height > 0).then_some((x + width / 2, y + height / 2))
 }

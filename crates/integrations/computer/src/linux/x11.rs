@@ -1,73 +1,48 @@
+use super::xproto::{
+    ANY_PROPERTY_TYPE, ATOM_CARDINAL, ATOM_STRING, ATOM_WINDOW, ATOM_WM_CLASS, Atom, BUTTON_PRESS,
+    BUTTON_RELEASE, Closer, Connection, KEY_PRESS, KEY_RELEASE, MAP_STATE_VIEWABLE, MOTION_NOTIFY,
+    PROP_MODE_APPEND, PROPERTY_CHANGE_MASK, PROPERTY_NOTIFY, Result as XResult,
+    SUBSTRUCTURE_NOTIFY_MASK, SUBSTRUCTURE_REDIRECT_MASK, Window,
+};
 use crate::{
     Button, Chord, Key,
     keys::x11::{ALT_L, CONTROL_L, SHIFT_L, SUPER_L, keysym},
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use std::{
-    collections::HashMap,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-    thread,
-    time::Duration,
-};
-use x11rb::{
-    connection::Connection as _,
-    errors::{ReplyError, ReplyOrIdError},
-    protocol::{
-        Event,
-        xproto::{
-            AtomEnum, BUTTON_PRESS_EVENT, BUTTON_RELEASE_EVENT, ChangeWindowAttributesAux,
-            ClientMessageEvent, ConnectionExt as _, CreateWindowAux, EventMask, ImageFormat,
-            ImageOrder, KEY_PRESS_EVENT, KEY_RELEASE_EVENT, MOTION_NOTIFY_EVENT, MapState,
-            PropMode, Window, WindowClass,
-        },
-        xtest::ConnectionExt as _,
-    },
-    rust_connection::RustConnection,
-};
+use std::{collections::HashMap, thread, time::Duration};
 
 pub type Rect = (i32, i32, i32, i32);
 
 const POINTER_ROOT: Window = 1;
+const NO_WINDOW: Window = 0;
 const REMAP_SETTLE: Duration = Duration::from_millis(100);
 const DRAG_STEPS: i32 = 12;
 const ORDERED_TIMES: u32 = 1 << 31;
 const STARTUP_CHUNK: usize = 20;
+const ACTIVE_SOURCE_PAGER: u32 = 2;
+const WINDOW_LIST_WORDS: u32 = 4096;
+const TEXT_PROPERTY_WORDS: u32 = 1024;
 
 pub struct Display {
-    conn: RustConnection,
+    conn: Connection,
     root: Window,
     screen: usize,
     size: (i32, i32),
-    pid: u32,
-    clients: u32,
-    stacking: u32,
-    application: u32,
-    active: u32,
-    startup: [u32; 2],
+    pid: Atom,
+    clients: Atom,
+    stacking: Atom,
+    application: Atom,
+    active: Atom,
+    startup: [Atom; 2],
 }
 
 pub struct Guard {
-    display: Arc<Display>,
-    window: Window,
-    stop: Arc<AtomicBool>,
+    closer: Closer,
 }
 
 impl Drop for Guard {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::Release);
-        let _ = self.display.conn.change_property(
-            PropMode::APPEND,
-            self.window,
-            self.display.startup[0],
-            AtomEnum::STRING,
-            8,
-            0,
-            &[],
-        );
-        let _ = self.display.conn.flush();
+        self.closer.close();
     }
 }
 
@@ -175,30 +150,11 @@ pub fn jpeg(width: u32, height: u32, rgb: &[u8], max: usize) -> Option<String> {
 
 impl Display {
     pub fn open() -> Result<Self, String> {
-        let (conn, screen) = RustConnection::connect(None)
+        let conn = Connection::open()
             .map_err(|error| format!("the X display could not be opened ({error})"))?;
-        let (root, size) = {
-            let screen = conn
-                .setup()
-                .roots
-                .get(screen)
-                .ok_or("the X display has no such screen")?;
-            (
-                screen.root,
-                (
-                    i32::from(screen.width_in_pixels),
-                    i32::from(screen.height_in_pixels),
-                ),
-            )
-        };
-        let atom = |name: &[u8]| -> Result<u32, String> {
-            Ok(conn
-                .intern_atom(false, name)
-                .map_err(failed)?
-                .reply()
-                .map_err(failed)?
-                .atom)
-        };
+        let (root, screen) = (conn.setup.root, conn.screen);
+        let size = (i32::from(conn.setup.width), i32::from(conn.setup.height));
+        let atom = |name: &[u8]| conn.intern_atom(false, name).map_err(failed);
         let (pid, clients) = (atom(b"_NET_WM_PID")?, atom(b"_NET_CLIENT_LIST")?);
         let application = atom(b"_GTK_APPLICATION_ID")?;
         let (active, stacking) = (
@@ -224,14 +180,16 @@ impl Display {
     }
 
     pub fn active(&self) -> Option<Window> {
+        let cookie = self
+            .conn
+            .get_property(self.root, self.active, ATOM_WINDOW, 1)
+            .ok()?;
         self.conn
-            .get_property(false, self.root, self.active, AtomEnum::WINDOW, 0, 1)
-            .ok()?
-            .reply()
+            .property(cookie)
             .ok()?
             .value32()?
             .next()
-            .filter(|&window| window != 0)
+            .filter(|&window| window != NO_WINDOW)
     }
 
     pub fn active_pid(&self) -> Option<u32> {
@@ -239,38 +197,25 @@ impl Display {
     }
 
     pub fn guard(user: Window, pid: u32) -> Option<Guard> {
-        let display = Arc::new(Self::open().ok()?);
-        display
+        let display = Self::open().ok()?;
+        let selected = display
             .conn
-            .change_window_attributes(
-                display.root,
-                &ChangeWindowAttributesAux::new().event_mask(EventMask::PROPERTY_CHANGE),
-            )
-            .ok()?
-            .check()
+            .select_events(display.root, PROPERTY_CHANGE_MASK)
             .ok()?;
-        let window = display.messenger().ok()?;
-        let stop = Arc::new(AtomicBool::new(false));
-        let (watching, stopped) = (display.clone(), stop.clone());
+        display.conn.check(selected).ok()?;
+        let closer = display.conn.closer().ok()?;
         thread::spawn(move || {
-            while let Ok(event) = watching.conn.wait_for_event() {
-                if stopped.load(Ordering::Acquire) {
-                    break;
-                }
-                if let Event::PropertyNotify(event) = event
-                    && event.window == watching.root
-                    && (event.atom == watching.active || event.atom == watching.stacking)
-                    && watching.took(user, pid)
+            while let Ok(event) = display.conn.event() {
+                if event.kind == PROPERTY_NOTIFY
+                    && event.window == display.root
+                    && (event.atom == display.active || event.atom == display.stacking)
+                    && display.took(user, pid)
                 {
-                    let _ = watching.activate(user);
+                    let _ = display.activate(user);
                 }
             }
         });
-        Some(Guard {
-            display,
-            window,
-            stop,
-        })
+        Some(Guard { closer })
     }
 
     pub fn took(&self, user: Window, pid: u32) -> bool {
@@ -280,14 +225,11 @@ impl Display {
     }
 
     pub fn top_pid(&self) -> Option<u32> {
-        let top = self
+        let cookie = self
             .conn
-            .get_property(false, self.root, self.stacking, AtomEnum::WINDOW, 0, 4096)
-            .ok()?
-            .reply()
-            .ok()?
-            .value32()?
-            .last()?;
+            .get_property(self.root, self.stacking, ATOM_WINDOW, WINDOW_LIST_WORDS)
+            .ok()?;
+        let top = self.conn.property(cookie).ok()?.value32()?.last()?;
         self.owner(top).ok().flatten()
     }
 
@@ -323,100 +265,81 @@ impl Display {
                 let mut data = [0; STARTUP_CHUNK];
                 data[..chunk.len()].copy_from_slice(chunk);
                 let kind = self.startup[usize::from(at > 0)];
-                let event = ClientMessageEvent::new(8, window, kind, data);
-                self.conn
-                    .send_event(false, self.root, EventMask::PROPERTY_CHANGE, event)?;
+                self.conn.send_client_message(
+                    self.root,
+                    PROPERTY_CHANGE_MASK,
+                    8,
+                    window,
+                    kind,
+                    data,
+                )?;
             }
-            Ok::<_, ReplyError>(value)
+            Ok::<_, super::xproto::Failure>(value)
         })();
         let _ = self.conn.destroy_window(window);
-        self.sync().ok()?;
+        self.conn.sync().ok()?;
         sent.ok()
     }
 
-    fn messenger(&self) -> Result<Window, ReplyOrIdError> {
+    fn messenger(&self) -> XResult<Window> {
         let window = self.conn.generate_id()?;
-        self.conn
-            .create_window(
-                0,
-                window,
-                self.root,
-                -1,
-                -1,
-                1,
-                1,
-                0,
-                WindowClass::INPUT_ONLY,
-                0,
-                &CreateWindowAux::new()
-                    .override_redirect(1)
-                    .event_mask(EventMask::PROPERTY_CHANGE),
-            )?
-            .check()?;
+        let created = self
+            .conn
+            .create_input_only(window, self.root, PROPERTY_CHANGE_MASK)?;
+        self.conn.check(created)?;
         Ok(window)
     }
 
-    fn now(&self, window: Window) -> Result<u32, ReplyError> {
+    fn now(&self, window: Window) -> XResult<u32> {
         let kind = self.startup[0];
-        self.conn
-            .change_property(PropMode::APPEND, window, kind, AtomEnum::STRING, 8, 0, &[])?
-            .check()?;
+        let changed =
+            self.conn
+                .change_property(PROP_MODE_APPEND, window, kind, ATOM_STRING, &[])?;
+        self.conn.check(changed)?;
         loop {
-            if let Event::PropertyNotify(event) = self.conn.wait_for_event()?
-                && event.window == window
-            {
+            let event = self.conn.event()?;
+            if event.kind == PROPERTY_NOTIFY && event.window == window {
                 return Ok(event.time);
             }
         }
     }
 
-    pub fn activate(&self, window: Window) -> Result<(), ReplyError> {
-        let event = ClientMessageEvent::new(32, window, self.active, [2, 0, 0, 0, 0]);
-        self.conn.send_event(
-            false,
+    pub fn activate(&self, window: Window) -> XResult<()> {
+        let mut data = [0; STARTUP_CHUNK];
+        data[..4].copy_from_slice(&ACTIVE_SOURCE_PAGER.to_le_bytes());
+        self.conn.send_client_message(
             self.root,
-            EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY,
-            event,
+            SUBSTRUCTURE_REDIRECT_MASK | SUBSTRUCTURE_NOTIFY_MASK,
+            32,
+            window,
+            self.active,
+            data,
         )?;
-        self.sync()
+        self.conn.sync()
     }
 
     pub fn alive(&self) -> bool {
-        self.conn
-            .get_input_focus()
-            .ok()
-            .and_then(|cookie| cookie.reply().ok())
-            .is_some()
+        self.conn.input_focus().is_ok()
     }
 
     pub fn atspi_address(&self) -> Option<String> {
-        let atom = self
+        let atom = self.conn.intern_atom(true, b"AT_SPI_BUS").ok()?;
+        let cookie = self
             .conn
-            .intern_atom(true, b"AT_SPI_BUS")
-            .ok()?
-            .reply()
-            .ok()?
-            .atom;
-        let reply = self
-            .conn
-            .get_property(false, self.root, atom, AtomEnum::STRING, 0, 1024)
-            .ok()?
-            .reply()
+            .get_property(self.root, atom, ATOM_STRING, TEXT_PROPERTY_WORDS)
             .ok()?;
-        String::from_utf8(reply.value)
+        String::from_utf8(self.conn.property(cookie).ok()?.value)
             .ok()
             .filter(|address| !address.is_empty())
     }
 
-    fn pid(&self, window: Window) -> Result<Option<u32>, ReplyError> {
-        let reply = self
-            .conn
-            .get_property(false, window, self.pid, AtomEnum::CARDINAL, 0, 1)?
-            .reply()?;
-        Ok(reply.value32().and_then(|mut values| values.next()))
+    fn pid(&self, window: Window) -> XResult<Option<u32>> {
+        let cookie = self.conn.get_property(window, self.pid, ATOM_CARDINAL, 1)?;
+        let property = self.conn.property(cookie)?;
+        Ok(property.value32().and_then(|mut values| values.next()))
     }
 
-    fn owner(&self, mut window: Window) -> Result<Option<u32>, ReplyError> {
+    fn owner(&self, mut window: Window) -> XResult<Option<u32>> {
         if window == self.root {
             return Ok(None);
         }
@@ -424,13 +347,13 @@ impl Display {
             if let Some(pid) = self.pid(window)? {
                 return Ok(Some(pid));
             }
-            let parent = self.conn.query_tree(window)?.reply()?.parent;
-            if parent == self.root || parent == 0 {
+            let (parent, _) = self.conn.query_tree(window)?;
+            if parent == self.root || parent == NO_WINDOW {
                 break;
             }
             window = parent;
         }
-        for child in self.conn.query_tree(window)?.reply()?.children {
+        for child in self.conn.query_tree(window)?.1 {
             if let Some(pid) = self.pid(child)? {
                 return Ok(Some(pid));
             }
@@ -438,68 +361,68 @@ impl Display {
         Ok(None)
     }
 
-    pub fn focused(&self, pid: u32) -> Result<bool, ReplyError> {
-        let mut focus = self.conn.get_input_focus()?.reply()?.focus;
+    pub fn focused(&self, pid: u32) -> XResult<bool> {
+        let mut focus = self.conn.input_focus()?;
         if focus == POINTER_ROOT {
-            focus = self.conn.query_pointer(self.root)?.reply()?.child;
+            focus = self.conn.pointer_child(self.root)?;
         }
-        if focus == 0 {
+        if focus == NO_WINDOW {
             return Ok(false);
         }
         Ok(self.owner(focus)? == Some(pid))
     }
 
-    fn rect(&self, window: Window) -> Result<Rect, ReplyError> {
-        let geometry = self.conn.get_geometry(window)?.reply()?;
-        let origin = self
-            .conn
-            .translate_coordinates(window, self.root, 0, 0)?
-            .reply()?;
+    fn rect(&self, window: Window) -> XResult<Rect> {
+        let (width, height) = self.conn.geometry(window)?;
+        let (x, y) = self.conn.translate(window, self.root)?;
         Ok((
-            i32::from(origin.dst_x),
-            i32::from(origin.dst_y),
-            i32::from(geometry.width),
-            i32::from(geometry.height),
+            i32::from(x),
+            i32::from(y),
+            i32::from(width),
+            i32::from(height),
         ))
     }
 
-    fn candidates(&self) -> Result<Vec<Window>, ReplyError> {
-        let listed = self
-            .conn
-            .get_property(false, self.root, self.clients, AtomEnum::WINDOW, 0, 4096)?
-            .reply()?;
+    fn candidates(&self) -> XResult<Vec<Window>> {
+        let cookie =
+            self.conn
+                .get_property(self.root, self.clients, ATOM_WINDOW, WINDOW_LIST_WORDS)?;
+        let listed = self.conn.property(cookie)?;
         let mut candidates: Vec<Window> =
             listed.value32().map(Iterator::collect).unwrap_or_default();
         if candidates.is_empty() {
-            for top in self.conn.query_tree(self.root)?.reply()?.children {
+            for top in self.conn.query_tree(self.root)?.1 {
                 candidates.push(top);
-                candidates.extend(self.conn.query_tree(top)?.reply()?.children);
+                candidates.extend(self.conn.query_tree(top)?.1);
             }
         }
         Ok(candidates)
     }
 
-    pub fn classes(&self) -> Result<HashMap<u32, Vec<String>>, ReplyError> {
+    pub fn classes(&self) -> XResult<HashMap<u32, Vec<String>>> {
         let text = |window, property| {
             self.conn
-                .get_property(false, window, property, AtomEnum::ANY, 0, 1024)
+                .get_property(window, property, ANY_PROPERTY_TYPE, TEXT_PROPERTY_WORDS)
         };
         let mut asked = Vec::new();
         for window in self.candidates()? {
             asked.push((
-                self.conn
-                    .get_property(false, window, self.pid, AtomEnum::CARDINAL, 0, 1)?,
+                self.conn.get_property(window, self.pid, ATOM_CARDINAL, 1)?,
                 text(window, self.application)?,
-                text(window, AtomEnum::WM_CLASS.into())?,
+                text(window, ATOM_WM_CLASS)?,
             ));
         }
         let mut classes: HashMap<u32, Vec<String>> = HashMap::new();
         for (pid, application, class) in asked {
-            let Some(pid) = pid.reply()?.value32().and_then(|mut values| values.next()) else {
+            let pid = self.conn.property(pid)?;
+            let Some(pid) = pid.value32().and_then(|mut values| values.next()) else {
                 continue;
             };
             let names = classes.entry(pid).or_default();
-            for value in [application.reply()?.value, class.reply()?.value] {
+            for value in [
+                self.conn.property(application)?.value,
+                self.conn.property(class)?.value,
+            ] {
                 names.extend(
                     value
                         .split(|&byte| byte == 0)
@@ -511,25 +434,20 @@ impl Display {
         Ok(classes)
     }
 
-    fn windows(&self, pid: u32) -> Result<Vec<(Window, Rect)>, ReplyError> {
+    fn windows(&self, pid: u32) -> XResult<Vec<(Window, Rect)>> {
         let mut found = Vec::new();
         for window in self.candidates()? {
             if self.pid(window)? != Some(pid) {
                 continue;
             }
-            let attributes = self.conn.get_window_attributes(window)?.reply()?;
-            if attributes.map_state == MapState::VIEWABLE {
+            if self.conn.map_state(window)? == MAP_STATE_VIEWABLE {
                 found.push((window, self.rect(window)?));
             }
         }
         Ok(found)
     }
 
-    pub fn window(
-        &self,
-        pid: u32,
-        hint: Option<Rect>,
-    ) -> Result<Option<(Window, Rect)>, ReplyError> {
+    pub fn window(&self, pid: u32, hint: Option<Rect>) -> XResult<Option<(Window, Rect)>> {
         let windows = self.windows(pid)?;
         Ok(match hint {
             Some((x, y, width, height)) => windows.into_iter().min_by_key(|(_, rect)| {
@@ -544,37 +462,25 @@ impl Display {
         })
     }
 
-    fn keymap(&self) -> Result<Keymap, ReplyError> {
-        let setup = self.conn.setup();
-        let (min, max) = (setup.min_keycode, setup.max_keycode);
-        let reply = self
-            .conn
-            .get_keyboard_mapping(min, max - min + 1)?
-            .reply()?;
+    fn keymap(&self) -> XResult<Keymap> {
+        let keyboard = self.conn.keyboard()?;
         Ok(Keymap {
-            min,
-            per: usize::from(reply.keysyms_per_keycode),
-            syms: reply.keysyms,
+            min: self.conn.setup.min_keycode,
+            per: usize::from(keyboard.per),
+            syms: keyboard.syms,
         })
     }
 
-    fn fake(&self, kind: u8, detail: u8, x: i16, y: i16) -> Result<(), ReplyError> {
-        self.conn
-            .xtest_fake_input(kind, detail, 0, self.root, x, y, 0)?
-            .check()?;
-        Ok(())
-    }
-
-    fn sync(&self) -> Result<(), ReplyError> {
-        self.conn.get_input_focus()?.reply()?;
-        Ok(())
+    fn fake(&self, kind: u8, detail: u8, x: i16, y: i16) -> XResult<()> {
+        let sent = self.conn.fake_input(kind, detail, self.root, x, y)?;
+        self.conn.check(sent)
     }
 
     pub fn press(&self, chord: Chord) -> Result<(), String> {
         self.chord(chord).map_err(failed)?
     }
 
-    fn chord(&self, chord: Chord) -> Result<Result<(), String>, ReplyError> {
+    fn chord(&self, chord: Chord) -> XResult<Result<(), String>> {
         let map = self.keymap()?;
         let modifier = |sym: u32| map.find(sym).map(|(code, _)| code);
         let sym = keysym(chord.key);
@@ -586,10 +492,9 @@ impl Display {
                         "That key has no keycode on this keyboard and none is free to borrow, so nothing was sent.".into(),
                     ));
                 };
-                self.conn
-                    .change_keyboard_mapping(1, spare, 2, &[sym, sym])?
-                    .check()?;
-                self.sync()?;
+                let remapped = self.conn.remap(spare, &[sym, sym])?;
+                self.conn.check(remapped)?;
+                self.conn.sync()?;
                 thread::sleep(REMAP_SETTLE);
                 (spare, false, true)
             }
@@ -607,21 +512,20 @@ impl Display {
         .collect();
         let sent = (|| {
             for &code in &held {
-                self.fake(KEY_PRESS_EVENT, code, 0, 0)?;
+                self.fake(KEY_PRESS, code, 0, 0)?;
             }
-            self.fake(KEY_PRESS_EVENT, code, 0, 0)?;
-            self.fake(KEY_RELEASE_EVENT, code, 0, 0)?;
+            self.fake(KEY_PRESS, code, 0, 0)?;
+            self.fake(KEY_RELEASE, code, 0, 0)?;
             for &code in held.iter().rev() {
-                self.fake(KEY_RELEASE_EVENT, code, 0, 0)?;
+                self.fake(KEY_RELEASE, code, 0, 0)?;
             }
-            self.sync()
+            self.conn.sync()
         })();
         if remapped {
             thread::sleep(REMAP_SETTLE);
-            self.conn
-                .change_keyboard_mapping(1, code, 2, &[0, 0])?
-                .check()?;
-            self.sync()?;
+            let restored = self.conn.remap(code, &[0, 0])?;
+            self.conn.check(restored)?;
+            self.conn.sync()?;
         }
         sent.map(Ok)
     }
@@ -661,12 +565,12 @@ impl Display {
         };
         let (x, y) = (point(x)?, point(y)?);
         (|| {
-            self.fake(MOTION_NOTIFY_EVENT, 0, x, y)?;
+            self.fake(MOTION_NOTIFY, 0, x, y)?;
             for _ in 0..count.max(1) {
-                self.fake(BUTTON_PRESS_EVENT, button, x, y)?;
-                self.fake(BUTTON_RELEASE_EVENT, button, x, y)?;
+                self.fake(BUTTON_PRESS, button, x, y)?;
+                self.fake(BUTTON_RELEASE, button, x, y)?;
             }
-            self.sync()
+            self.conn.sync()
         })()
         .map_err(failed)
     }
@@ -680,24 +584,24 @@ impl Display {
         };
         let (start, end) = (point(from)?, point(to)?);
         (|| {
-            self.fake(MOTION_NOTIFY_EVENT, 0, start.0, start.1)?;
-            self.fake(BUTTON_PRESS_EVENT, 1, start.0, start.1)?;
-            self.sync()?;
+            self.fake(MOTION_NOTIFY, 0, start.0, start.1)?;
+            self.fake(BUTTON_PRESS, 1, start.0, start.1)?;
+            self.conn.sync()?;
             for step in 1..=DRAG_STEPS {
                 let along = |a: i16, b: i16| {
                     (i32::from(a) + (i32::from(b) - i32::from(a)) * step / DRAG_STEPS) as i16
                 };
                 self.fake(
-                    MOTION_NOTIFY_EVENT,
+                    MOTION_NOTIFY,
                     0,
                     along(start.0, end.0),
                     along(start.1, end.1),
                 )?;
-                self.sync()?;
+                self.conn.sync()?;
                 thread::sleep(Duration::from_millis(10));
             }
-            self.fake(BUTTON_RELEASE_EVENT, 1, end.0, end.1)?;
-            self.sync()
+            self.fake(BUTTON_RELEASE, 1, end.0, end.1)?;
+            self.conn.sync()
         })()
         .map_err(failed)
     }
@@ -712,38 +616,24 @@ impl Display {
         let (width, height) = ((right - left) as u16, (bottom - top) as u16);
         let image = self
             .conn
-            .get_image(
-                ImageFormat::Z_PIXMAP,
-                window,
-                (left - x) as i16,
-                (top - y) as i16,
-                width,
-                height,
-                !0,
-            )
-            .map_err(failed)?
-            .reply()
+            .image(window, (left - x) as i16, (top - y) as i16, width, height)
             .map_err(failed)?;
-        let setup = self.conn.setup();
+        let setup = &self.conn.setup;
         let format = setup
-            .pixmap_formats
+            .formats
             .iter()
             .find(|format| format.depth == image.depth)
             .ok_or("the window's pixel format is unknown")?;
         let masks = setup
-            .roots
+            .visuals
             .iter()
-            .flat_map(|screen| &screen.allowed_depths)
-            .flat_map(|depth| &depth.visuals)
-            .find(|visual| visual.visual_id == image.visual)
-            .map_or([0xff_0000, 0xff00, 0xff], |visual| {
-                [visual.red_mask, visual.green_mask, visual.blue_mask]
-            });
+            .find(|visual| visual.id == image.visual)
+            .map_or([0xff_0000, 0xff00, 0xff], |visual| visual.masks);
         let layout = Layout {
             bits: usize::from(format.bits_per_pixel),
             pad: usize::from(format.scanline_pad),
             masks,
-            msb: setup.image_byte_order == ImageOrder::MSB_FIRST,
+            msb: setup.image_msb_first,
         };
         let pixels = rgb(
             &image.data,

@@ -1,21 +1,24 @@
+mod a11y;
 mod act;
 mod atspi;
+mod dbus;
 mod desktop;
 mod identity;
+mod wire;
 mod x11;
+mod xproto;
 
 use crate::{
     App, Backend, Capabilities, Chord, Direction, Key, Pointer, Press, Read, Selection, Target,
 };
+use a11y::Interfaces;
 use atspi::Element;
-use futures_util::{StreamExt, stream};
+use dbus::Bus;
 use std::{collections::HashMap, future::Future, time::Duration};
 use tokio::{
     runtime::{Builder, Handle, Runtime},
-    sync::mpsc::{self, UnboundedReceiver},
-    task::JoinHandle,
+    sync::mpsc::{self, UnboundedReceiver, UnboundedSender},
 };
-use zbus::Connection;
 
 const NO_BUS: &str = "Computer use needs a desktop session with the AT-SPI accessibility bus (DISPLAY or WAYLAND_DISPLAY and at-spi2-core), so nothing ran.";
 const NO_X: &str = "needs an X11 display (DISPLAY), which this session lacks, so nothing was sent.";
@@ -28,14 +31,14 @@ enum Exec {
 
 struct Watch {
     changes: UnboundedReceiver<()>,
-    task: JoinHandle<()>,
+    sender: UnboundedSender<()>,
     activation: Duration,
 }
 
 #[derive(Default)]
 pub struct AtSpi {
     exec: Option<Exec>,
-    bus: Option<Connection>,
+    bus: Option<Bus>,
     display: Option<x11::Display>,
     apps: HashMap<i64, Vec<Element>>,
     entries: desktop::Index,
@@ -61,14 +64,7 @@ impl AtSpi {
         }
     }
 
-    fn spawn(&self, work: impl Future<Output = ()> + Send + 'static) -> Option<JoinHandle<()>> {
-        match self.exec.as_ref()? {
-            Exec::Shared(handle) => Some(handle.spawn(work)),
-            Exec::Own(runtime) => Some(runtime.spawn(work)),
-        }
-    }
-
-    fn bus(&self) -> Result<Connection, String> {
+    fn bus(&self) -> Result<Bus, String> {
         self.bus.clone().ok_or_else(|| NO_BUS.to_owned())
     }
 
@@ -366,32 +362,20 @@ impl Backend for AtSpi {
         if !self.registered || senders.is_empty() {
             return false;
         }
-        let streams = self.block(async {
-            let mut streams = Vec::new();
-            for sender in &senders {
-                streams.push(atspi::changes(&bus, sender).await?);
-            }
-            Some(streams)
-        });
-        let Some(Some(streams)) = streams else {
-            return false;
-        };
         let (sender, changes) = mpsc::unbounded_channel();
-        let task = self.spawn(async move {
-            let mut messages = stream::select_all(streams);
-            while let Some(message) = messages.next().await {
-                if message.is_ok_and(|message| atspi::changed(&message)) && sender.send(()).is_err()
-                {
-                    break;
-                }
+        let watched = self.block(async {
+            for watched in &senders {
+                atspi::changes(&bus, watched, sender.clone()).await?;
             }
+            Some(())
         });
-        let Some(task) = task else {
+        if watched != Some(Some(())) {
+            let _ = bus.forget(sender);
             return false;
-        };
+        }
         self.watching = Some(Watch {
             changes,
-            task,
+            sender,
             activation: self.activations.get(&app.pid).copied().unwrap_or_default(),
         });
         true
@@ -417,8 +401,10 @@ impl Backend for AtSpi {
     }
 
     fn unwatch(&mut self) {
-        if let Some(watch) = self.watching.take() {
-            watch.task.abort();
+        if let Some(watch) = self.watching.take()
+            && let Ok(bus) = self.bus()
+        {
+            let _ = bus.forget(watch.sender);
         }
     }
 
@@ -427,7 +413,7 @@ impl Backend for AtSpi {
             return false;
         };
         self.block(atspi::interfaces(&bus, element))
-            .is_some_and(|interfaces| interfaces.contains(atspi_common::Interface::EditableText))
+            .is_some_and(|interfaces| interfaces.contains(Interfaces::EDITABLE_TEXT))
     }
 
     fn read(&mut self, app: &App) -> Result<Read<Element>, String> {

@@ -1,23 +1,14 @@
-use crate::state::Node;
-use atspi_common::{Interface, InterfaceSet, Role, State, StateSet};
-use atspi_proxies::{
-    accessible::AccessibleProxy, action::ActionProxy, application::ApplicationProxy, bus::BusProxy,
-    component::ComponentProxy, registry::RegistryProxy, selection::SelectionProxy, text::TextProxy,
-    value::ValueProxy,
+use super::{
+    a11y::{Interfaces, Role, States},
+    dbus::{BUS, BUS_PATH, Bus, Error, Message, PEER, PROPERTIES},
+    wire::Value,
 };
+use crate::state::Node;
 use futures_util::{StreamExt, stream};
 use std::{collections::HashMap, future::Future, time::Duration};
 use tokio::{
-    sync::mpsc::UnboundedReceiver,
+    sync::mpsc::{UnboundedReceiver, UnboundedSender},
     time::{Instant, timeout, timeout_at},
-};
-use zbus::{
-    Connection, MatchRule, Message, MessageStream,
-    fdo::DBusProxy,
-    message::Type,
-    names::BusName,
-    proxy::{Builder, CacheProperties, Defaults},
-    zvariant::{OwnedObjectPath, OwnedValue},
 };
 
 pub const CALL: Duration = Duration::from_secs(1);
@@ -28,9 +19,21 @@ const MAX_CHILDREN: usize = 400;
 const MAX_TEXT: i32 = 1000;
 const PARALLEL: usize = 64;
 const REGISTRY: &str = "org.a11y.atspi.Registry";
+const REGISTRY_PATH: &str = "/org/a11y/atspi/registry";
 const ROOT: &str = "/org/a11y/atspi/accessible/root";
 const NULL: &str = "/org/a11y/atspi/null";
-const WINDOWS: [Role; 4] = [Role::Frame, Role::Window, Role::Dialog, Role::Alert];
+const A11Y_BUS: &str = "org.a11y.Bus";
+const A11Y_BUS_PATH: &str = "/org/a11y/bus";
+pub const ACCESSIBLE: &str = "org.a11y.atspi.Accessible";
+pub const ACTION: &str = "org.a11y.atspi.Action";
+const APPLICATION: &str = "org.a11y.atspi.Application";
+pub const COMPONENT: &str = "org.a11y.atspi.Component";
+pub const EDITABLE_TEXT: &str = "org.a11y.atspi.EditableText";
+pub const SELECTION: &str = "org.a11y.atspi.Selection";
+pub const TEXT: &str = "org.a11y.atspi.Text";
+pub const VALUE: &str = "org.a11y.atspi.Value";
+pub const COORD_TYPE_SCREEN: u32 = 0;
+const WINDOWS: [Role; 4] = [Role::FRAME, Role::WINDOW, Role::DIALOG, Role::ALERT];
 const GTK4_ACTIVATION: Duration = Duration::from_millis(250);
 const EVENTS: [&str; 9] = [
     "object:state-changed",
@@ -60,8 +63,7 @@ pub struct Element {
 }
 
 impl Element {
-    fn of((bus, path): (String, OwnedObjectPath)) -> Option<Self> {
-        let path = path.as_str().to_owned();
+    fn of((bus, path): (String, String)) -> Option<Self> {
         (!bus.is_empty() && path != NULL).then_some(Self { bus, path })
     }
 }
@@ -69,8 +71,8 @@ impl Element {
 pub struct Info {
     pub role: Role,
     pub name: Option<String>,
-    pub states: StateSet,
-    pub interfaces: InterfaceSet,
+    pub states: States,
+    pub interfaces: Interfaces,
     pub actionable: bool,
     pub value: Option<String>,
     pub children: Vec<Element>,
@@ -92,79 +94,285 @@ pub struct Registered {
     pub windows: bool,
 }
 
+pub trait One: Sized {
+    fn one(value: Value) -> Option<Self>;
+}
+
+impl One for () {
+    fn one(_: Value) -> Option<Self> {
+        Some(())
+    }
+}
+
+impl One for Value {
+    fn one(value: Value) -> Option<Self> {
+        Some(value)
+    }
+}
+
+impl One for bool {
+    fn one(value: Value) -> Option<Self> {
+        value.bool()
+    }
+}
+
+impl One for i32 {
+    fn one(value: Value) -> Option<Self> {
+        value.i32()
+    }
+}
+
+impl One for u32 {
+    fn one(value: Value) -> Option<Self> {
+        value.u32()
+    }
+}
+
+impl One for f64 {
+    fn one(value: Value) -> Option<Self> {
+        value.f64()
+    }
+}
+
+impl One for String {
+    fn one(value: Value) -> Option<Self> {
+        match value {
+            Value::Str(text) => Some(text),
+            _ => None,
+        }
+    }
+}
+
+impl One for (String, String) {
+    fn one(value: Value) -> Option<Self> {
+        match value.fields()? {
+            [Value::Str(bus), Value::Path(path)] => Some((bus.clone(), path.clone())),
+            _ => None,
+        }
+    }
+}
+
+impl One for (i32, i32) {
+    fn one(value: Value) -> Option<Self> {
+        match value.fields()? {
+            [Value::I32(start), Value::I32(end)] => Some((*start, *end)),
+            _ => None,
+        }
+    }
+}
+
+impl One for (i32, i32, i32, i32) {
+    fn one(value: Value) -> Option<Self> {
+        match value.fields()? {
+            [
+                Value::I32(x),
+                Value::I32(y),
+                Value::I32(width),
+                Value::I32(height),
+            ] => Some((*x, *y, *width, *height)),
+            _ => None,
+        }
+    }
+}
+
+pub struct ActionName(String);
+
+impl One for ActionName {
+    fn one(value: Value) -> Option<Self> {
+        match value.fields()? {
+            [Value::Str(name), Value::Str(_), Value::Str(_)] => Some(Self(name.clone())),
+            _ => None,
+        }
+    }
+}
+
+impl<T: One> One for Vec<T> {
+    fn one(value: Value) -> Option<Self> {
+        match value {
+            Value::Array(items) => items.into_iter().map(T::one).collect(),
+            _ => None,
+        }
+    }
+}
+
+impl One for States {
+    fn one(value: Value) -> Option<Self> {
+        Self::of(&Vec::<u32>::one(value)?)
+    }
+}
+
+impl One for Interfaces {
+    fn one(value: Value) -> Option<Self> {
+        Some(Self::of(
+            Vec::<String>::one(value)?.iter().map(String::as_str),
+        ))
+    }
+}
+
+impl One for HashMap<String, Value> {
+    fn one(value: Value) -> Option<Self> {
+        match value {
+            Value::Array(items) => items
+                .into_iter()
+                .map(|item| match item {
+                    Value::Entry(entry) => match *entry {
+                        (Value::Str(key), Value::Variant(inner)) => Some((key, *inner)),
+                        _ => None,
+                    },
+                    _ => None,
+                })
+                .collect(),
+            _ => None,
+        }
+    }
+}
+
+fn read<T: One>(message: &Message) -> Result<T, Error> {
+    let mut values = message.body()?;
+    let value = if values.len() == 1 {
+        values.remove(0)
+    } else {
+        Value::Struct(values)
+    };
+    T::one(value).ok_or(Error::Malformed("the reply has another type"))
+}
+
+pub struct Object<'a> {
+    bus: &'a Bus,
+    element: &'a Element,
+}
+
+impl Object<'_> {
+    pub fn call<T: One>(
+        &self,
+        interface: &str,
+        member: &str,
+        args: &[Value],
+    ) -> impl Future<Output = Result<T, Error>> + use<T> {
+        let reply = self.bus.call(
+            &self.element.bus,
+            &self.element.path,
+            interface,
+            member,
+            args,
+        );
+        async move { read(&reply.await?) }
+    }
+
+    pub fn get<T: One>(
+        &self,
+        interface: &str,
+        property: &str,
+    ) -> impl Future<Output = Result<T, Error>> + use<T> {
+        let args = [Value::Str(interface.into()), Value::Str(property.into())];
+        let reply = self.bus.call(
+            &self.element.bus,
+            &self.element.path,
+            PROPERTIES,
+            "Get",
+            &args,
+        );
+        async move {
+            match read::<Value>(&reply.await?)? {
+                Value::Variant(inner) => {
+                    T::one(*inner).ok_or(Error::Malformed("the property has another type"))
+                }
+                _ => Err(Error::Malformed("the property is not a variant")),
+            }
+        }
+    }
+
+    pub fn set(
+        &self,
+        interface: &str,
+        property: &str,
+        value: Value,
+    ) -> impl Future<Output = Result<(), Error>> + use<> {
+        let args = [
+            Value::Str(interface.into()),
+            Value::Str(property.into()),
+            Value::Variant(Box::new(value)),
+        ];
+        let reply = self.bus.call(
+            &self.element.bus,
+            &self.element.path,
+            PROPERTIES,
+            "Set",
+            &args,
+        );
+        async move { reply.await.map(|_| ()) }
+    }
+}
+
 pub async fn timed<T, E>(work: impl Future<Output = Result<T, E>>) -> Option<T> {
     timeout(CALL, work).await.ok()?.ok()
 }
 
-pub async fn proxy<'a, P>(bus: &Connection, element: &'a Element) -> Option<P>
-where
-    P: From<zbus::Proxy<'a>> + Defaults,
-{
-    Builder::<P>::new(bus)
-        .cache_properties(CacheProperties::No)
-        .destination(element.bus.as_str())
-        .ok()?
-        .path(element.path.as_str())
-        .ok()?
-        .build()
-        .await
-        .ok()
+pub fn proxy<'a>(bus: &'a Bus, element: &'a Element) -> Option<Object<'a>> {
+    (super::dbus::valid_name(&element.bus) && super::dbus::valid_path(&element.path))
+        .then_some(Object { bus, element })
 }
 
-pub async fn connect(fallback: Option<String>) -> Option<Connection> {
+pub async fn connect(fallback: Option<String>) -> Option<Bus> {
     let address = match std::env::var("AT_SPI_BUS_ADDRESS") {
         Ok(address) if !address.is_empty() => Some(address),
         _ => session_address().await.or(fallback),
     }?;
-    let builder = zbus::connection::Builder::address(address.as_str()).ok()?;
-    timeout(CALL * 2, builder.build()).await.ok()?.ok()
+    timeout(CALL * 2, Bus::connect(&address, PARALLEL))
+        .await
+        .ok()?
+        .ok()
+}
+
+fn session() -> String {
+    match std::env::var("DBUS_SESSION_BUS_ADDRESS") {
+        Ok(address) => address,
+        Err(_) => {
+            let runtime = std::env::var("XDG_RUNTIME_DIR")
+                .unwrap_or_else(|_| format!("/run/user/{}", nanocode_sys::unix::user_id()));
+            format!("unix:path={runtime}/bus")
+        }
+    }
 }
 
 async fn session_address() -> Option<String> {
-    let session = timeout(CALL * 2, Connection::session()).await.ok()?.ok()?;
-    let bus = BusProxy::builder(&session)
-        .cache_properties(CacheProperties::No)
-        .build()
+    let session = timeout(CALL * 2, Bus::connect(&session(), PARALLEL))
         .await
+        .ok()?
         .ok()?;
-    timed(bus.get_address()).await
+    let asked = session.call(A11Y_BUS, A11Y_BUS_PATH, A11Y_BUS, "GetAddress", &[]);
+    timed(async { read::<String>(&asked.await?) }).await
 }
 
-pub async fn register(bus: &Connection) -> bool {
-    let Ok(registry) = RegistryProxy::builder(bus)
-        .cache_properties(CacheProperties::No)
-        .build()
-        .await
-    else {
-        return false;
-    };
+pub async fn register(bus: &Bus) -> bool {
     for event in EVENTS {
-        if timed(registry.register_event(event)).await.is_none() {
+        let registered = bus.call(
+            REGISTRY,
+            REGISTRY_PATH,
+            REGISTRY,
+            "RegisterEvent",
+            &[Value::Str(event.into())],
+        );
+        if timed(registered).await.is_none() {
             return false;
         }
     }
     true
 }
 
-pub async fn changes(bus: &Connection, sender: &str) -> Option<MessageStream> {
-    let rule = MatchRule::builder()
-        .msg_type(Type::Signal)
-        .sender(sender)
-        .ok()?
-        .build();
-    timed(MessageStream::for_match_rule(rule, bus, None)).await
+pub async fn changes(bus: &Bus, sender: &str, changes: UnboundedSender<()>) -> Option<()> {
+    timed(bus.watch(sender, changed, changes)).await
 }
 
 pub fn changed(message: &Message) -> bool {
-    let header = message.header();
-    let (Some(interface), Some(member)) = (header.interface(), header.member()) else {
+    let (Some(interface), Some(member)) = (&message.interface, &message.member) else {
         return false;
     };
     match interface.as_str() {
         "org.a11y.atspi.Event.Window" | "org.a11y.atspi.Event.Focus" => true,
         "org.a11y.atspi.Event.Object" => CHANGES
             .iter()
-            .any(|change| change.eq_ignore_ascii_case(member.as_str())),
+            .any(|change| change.eq_ignore_ascii_case(member)),
         _ => false,
     }
 }
@@ -181,25 +389,19 @@ pub async fn settle(changes: &mut UnboundedReceiver<()>, first: Duration, quiet:
     changed
 }
 
-pub async fn ping(bus: &Connection) -> bool {
-    let ping = bus.call_method(
-        Some("org.freedesktop.DBus"),
-        "/org/freedesktop/DBus",
-        Some("org.freedesktop.DBus.Peer"),
-        "Ping",
-        &(),
-    );
-    timed(ping).await.is_some()
+pub async fn ping(bus: &Bus) -> bool {
+    timed(bus.call(BUS, BUS_PATH, PEER, "Ping", &[]))
+        .await
+        .is_some()
 }
 
-pub async fn children(bus: &Connection, element: &Element, count: i32) -> (Vec<Element>, bool) {
-    let Some(accessible) = proxy::<AccessibleProxy>(bus, element).await else {
+pub async fn children(bus: &Bus, element: &Element, count: i32) -> (Vec<Element>, bool) {
+    let Some(accessible) = proxy(bus, element) else {
         return (Vec::new(), true);
     };
-    let accessible = accessible.inner();
     if usize::try_from(count).map_or(true, |count| count <= MAX_CHILDREN) {
-        let refs: Option<Vec<(String, OwnedObjectPath)>> =
-            timed(accessible.call("GetChildren", &())).await;
+        let refs: Option<Vec<(String, String)>> =
+            timed(accessible.call(ACCESSIBLE, "GetChildren", &[])).await;
         let Some(refs) = refs else {
             return (Vec::new(), true);
         };
@@ -211,9 +413,10 @@ pub async fn children(bus: &Connection, element: &Element, count: i32) -> (Vec<E
             .collect();
         return (children, cut);
     }
+    let accessible = &accessible;
     let children: Vec<Option<Element>> = stream::iter(0..MAX_CHILDREN as i32)
         .map(|index| async move {
-            timed(accessible.call("GetChildAtIndex", &(index,)))
+            timed(accessible.call(ACCESSIBLE, "GetChildAtIndex", &[Value::I32(index)]))
                 .await
                 .and_then(Element::of)
         })
@@ -223,58 +426,68 @@ pub async fn children(bus: &Connection, element: &Element, count: i32) -> (Vec<E
     (children.into_iter().flatten().collect(), true)
 }
 
-pub async fn role(bus: &Connection, element: &Element) -> Option<Role> {
-    let accessible = proxy::<AccessibleProxy>(bus, element).await?;
-    let role: u32 = timed(accessible.inner().call("GetRole", &())).await?;
-    Some(Role::try_from(role).unwrap_or(Role::Unknown))
+pub async fn role(bus: &Bus, element: &Element) -> Option<Role> {
+    let accessible = proxy(bus, element)?;
+    let role: u32 = timed(accessible.call(ACCESSIBLE, "GetRole", &[])).await?;
+    Some(Role::of(role))
 }
 
-pub async fn states(bus: &Connection, element: &Element) -> Option<StateSet> {
-    let accessible = proxy::<AccessibleProxy>(bus, element).await?;
-    timed(accessible.get_state()).await
+pub async fn states(bus: &Bus, element: &Element) -> Option<States> {
+    let accessible = proxy(bus, element)?;
+    timed(accessible.call(ACCESSIBLE, "GetState", &[])).await
 }
 
-pub async fn interfaces(bus: &Connection, element: &Element) -> InterfaceSet {
-    match proxy::<AccessibleProxy>(bus, element).await {
-        Some(accessible) => timed(accessible.get_interfaces()).await.unwrap_or_default(),
-        None => InterfaceSet::empty(),
+pub async fn interfaces(bus: &Bus, element: &Element) -> Interfaces {
+    match proxy(bus, element) {
+        Some(accessible) => timed(accessible.call(ACCESSIBLE, "GetInterfaces", &[]))
+            .await
+            .unwrap_or_default(),
+        None => Interfaces::default(),
     }
 }
 
-pub async fn parent(bus: &Connection, element: &Element) -> Option<Element> {
-    let accessible = proxy::<AccessibleProxy>(bus, element).await?;
-    let parent = timed(accessible.parent()).await?;
-    let bus = parent.name_as_str()?.to_owned();
-    let path = parent.path_as_str().to_owned();
-    (path != NULL && path != ROOT).then_some(Element { bus, path })
+pub async fn parent(bus: &Bus, element: &Element) -> Option<Element> {
+    let accessible = proxy(bus, element)?;
+    let parent = timed(accessible.get(ACCESSIBLE, "Parent")).await?;
+    Element::of(parent).filter(|parent| parent.path != ROOT)
 }
 
-pub async fn actions(bus: &Connection, element: &Element) -> Vec<String> {
-    let Some(action) = proxy::<ActionProxy>(bus, element).await else {
+pub async fn actions(bus: &Bus, element: &Element) -> Vec<String> {
+    let Some(action) = proxy(bus, element) else {
         return Vec::new();
     };
-    let listed = timed(action.get_actions()).await.unwrap_or_default();
+    let listed: Vec<ActionName> = timed(action.call(ACTION, "GetActions", &[]))
+        .await
+        .unwrap_or_default();
     let mut names = Vec::with_capacity(listed.len());
-    for (index, listed) in (0..).zip(listed) {
-        names.push(if listed.name.is_empty() {
-            timed(action.get_name(index)).await.unwrap_or_default()
+    for (index, ActionName(listed)) in (0..).zip(listed) {
+        names.push(if listed.is_empty() {
+            timed(action.call(ACTION, "GetName", &[Value::I32(index)]))
+                .await
+                .unwrap_or_default()
         } else {
-            listed.name
+            listed
         });
     }
     names
 }
 
-pub async fn extents(bus: &Connection, element: &Element) -> Option<(i32, i32, i32, i32)> {
-    let component = proxy::<ComponentProxy>(bus, element).await?;
-    let extents = timed(component.get_extents(atspi_common::CoordType::Screen)).await?;
+pub async fn extents(bus: &Bus, element: &Element) -> Option<(i32, i32, i32, i32)> {
+    let component = proxy(bus, element)?;
+    let extents: (i32, i32, i32, i32) =
+        timed(component.call(COMPONENT, "GetExtents", &[Value::U32(COORD_TYPE_SCREEN)])).await?;
     (extents.2 > 0 && extents.3 > 0).then_some(extents)
 }
 
-pub async fn text(bus: &Connection, element: &Element, limit: i32) -> Option<String> {
-    let text = proxy::<TextProxy>(bus, element).await?;
-    let count = timed(text.character_count()).await?;
-    timed(text.get_text(0, count.min(limit))).await
+pub async fn text(bus: &Bus, element: &Element, limit: i32) -> Option<String> {
+    let text = proxy(bus, element)?;
+    let count: i32 = timed(text.get(TEXT, "CharacterCount")).await?;
+    timed(text.call(
+        TEXT,
+        "GetText",
+        &[Value::I32(0), Value::I32(count.min(limit))],
+    ))
+    .await
 }
 
 pub fn number(value: f64) -> String {
@@ -285,37 +498,26 @@ pub fn number(value: f64) -> String {
     }
 }
 
-pub fn textual(role: Role, interfaces: InterfaceSet) -> bool {
-    interfaces.contains(Interface::Text)
-        && (interfaces.contains(Interface::EditableText)
-            || matches!(
-                role,
-                Role::Text | Role::Entry | Role::PasswordText | Role::Terminal
-            ))
+pub fn textual(role: Role, interfaces: Interfaces) -> bool {
+    interfaces.contains(Interfaces::TEXT)
+        && (interfaces.contains(Interfaces::EDITABLE_TEXT)
+            || [Role::TEXT, Role::ENTRY, Role::PASSWORD_TEXT, Role::TERMINAL].contains(&role))
 }
 
-pub async fn selected(bus: &Connection, element: &Element) -> Option<String> {
-    let selection = proxy::<SelectionProxy>(bus, element).await?;
-    let chosen = timed(selection.get_selected_child(0)).await?;
-    let chosen = Element {
-        bus: chosen.name_as_str()?.to_owned(),
-        path: chosen.path_as_str().to_owned(),
-    };
-    let accessible = proxy::<AccessibleProxy>(bus, &chosen).await?;
-    timed(accessible.name())
+pub async fn selected(bus: &Bus, element: &Element) -> Option<String> {
+    let selection = proxy(bus, element)?;
+    let chosen = timed(selection.call(SELECTION, "GetSelectedChild", &[Value::I32(0)])).await?;
+    let chosen = Element::of(chosen)?;
+    let accessible = proxy(bus, &chosen)?;
+    timed(accessible.get::<String>(ACCESSIBLE, "Name"))
         .await
         .filter(|name| !name.trim().is_empty())
 }
 
-async fn value(
-    bus: &Connection,
-    element: &Element,
-    role: Role,
-    interfaces: InterfaceSet,
-) -> Option<String> {
-    if role == Role::PasswordText {
-        let text = proxy::<TextProxy>(bus, element).await?;
-        let count = timed(text.character_count()).await?;
+async fn value(bus: &Bus, element: &Element, role: Role, interfaces: Interfaces) -> Option<String> {
+    if role == Role::PASSWORD_TEXT {
+        let text = proxy(bus, element)?;
+        let count: i32 = timed(text.get(TEXT, "CharacterCount")).await?;
         return (count > 0).then(String::new);
     }
     if textual(role, interfaces) {
@@ -323,67 +525,54 @@ async fn value(
             .await
             .filter(|text| !text.is_empty());
     }
-    if role == Role::ComboBox {
-        if interfaces.contains(Interface::Selection) {
+    if role == Role::COMBO_BOX {
+        if interfaces.contains(Interfaces::SELECTION) {
             return selected(bus, element).await;
         }
         let (kids, _) = children(bus, element, 1).await;
         let list = kids.first()?;
         return if self::interfaces(bus, list)
             .await
-            .contains(Interface::Selection)
+            .contains(Interfaces::SELECTION)
         {
             selected(bus, list).await
         } else {
             None
         };
     }
-    if interfaces.contains(Interface::Value) {
-        let value = proxy::<ValueProxy>(bus, element).await?;
-        return timed(value.current_value()).await.map(number);
+    if interfaces.contains(Interfaces::VALUE) {
+        let value = proxy(bus, element)?;
+        return timed(value.get::<f64>(VALUE, "CurrentValue"))
+            .await
+            .map(number);
     }
     None
 }
 
-async fn summary(
-    bus: &Connection,
-    element: &Element,
-    accessible: &AccessibleProxy<'_>,
-) -> (Option<String>, Option<Option<String>>, Option<i32>) {
-    let all = bus.call_method(
-        Some(element.bus.as_str()),
-        element.path.as_str(),
-        Some("org.freedesktop.DBus.Properties"),
-        "GetAll",
-        &("org.a11y.atspi.Accessible",),
-    );
-    let all: Option<HashMap<String, OwnedValue>> = timed(all)
-        .await
-        .and_then(|reply| reply.body().deserialize().ok());
+async fn summary(accessible: &Object<'_>) -> (Option<String>, Option<Option<String>>, Option<i32>) {
+    let all: Option<HashMap<String, Value>> =
+        timed(accessible.call(PROPERTIES, "GetAll", &[Value::Str(ACCESSIBLE.into())])).await;
     if let Some(all) = all {
-        let text = |key: &str| {
-            all.get(key)
-                .and_then(|value| value.downcast_ref::<&str>().ok())
-                .map(str::to_owned)
-        };
-        let count = all
-            .get("ChildCount")
-            .and_then(|value| value.downcast_ref::<i32>().ok());
+        let text = |key: &str| all.get(key).and_then(Value::str).map(str::to_owned);
+        let count = all.get("ChildCount").and_then(Value::i32);
         return (text("Name"), Some(text("Description")), count);
     }
-    let (name, count) = tokio::join!(timed(accessible.name()), timed(accessible.child_count()));
+    let (name, count) = tokio::join!(
+        timed(accessible.get::<String>(ACCESSIBLE, "Name")),
+        timed(accessible.get::<i32>(ACCESSIBLE, "ChildCount"))
+    );
     (name, None, count)
 }
 
-pub async fn info(bus: &Connection, element: &Element, deep: bool) -> Option<Info> {
-    let accessible = proxy::<AccessibleProxy>(bus, element).await?;
+pub async fn info(bus: &Bus, element: &Element, deep: bool) -> Option<Info> {
+    let accessible = proxy(bus, element)?;
     let (role, states, interfaces, (name, described, count)) = tokio::join!(
-        timed(accessible.inner().call::<_, _, u32>("GetRole", &())),
-        timed(accessible.get_state()),
-        timed(accessible.get_interfaces()),
-        summary(bus, element, &accessible),
+        timed(accessible.call::<u32>(ACCESSIBLE, "GetRole", &[])),
+        timed(accessible.call::<States>(ACCESSIBLE, "GetState", &[])),
+        timed(accessible.call::<Interfaces>(ACCESSIBLE, "GetInterfaces", &[])),
+        summary(&accessible),
     );
-    let role = Role::try_from(role?).unwrap_or(Role::Unknown);
+    let role = Role::of(role?);
     let states = states.unwrap_or_default();
     let interfaces = interfaces.unwrap_or_default();
     let shown = listed(states);
@@ -403,16 +592,13 @@ pub async fn info(bus: &Connection, element: &Element, deep: bool) -> Option<Inf
     if !shown {
         return Some(info);
     }
-    let unnamed = info.name.is_none() && interfaces.contains(Interface::Action);
+    let unnamed = info.name.is_none() && interfaces.contains(Interfaces::ACTION);
     let (actionable, value, children, description) = tokio::join!(
         async {
-            if !interfaces.contains(Interface::Action) {
+            if !interfaces.contains(Interfaces::ACTION) {
                 return false;
             }
-            let Some(action) = proxy::<ActionProxy>(bus, element).await else {
-                return false;
-            };
-            timed(action.get_actions())
+            timed(accessible.call::<Vec<ActionName>>(ACTION, "GetActions", &[]))
                 .await
                 .is_some_and(|listed| !listed.is_empty())
         },
@@ -428,7 +614,7 @@ pub async fn info(bus: &Connection, element: &Element, deep: bool) -> Option<Inf
             match described {
                 _ if !unnamed => None,
                 Some(description) => description,
-                None => timed(accessible.description()).await,
+                None => timed(accessible.get::<String>(ACCESSIBLE, "Description")).await,
             }
         },
     );
@@ -441,9 +627,9 @@ pub async fn info(bus: &Connection, element: &Element, deep: bool) -> Option<Inf
     Some(info)
 }
 
-pub fn listed(states: StateSet) -> bool {
-    !states.contains(State::Defunct)
-        && (states.contains(State::Visible) || states.contains(State::Showing))
+pub const fn listed(states: States) -> bool {
+    !states.contains(States::DEFUNCT)
+        && (states.contains(States::VISIBLE) || states.contains(States::SHOWING))
 }
 
 pub fn camel(role: &str) -> String {
@@ -459,30 +645,30 @@ pub fn camel(role: &str) -> String {
 
 pub fn role_name(role: Role) -> String {
     match role {
-        Role::Button => "PushButton".into(),
+        Role::PUSH_BUTTON => "PushButton".into(),
         role => camel(role.name()),
     }
 }
 
-pub fn flags(states: StateSet, actionable: bool) -> Vec<&'static str> {
+pub fn flags(states: States, actionable: bool) -> Vec<&'static str> {
     let mut flags = Vec::new();
-    if actionable && !states.contains(State::Enabled) && !states.contains(State::Sensitive) {
+    if actionable && !states.contains(States::ENABLED) && !states.contains(States::SENSITIVE) {
         flags.push("disabled");
     }
-    if states.contains(State::Focused) {
+    if states.contains(States::FOCUSED) {
         flags.push("focused");
     }
-    if states.contains(State::Selected) {
+    if states.contains(States::SELECTED) {
         flags.push("selected");
     }
-    if states.contains(State::Expandable) {
-        flags.push(if states.contains(State::Expanded) {
+    if states.contains(States::EXPANDABLE) {
+        flags.push(if states.contains(States::EXPANDED) {
             "expanded"
         } else {
             "collapsed"
         });
     }
-    if states.contains(State::Checked) {
+    if states.contains(States::CHECKED) {
         flags.push("checked");
     }
     flags
@@ -490,19 +676,19 @@ pub fn flags(states: StateSet, actionable: bool) -> Vec<&'static str> {
 
 pub fn node(element: Element, info: Info) -> Node<Element> {
     let actionable = info.actionable
-        || info.interfaces.contains(Interface::EditableText)
-        || info.interfaces.contains(Interface::Value)
-        || info.states.contains(State::Selectable);
+        || info.interfaces.contains(Interfaces::EDITABLE_TEXT)
+        || info.interfaces.contains(Interfaces::VALUE)
+        || info.states.contains(States::SELECTABLE);
     let mut node = Node::new(role_name(info.role), element);
     node.name = info.name;
     node.value = info.value;
     node.states = flags(info.states, actionable);
     node.actionable = actionable;
-    node.secure = info.role == Role::PasswordText;
+    node.secure = info.role == Role::PASSWORD_TEXT;
     node
 }
 
-pub async fn tree(bus: &Connection, window: &Element) -> Tree {
+pub async fn tree(bus: &Bus, window: &Element) -> Tree {
     let deadline = Instant::now() + READ;
     let mut slots: Vec<(Element, Info, Vec<usize>)> = Vec::new();
     let mut level = vec![(window.clone(), None::<usize>, 0)];
@@ -552,7 +738,7 @@ pub async fn tree(bus: &Connection, window: &Element) -> Tree {
     }
     let focused = slots
         .iter()
-        .find(|(_, info, _)| info.states.contains(State::Focused))
+        .find(|(_, info, _)| info.states.contains(States::FOCUSED))
         .map(|(element, _, _)| element.clone());
     let mut built: Vec<Option<Node<Element>>> = slots.iter().map(|_| None).collect();
     for (index, (element, info, kids)) in slots.into_iter().enumerate().rev() {
@@ -568,7 +754,7 @@ pub async fn tree(bus: &Connection, window: &Element) -> Tree {
 }
 
 pub async fn registered(
-    bus: &Connection,
+    bus: &Bus,
     known: &HashMap<String, (u32, String, Duration)>,
     shown: bool,
 ) -> Vec<Registered> {
@@ -577,14 +763,6 @@ pub async fn registered(
         path: ROOT.into(),
     };
     let (apps, _) = children(bus, &root, -1).await;
-    let Ok(builder) = DBusProxy::builder(bus)
-        .cache_properties(CacheProperties::No)
-        .build()
-        .await
-    else {
-        return Vec::new();
-    };
-    let dbus = &builder;
     let found: Vec<Option<Registered>> = stream::iter(apps)
         .map(|element| async move {
             let windows = async {
@@ -598,14 +776,18 @@ pub async fn registered(
                 Some((pid, name, activation)) => (Some(*pid), name.clone(), *activation),
                 None => {
                     let pid = async {
-                        timed(dbus.get_connection_unix_process_id(
-                            BusName::try_from(element.bus.as_str()).ok()?,
-                        ))
-                        .await
+                        let asked = bus.call(
+                            BUS,
+                            BUS_PATH,
+                            BUS,
+                            "GetConnectionUnixProcessID",
+                            &[Value::Str(element.bus.clone())],
+                        );
+                        timed(async { read::<u32>(&asked.await?) }).await
                     };
                     let name = async {
-                        let accessible = proxy::<AccessibleProxy>(bus, &element).await?;
-                        timed(accessible.name()).await
+                        let accessible = proxy(bus, &element)?;
+                        timed(accessible.get::<String>(ACCESSIBLE, "Name")).await
                     };
                     let (pid, name, activation) =
                         tokio::join!(pid, name, activation(bus, &element));
@@ -619,7 +801,7 @@ pub async fn registered(
                 activation,
                 windows: windows
                     .iter()
-                    .any(|(_, _, states)| states.contains(State::Showing)),
+                    .any(|(_, _, states)| states.contains(States::SHOWING)),
                 element,
             })
         })
@@ -629,13 +811,13 @@ pub async fn registered(
     found.into_iter().flatten().collect()
 }
 
-async fn activation(bus: &Connection, app: &Element) -> Duration {
-    let Some(application) = proxy::<ApplicationProxy>(bus, app).await else {
+async fn activation(bus: &Bus, app: &Element) -> Duration {
+    let Some(application) = proxy(bus, app) else {
         return Duration::ZERO;
     };
     let (toolkit, version) = tokio::join!(
-        timed(application.toolkit_name()),
-        timed(application.version())
+        timed(application.get::<String>(APPLICATION, "ToolkitName")),
+        timed(application.get::<String>(APPLICATION, "Version"))
     );
     if toolkit.as_deref() == Some("GTK") && version.is_some_and(|version| version.starts_with("4."))
     {
@@ -645,12 +827,12 @@ async fn activation(bus: &Connection, app: &Element) -> Duration {
     }
 }
 
-pub async fn windows(bus: &Connection, app: &Element) -> Option<Vec<(Element, Role, StateSet)>> {
+pub async fn windows(bus: &Bus, app: &Element) -> Option<Vec<(Element, Role, States)>> {
     let (children, cut) = children(bus, app, -1).await;
     if cut && children.is_empty() {
         return None;
     }
-    let found: Vec<Option<(Element, Role, StateSet)>> = stream::iter(children)
+    let found: Vec<Option<(Element, Role, States)>> = stream::iter(children)
         .map(|element| async move {
             let (role, states) = tokio::join!(role(bus, &element), states(bus, &element));
             let role = role.filter(|role| WINDOWS.contains(role))?;
@@ -662,10 +844,7 @@ pub async fn windows(bus: &Connection, app: &Element) -> Option<Vec<(Element, Ro
     Some(found.into_iter().flatten().collect())
 }
 
-pub async fn window(
-    bus: &Connection,
-    apps: &[Element],
-) -> Result<Option<(Element, Option<String>)>, ()> {
+pub async fn window(bus: &Bus, apps: &[Element]) -> Result<Option<(Element, Option<String>)>, ()> {
     let mut all = Vec::new();
     let mut answered = apps.is_empty();
     for app in apps {
@@ -679,16 +858,16 @@ pub async fn window(
     }
     let Some((window, _, _)) = all
         .iter()
-        .find(|(_, _, states)| states.contains(State::Active))
+        .find(|(_, _, states)| states.contains(States::ACTIVE))
         .or_else(|| {
             all.iter()
-                .find(|(_, _, states)| states.contains(State::Showing))
+                .find(|(_, _, states)| states.contains(States::SHOWING))
         })
     else {
         return Ok(None);
     };
-    let title = match proxy::<AccessibleProxy>(bus, window).await {
-        Some(accessible) => timed(accessible.name()).await,
+    let title = match proxy(bus, window) {
+        Some(accessible) => timed(accessible.get::<String>(ACCESSIBLE, "Name")).await,
         None => None,
     };
     Ok(Some((

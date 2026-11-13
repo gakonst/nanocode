@@ -10,6 +10,7 @@ pub const MAX_STREAM_BYTES: usize = 30_000;
 pub const NESTED_STREAM_BYTES: usize = 128 * 1024;
 
 pub const DEFAULT_TIMEOUT_MS: u64 = 120_000;
+const BLOCKED_SLEEP_SECONDS: f64 = 25.0;
 
 pub const MAX_TIMEOUT_MS: u64 = 600_000;
 
@@ -166,6 +167,11 @@ impl<E: BashExecutor> ClaudeBash<E> {
                 "command must be nonblank and at most {MAX_COMMAND_BYTES} bytes"
             ));
         }
+        if !background && let Some(sleep) = leading_sleep(command) {
+            return Err(format!(
+                "Blocked: {sleep}. To wait for a command you started, use run_in_background: true. Do not chain shorter sleeps to work around this block."
+            ));
+        }
         let description = match fields.get("description") {
             None => None,
             Some(value) => {
@@ -236,6 +242,35 @@ impl<E: BashExecutor> ClaudeBash<E> {
         })
         .to_string())
     }
+}
+
+fn leading_sleep(command: &str) -> Option<String> {
+    let command = command.trim();
+    let end = command.find(['&', '|', ';', '\n']).unwrap_or(command.len());
+    let seconds = command[..end].trim().strip_prefix("sleep")?;
+    if !seconds.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let seconds = seconds.trim();
+    let (whole, fraction) = seconds.split_once('.').unwrap_or((seconds, ""));
+    if whole.is_empty()
+        || !whole.bytes().all(|byte| byte.is_ascii_digit())
+        || !fraction.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+    let seconds: f64 = seconds.parse().ok()?;
+    if seconds < BLOCKED_SLEEP_SECONDS {
+        return None;
+    }
+    let rest = command[end..]
+        .trim_start_matches(['&', '|', ';', '\n', ' ', '\t'])
+        .trim();
+    Some(if rest.is_empty() {
+        format!("standalone sleep {seconds}")
+    } else {
+        format!("sleep {seconds} followed by: {rest}")
+    })
 }
 
 fn cap_utf8(value: &str, max: usize) -> (&str, bool) {

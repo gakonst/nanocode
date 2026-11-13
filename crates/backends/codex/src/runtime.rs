@@ -232,7 +232,10 @@ impl RuntimeBackend for CodexHarness {
                     )?;
                     let builder = selected.into_builder();
                     let builder = match direct && !remote {
-                        true => builder.exposure(nanocode_tool_host::ToolExposure::DirectOnly),
+                        true => builder
+                            .exposure(nanocode_tool_host::ToolExposure::DirectOnly)
+                            .web_search(false)
+                            .image_generation(false),
                         false => builder,
                     };
                     #[cfg(not(target_family = "wasm"))]

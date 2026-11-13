@@ -622,15 +622,17 @@ impl Agent {
         self.backend.is_stopped()
     }
 
-    async fn resume_interrupted(&self, request_id: Option<&str>) -> Result<()> {
+    async fn resume_interrupted(&self, request_id: Option<&str>) -> Result<bool> {
         loop {
             let Some(resumption) = self.interrupted.turns.load_full() else {
-                return Ok(());
+                return Ok(false);
             };
             if resumption.claimed.swap(true, Ordering::AcqRel) {
                 resumption.done.wait().await;
                 continue;
             }
+            let interrupted = request_id
+                .is_some_and(|id| resumption.turns.iter().any(|(turn, _)| turn == id));
             let mut claim = ResumptionClaim {
                 interrupted: &self.interrupted,
                 resumption,
@@ -641,7 +643,7 @@ impl Agent {
                 .resume_turns(&claim.resumption.turns, request_id, &mut claim.resumed)
                 .await;
             claim.remaining = Some(remaining);
-            return result;
+            return result.map(|()| interrupted);
         }
     }
 
@@ -697,19 +699,22 @@ impl Agent {
         BackendTurnKey(self.next_turn.fetch_add(1, Ordering::Relaxed))
     }
 
-    async fn admit(&self, id: Option<&str>) -> Result<(Option<RequestClaim>, BackendTurnKey)> {
+    async fn admit(
+        &self,
+        id: Option<&str>,
+    ) -> Result<(Option<RequestClaim>, BackendTurnKey, bool)> {
         if id.is_some_and(|id| id.trim().is_empty()) {
             return Err(NanocodeError::InvalidRequest(
                 "request ID must not be empty".to_owned(),
             ));
         }
-        self.resume_interrupted(id).await?;
+        let interrupted = self.resume_interrupted(id).await?;
         let Some(id) = id else {
-            return Ok((None, self.next_key()));
+            return Ok((None, self.next_key(), false));
         };
         let claim = self.claim_request(id).await;
         let key = claim.admitted.key;
-        Ok((Some(claim), key))
+        Ok((Some(claim), key, interrupted))
     }
 
     async fn claim_request(&self, id: &str) -> RequestClaim {
@@ -834,7 +839,7 @@ impl Agent {
         prompt
             .validate()
             .map_err(|error| NanocodeError::InvalidRequest(error.to_string()))?;
-        let (request, key) = self.admit(request_id.as_deref()).await?;
+        let (request, key, _) = self.admit(request_id.as_deref()).await?;
         let (events, event_stream) = self.events.mirrored_channel();
         let turn_id = nanocode_platform::uuid_v7().to_string();
         let events = events.with_turn_id(turn_id.clone());
@@ -896,21 +901,26 @@ impl Agent {
         prompt
             .validate()
             .map_err(|error| NanocodeError::InvalidRequest(error.to_string()))?;
-        let (request, key) = self.admit(request_id.as_deref()).await?;
+        let (request, key, interrupted) = self.admit(request_id.as_deref()).await?;
         let (events, event_stream) = self.events.mirrored_channel();
         let turn_id = nanocode_platform::uuid_v7().to_string();
         let events = events.with_turn_id(turn_id.clone());
         let (prompt, claimed) = self.claim_seed(prompt).await?;
-        let routed = self
-            .backend
-            .route(BackendPrompt {
-                key,
-                prompt,
-                request_id,
-                cancel_on_admission,
-                events,
-            })
-            .await;
+        let prompt = BackendPrompt {
+            key,
+            prompt,
+            request_id,
+            cancel_on_admission,
+            events,
+        };
+        let routed = if interrupted {
+            self.backend
+                .submit(prompt)
+                .await
+                .map(BackendPromptRoute::Started)
+        } else {
+            self.backend.route(prompt).await
+        };
         match routed {
             Ok(BackendPromptRoute::Started(BackendTurn { request_id, result })) => {
                 let result = self.settle_seed(claimed, tracked(request, result));

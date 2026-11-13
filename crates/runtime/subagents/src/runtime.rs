@@ -747,6 +747,35 @@ impl NoticeOutcome {
         }
     }
 
+    async fn of_route(
+        route: PromptRoute,
+        steered: oneshot::Receiver<Self>,
+        parent: &WeakAgent,
+        request_id: String,
+        prompt: String,
+    ) -> Self {
+        match route {
+            PromptRoute::Started(turn) => {
+                drop(steered);
+                Self::of_turn(turn.result().await)
+            }
+            PromptRoute::Steered => match parent.upgrade() {
+                Some(parent) if parent.turn_controls().is_empty() => {
+                    drop(steered);
+                    Self::of_receipt(parent.steer_receipt(request_id, prompt).await)
+                }
+                _ => steered.await.unwrap_or(Self::Stopped),
+            },
+        }
+    }
+
+    fn of_receipt(receipt: AgentResult<SteerReceiptStatus>) -> Self {
+        match receipt {
+            Ok(SteerReceiptStatus::Accepted) => Self::Read,
+            _ => Self::Unread,
+        }
+    }
+
     async fn of_steers(
         mut events: AgentEvents,
         parent: WeakAgent,
@@ -806,15 +835,10 @@ impl NoticeOutcome {
                         let parent = parent.clone();
                         drop(platform::spawn(async move {
                             let outcome = match parent.upgrade() {
-                                Some(parent)
-                                    if matches!(
-                                        parent.steer_receipt(steer.request_id, steer.prompt).await,
-                                        Ok(SteerReceiptStatus::Accepted)
-                                    ) =>
-                                {
-                                    Self::Read
-                                }
-                                _ => Self::Unread,
+                                Some(parent) => Self::of_receipt(
+                                    parent.steer_receipt(steer.request_id, steer.prompt).await,
+                                ),
+                                None => Self::Unread,
                             };
                             let _ = steer.outcome.send(outcome);
                         }));
@@ -6225,10 +6249,13 @@ impl Registry {
                     .harness()
                     .cloned()
                     .filter(|_| registry.begin_pending_checkpoint(root_session_id));
+                let delivered = session.settled_revision == Some(settled)
+                    && session.completion == Completion::None;
                 session.settled_revision = Some(settled);
 
                 let completion = (session.status.wakes_parent()
-                    && session.descriptor.parent.is_none())
+                    && session.descriptor.parent.is_none()
+                    && !delivered)
                 .then_some(settled);
                 if let Some(revision) = completion {
                     session.settle_completion(revision);
@@ -6761,13 +6788,8 @@ impl Registry {
                 let parent = parent.downgrade();
                 let root_session_id = root_session_id.to_owned();
                 drop(platform::spawn(async move {
-                    let outcome = match route {
-                        PromptRoute::Started(turn) => {
-                            drop(steered);
-                            NoticeOutcome::of_turn(turn.result().await)
-                        }
-                        PromptRoute::Steered => steered.await.unwrap_or(NoticeOutcome::Stopped),
-                    };
+                    let outcome =
+                        NoticeOutcome::of_route(route, steered, &parent, request_id, prompt).await;
                     let Some(registry) = registry.upgrade() else {
                         return;
                     };
@@ -6784,6 +6806,10 @@ impl Registry {
                     NanocodeError::AgentStopped | NanocodeError::TurnStopped
                 ) {
                     for (id, revision, _, _, _) in group {
+                        if matches!(error, NanocodeError::InvalidRequest(_)) {
+                            self.next_completion_attempt(root_session_id, id, revision)
+                                .await;
+                        }
                         self.retry_completion(root_session_id, id, revision);
                     }
                 }
@@ -6890,13 +6916,8 @@ impl Registry {
                 let registry = Arc::downgrade(self);
                 let parent = parent.downgrade();
                 drop(platform::spawn(async move {
-                    let outcome = match route {
-                        PromptRoute::Started(turn) => {
-                            drop(steered);
-                            NoticeOutcome::of_turn(turn.result().await)
-                        }
-                        PromptRoute::Steered => steered.await.unwrap_or(NoticeOutcome::Stopped),
-                    };
+                    let outcome =
+                        NoticeOutcome::of_route(route, steered, &parent, request_id, prompt).await;
                     let Some(registry) = registry.upgrade() else {
                         return;
                     };
@@ -6907,6 +6928,10 @@ impl Registry {
                 Ok(true)
             }
             Err(error) => {
+                if matches!(error, NanocodeError::InvalidRequest(_)) {
+                    self.next_completion_attempt(root_session_id, id, revision)
+                        .await;
+                }
                 if !matches!(
                     error,
                     NanocodeError::AgentStopped | NanocodeError::TurnStopped

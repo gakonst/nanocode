@@ -589,7 +589,7 @@ struct Driver {
     batch: Option<u64>,
     rerun_steps: HashSet<(String, String)>,
     unsaved_results: HashSet<(String, String)>,
-
+    deferred_writes: bool,
     committed_records: HashSet<String>,
     next_event: Option<u64>,
     sessions: Arc<Sessions>,
@@ -787,7 +787,9 @@ impl Driver {
                     };
                     if deferred {
                         let revision = self.state.revision();
-                        self.state.apply_within(revision, transition)
+                        self.state.apply_within(revision, transition)?;
+                        self.deferred_writes = true;
+                        Ok(())
                     } else {
                         self.apply(transition).await
                     }
@@ -1176,6 +1178,10 @@ impl Driver {
                         let outcome = match self.require_claimed(&caller, &operation_id) {
                             Ok(()) => self.require_running(&operation_id),
                             Err(error) => Err(error),
+                        };
+                        let outcome = match outcome {
+                            Ok(()) if self.deferred_writes => self.persist_deferred().await,
+                            outcome => outcome,
                         };
                         if finishing_attempt_releases_claim(&outcome) {
                             self.release_claim_if_owned(&caller, &operation_id);
@@ -1975,6 +1981,7 @@ impl Driver {
                 if !self.rerun_steps.remove(&key) {
                     self.unsaved_results.insert(key);
                 }
+                self.deferred_writes = true;
                 Ok(())
             }
         }
@@ -2159,6 +2166,7 @@ impl Driver {
         if deferred {
             self.rerun_steps.extend(begun);
             self.state = next;
+            self.deferred_writes = true;
             return Ok(outcomes);
         }
         if next.revision() == revision {
@@ -2205,6 +2213,20 @@ impl Driver {
         if write != SessionWrite::default() {
             self.staged.push(write);
         }
+        Ok(())
+    }
+
+    async fn persist_deferred(&mut self) -> Result<()> {
+        let revision = self.state.revision().checked_add(1).ok_or_else(|| {
+            Error::InvalidState("state revision exceeded the u64 range".to_owned())
+        })?;
+        let mut next = self.state.clone();
+        next.advance_revision(revision)?;
+        if let Some(limit) = self.terminal_receipt_limit {
+            let _ = next.retain_terminal_receipts(limit);
+        }
+        self.persist(next).await?;
+        assert!(!self.deferred_writes, "a commit leaves no deferred writes behind");
         Ok(())
     }
 
@@ -2396,6 +2418,7 @@ impl Driver {
         }
         self.staged.clear();
         self.unsaved_results.clear();
+        self.deferred_writes = false;
         self.state = next;
         Ok(Persisted {
             revision: committed.revision,
@@ -2826,6 +2849,7 @@ impl DurableSession {
             batch: None,
             rerun_steps: HashSet::new(),
             unsaved_results: HashSet::new(),
+            deferred_writes: false,
             committed_records: HashSet::new(),
             next_event: None,
             sessions: Arc::clone(&store.sessions),

@@ -1681,6 +1681,7 @@ name = "psh-utils"
 version = "0.0.0"
 dependencies = [
  "memchr",
+ "nanocode-sys",
  "psh-classify",
  "psh-engine",
  "psh-pattern",

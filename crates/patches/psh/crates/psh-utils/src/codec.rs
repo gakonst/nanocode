@@ -3,6 +3,8 @@
 
 use crate::deflate::compress;
 use crate::inflate::{Inflater, InputEnd, Progress};
+use nanocode_sys::adler32::Adler32Instructions;
+use nanocode_sys::crc32::Crc32Instructions;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Format {
@@ -13,6 +15,9 @@ pub enum Format {
 /// The CRC-32 of gzip and zip (polynomial 0xedb88320), eight bytes at a step
 /// (slicing-by-8: one table per byte of the step).
 pub fn crc32(data: &[u8]) -> u32 {
+    if let Some(instructions) = Crc32Instructions::detect() {
+        return instructions.update(0, data);
+    }
     const TABLES: [[u32; 256]; 8] = {
         let mut tables = [[0u32; 256]; 8];
         let mut i = 0;
@@ -65,6 +70,11 @@ pub fn crc32(data: &[u8]) -> u32 {
 pub fn adler32(adler: u32, data: &[u8]) -> u32 {
     const MODULUS: u32 = 65_521;
     const CHUNK_BYTES: usize = 5_552;
+    if let Some(instructions) = Adler32Instructions::detect()
+        && !data.is_empty()
+    {
+        return instructions.update(adler, data);
+    }
     let (mut low, mut high) = (adler & 0xffff, adler >> 16);
     for chunk in data.chunks(CHUNK_BYTES) {
         for &byte in chunk {

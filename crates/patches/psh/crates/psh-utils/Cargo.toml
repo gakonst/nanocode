@@ -18,6 +18,7 @@ psh-regex.workspace = true
 psh-pattern.workspace = true
 # Byte and substring searches of the record readers.
 memchr = "2.8.3"
+nanocode-sys.workspace = true
 
 [lints]
 workspace = true

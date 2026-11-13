@@ -1,7 +1,7 @@
 use std::ops::Range;
 
-use super::program::{Instruction, LoopFields, Program, Start};
-use super::set::ASCII_LAST;
+use super::program::{BYTE_VALUES, Instruction, LoopFields, Program, Start};
+use super::set::{ASCII_LAST, CodePointSet};
 use super::unicode;
 
 #[derive(Clone, Copy, Debug)]
@@ -24,7 +24,6 @@ impl GroupState {
 
 #[derive(Clone, Copy, Debug)]
 enum Backtrack {
-    Exhausted,
     SetPosition {
         ip: usize,
         position: usize,
@@ -61,38 +60,77 @@ enum Flow {
 }
 
 pub(super) fn is_match(program: &Program, text: &str) -> bool {
+    let bytes = text.as_bytes();
     let mut machine = Machine {
         program,
         text,
-        loops: vec![
-            LoopState {
-                iterations: 0,
-                entry: 0,
-            };
-            program.loop_count
-        ],
-        groups: vec![GroupState::default(); program.group_count],
-        stack: vec![Backtrack::Exhausted],
+        loops: Vec::new(),
+        groups: Vec::new(),
+        stack: Vec::new(),
+        saved_groups: Vec::new(),
     };
+    let mut required = match &program.required {
+        Some(literal) => match literal.find(bytes) {
+            Some(at) => Some((literal, at)),
+            None => return false,
+        },
+        None => None,
+    };
+    let mut prepared = false;
     let mut start = 0;
     loop {
+        let rest = &bytes[start..];
         let candidate = match &program.start {
-            Start::Sequence(sequence) => find_sequence(&text.as_bytes()[start..], sequence),
-            Start::AnyByte(bytes) => find_any(&text.as_bytes()[start..], bytes),
-            Start::Bytes(bytes) => text.as_bytes()[start..]
-                .iter()
-                .position(|&byte| bytes[usize::from(byte)]),
+            Start::Literal(literal) => literal.find(rest),
+            Start::TwoBytes(first, second) => memchr::memchr2(*first, *second, rest),
+            Start::ThreeBytes(first, second, third) => {
+                memchr::memchr3(*first, *second, *third, rest)
+            }
+            Start::Bytes(set) => find_in_set(rest, set),
             Start::Anywhere | Start::Anchored => Some(0),
         };
         let Some(offset) = candidate else {
             return false;
         };
         start += offset;
+        if let Some((literal, at)) = &mut required
+            && *at < start
+        {
+            let Some(found) = literal.find(&bytes[start..]) else {
+                return false;
+            };
+            *at = start + found;
+        }
+        if !lead_matches(&program.lead, &bytes[start..]) {
+            if matches!(program.start, Start::Anchored) {
+                return false;
+            }
+            let Some(next) = machine.right_boundary(start) else {
+                return false;
+            };
+            start = next;
+            continue;
+        }
+        if !prepared {
+            prepared = true;
+            machine.loops = vec![
+                LoopState {
+                    iterations: 0,
+                    entry: 0,
+                };
+                program.loop_count
+            ];
+            machine.groups = vec![GroupState::default(); program.group_count];
+        }
         if machine.attempt(0, start, true).is_some() {
             return true;
         }
         if matches!(program.start, Start::Anchored) {
             return false;
+        }
+        if let Some(ip) = program.leading_run {
+            let matcher = &program.instructions[ip + 1];
+            start = machine.repeat_one(matcher, start, usize::MAX, true).0;
         }
         let Some(next) = machine.right_boundary(start) else {
             return false;
@@ -101,40 +139,33 @@ pub(super) fn is_match(program: &Program, text: &str) -> bool {
     }
 }
 
-const WORD_BYTES: usize = 8;
-const LOW_BITS: u64 = 0x0101_0101_0101_0101;
-const HIGH_BITS: u64 = 0x8080_8080_8080_8080;
+const SET_SCAN_BYTES: usize = 16;
 
-const fn word_has_byte(word: u64, byte: u8) -> bool {
-    let difference = word ^ (LOW_BITS * byte as u64);
-    difference.wrapping_sub(LOW_BITS) & !difference & HIGH_BITS != 0
-}
-
-fn find_any(haystack: &[u8], needles: &[u8]) -> Option<usize> {
-    let mut offset = 0;
-    while let Some(chunk) = haystack.get(offset..offset + WORD_BYTES) {
-        let word = u64::from_le_bytes(chunk.try_into().expect("a whole word"));
-        if needles.iter().any(|&needle| word_has_byte(word, needle)) {
-            break;
+fn find_in_set(haystack: &[u8], set: &[bool; BYTE_VALUES]) -> Option<usize> {
+    let member = |byte: &u8| set[usize::from(*byte)];
+    let (chunks, remainder) = haystack.as_chunks::<SET_SCAN_BYTES>();
+    for (index, chunk) in chunks.iter().enumerate() {
+        if chunk.iter().fold(false, |any, byte| any | member(byte)) {
+            let position = chunk
+                .iter()
+                .position(member)
+                .expect("a chunk holding a member has its position");
+            return Some(index * SET_SCAN_BYTES + position);
         }
-        offset += WORD_BYTES;
     }
-    haystack[offset..]
+    remainder
         .iter()
-        .position(|byte| needles.contains(byte))
-        .map(|position| offset + position)
+        .position(member)
+        .map(|position| chunks.len() * SET_SCAN_BYTES + position)
 }
 
-fn find_sequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    let (&first, rest) = needle.split_first().expect("a start sequence is not empty");
-    let mut offset = 0;
-    loop {
-        let found = offset + find_any(&haystack[offset..], &[first])?;
-        if haystack[found + 1..].starts_with(rest) {
-            return Some(found);
-        }
-        offset = found + 1;
+fn lead_matches(lead: &[u128], rest: &[u8]) -> bool {
+    if rest.len() < lead.len() {
+        return false;
     }
+    lead.iter()
+        .zip(rest)
+        .all(|(mask, &byte)| u32::from(byte) <= ASCII_LAST && mask & (1 << byte) != 0)
 }
 
 struct Machine<'a> {
@@ -143,28 +174,63 @@ struct Machine<'a> {
     loops: Vec<LoopState>,
     groups: Vec<GroupState>,
     stack: Vec<Backtrack>,
+    saved_groups: Vec<GroupState>,
+}
+
+fn single_matches(instruction: &Instruction, c: u32) -> bool {
+    match instruction {
+        Instruction::Char(expected) => c == *expected,
+        Instruction::MatchAny => true,
+        Instruction::MatchAnyExceptLineTerminator => !unicode::is_line_terminator(c),
+        _ => unreachable!("a single character instruction"),
+    }
+}
+
+fn bracket_contains(invert: bool, ascii: u128, set: &CodePointSet, c: u32) -> bool {
+    let contained = if c <= ASCII_LAST {
+        ascii & (1 << c) != 0
+    } else {
+        set.contains(c)
+    };
+    contained != invert
 }
 
 impl Machine<'_> {
     fn peek_left(&self, position: usize) -> Option<u32> {
-        self.text[..position].chars().next_back().map(u32::from)
+        self.read(position, false).map(|(c, _)| c)
     }
 
     fn peek_right(&self, position: usize) -> Option<u32> {
-        self.text[position..].chars().next().map(u32::from)
+        self.read(position, true).map(|(c, _)| c)
     }
 
     fn right_boundary(&self, position: usize) -> Option<usize> {
-        let c = self.text[position..].chars().next()?;
-        Some(position + c.len_utf8())
+        self.read(position, true).map(|(_, next)| next)
     }
 
     fn left_boundary(&self, position: usize) -> Option<usize> {
-        let c = self.text[..position].chars().next_back()?;
-        Some(position - c.len_utf8())
+        self.read(position, false).map(|(_, next)| next)
     }
 
+    #[inline(always)]
     fn read(&self, position: usize, forward: bool) -> Option<(u32, usize)> {
+        let bytes = self.text.as_bytes();
+        if forward {
+            let &byte = bytes.get(position)?;
+            if byte.is_ascii() {
+                return Some((u32::from(byte), position + 1));
+            }
+        } else {
+            let &byte = bytes.get(position.checked_sub(1)?)?;
+            if byte.is_ascii() {
+                return Some((u32::from(byte), position - 1));
+            }
+        }
+        self.read_wide(position, forward)
+    }
+
+    #[inline(never)]
+    fn read_wide(&self, position: usize, forward: bool) -> Option<(u32, usize)> {
         if forward {
             let c = self.text[position..].chars().next()?;
             Some((u32::from(c), position + c.len_utf8()))
@@ -182,35 +248,27 @@ impl Machine<'_> {
     ) -> Option<usize> {
         let (c, next) = self.read(position, forward)?;
         let matched = match instruction {
-            Instruction::Char(expected) => c == *expected,
             Instruction::CharSet(set) => set.contains(&c),
             Instruction::Bracket { invert, ascii, set } => {
-                let contained = if c <= ASCII_LAST {
-                    ascii & (1 << c) != 0
-                } else {
-                    set.contains(c)
-                };
-                contained != *invert
+                bracket_contains(*invert, *ascii, set, c)
             }
-            Instruction::MatchAny => true,
-            Instruction::MatchAnyExceptLineTerminator => !unicode::is_line_terminator(c),
-            _ => unreachable!("a single character instruction"),
+            _ => single_matches(instruction, c),
         };
         matched.then_some(next)
     }
 
     fn attempt(&mut self, mut ip: usize, mut position: usize, forward: bool) -> Option<usize> {
-        assert_eq!(self.stack.len(), 1);
+        let base = self.stack.len();
         loop {
             match self.step(&mut ip, &mut position, forward) {
                 Flow::Continue => {}
                 Flow::Goal => {
-                    self.stack.truncate(1);
+                    self.stack.truncate(base);
                     return Some(position);
                 }
                 Flow::Backtrack => {
-                    if !self.backtrack(&mut ip, &mut position, forward) {
-                        assert_eq!(self.stack.len(), 1);
+                    if !self.backtrack(base, &mut ip, &mut position, forward) {
+                        assert_eq!(self.stack.len(), base);
                         return None;
                     }
                 }
@@ -235,25 +293,32 @@ impl Machine<'_> {
                     None => None,
                 }
             }
+            Instruction::Literal(bytes) => self
+                .match_literal(bytes, position, forward)
+                .then_some(*ip + 1),
             Instruction::Jump(target) => Some(*target),
-            Instruction::Alt(secondary) => {
-                self.stack.push(Backtrack::SetPosition {
-                    ip: *secondary,
-                    position: *position,
-                });
-                Some(*ip + 1)
+            Instruction::Alt { secondary, guard } => {
+                if self.guard_rejects(*guard, *position, forward) {
+                    Some(*secondary)
+                } else {
+                    self.stack.push(Backtrack::SetPosition {
+                        ip: *secondary,
+                        position: *position,
+                    });
+                    Some(*ip + 1)
+                }
             }
             Instruction::Goal => return Flow::Goal,
             Instruction::Fail => None,
             Instruction::EnterLoop(fields) => {
                 self.loops[fields.id].iterations = 0;
-                self.run_loop(fields, *position, *ip)
+                self.run_loop(fields, *position, *ip, forward)
             }
             Instruction::LoopAgain { begin } => {
                 let Instruction::EnterLoop(fields) = &program.instructions[*begin] else {
                     unreachable!("LoopAgain refers to EnterLoop");
                 };
-                self.run_loop(fields, *position, *begin)
+                self.run_loop(fields, *position, *begin, forward)
             }
             Instruction::LoopOneCharacter { min, max, greedy } => {
                 self.run_one_character_loop(*ip, position, *min, *max, *greedy, forward)
@@ -277,6 +342,23 @@ impl Machine<'_> {
             }
             None => Flow::Backtrack,
         }
+    }
+
+    fn match_literal(&self, literal: &[u8], position: &mut usize, forward: bool) -> bool {
+        let (forward_bytes, backward_bytes) = literal.split_at(literal.len() / 2);
+        let bytes = self.text.as_bytes();
+        if forward {
+            if !bytes[*position..].starts_with(forward_bytes) {
+                return false;
+            }
+            *position += forward_bytes.len();
+        } else {
+            if !bytes[..*position].ends_with(backward_bytes) {
+                return false;
+            }
+            *position -= backward_bytes.len();
+        }
+        true
     }
 
     fn step_state(
@@ -415,20 +497,21 @@ impl Machine<'_> {
         negate: bool,
         forward: bool,
     ) -> bool {
-        let saved: Vec<GroupState> = self.groups[groups.clone()].to_vec();
-        let outer = std::mem::replace(&mut self.stack, vec![Backtrack::Exhausted]);
+        let saved = self.saved_groups.len();
+        self.saved_groups
+            .extend_from_slice(&self.groups[groups.clone()]);
         let matched = self.attempt(ip, position, forward).is_some();
-        self.stack = outer;
         if matched && !negate {
-            for (offset, state) in saved.into_iter().enumerate() {
+            for (offset, &state) in self.saved_groups[saved..].iter().enumerate() {
                 self.stack.push(Backtrack::SetGroup {
                     id: groups.start + offset,
                     state,
                 });
             }
         } else {
-            self.groups.splice(groups, saved);
+            self.groups[groups].copy_from_slice(&self.saved_groups[saved..]);
         }
+        self.saved_groups.truncate(saved);
         matched != negate
     }
 
@@ -443,7 +526,26 @@ impl Machine<'_> {
         state.entry = position;
     }
 
-    fn run_loop(&mut self, fields: &LoopFields, position: usize, ip: usize) -> Option<usize> {
+    fn guard_rejects(&self, guard: Option<usize>, position: usize, forward: bool) -> bool {
+        let Some(index) = guard else {
+            return false;
+        };
+        forward
+            && !self
+                .text
+                .as_bytes()
+                .get(position)
+                .is_some_and(|&byte| self.program.guards[index][usize::from(byte)])
+    }
+
+    fn run_loop(
+        &mut self,
+        fields: &LoopFields,
+        position: usize,
+        ip: usize,
+        forward: bool,
+    ) -> Option<usize> {
+        let rejected = self.guard_rejects(fields.guard, position, forward);
         let state = &mut self.loops[fields.id];
         let iteration = state.iterations;
         let take = iteration < fields.max;
@@ -454,6 +556,7 @@ impl Machine<'_> {
         match (take, skip) {
             (false, false) => None,
             (false, true) => Some(fields.exit),
+            (true, false) if rejected => None,
             (true, false) => {
                 Self::enter_iteration(&mut self.stack, position, fields.id, state);
                 Some(ip + 1)
@@ -468,6 +571,7 @@ impl Machine<'_> {
                 });
                 Some(fields.exit)
             }
+            (true, true) if rejected => Some(fields.exit),
             (true, true) => {
                 self.stack.push(Backtrack::SetPosition {
                     ip: fields.exit,
@@ -482,15 +586,39 @@ impl Machine<'_> {
     fn repeat_one(
         &self,
         matcher: &Instruction,
-        mut position: usize,
+        position: usize,
         count: usize,
         forward: bool,
     ) -> (usize, usize) {
+        match matcher {
+            Instruction::CharSet(set) => {
+                self.repeat_while(position, count, forward, |c| set.contains(&c))
+            }
+            Instruction::Bracket { invert, ascii, set } => {
+                self.repeat_while(position, count, forward, |c| {
+                    bracket_contains(*invert, *ascii, set, c)
+                })
+            }
+            Instruction::MatchAny => self.repeat_while(position, count, forward, |_| true),
+            _ => self.repeat_while(position, count, forward, |c| single_matches(matcher, c)),
+        }
+    }
+
+    fn repeat_while(
+        &self,
+        mut position: usize,
+        count: usize,
+        forward: bool,
+        matches: impl Fn(u32) -> bool,
+    ) -> (usize, usize) {
         let mut matched = 0;
         while matched < count {
-            let Some(next) = self.match_one(matcher, position, forward) else {
+            let Some((c, next)) = self.read(position, forward) else {
                 break;
             };
+            if !matches(c) {
+                break;
+            }
             position = next;
             matched += 1;
         }
@@ -508,11 +636,19 @@ impl Machine<'_> {
     ) -> Option<usize> {
         assert!(min <= max);
         let matcher = &self.program.instructions[ip + 1];
-        let (min_position, matched) = self.repeat_one(matcher, *position, min, forward);
+        let (min_position, matched) = if min == 0 {
+            (*position, 0)
+        } else {
+            self.repeat_one(matcher, *position, min, forward)
+        };
         if matched < min {
             return None;
         }
-        let (max_position, _) = self.repeat_one(matcher, min_position, max - min, forward);
+        let max_position = if max == min {
+            min_position
+        } else {
+            self.repeat_one(matcher, min_position, max - min, forward).0
+        };
         let continuation = ip + 2;
         if min_position != max_position {
             self.stack.push(if greedy {
@@ -533,14 +669,39 @@ impl Machine<'_> {
         Some(continuation)
     }
 
-    fn backtrack(&mut self, ip: &mut usize, position: &mut usize, forward: bool) -> bool {
+    fn step_back(&self, position: usize, forward: bool) -> Option<usize> {
+        if forward {
+            self.left_boundary(position)
+        } else {
+            self.right_boundary(position)
+        }
+    }
+
+    fn continuation_fails(&self, continuation: usize, position: usize, forward: bool) -> bool {
+        let instruction = &self.program.instructions[continuation];
+        matches!(
+            instruction,
+            Instruction::Char(_)
+                | Instruction::CharSet(_)
+                | Instruction::Bracket { .. }
+                | Instruction::MatchAny
+                | Instruction::MatchAnyExceptLineTerminator
+        ) && self.match_one(instruction, position, forward).is_none()
+    }
+
+    fn backtrack(
+        &mut self,
+        base: usize,
+        ip: &mut usize,
+        position: &mut usize,
+        forward: bool,
+    ) -> bool {
         loop {
-            let top = *self
-                .stack
-                .last()
-                .expect("the backtrack stack keeps its Exhausted base");
+            if self.stack.len() == base {
+                return false;
+            }
+            let top = *self.stack.last().expect("the stack is above its base");
             match top {
-                Backtrack::Exhausted => return false,
                 Backtrack::SetPosition {
                     ip: saved_ip,
                     position: saved_position,
@@ -594,12 +755,14 @@ impl Machine<'_> {
                         self.stack.pop();
                         continue;
                     }
-                    let shorter = if forward {
-                        self.left_boundary(max)
-                    } else {
-                        self.right_boundary(max)
+                    let mut shorter = self
+                        .step_back(max, forward)
+                        .expect("a longer one-character run can give back a character");
+                    while shorter != min && self.continuation_fails(continuation, shorter, forward) {
+                        shorter = self
+                            .step_back(shorter, forward)
+                            .expect("a longer one-character run can give back a character");
                     }
-                    .expect("a longer one-character run can give back a character");
                     let last = self.stack.len() - 1;
                     self.stack[last] = Backtrack::GreedyOneCharacter {
                         continuation,
@@ -619,12 +782,14 @@ impl Machine<'_> {
                         self.stack.pop();
                         continue;
                     }
-                    let longer = if forward {
-                        self.right_boundary(min)
-                    } else {
-                        self.left_boundary(min)
+                    let mut longer = self
+                        .step_back(min, !forward)
+                        .expect("a shorter one-character run can take another character");
+                    while longer != max && self.continuation_fails(continuation, longer, forward) {
+                        longer = self
+                            .step_back(longer, !forward)
+                            .expect("a shorter one-character run can take another character");
                     }
-                    .expect("a shorter one-character run can take another character");
                     let last = self.stack.len() - 1;
                     self.stack[last] = Backtrack::LazyOneCharacter {
                         continuation,

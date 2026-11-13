@@ -1075,6 +1075,7 @@ version = "0.7.0"
 dependencies = [
  "base64",
  "idna",
+ "memchr",
  "serde",
  "serde_json",
  "url",

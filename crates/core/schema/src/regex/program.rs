@@ -1,5 +1,7 @@
 use std::ops::Range;
 
+use memchr::memmem;
+
 use super::parse::{Node, Parsed};
 use super::set::CodePointSet;
 
@@ -10,11 +12,13 @@ pub(super) struct LoopFields {
     pub(super) max: usize,
     pub(super) greedy: bool,
     pub(super) exit: usize,
+    pub(super) guard: Option<usize>,
 }
 
 #[derive(Debug)]
 pub(super) enum Instruction {
     Char(u32),
+    Literal(Box<[u8]>),
     CharSet(Box<[u32]>),
     Bracket {
         invert: bool,
@@ -34,7 +38,10 @@ pub(super) enum Instruction {
         ignore_case: bool,
     },
     Jump(usize),
-    Alt(usize),
+    Alt {
+        secondary: usize,
+        guard: Option<usize>,
+    },
     BeginGroup(usize),
     EndGroup(usize),
     ResetGroup(usize),
@@ -61,21 +68,50 @@ pub(super) enum Instruction {
     Fail,
 }
 
-const BYTE_VALUES: usize = 256;
+pub(super) const BYTE_VALUES: usize = 256;
 const UTF8_SINGLE_BYTE_LIMIT: u32 = 0x80;
 const UTF8_DOUBLE_BYTE_LIMIT: u32 = 0x800;
 const UTF8_TRIPLE_BYTE_LIMIT: u32 = 0x1_0000;
 
 #[derive(Debug)]
+pub(super) enum Literal {
+    Byte(u8),
+    Sequence(memmem::Finder<'static>),
+}
+
+impl Literal {
+    fn new(bytes: &[u8]) -> Self {
+        match bytes {
+            [] => unreachable!("a literal is not empty"),
+            [byte] => Self::Byte(*byte),
+            _ => Self::Sequence(memmem::Finder::new(bytes).into_owned()),
+        }
+    }
+
+    fn bytes(&self) -> &[u8] {
+        match self {
+            Self::Byte(byte) => std::slice::from_ref(byte),
+            Self::Sequence(finder) => finder.needle(),
+        }
+    }
+
+    pub(super) fn find(&self, haystack: &[u8]) -> Option<usize> {
+        match self {
+            Self::Byte(byte) => memchr::memchr(*byte, haystack),
+            Self::Sequence(finder) => finder.find(haystack),
+        }
+    }
+}
+
+#[derive(Debug)]
 pub(super) enum Start {
     Anywhere,
     Anchored,
-    Sequence(Box<[u8]>),
-    AnyByte(Box<[u8]>),
+    Literal(Literal),
+    TwoBytes(u8, u8),
+    ThreeBytes(u8, u8, u8),
     Bytes(Box<[bool; BYTE_VALUES]>),
 }
-
-const SCANNED_BYTES_MAX: usize = 3;
 
 enum Prefix {
     Arbitrary,
@@ -89,10 +125,15 @@ pub(super) struct Program {
     pub(super) loop_count: usize,
     pub(super) group_count: usize,
     pub(super) start: Start,
+    pub(super) required: Option<Literal>,
+    pub(super) lead: Box<[u128]>,
+    pub(super) guards: Box<[[bool; BYTE_VALUES]]>,
+    pub(super) leading_run: Option<usize>,
 }
 
 enum Pending<'a> {
     Node(&'a Node),
+    Literal(&'a [Node]),
     AlternativeNext {
         nodes: &'a [Node],
         index: usize,
@@ -116,14 +157,116 @@ pub(super) fn compile(mut parsed: Parsed) -> Program {
     let mut emitter = Emitter {
         instructions: Vec::new(),
         loop_count: 0,
+        guards: Vec::new(),
     };
     emitter.emit(&parsed.node);
     emitter.instructions.push(Instruction::Goal);
+    let start = start_of(&parsed.node);
+    let required = required_of(&parsed.node, &start);
+    let mut lead = Vec::new();
+    lead_into(&parsed.node, &mut lead);
+    let lead = lead.into_boxed_slice();
+    let leading_run = leading_run_of(&emitter.instructions);
     Program {
         instructions: emitter.instructions,
         loop_count: emitter.loop_count,
         group_count: usize::from(parsed.group_count),
-        start: start_of(&parsed.node),
+        start,
+        required,
+        lead,
+        guards: emitter.guards.into_boxed_slice(),
+        leading_run,
+    }
+}
+
+fn leading_run_of(instructions: &[Instruction]) -> Option<usize> {
+    if instructions
+        .iter()
+        .any(|instruction| matches!(instruction, Instruction::BackReference { .. }))
+    {
+        return None;
+    }
+    let ip = instructions
+        .iter()
+        .position(|instruction| !matches!(instruction, Instruction::BeginGroup(_)))?;
+    match instructions[ip] {
+        Instruction::LoopOneCharacter { max: usize::MAX, .. } => Some(ip),
+        _ => None,
+    }
+}
+
+fn ascii_mask(code_points: impl IntoIterator<Item = u32>) -> Option<u128> {
+    let mut mask = 0;
+    for code_point in code_points {
+        if code_point > super::set::ASCII_LAST {
+            return None;
+        }
+        mask |= 1 << code_point;
+    }
+    Some(mask)
+}
+
+fn push_mask(lead: &mut Vec<u128>, mask: Option<u128>) -> bool {
+    let Some(mask) = mask else {
+        return false;
+    };
+    lead.push(mask);
+    true
+}
+
+fn lead_into(node: &Node, lead: &mut Vec<u128>) -> bool {
+    match node {
+        Node::Char(c) => push_mask(lead, ascii_mask([*c])),
+        Node::CharSet(chars) if !chars.is_empty() => {
+            push_mask(lead, ascii_mask(chars.iter().copied()))
+        }
+        Node::Bracket { invert: false, set }
+            if !set.is_empty()
+                && set
+                    .intervals()
+                    .last()
+                    .is_some_and(|interval| interval.last <= super::set::ASCII_LAST) =>
+        {
+            lead.push(set.ascii_mask());
+            true
+        }
+        Node::Empty
+        | Node::StartOfLine { .. }
+        | Node::EndOfLine { .. }
+        | Node::WordBoundary { .. }
+        | Node::Lookaround { .. } => true,
+        Node::Group { contents, .. } => lead_into(contents, lead),
+        Node::Cat(nodes) => nodes.iter().all(|child| lead_into(child, lead)),
+        Node::Alt(nodes) => {
+            let (first, rest) = nodes
+                .split_first()
+                .expect("an alternation has alternatives");
+            let start = lead.len();
+            let mut complete = lead_into(first, lead);
+            let mut alternative = Vec::new();
+            for node in rest {
+                alternative.clear();
+                let alternative_complete = lead_into(node, &mut alternative);
+                complete =
+                    complete && alternative_complete && lead.len() - start == alternative.len();
+                lead.truncate(start + alternative.len().min(lead.len() - start));
+                for (mask, other) in lead[start..].iter_mut().zip(&alternative) {
+                    *mask |= other;
+                }
+            }
+            complete
+        }
+        Node::Loop {
+            body, quantifier, ..
+        } if quantifier.min > 0 => {
+            lead_into(body, lead) && quantifier.min == 1 && quantifier.max == Some(1)
+        }
+        Node::CharSet(_)
+        | Node::Bracket { .. }
+        | Node::MatchAny
+        | Node::MatchAnyExceptLineTerminator
+        | Node::BackReference { .. }
+        | Node::Loop { .. } => false,
     }
 }
 
@@ -132,20 +275,104 @@ fn start_of(node: &Node) -> Start {
         return Start::Anchored;
     }
     match prefix(node) {
-        Some(Prefix::Sequence(bytes)) if !bytes.is_empty() => {
-            Start::Sequence(bytes.into_boxed_slice())
-        }
-        Some(Prefix::Bytes(bytes)) if bytes.iter().any(|&set| set) => {
-            let listed: Vec<u8> = (0..=u8::MAX)
-                .filter(|&byte| bytes[usize::from(byte)])
-                .collect();
-            if listed.len() <= SCANNED_BYTES_MAX {
-                Start::AnyByte(listed.into_boxed_slice())
-            } else {
-                Start::Bytes(bytes)
+        Some(Prefix::Sequence(bytes)) if !bytes.is_empty() => Start::Literal(Literal::new(&bytes)),
+        Some(Prefix::Bytes(bytes)) => {
+            let mut listed = (0..=u8::MAX).filter(|&byte| bytes[usize::from(byte)]);
+            match (listed.next(), listed.next(), listed.next(), listed.next()) {
+                (None, _, _, _) => Start::Anywhere,
+                (Some(first), None, _, _) => Start::Literal(Literal::Byte(first)),
+                (Some(first), Some(second), None, _) => Start::TwoBytes(first, second),
+                (Some(first), Some(second), Some(third), None) => {
+                    Start::ThreeBytes(first, second, third)
+                }
+                _ => Start::Bytes(bytes),
             }
         }
         _ => Start::Anywhere,
+    }
+}
+
+fn required_of(node: &Node, start: &Start) -> Option<Literal> {
+    if matches!(start, Start::Anchored) {
+        return None;
+    }
+    let mut runs = Runs {
+        current: Vec::new(),
+        longest: Vec::new(),
+    };
+    runs.visit(node);
+    runs.end();
+    if runs.longest.is_empty() {
+        return None;
+    }
+    if let Start::Literal(literal) = start
+        && literal
+            .bytes()
+            .windows(runs.longest.len())
+            .any(|window| window == runs.longest.as_slice())
+    {
+        return None;
+    }
+    Some(Literal::new(&runs.longest))
+}
+
+struct Runs {
+    current: Vec<u8>,
+    longest: Vec<u8>,
+}
+
+impl Runs {
+    fn end(&mut self) {
+        if self.current.len() > self.longest.len() {
+            std::mem::swap(&mut self.current, &mut self.longest);
+        }
+        self.current.clear();
+    }
+
+    fn visit(&mut self, node: &Node) {
+        match node {
+            Node::Char(c) => match char::from_u32(*c) {
+                Some(c) => {
+                    let mut encoded = [0; 4];
+                    self.current
+                        .extend_from_slice(c.encode_utf8(&mut encoded).as_bytes());
+                }
+                None => self.end(),
+            },
+            Node::Cat(nodes) => nodes.iter().for_each(|child| self.visit(child)),
+            Node::Group { contents, .. } => self.visit(contents),
+            Node::Empty
+            | Node::StartOfLine { .. }
+            | Node::EndOfLine { .. }
+            | Node::WordBoundary { .. } => {}
+            Node::Lookaround {
+                negate,
+                backwards,
+                contents,
+                ..
+            } => {
+                if !negate && !backwards {
+                    let outer = std::mem::take(&mut self.current);
+                    self.visit(contents);
+                    self.end();
+                    self.current = outer;
+                }
+            }
+            Node::Loop {
+                body, quantifier, ..
+            } if quantifier.min > 0 => {
+                self.end();
+                self.visit(body);
+                self.end();
+            }
+            Node::CharSet(_)
+            | Node::Bracket { .. }
+            | Node::MatchAny
+            | Node::MatchAnyExceptLineTerminator
+            | Node::Alt(_)
+            | Node::BackReference { .. }
+            | Node::Loop { .. } => self.end(),
+        }
     }
 }
 
@@ -223,7 +450,11 @@ fn prefix(node: &Node) -> Option<Prefix> {
         }),
         Node::Cat(nodes) => sequence_prefix(nodes),
         Node::Group { contents, .. } => prefix(contents),
-        Node::Lookaround { .. } => None,
+        Node::Lookaround { .. }
+        | Node::Empty
+        | Node::StartOfLine { .. }
+        | Node::EndOfLine { .. }
+        | Node::WordBoundary { .. } => None,
         Node::Loop {
             body, quantifier, ..
         } => {
@@ -239,12 +470,16 @@ fn prefix(node: &Node) -> Option<Prefix> {
 }
 
 fn sequence_prefix(nodes: &[Node]) -> Option<Prefix> {
-    let index = nodes.iter().position(|node| prefix(node).is_some())?;
-    if literal(&nodes[index]).is_none() {
-        return prefix(&nodes[index]);
+    for (index, node) in nodes.iter().enumerate() {
+        if literal(node).is_some() {
+            let text: String = nodes[index..].iter().map_while(literal).collect();
+            return Some(Prefix::Sequence(text.into_bytes()));
+        }
+        if let Some(found) = prefix(node) {
+            return Some(found);
+        }
     }
-    let text: String = nodes[index..].iter().map_while(literal).collect();
-    Some(Prefix::Sequence(text.into_bytes()))
+    None
 }
 
 fn alternatives_prefix(nodes: &[Node]) -> Option<Prefix> {
@@ -404,6 +639,7 @@ fn fold_alternatives(mut nodes: Vec<Node>) -> Vec<Node> {
 struct Emitter {
     instructions: Vec<Instruction>,
     loop_count: usize,
+    guards: Vec<[bool; BYTE_VALUES]>,
 }
 
 impl Emitter {
@@ -416,11 +652,26 @@ impl Emitter {
         self.instructions.len()
     }
 
+    fn guard(&mut self, node: &Node) -> Option<usize> {
+        let bytes = match prefix(node)? {
+            Prefix::Arbitrary => return None,
+            Prefix::Sequence(sequence) => {
+                let mut bytes = [false; BYTE_VALUES];
+                bytes[usize::from(*sequence.first()?)] = true;
+                bytes
+            }
+            Prefix::Bytes(bytes) => *bytes,
+        };
+        self.guards.push(bytes);
+        Some(self.guards.len() - 1)
+    }
+
     fn emit(&mut self, root: &Node) {
         let mut stack = vec![Pending::Node(root)];
         while let Some(pending) = stack.pop() {
             match pending {
                 Pending::Node(node) => self.emit_node(node, &mut stack),
+                Pending::Literal(nodes) => self.emit_literal(nodes),
                 Pending::AlternativeNext {
                     nodes,
                     index,
@@ -458,9 +709,43 @@ impl Emitter {
         }
     }
 
+    fn emit_cat<'a>(nodes: &'a [Node], stack: &mut Vec<Pending<'a>>) {
+        let first = stack.len();
+        let mut index = 0;
+        while index < nodes.len() {
+            let run = nodes[index..]
+                .iter()
+                .take_while(|node| literal(node).is_some())
+                .count();
+            if run >= 2 {
+                stack.push(Pending::Literal(&nodes[index..index + run]));
+                index += run;
+            } else {
+                stack.push(Pending::Node(&nodes[index]));
+                index += 1;
+            }
+        }
+        stack[first..].reverse();
+    }
+
+    fn emit_literal(&mut self, nodes: &[Node]) {
+        let mut bytes = Vec::new();
+        let mut encoded = [0; 4];
+        for node in nodes.iter().chain(nodes.iter().rev()) {
+            let c = literal(node).expect("a literal run holds characters");
+            bytes.extend_from_slice(c.encode_utf8(&mut encoded).as_bytes());
+        }
+        assert_eq!(bytes.len() % 2, 0);
+        self.push(Instruction::Literal(bytes.into_boxed_slice()));
+    }
+
     fn emit_alt<'a>(&mut self, nodes: &'a [Node], stack: &mut Vec<Pending<'a>>) {
         assert!(nodes.len() >= 2);
-        let alt = self.push(Instruction::Alt(0));
+        let guard = self.guard(&nodes[0]);
+        let alt = self.push(Instruction::Alt {
+            secondary: 0,
+            guard,
+        });
         stack.push(Pending::AlternativeNext {
             nodes,
             index: 1,
@@ -480,11 +765,21 @@ impl Emitter {
     ) {
         jumps.push(self.push(Instruction::Jump(0)));
         let secondary = self.next();
-        self.instructions[alt] = Instruction::Alt(secondary);
+        let Instruction::Alt {
+            secondary: target, ..
+        } = &mut self.instructions[alt]
+        else {
+            unreachable!("an alternative begins with Alt");
+        };
+        *target = secondary;
         if index + 1 == nodes.len() {
             stack.push(Pending::AlternativesFinish { jumps });
         } else {
-            let next_alt = self.push(Instruction::Alt(0));
+            let guard = self.guard(&nodes[index]);
+            let next_alt = self.push(Instruction::Alt {
+                secondary: 0,
+                guard,
+            });
             stack.push(Pending::AlternativeNext {
                 nodes,
                 index: index + 1,
@@ -529,7 +824,7 @@ impl Emitter {
                 }
             }
             Node::Cat(nodes) => {
-                stack.extend(nodes.iter().rev().map(Pending::Node));
+                Self::emit_cat(nodes, stack);
                 return;
             }
             Node::Alt(nodes) => {
@@ -578,12 +873,14 @@ impl Emitter {
                     stack.push(Pending::Node(body));
                     return;
                 }
+                let guard = self.guard(body);
                 let begin = self.push(Instruction::EnterLoop(LoopFields {
                     id: self.loop_count,
                     min: quantifier.min,
                     max,
                     greedy: quantifier.greedy,
                     exit: 0,
+                    guard,
                 }));
                 self.loop_count += 1;
                 for group in groups.clone() {

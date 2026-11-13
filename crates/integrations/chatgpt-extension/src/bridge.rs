@@ -154,7 +154,7 @@ pub fn host_path(root: &Path) -> PathBuf {
 
 fn random_hex() -> Result<String, Error> {
     let mut random = [0u8; 16];
-    getrandom::fill(&mut random).map_err(|_| "cannot generate random bytes")?;
+    nanocode_platform::fill_random(&mut random).map_err(|_| "cannot generate random bytes")?;
     Ok(random.iter().map(|b| format!("{b:02x}")).collect())
 }
 

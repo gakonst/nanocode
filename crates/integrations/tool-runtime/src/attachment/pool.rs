@@ -986,7 +986,7 @@ impl RunnerPool {
                 }
                 None => {
                     let mut bytes = [0u8; 32];
-                    getrandom::fill(&mut bytes).map_err(error)?;
+                    nanocode_platform::fill_random(&mut bytes).map_err(error)?;
                     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
                 }
             };

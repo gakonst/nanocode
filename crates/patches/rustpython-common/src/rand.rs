@@ -9,6 +9,6 @@
 #[must_use]
 pub fn os_random<const N: usize>() -> [u8; N] {
     let mut buf = [0u8; N];
-    getrandom::fill(&mut buf).unwrap();
+    nanocode_platform::fill_random(&mut buf).unwrap();
     buf
 }

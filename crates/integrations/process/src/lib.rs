@@ -1042,7 +1042,7 @@ fn random() -> u64 {
     static STATE: std::sync::OnceLock<AtomicU64> = std::sync::OnceLock::new();
     let state = STATE.get_or_init(|| {
         let mut seed = [0_u8; 8];
-        let _ = getrandom::fill(&mut seed);
+        let _ = nanocode_platform::fill_random(&mut seed);
         AtomicU64::new(u64::from_ne_bytes(seed))
     });
     let mut bits = state

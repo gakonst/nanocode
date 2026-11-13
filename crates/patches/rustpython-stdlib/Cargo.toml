@@ -81,9 +81,8 @@ path = "src/lib.rs"
 version = "0.2.2"
 optional = true
 
-[dependencies.getrandom]
-version = "0.4"
-features = ["std"]
+[dependencies.nanocode-platform]
+path = "../../core/platform"
 
 [dependencies.indexmap]
 version = "2.14.0"

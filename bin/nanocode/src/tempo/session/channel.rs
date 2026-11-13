@@ -46,7 +46,7 @@ pub(crate) fn parse_hash(text: &str) -> Result<Hash, nanocode_tempo::Error> {
 
 pub(crate) fn random_hash() -> Result<Hash, Fault> {
     let mut hash = [0u8; 32];
-    getrandom::fill(&mut hash)
+    nanocode_platform::fill_random(&mut hash)
         .map_err(|error| Fault::Internal(format!("randomness unavailable: {error}")))?;
     Ok(hash)
 }

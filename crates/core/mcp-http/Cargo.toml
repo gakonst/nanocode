@@ -24,7 +24,6 @@ serde_json.workspace = true
 tracing.workspace = true
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-getrandom.workspace = true
 nanocode-tls.workspace = true
 reqwest.workspace = true
 serde.workspace = true

@@ -45,7 +45,7 @@ impl MT19937 {
 
     pub(crate) fn from_os_random() -> Self {
         let mut bytes = [0u8; N * WORD_BYTES];
-        getrandom::fill(&mut bytes).expect("the operating system supplies random bytes");
+        nanocode_platform::fill_random(&mut bytes).expect("the operating system supplies random bytes");
         let mut key = [0u32; N];
         for (word, chunk) in key.iter_mut().zip(bytes.chunks_exact(WORD_BYTES)) {
             *word = u32::from_ne_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);

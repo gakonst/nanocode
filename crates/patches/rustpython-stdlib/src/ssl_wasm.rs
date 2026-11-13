@@ -900,7 +900,7 @@ mod _ssl {
             return Err(vm.new_value_error("num must be positive"));
         }
         let mut buf = vm.new_zeroed_bytes(n as usize)?;
-        getrandom::fill(&mut buf)
+        nanocode_platform::fill_random(&mut buf)
             .map_err(|_| vm.new_os_error("Failed to generate random bytes"))?;
         Ok(PyBytesRef::from(vm.ctx.new_bytes(buf)))
     }

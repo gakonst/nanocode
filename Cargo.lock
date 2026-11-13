@@ -1520,7 +1520,6 @@ version = "0.7.0"
 dependencies = [
  "base64 0.22.1",
  "futures-util",
- "getrandom 0.4.3",
  "http",
  "memchr",
  "nanocode-agent-types",
@@ -1549,9 +1548,9 @@ dependencies = [
 name = "nanocode-chatgpt-extension"
 version = "0.7.0"
 dependencies = [
- "getrandom 0.4.3",
  "libc",
  "nanocode-digest",
+ "nanocode-platform",
  "nanocode-sync",
  "nanocode-tool-contracts",
  "serde",
@@ -1565,7 +1564,6 @@ name = "nanocode-cli"
 version = "0.7.0"
 dependencies = [
  "futures-util",
- "getrandom 0.4.3",
  "http",
  "http-body-util",
  "hyper",
@@ -1787,7 +1785,6 @@ name = "nanocode-mcp-http"
 version = "0.7.0"
 dependencies = [
  "futures-util",
- "getrandom 0.4.3",
  "http",
  "nanocode-http",
  "nanocode-mcp",
@@ -1855,7 +1852,6 @@ dependencies = [
 name = "nanocode-platform"
 version = "0.7.0"
 dependencies = [
- "getrandom 0.4.3",
  "nanocode-digest",
  "nanocode-sys",
  "rustls-pki-types",
@@ -1874,7 +1870,6 @@ dependencies = [
 name = "nanocode-process"
 version = "0.7.0"
 dependencies = [
- "getrandom 0.4.3",
  "libc",
  "nanocode-home",
  "nanocode-platform",
@@ -2125,7 +2120,6 @@ version = "0.7.0"
 dependencies = [
  "base64 0.22.1",
  "futures-util",
- "getrandom 0.4.3",
  "http",
  "nanocode-code-mode",
  "nanocode-home",
@@ -2222,10 +2216,10 @@ version = "0.7.0"
 dependencies = [
  "base64 0.22.1",
  "futures-util",
- "getrandom 0.4.3",
  "http",
  "httparse",
  "nanocode-digest",
+ "nanocode-platform",
  "tokio",
  "tokio-rustls",
 ]
@@ -2741,11 +2735,11 @@ name = "rustpython-common"
 version = "0.6.0"
 dependencies = [
  "bitflags",
- "getrandom 0.4.3",
  "libc",
  "memchr",
  "nanocode-compression",
  "nanocode-numeric",
+ "nanocode-platform",
  "rustpython-literal",
  "rustpython-unicode",
  "rustpython-wtf8",
@@ -2807,10 +2801,10 @@ version = "0.6.0"
 dependencies = [
  "bitflags",
  "cc",
- "getrandom 0.4.3",
  "junction",
  "libc",
  "memchr",
+ "nanocode-platform",
  "parking_lot",
  "rustpython-wtf8",
  "schannel",
@@ -2893,11 +2887,11 @@ dependencies = [
 name = "rustpython-stdlib"
 version = "0.6.0"
 dependencies = [
- "getrandom 0.4.3",
  "indexmap",
  "libc",
  "memchr",
  "nanocode-numeric",
+ "nanocode-platform",
  "pymath",
  "rustpython-common",
  "rustpython-derive",

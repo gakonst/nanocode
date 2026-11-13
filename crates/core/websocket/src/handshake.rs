@@ -134,7 +134,7 @@ pub(crate) fn uri_mode(uri: &Uri) -> Result<Mode> {
 
 fn generate_key() -> Result<String> {
     let mut key = [0; KEY_BYTES];
-    getrandom::fill(&mut key).map_err(|error| Error::Io(std::io::Error::other(error)))?;
+    nanocode_platform::fill_random(&mut key).map_err(Error::Io)?;
     Ok(STANDARD.encode(key))
 }
 

@@ -315,8 +315,7 @@ impl MaskSource {
 
     pub(crate) fn next(&mut self) -> Result<[u8; MASK_BYTES]> {
         if self.used == MASK_POOL_BYTES {
-            getrandom::fill(&mut self.pool)
-                .map_err(|error| Error::Io(std::io::Error::other(error)))?;
+            nanocode_platform::fill_random(&mut self.pool).map_err(Error::Io)?;
             self.used = 0;
         }
         let mut mask = [0; MASK_BYTES];

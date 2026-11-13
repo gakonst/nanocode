@@ -834,7 +834,7 @@ pub fn runner_configs(args: &RemoteArgs) -> Result<RunnerConfigs> {
     let mut servers = Vec::new();
     if args.tab {
         let mut bytes = [0u8; 32];
-        getrandom::fill(&mut bytes)?;
+        nanocode_platform::fill_random(&mut bytes)?;
         let token = bytes
             .iter()
             .map(|byte| format!("{byte:02x}"))

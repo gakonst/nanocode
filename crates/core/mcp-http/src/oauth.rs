@@ -1088,7 +1088,7 @@ impl PendingWebLogin {
 
 fn random_bytes<const N: usize>() -> Result<[u8; N], String> {
     let mut bytes = [0_u8; N];
-    getrandom::fill(&mut bytes)
+    nanocode_platform::fill_random(&mut bytes)
         .map_err(|error| format!("failed to generate OAuth randomness: {error}"))?;
     Ok(bytes)
 }

@@ -211,7 +211,7 @@ impl KeyPair {
     pub(crate) fn generate() -> Result<Self, CertificateFault> {
         for _ in 0..KEY_GENERATION_ATTEMPTS_MAX {
             let mut secret = [0u8; SCALAR_BYTES];
-            getrandom::fill(&mut secret).map_err(|error| CertificateFault(error.to_string()))?;
+            nanocode_platform::fill_random(&mut secret).map_err(|error| CertificateFault(error.to_string()))?;
             if let Ok(key) = SigningKey::p256(&secret) {
                 return Ok(Self::from_key(key, &secret));
             }

@@ -16,7 +16,6 @@ nanocode-sys.workspace = true
 serde.workspace = true
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-getrandom.workspace = true
 rustls-pki-types = { version = "1.15.0", features = ["std"] }
 tokio = { workspace = true, features = ["rt", "time"] }
 

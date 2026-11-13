@@ -62,9 +62,8 @@ features = [
 ]
 optional = true
 
-[dependencies.getrandom]
-version = "0.4"
-features = ["std"]
+[dependencies.nanocode-platform]
+path = "../../core/platform"
 
 [dependencies.libc]
 version = "0.2.186"

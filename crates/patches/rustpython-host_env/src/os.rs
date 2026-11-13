@@ -565,7 +565,7 @@ pub fn abort() -> ! {
 /// Read `size` cryptographically random bytes from the OS.
 pub fn urandom(size: usize) -> io::Result<Vec<u8>> {
     let mut buf = vec![0u8; size];
-    getrandom::fill(&mut buf).map_err(io::Error::from)?;
+    nanocode_platform::fill_random(&mut buf)?;
     Ok(buf)
 }
 

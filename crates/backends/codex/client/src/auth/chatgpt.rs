@@ -1329,7 +1329,7 @@ async fn exchange_code(
 
 fn random_urlsafe() -> Result<String, ChatGptAuthError> {
     let mut bytes = [0_u8; 32];
-    getrandom::fill(&mut bytes)
+    nanocode_platform::fill_random(&mut bytes)
         .map_err(|error| ChatGptAuthError::LoginRejected(error.to_string()))?;
     Ok(URL_SAFE_NO_PAD.encode(bytes))
 }

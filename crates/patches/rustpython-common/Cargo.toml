@@ -53,7 +53,7 @@ threading = [
     "parking_lot",
     "std",
 ]
-wasm_js = ["getrandom/wasm_js"]
+wasm_js = []
 zlib = [
     "std",
     "dep:nanocode-compression",
@@ -70,9 +70,8 @@ version = "2.11.0"
 version = "0.8.21"
 optional = true
 
-[dependencies.getrandom]
-version = "0.4"
-features = ["std"]
+[dependencies.nanocode-platform]
+path = "../../core/platform"
 
 [dependencies.libc]
 version = "0.2.186"

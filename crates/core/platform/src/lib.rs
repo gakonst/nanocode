@@ -126,7 +126,7 @@ thread_local! {
 
 #[cfg(not(target_family = "wasm"))]
 fn kernel_random(bytes: &mut [u8]) -> std::io::Result<()> {
-    getrandom::fill(bytes).map_err(std::io::Error::other)
+    nanocode_sys::fill_random(bytes)
 }
 
 #[cfg(not(target_family = "wasm"))]

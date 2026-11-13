@@ -27,20 +27,21 @@ mod writer;
 use std::{borrow::Cow, fs::OpenOptions, io, path::PathBuf, sync::Arc, time::Duration};
 
 
+pub use batch::{BatchConfig, BatchSpanProcessor, SpanExporter};
 pub use cli::ObservabilityOutputArgs;
-pub use layer::{add_link, span_context};
-pub use model::{ExportError, SpanContext};
-pub use otlp_http::OtlpError;
+pub use layer::{OtelLayer, OtelSpan, add_link, span_context};
+pub use model::{
+    Event, ExportError, KeyValue, Resource, Scope, SpanContext, SpanData, SpanKind, Status, Text,
+    Value,
+};
+pub use otlp_http::{OtlpError, SpanExporter as OtlpSpanExporter};
+pub use trace::{SpanProcessor, Tracer};
 
 use crate::{
-    batch::BatchSpanProcessor,
     filter::{And, FilterFn, ParseError},
     format::{FmtLayer, Format},
-    subscriber::{Filtered, Registry},
-    layer::OtelLayer,
     metrics::{Meter, MetricsFilter, MetricsLayer},
-    model::{KeyValue, Resource, Scope},
-    trace::{SpanProcessor, Tracer},
+    subscriber::{Filtered, Registry},
 };
 
 pub const DEFAULT_FILTER: &str = "warn,nanocode=info,nanocode_backend_codex=info,nanocode_backend_claude=info,nanocode_claude=info,nanocode_agent=info,nanocode_code_mode=info,nanocode_subagents=info,nanocode_durability=info,nanocode_store_jsonl=info,nanocode=info";
@@ -351,7 +352,7 @@ impl ObservabilityBuilder {
     }
 
     fn resource(&self) -> Resource {
-        let mut resource = detected();
+        let mut resource = Resource::detected();
         if std::env::var_os(OTEL_SERVICE_NAME).is_none() {
             resource = resource.merge(&Resource {
                 attributes: vec![KeyValue::new(SERVICE_NAME, self.service_name.clone())],
@@ -411,41 +412,44 @@ fn environment_attributes() -> Resource {
     resource
 }
 
-fn detected() -> Resource {
-    let service = std::env::var(OTEL_SERVICE_NAME)
-        .ok()
-        .filter(|name| !name.is_empty())
-        .map(model::Value::from)
-        .or_else(|| {
-            environment_attributes()
-                .attributes
-                .into_iter()
-                .find(|pair| pair.key == SERVICE_NAME)
-                .map(|pair| pair.value)
-        })
-        .unwrap_or_else(|| {
-            std::env::current_exe()
-                .ok()
-                .and_then(|path| {
-                    path.file_name()
-                        .and_then(|name| name.to_str())
-                        .map(|name| format!("{UNKNOWN_SERVICE}:{name}"))
-                })
-                .unwrap_or_else(|| UNKNOWN_SERVICE.to_owned())
-                .into()
+impl Resource {
+    #[must_use]
+    pub fn detected() -> Self {
+        let service = std::env::var(OTEL_SERVICE_NAME)
+            .ok()
+            .filter(|name| !name.is_empty())
+            .map(model::Value::from)
+            .or_else(|| {
+                environment_attributes()
+                    .attributes
+                    .into_iter()
+                    .find(|pair| pair.key == SERVICE_NAME)
+                    .map(|pair| pair.value)
+            })
+            .unwrap_or_else(|| {
+                std::env::current_exe()
+                    .ok()
+                    .and_then(|path| {
+                        path.file_name()
+                            .and_then(|name| name.to_str())
+                            .map(|name| format!("{UNKNOWN_SERVICE}:{name}"))
+                    })
+                    .unwrap_or_else(|| UNKNOWN_SERVICE.to_owned())
+                    .into()
+            });
+        let mut resource = Self::default();
+        resource.insert(KeyValue {
+            key: Cow::Borrowed(SERVICE_NAME),
+            value: service,
         });
-    let mut resource = Resource::default();
-    resource.insert(KeyValue {
-        key: Cow::Borrowed(SERVICE_NAME),
-        value: service,
-    });
-    resource.insert(KeyValue::new(TELEMETRY_SDK_NAME, TELEMETRY_SDK.0));
-    resource.insert(KeyValue::new(TELEMETRY_SDK_LANGUAGE, TELEMETRY_SDK.1));
-    resource.insert(KeyValue::new(TELEMETRY_SDK_VERSION, TELEMETRY_SDK.2));
-    for pair in environment_attributes().attributes {
-        resource.insert(pair);
+        resource.insert(KeyValue::new(TELEMETRY_SDK_NAME, TELEMETRY_SDK.0));
+        resource.insert(KeyValue::new(TELEMETRY_SDK_LANGUAGE, TELEMETRY_SDK.1));
+        resource.insert(KeyValue::new(TELEMETRY_SDK_VERSION, TELEMETRY_SDK.2));
+        for pair in environment_attributes().attributes {
+            resource.insert(pair);
+        }
+        resource
     }
-    resource
 }
 
 pub fn init(registry: Registry) -> Result<(), ObservabilityError> {
@@ -470,8 +474,11 @@ fn tracer_provider(
     }
     if let Some(endpoint) = endpoint {
         let exporter =
-            otlp_http::SpanExporter::build(&signal_endpoint(endpoint, "traces"), resource, &scope)?;
-        processors.push(Box::new(BatchSpanProcessor::new(exporter)));
+            OtlpSpanExporter::build(&signal_endpoint(endpoint, "traces"), resource, &scope)?;
+        processors.push(Box::new(BatchSpanProcessor::new(
+            exporter,
+            BatchConfig::default().with_env(),
+        )));
     }
     Ok(Tracer::new(processors))
 }

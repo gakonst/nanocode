@@ -4,10 +4,10 @@ use std::{
     time::SystemTime,
 };
 
-pub(crate) type Text = Cow<'static, str>;
+pub type Text = Cow<'static, str>;
 
 #[derive(Clone, Debug)]
-pub(crate) enum Value {
+pub enum Value {
     Bool(bool),
     I64(i64),
     F64(f64),
@@ -74,13 +74,13 @@ impl From<String> for Value {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub(crate) struct KeyValue {
-    pub(crate) key: Text,
-    pub(crate) value: Value,
+pub struct KeyValue {
+    pub key: Text,
+    pub value: Value,
 }
 
 impl KeyValue {
-    pub(crate) fn new(key: impl Into<Text>, value: impl Into<Value>) -> Self {
+    pub fn new(key: impl Into<Text>, value: impl Into<Value>) -> Self {
         Self {
             key: key.into(),
             value: value.into(),
@@ -90,13 +90,13 @@ impl KeyValue {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SpanContext {
-    pub(crate) trace_id: u128,
-    pub(crate) span_id: u64,
-    pub(crate) sampled: bool,
+    pub trace_id: u128,
+    pub span_id: u64,
+    pub sampled: bool,
 }
 
 impl SpanContext {
-    pub(crate) const INVALID: Self = Self {
+    pub const INVALID: Self = Self {
         trace_id: 0,
         span_id: 0,
         sampled: false,
@@ -109,7 +109,7 @@ impl SpanContext {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum SpanKind {
+pub enum SpanKind {
     Client,
     Server,
     Producer,
@@ -118,7 +118,7 @@ pub(crate) enum SpanKind {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum Status {
+pub enum Status {
     #[default]
     Unset,
     Error(Text),
@@ -126,51 +126,51 @@ pub(crate) enum Status {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct Event {
-    pub(crate) name: Text,
-    pub(crate) timestamp: SystemTime,
-    pub(crate) attributes: Vec<KeyValue>,
-    pub(crate) dropped_attributes_count: u32,
+pub struct Event {
+    pub name: Text,
+    pub timestamp: SystemTime,
+    pub attributes: Vec<KeyValue>,
+    pub dropped_attributes_count: u32,
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct SpanData {
-    pub(crate) context: SpanContext,
-    pub(crate) parent_span_id: u64,
-    pub(crate) kind: SpanKind,
-    pub(crate) name: Text,
-    pub(crate) start_time: SystemTime,
-    pub(crate) end_time: SystemTime,
-    pub(crate) attributes: Vec<KeyValue>,
-    pub(crate) dropped_attributes_count: u32,
-    pub(crate) events: Vec<Event>,
-    pub(crate) dropped_events_count: u32,
-    pub(crate) links: Vec<SpanContext>,
-    pub(crate) dropped_links_count: u32,
-    pub(crate) status: Status,
+pub struct SpanData {
+    pub context: SpanContext,
+    pub parent_span_id: u64,
+    pub kind: SpanKind,
+    pub name: Text,
+    pub start_time: SystemTime,
+    pub end_time: SystemTime,
+    pub attributes: Vec<KeyValue>,
+    pub dropped_attributes_count: u32,
+    pub events: Vec<Event>,
+    pub dropped_events_count: u32,
+    pub links: Vec<SpanContext>,
+    pub dropped_links_count: u32,
+    pub status: Status,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Scope {
-    pub(crate) name: Text,
-    pub(crate) version: Option<Text>,
+pub struct Scope {
+    pub name: Text,
+    pub version: Option<Text>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct Resource {
-    pub(crate) attributes: Vec<KeyValue>,
-    pub(crate) schema_url: Option<Text>,
+pub struct Resource {
+    pub attributes: Vec<KeyValue>,
+    pub schema_url: Option<Text>,
 }
 
 impl Resource {
-    pub(crate) fn insert(&mut self, pair: KeyValue) {
+    pub fn insert(&mut self, pair: KeyValue) {
         match self.attributes.iter_mut().find(|held| held.key == pair.key) {
             Some(held) => held.value = pair.value,
             None => self.attributes.push(pair),
         }
     }
 
-    pub(crate) fn merge(&self, other: &Self) -> Self {
+    pub fn merge(&self, other: &Self) -> Self {
         if self.attributes.is_empty() && self.schema_url.is_none() {
             return other.clone();
         }

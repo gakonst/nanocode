@@ -28,7 +28,7 @@ const XOSHIRO_ROTATE_OUTPUT: u32 = 23;
 const XOSHIRO_SHIFT: u32 = 17;
 const XOSHIRO_ROTATE_STATE: u32 = 45;
 
-pub(crate) trait SpanProcessor: Send + Sync {
+pub trait SpanProcessor: Send + Sync {
     fn on_end(&self, span: SpanData);
 
     fn shutdown_with_timeout(&self, timeout: Duration) -> Exported;
@@ -121,7 +121,7 @@ struct Provider {
 }
 
 #[derive(Clone)]
-pub(crate) struct Tracer(Arc<Provider>);
+pub struct Tracer(Arc<Provider>);
 
 thread_local! {
     static SUPPRESSED: Cell<bool> = const { Cell::new(false) };
@@ -229,7 +229,8 @@ fn truncate<T>(items: &mut Vec<T>, limit: usize) -> u32 {
 }
 
 impl Tracer {
-    pub(crate) fn new(processors: Vec<Box<dyn SpanProcessor>>) -> Self {
+    #[must_use]
+    pub fn new(processors: Vec<Box<dyn SpanProcessor>>) -> Self {
         Self(Arc::new(Provider {
             processors,
             sampler: Sampler::from_env(),
@@ -305,7 +306,7 @@ impl Tracer {
         }
     }
 
-    pub(crate) fn shutdown_with_timeout(&self, timeout: Duration) -> Exported {
+    pub fn shutdown_with_timeout(&self, timeout: Duration) -> Exported {
         if self
             .0
             .shut_down

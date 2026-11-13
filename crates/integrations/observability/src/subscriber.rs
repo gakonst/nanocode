@@ -15,7 +15,7 @@ use tracing_core::{
     span::{Attributes, Current, Id, Record},
 };
 
-pub const LAYER_SLOTS: usize = 3;
+pub const LAYER_SLOTS: usize = 8;
 
 const PAGE_FIRST_ENTRIES: usize = 32;
 const PAGE_COUNT: usize = 27;
@@ -686,7 +686,7 @@ impl Table {
 pub struct Registry {
     spans: Table,
     callsites: Callsites,
-    slots: [Option<Filtered>; LAYER_SLOTS],
+    slots: Box<[Option<Filtered>]>,
     key: u64,
 }
 
@@ -697,7 +697,11 @@ enum Release {
 
 impl Registry {
     #[must_use]
-    pub fn new(slots: [Option<Filtered>; LAYER_SLOTS]) -> Self {
+    pub fn new<const SLOTS: usize>(slots: [Option<Filtered>; SLOTS]) -> Self {
+        assert!(
+            SLOTS <= LAYER_SLOTS,
+            "a registry holds at most {LAYER_SLOTS} layers, not {SLOTS}"
+        );
         Self {
             spans: Table::new(),
             callsites: Callsites {
@@ -705,7 +709,7 @@ impl Registry {
                 next: AtomicU64::new(0),
                 by_address: AtomMap::new(),
             },
-            slots,
+            slots: Box::new(slots),
             key: NEXT_REGISTRY.fetch_add(1, Ordering::Relaxed),
         }
     }
@@ -854,7 +858,7 @@ impl Registry {
         } else {
             Interest::always()
         };
-        for depth in 1..=LAYER_SLOTS {
+        for depth in 1..=self.slots.len() {
             let inner_has_filters =
                 depth == 1 || self.slots[..depth - 1].iter().any(Option::is_some);
             if self.slots[depth - 1].is_none() && interest.is_never() && inner_has_filters {
@@ -866,7 +870,7 @@ impl Registry {
 
     fn level_hint(&self) -> Option<LevelFilter> {
         let mut hint = None;
-        for depth in 1..=LAYER_SLOTS {
+        for depth in 1..=self.slots.len() {
             let layer = self.slots[depth - 1].as_ref();
             let outer = layer.map_or(Some(LevelFilter::OFF), |layer| layer.0.max_level_hint());
             let inner = &self.slots[..depth - 1];

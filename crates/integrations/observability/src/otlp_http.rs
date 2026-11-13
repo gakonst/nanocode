@@ -195,13 +195,13 @@ fn percent_decoded(value: &str) -> Option<String> {
 }
 
 #[derive(Debug)]
-pub(crate) struct SpanExporter {
+pub struct SpanExporter {
     http: Http,
     origin: protobuf::Origin,
 }
 
 impl SpanExporter {
-    pub(crate) fn build(
+    pub fn build(
         endpoint: &str,
         resource: &Resource,
         scope: &Scope,

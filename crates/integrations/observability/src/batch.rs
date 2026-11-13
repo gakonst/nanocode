@@ -24,7 +24,7 @@ const CONTROL_MESSAGES_MAX: usize = 64;
 const SHUTDOWN_CHANNEL_FULL: &str = "Shutdown cannot be performed as Control channel is full. This can occur if user repeatedly calls force_flush/shutdown without finishing the previous call.";
 const BATCH_THREAD: &str = "OpenTelemetry.Traces.BatchProcessor";
 
-pub(crate) trait SpanExporter: Send + 'static {
+pub trait SpanExporter: Send + 'static {
     fn export(&self, batch: Vec<SpanData>) -> Exported;
 }
 
@@ -33,27 +33,38 @@ enum Message {
     Shutdown(SyncSender<()>),
 }
 
-#[derive(Clone, Copy)]
-struct Config {
-    max_queue_size: usize,
-    scheduled_delay: Duration,
-    max_export_batch_size: usize,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BatchConfig {
+    pub max_queue_size: usize,
+    pub scheduled_delay: Duration,
+    pub max_export_batch_size: usize,
 }
 
-impl Config {
-    fn from_env() -> Self {
+impl Default for BatchConfig {
+    fn default() -> Self {
+        Self {
+            max_queue_size: MAX_QUEUE_SIZE_DEFAULT,
+            scheduled_delay: SCHEDULE_DELAY_DEFAULT,
+            max_export_batch_size: MAX_EXPORT_BATCH_SIZE_DEFAULT,
+        }
+    }
+}
+
+impl BatchConfig {
+    #[must_use]
+    pub fn with_env(self) -> Self {
         let read = |name: &str| {
             env::var(name)
                 .ok()
                 .and_then(|value| usize::from_str(&value).ok())
         };
-        let max_queue_size = read(OTEL_BSP_MAX_QUEUE_SIZE).unwrap_or(MAX_QUEUE_SIZE_DEFAULT);
+        let max_queue_size = read(OTEL_BSP_MAX_QUEUE_SIZE).unwrap_or(self.max_queue_size);
         let scheduled_delay = env::var(OTEL_BSP_SCHEDULE_DELAY)
             .ok()
             .and_then(|delay| u64::from_str(&delay).ok())
-            .map_or(SCHEDULE_DELAY_DEFAULT, Duration::from_millis);
+            .map_or(self.scheduled_delay, Duration::from_millis);
         let max_export_batch_size = read(OTEL_BSP_MAX_EXPORT_BATCH_SIZE)
-            .unwrap_or(MAX_EXPORT_BATCH_SIZE_DEFAULT)
+            .unwrap_or(self.max_export_batch_size)
             .min(max_queue_size);
         Self {
             max_queue_size,
@@ -63,7 +74,7 @@ impl Config {
     }
 }
 
-pub(crate) struct BatchSpanProcessor {
+pub struct BatchSpanProcessor {
     spans: SyncSender<SpanData>,
     messages: SyncSender<Message>,
     export_requested: Arc<AtomicBool>,
@@ -77,7 +88,7 @@ struct Worker<E> {
     batch: Vec<SpanData>,
     batch_size: Arc<AtomicUsize>,
     export_requested: Arc<AtomicBool>,
-    config: Config,
+    config: BatchConfig,
 }
 
 impl<E: SpanExporter> Worker<E> {
@@ -132,8 +143,7 @@ impl<E: SpanExporter> Worker<E> {
 }
 
 impl BatchSpanProcessor {
-    pub(crate) fn new(exporter: impl SpanExporter) -> Self {
-        let config = Config::from_env();
+    pub fn new(exporter: impl SpanExporter, config: BatchConfig) -> Self {
         let (spans, received_spans) = sync_channel(config.max_queue_size);
         let (messages, received) = sync_channel(CONTROL_MESSAGES_MAX);
         let batch_size = Arc::new(AtomicUsize::new(0));

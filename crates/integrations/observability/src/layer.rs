@@ -43,7 +43,7 @@ thread_local! {
     };
 }
 
-pub(crate) struct OtelLayer {
+pub struct OtelLayer {
     tracer: Tracer,
 }
 
@@ -309,7 +309,8 @@ impl OtelData {
 }
 
 impl OtelLayer {
-    pub(crate) const fn new(tracer: Tracer) -> Self {
+    #[must_use]
+    pub const fn new(tracer: Tracer) -> Self {
         Self { tracer }
     }
 
@@ -404,7 +405,7 @@ impl<T> Exclusive<T> {
     }
 }
 
-pub(crate) struct OtelSpan(Exclusive<OtelSlot>);
+pub struct OtelSpan(Exclusive<OtelSlot>);
 
 struct OtelSlot {
     data: Option<OtelData>,

@@ -3,16 +3,12 @@ use std::{
     time::{Duration, Instant},
 };
 
+use nanocode_observability::{ExportError, SpanData, SpanKind, SpanProcessor, Status};
 use nanocode_sync::{Atom, Map};
-use opentelemetry::{
-    Context,
-    trace::{SpanId, SpanKind, Status, TraceId},
-};
-use opentelemetry_sdk::{
-    Resource,
-    error::OTelSdkResult,
-    trace::{Span, SpanData, SpanProcessor},
-};
+
+use crate::genai::shown;
+
+const NO_PARENT: u64 = 0;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Holding {
@@ -38,38 +34,57 @@ pub struct Held<P> {
 
 #[derive(Clone, Debug, Default)]
 struct Traces {
-    spans: Map<TraceId, imbl::Vector<SpanData>>,
-    due: imbl::Vector<(Instant, TraceId)>,
+    spans: Map<(u128, usize), SpanData>,
+    lengths: Map<u128, usize>,
+    due: Map<u64, (Instant, u128)>,
+    first_due: u64,
+    next_due: u64,
     count: usize,
 }
 
 impl Traces {
-    fn take(&mut self, trace: TraceId) -> Vec<SpanData> {
-        let spans = self.spans.remove(&trace).unwrap_or_default();
+    fn take(&mut self, trace: u128) -> Vec<SpanData> {
+        let length = self.lengths.remove(&trace).unwrap_or(0);
+        let spans: Vec<SpanData> = (0..length)
+            .map(|position| {
+                self.spans
+                    .remove(&(trace, position))
+                    .expect("a held trace holds a span at each position below its length")
+            })
+            .collect();
         self.count -= spans.len();
-        spans.into_iter().collect()
+        spans
     }
 
     fn expire(&mut self, now: Option<Instant>) -> Vec<SpanData> {
         let mut ready = Vec::new();
-        while let Some(&(at, trace)) = self.due.front() {
+        for _ in self.first_due..self.next_due {
+            let &(at, trace) = self
+                .due
+                .get(&self.first_due)
+                .expect("every due position from first to next is held");
             if now.is_some_and(|now| at > now) {
                 break;
             }
-            self.due.pop_front();
+            self.due.remove(&self.first_due);
+            self.first_due += 1;
             ready.extend(self.take(trace));
         }
         ready
     }
 
     fn hold(&mut self, span: SpanData, due: Instant) {
-        let trace = span.span_context.trace_id();
-        let mut spans = self.spans.remove(&trace).unwrap_or_else(|| {
-            self.due.push_back((due, trace));
-            imbl::Vector::new()
-        });
-        spans.push_back(span);
-        self.spans.insert(trace, spans);
+        let trace = span.context.trace_id;
+        let length = match self.lengths.get(&trace) {
+            Some(&length) => length,
+            None => {
+                self.due.insert(self.next_due, (due, trace));
+                self.next_due += 1;
+                0
+            }
+        };
+        self.spans.insert((trace, length), span);
+        self.lengths.insert(trace, length + 1);
         self.count += 1;
     }
 }
@@ -94,10 +109,10 @@ impl<P: SpanProcessor> Held<P> {
 
 impl Holding {
     fn holds(&self, span: &SpanData) -> bool {
-        span.attributes.iter().any(|kv| {
-            kv.key.as_str() == "target"
+        span.attributes.iter().any(|pair| {
+            pair.key == "target"
                 && self.targets.iter().any(|target| {
-                    let emitted = kv.value.as_str();
+                    let emitted = shown(&pair.value);
                     emitted == *target || emitted.starts_with(&format!("{target}::"))
                 })
         })
@@ -109,23 +124,21 @@ impl Holding {
             .duration_since(root.start_time)
             .unwrap_or_default();
         took >= self.slow
-            || matches!(root.status, Status::Error { .. })
-            || u128::from_be_bytes(root.span_context.trace_id().to_bytes())
-                .is_multiple_of(self.one_in)
+            || matches!(root.status, Status::Error(_))
+            || root.context.trace_id.is_multiple_of(self.one_in)
     }
 }
 
 fn request_root(span: &SpanData) -> bool {
-    span.span_kind == SpanKind::Server
-        && (span.parent_span_id == SpanId::INVALID || span.parent_span_is_remote)
+    span.kind == SpanKind::Server && span.parent_span_id == NO_PARENT
 }
 
 fn outside(root: &SpanData, spans: Vec<SpanData>) -> (Vec<SpanData>, u64) {
-    let parents: HashMap<SpanId, SpanId> = spans
+    let parents: HashMap<u64, u64> = spans
         .iter()
-        .map(|span| (span.span_context.span_id(), span.parent_span_id))
+        .map(|span| (span.context.span_id, span.parent_span_id))
         .collect();
-    let root = root.span_context.span_id();
+    let root = root.context.span_id;
     let under = |span: &SpanData| {
         let mut parent = span.parent_span_id;
         for _ in 0..=parents.len() {
@@ -140,14 +153,13 @@ fn outside(root: &SpanData, spans: Vec<SpanData>) -> (Vec<SpanData>, u64) {
         false
     };
     let (own, others): (Vec<_>, Vec<_>) = spans.into_iter().partition(under);
-    (others, u64::try_from(own.len()).unwrap_or(u64::MAX))
+    (
+        others,
+        u64::try_from(own.len()).expect("a span count fits in u64"),
+    )
 }
 
 impl<P: SpanProcessor> SpanProcessor for Held<P> {
-    fn on_start(&self, span: &mut Span, cx: &Context) {
-        self.inner.on_start(span, cx);
-    }
-
     fn on_end(&self, span: SpanData) {
         (self.ended)(Ended::Span);
         let Some(holding) = self.holding.filter(|holding| holding.holds(&span)) else {
@@ -159,7 +171,7 @@ impl<P: SpanProcessor> SpanProcessor for Held<P> {
             let mut ready = held.expire(Some(now));
             let mut skipped = 0;
             if request_root(&span) {
-                let spans = held.take(span.span_context.trace_id());
+                let spans = held.take(span.context.trace_id);
                 if holding.exports(&span) {
                     ready.extend(spans);
                     ready.push(span.clone());
@@ -183,17 +195,8 @@ impl<P: SpanProcessor> SpanProcessor for Held<P> {
         }
     }
 
-    fn force_flush(&self) -> OTelSdkResult {
-        self.release();
-        self.inner.force_flush()
-    }
-
-    fn shutdown_with_timeout(&self, timeout: Duration) -> OTelSdkResult {
+    fn shutdown_with_timeout(&self, timeout: Duration) -> Result<(), ExportError> {
         self.release();
         self.inner.shutdown_with_timeout(timeout)
-    }
-
-    fn set_resource(&mut self, resource: &Resource) {
-        self.inner.set_resource(resource);
     }
 }

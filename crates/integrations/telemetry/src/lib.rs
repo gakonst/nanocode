@@ -7,5 +7,4 @@ mod lines;
 pub use genai::{Agent, Exported, GenAi};
 pub use held::{Ended, Held, Holding};
 pub use lines::{Counters, Exports, Lines, line};
-
-pub const METRICS_TARGET: &str = "nc_metrics";
+pub use nanocode_observability::METRICS_TARGET;

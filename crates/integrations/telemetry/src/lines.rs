@@ -1,22 +1,25 @@
 use std::fmt::{Debug, Write as _};
 
-use tracing::{
-    Event, Metadata, Subscriber,
-    field::{Field, Visit},
+use nanocode_observability::{
+    filter::FilterFn,
+    subscriber::{Context, Filtered, Layer, SpanRef},
 };
-use tracing_subscriber::{
-    Layer,
-    filter::{FilterFn, filter_fn},
-    layer::Context,
-    registry::LookupSpan,
+use tracing::{
+    Event, Metadata,
+    field::{Field, Visit},
+    span::Attributes,
 };
 
 use crate::METRICS_TARGET;
 
 pub struct Lines(pub fn(&str));
 
-impl<S: Subscriber> Layer<S> for Lines {
-    fn on_event(&self, event: &Event<'_>, _: Context<'_, S>) {
+impl Layer for Lines {
+    type Span = ();
+
+    fn new_span(&self, _: &Attributes<'_>, _: &SpanRef<'_, ()>, _: &Context<'_, ()>) {}
+
+    fn on_event(&self, event: &Event<'_>, _: &Context<'_, ()>) {
         (self.0)(&line(event));
     }
 }
@@ -44,18 +47,23 @@ impl Visit for Fields<'_> {
 pub struct Counters(pub fn(String, u64));
 
 impl Counters {
-    pub fn layer<S>(self) -> impl Layer<S>
-    where
-        S: Subscriber + for<'span> LookupSpan<'span>,
-    {
-        self.with_filter(filter_fn(|metadata| {
-            metadata.is_event() && metadata.target() == METRICS_TARGET
-        }))
+    #[must_use]
+    pub fn layer(self) -> Filtered {
+        Filtered::new(
+            self,
+            FilterFn(|metadata: &Metadata<'_>| {
+                metadata.is_event() && metadata.target() == METRICS_TARGET
+            }),
+        )
     }
 }
 
-impl<S: Subscriber> Layer<S> for Counters {
-    fn on_event(&self, event: &Event<'_>, _: Context<'_, S>) {
+impl Layer for Counters {
+    type Span = ();
+
+    fn new_span(&self, _: &Attributes<'_>, _: &SpanRef<'_, ()>, _: &Context<'_, ()>) {}
+
+    fn on_event(&self, event: &Event<'_>, _: &Context<'_, ()>) {
         event.record(&mut Counted(self.0));
     }
 }
@@ -92,8 +100,9 @@ impl Exports {
             .is_ok_and(|value| value.eq_ignore_ascii_case("true"))
     }
 
-    pub fn filter(self) -> FilterFn<impl Fn(&Metadata<'_>) -> bool> {
-        filter_fn(move |metadata| {
+    #[must_use]
+    pub fn filter(self) -> FilterFn<impl Fn(&Metadata<'_>) -> bool + Send + Sync + 'static> {
+        FilterFn(move |metadata: &Metadata<'_>| {
             let from = |targets: &[&str]| {
                 targets.iter().any(|target| {
                     metadata.target() == *target

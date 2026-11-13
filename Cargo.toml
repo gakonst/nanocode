@@ -160,8 +160,6 @@ nanocode-mcp-tools = { version = "0.7.0", path = "crates/integrations/mcp-tools"
 nanocode-code-mode-engine = { version = "0.7.0", path = "crates/runtime/code-mode-engine" }
 nanocode-tools-macros = { version = "0.7.0", path = "crates/core/tools-macros" }
 image = { version = "=0.25.6", default-features = false, features = ["bmp", "gif", "jpeg", "png", "pnm", "webp"] }
-opentelemetry = { version = "0.32", default-features = false, features = ["metrics", "trace"] }
-opentelemetry_sdk = { version = "0.32", default-features = false, features = ["metrics", "trace"] }
 proc-macro2 = "1.0.106"
 quote = "1.0.46"
 rcgen = { version = "0.14.10", default-features = false, features = ["crypto", "pem", "ring"] }
@@ -181,7 +179,6 @@ tokio-util = { version = "0.7", features = ["codec"] }
 tokio-rustls = { version = "0.26.4", default-features = false }
 tracing = { version = "0.1.44", default-features = false, features = ["std"] }
 tracing-core = { version = "0.1.36", default-features = false, features = ["std"] }
-tracing-subscriber = { version = "0.3.22", features = ["env-filter", "fmt", "json"] }
 unicode-normalization = { path = "crates/core/unicode-normalization" }
 url = "2.5.7"
 nanocode-zstd = { version = "0.7.0", path = "crates/core/zstd" }

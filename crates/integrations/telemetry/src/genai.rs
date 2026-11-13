@@ -1,11 +1,6 @@
-use std::time::Duration;
+use std::borrow::Cow;
 
-use opentelemetry::{KeyValue, Value};
-use opentelemetry_sdk::{
-    Resource,
-    error::OTelSdkResult,
-    trace::{SpanData, SpanExporter},
-};
+use nanocode_observability::{ExportError, KeyValue, SpanData, SpanExporter, Value};
 use serde_json::{Value as Json, json};
 
 #[derive(Clone, Copy, Debug)]
@@ -39,30 +34,31 @@ impl<E> GenAi<E> {
 }
 
 impl<E: SpanExporter> SpanExporter for GenAi<E> {
-    async fn export(&self, batch: Vec<SpanData>) -> OTelSdkResult {
-        let count = u64::try_from(batch.len()).unwrap_or(u64::MAX);
+    fn export(&self, batch: Vec<SpanData>) -> Result<(), ExportError> {
+        let count = u64::try_from(batch.len()).expect("a batch length fits in u64");
         let batch = batch
             .into_iter()
             .map(|span| gen_ai(span, self.agent, self.exported))
             .collect();
-        let exported = self.exporter.export(batch).await;
+        let exported = self.exporter.export(batch);
         (self.exported)(match exported {
             Ok(()) => Exported::Sent(count),
             Err(_) => Exported::Failed(count),
         });
         exported
     }
+}
 
-    fn shutdown_with_timeout(&self, timeout: Duration) -> OTelSdkResult {
-        self.exporter.shutdown_with_timeout(timeout)
-    }
-
-    fn force_flush(&self) -> OTelSdkResult {
-        self.exporter.force_flush()
-    }
-
-    fn set_resource(&mut self, resource: &Resource) {
-        self.exporter.set_resource(resource);
+pub(crate) fn shown(value: &Value) -> Cow<'_, str> {
+    match value {
+        Value::Bool(value) => Cow::Owned(value.to_string()),
+        Value::I64(value) => Cow::Owned(value.to_string()),
+        Value::F64(value) => Cow::Owned(value.to_string()),
+        Value::String(value) => Cow::Borrowed(value),
+        Value::Strings(values) => {
+            let quoted: Vec<String> = values.iter().map(|value| format!("\"{value}\"")).collect();
+            Cow::Owned(format!("[{}]", quoted.join(",")))
+        }
     }
 }
 
@@ -119,13 +115,13 @@ impl Operation {
 fn attribute(span: &SpanData, key: &str) -> Option<Value> {
     span.attributes
         .iter()
-        .find(|kv| kv.key.as_str() == key)
-        .map(|kv| kv.value.clone())
+        .find(|pair| pair.key == key)
+        .map(|pair| pair.value.clone())
 }
 
 fn gen_ai(mut span: SpanData, agent: Option<Agent>, exported: fn(Exported)) -> SpanData {
     content(&mut span);
-    let Some(operation) = Operation::of(span.name.as_ref(), agent) else {
+    let Some(operation) = Operation::of(&span.name, agent) else {
         return span;
     };
     let mut added = vec![KeyValue::new("gen_ai.operation.name", operation.name())];
@@ -136,12 +132,12 @@ fn gen_ai(mut span: SpanData, agent: Option<Agent>, exported: fn(Exported)) -> S
             .filter_map(|(from, to)| Some(KeyValue::new(*to, attribute(&span, from)?))),
     );
     if let Some(subject) = operation.subject(&span) {
-        span.name = format!("{} {subject}", operation.name()).into();
+        span.name = format!("{} {}", operation.name(), shown(&subject)).into();
     }
     if let Operation::Chat = operation {
         if let Some(provider) = model_provider(&span) {
             span.attributes
-                .retain(|kv| !matches!(kv.key.as_str(), "gen_ai.provider.name" | "gen_ai.system"));
+                .retain(|pair| !matches!(&*pair.key, "gen_ai.provider.name" | "gen_ai.system"));
             added.push(KeyValue::new("gen_ai.provider.name", provider.clone()));
             added.push(KeyValue::new("gen_ai.system", provider));
         } else {
@@ -160,7 +156,7 @@ fn model_provider(span: &SpanData) -> Option<Value> {
     }
     for key in ["code.module.name", "target"] {
         if let Some(Value::String(value)) = attribute(span, key) {
-            match value.as_str().split("::").next() {
+            match value.split("::").next() {
                 Some("nanocode_backend_claude" | "nanocode_claude") => {
                     return Some(Value::from("anthropic"));
                 }
@@ -177,13 +173,13 @@ fn model_provider(span: &SpanData) -> Option<Value> {
 fn content(span: &mut SpanData) {
     let (mut input, mut output) = (Vec::new(), Vec::new());
     let mut added = Vec::new();
-    span.events.events.retain(|event| {
+    span.events.retain(|event| {
         let get = |key: &str| {
             event
                 .attributes
                 .iter()
-                .find(|kv| kv.key.as_str() == key)
-                .map(|kv| kv.value.as_str().into_owned())
+                .find(|pair| pair.key == key)
+                .map(|pair| shown(&pair.value).into_owned())
         };
         let (Some(kind), Some(content)) = (get("content_kind"), get("content")) else {
             return true;

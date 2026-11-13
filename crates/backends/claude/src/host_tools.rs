@@ -493,7 +493,10 @@ impl Tool for HostBashTool {
                 {
                     Ok(output) => {
                         let value = serde_json::from_str::<Value>(&output).unwrap_or(Value::Null);
-                        let text = value["message"].as_str().map_or(output, str::to_owned);
+                        let text = value["message"]
+                            .as_str()
+                            .filter(|_| value["background"] == true)
+                            .map_or(output, str::to_owned);
                         ToolOutput::text(text).with_structured_result(value)
                     }
                     Err(error) => ToolOutput::error(error),

@@ -200,14 +200,19 @@ impl<E: BashExecutor> ClaudeBash<E> {
         } else {
             (DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS)
         };
-        let timeout_ms = fields
+        let requested = fields
             .get("timeout")
             .map_or(Some(default), Value::as_u64)
             .ok_or("invalid timeout")?;
-        if timeout_ms == 0 {
+        if requested == 0 {
             return Err("timeout must be at least 1 millisecond".into());
         }
-        let timeout_ms = timeout_ms.min(maximum);
+        let timeout_ms = requested.min(maximum);
+        let reduced = (requested > maximum).then(|| {
+            format!(
+                "The call asked for a timeout of {requested} ms, more than the maximum of {maximum} ms, so the command had the maximum."
+            )
+        });
         let stream_bytes = if nested {
             NESTED_STREAM_BYTES
         } else {
@@ -242,6 +247,10 @@ impl<E: BashExecutor> ClaudeBash<E> {
                 output_file,
                 message,
             } => {
+                let message = match reduced {
+                    Some(reduced) => format!("{message} {reduced}"),
+                    None => message,
+                };
                 return Ok(json!({
                     "stdout": format!("{message}\n"),
                     "stderr": "",
@@ -271,7 +280,7 @@ impl<E: BashExecutor> ClaudeBash<E> {
             "task_id": null,
             "output_file": kept.map(|(file, _)| file),
             "output_bytes": kept.map(|(_, bytes)| bytes),
-            "message": null,
+            "message": reduced,
         })
         .to_string())
     }

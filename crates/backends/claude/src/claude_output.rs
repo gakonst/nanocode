@@ -77,7 +77,7 @@ fn bash(cut: &str, output_file: Value) -> Value {
         "task_id": {"type": ["string", "null"]},
         "output_file": output_file,
         "output_bytes": {"type": ["integer", "null"], "description": "The size of `output_file` when `truncated` is true."},
-        "message": {"type": ["string", "null"]}
+        "message": {"type": ["string", "null"], "description": "What a background command's `stdout` says, or that the call's `timeout` was over the maximum and was reduced to it."}
     }, "required": ["stdout", "stderr", "exit_code", "interrupted", "truncated", "background", "status", "task_id", "output_file", "output_bytes", "message"], "additionalProperties": false})
 }
 

@@ -56,6 +56,7 @@ pub struct Argument {
     required_unless: Option<&'static str>,
     conflicts: &'static [&'static str],
     requires: Option<&'static str>,
+    hyphen_values: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -277,6 +278,7 @@ impl Argument {
             required_unless: None,
             conflicts: &[],
             requires: None,
+            hyphen_values: false,
         }
     }
 
@@ -411,6 +413,14 @@ impl Argument {
     }
 
     #[must_use]
+    pub const fn allow_hyphen_values(self) -> Self {
+        Self {
+            hyphen_values: true,
+            ..self
+        }
+    }
+
+    #[must_use]
     pub const fn id(&self) -> &'static str {
         self.id
     }
@@ -456,6 +466,10 @@ impl Argument {
 
     const fn is_trailing(&self) -> bool {
         matches!(self.kind, Kind::Trailing)
+    }
+
+    const fn takes_hyphen_values(&self) -> bool {
+        self.hyphen_values || self.is_trailing()
     }
 
     const fn appends(&self) -> bool {

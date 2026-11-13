@@ -135,7 +135,9 @@ const TIERS: [Choice; 3] = [
 ];
 
 const SESSION: Group = Group::new(&[
-    Argument::positional("prompt", "PROMPT", Parser::Text).help("Prompt to send as soon as the session is ready"),
+    Argument::positional("prompt", "PROMPT", Parser::Text)
+        .allow_hyphen_values()
+        .help("Prompt to send as soon as the session is ready"),
     Argument::value("model", "MODEL", Parser::Text)
         .short('m')
         .long("model")

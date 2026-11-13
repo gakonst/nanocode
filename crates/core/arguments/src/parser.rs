@@ -595,7 +595,7 @@ impl Run<'_> {
     fn hyphen_position(&self, position: usize) -> bool {
         self.level
             .positional(position)
-            .is_some_and(|entry| self.level.entries[entry].argument.is_trailing())
+            .is_some_and(|entry| self.level.entries[entry].argument.takes_hyphen_values())
     }
 
     fn long(

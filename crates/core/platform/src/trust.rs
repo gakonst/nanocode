@@ -108,7 +108,9 @@ fn load_paths(file: Option<&Path>, directories: &[PathBuf]) -> NativeCertificate
     }
     let mut read = BTreeSet::new();
     if let Some(file) = file {
-        read.insert(fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf()));
+        if let Ok(metadata) = fs::metadata(file) {
+            read.insert(identity(file, &metadata));
+        }
         load_pem(file, &mut loaded);
     }
     for directory in directories {
@@ -121,7 +123,7 @@ fn load_paths(file: Option<&Path>, directories: &[PathBuf]) -> NativeCertificate
     loaded
 }
 
-fn load_directory(directory: &Path, read: &mut BTreeSet<PathBuf>, loaded: &mut NativeCertificates) {
+fn load_directory(directory: &Path, read: &mut BTreeSet<FileIdentity>, loaded: &mut NativeCertificates) {
     let entries = match fs::read_dir(directory) {
         Ok(entries) => entries,
         Err(error) => {
@@ -138,15 +140,7 @@ fn load_directory(directory: &Path, read: &mut BTreeSet<PathBuf>, loaded: &mut N
             }
         };
         let path = entry.path();
-        let target = match fs::canonicalize(&path) {
-            Ok(target) => target,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
-            Err(error) => {
-                loaded.io_error(error, &path, "failed to open file");
-                continue;
-            }
-        };
-        let metadata = match fs::metadata(&target) {
+        let metadata = match fs::metadata(&path) {
             Ok(metadata) => metadata,
             Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
             Err(error) => {
@@ -154,10 +148,27 @@ fn load_directory(directory: &Path, read: &mut BTreeSet<PathBuf>, loaded: &mut N
                 continue;
             }
         };
-        if metadata.is_file() && read.insert(target) {
+        if metadata.is_file() && read.insert(identity(&path, &metadata)) {
             load_pem(&path, loaded);
         }
     }
+}
+
+#[cfg(unix)]
+type FileIdentity = (u64, u64);
+
+#[cfg(unix)]
+fn identity(_: &Path, metadata: &fs::Metadata) -> FileIdentity {
+    use std::os::unix::fs::MetadataExt;
+    (metadata.dev(), metadata.ino())
+}
+
+#[cfg(not(unix))]
+type FileIdentity = PathBuf;
+
+#[cfg(not(unix))]
+fn identity(path: &Path, _: &fs::Metadata) -> FileIdentity {
+    fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 fn load_pem(path: &Path, loaded: &mut NativeCertificates) {

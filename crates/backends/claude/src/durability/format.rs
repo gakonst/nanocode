@@ -26,6 +26,10 @@ pub(crate) fn prefix(key: &str) -> Option<std::sync::Arc<Prefix>> {
     PREFIXES.get(key)
 }
 
+pub fn forget_templates() {
+    PREFIXES.update(|prefixes| *prefixes = nanocode_sync::Map::default());
+}
+
 pub(crate) fn keep_prefix(key: &str, prefix: &std::sync::Arc<Prefix>) {
     if PREFIXES.get(key).is_none() {
         PREFIXES.insert(key.to_owned(), std::sync::Arc::clone(prefix));

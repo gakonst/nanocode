@@ -29,7 +29,7 @@ use crate::{
 mod format;
 pub(crate) use format::{Prefix, keep_prefix, prefix};
 
-pub use format::ClaudeCheckpointFormat;
+pub use format::{ClaudeCheckpointFormat, forget_templates};
 
 const MAINTENANCE_KINDS: &[&str] = &["compact", "session_end"];
 

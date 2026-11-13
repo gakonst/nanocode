@@ -159,7 +159,6 @@ quote = "1.0.46"
 ring = { version = "0.17.14", default-features = false, features = ["alloc"] }
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls-no-provider"] }
 rustls = { version = "0.23.45", default-features = false, features = ["std"] }
-sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio"] }
 djs-embed = { path = "crates/patches/djs/crates/djs-embed" }
 psh-engine = { path = "crates/patches/psh/crates/psh-engine" }
 psh-utils = { path = "crates/patches/psh/crates/psh-utils" }
@@ -211,8 +210,6 @@ rustpython-stdlib = { path = "crates/patches/rustpython-stdlib" }
 rustpython-unicode = { path = "crates/patches/rustpython-unicode" }
 rustpython-vm = { path = "crates/patches/rustpython-vm" }
 rustpython-wtf8 = { path = "crates/patches/rustpython-wtf8" }
-sqlx-core = { git = "https://github.com/gakonst/sqlx", rev = "7667896a183e2597e8bf9df17bbd22c5d1658772" }
-sqlx-postgres = { git = "https://github.com/gakonst/sqlx", rev = "7667896a183e2597e8bf9df17bbd22c5d1658772" }
 unicode-normalization = { path = "crates/core/unicode-normalization" }
 
 [workspace.lints.rust]
@@ -234,9 +231,6 @@ strip = false
 
 [profile.dev.package."*"]
 debug = false
-
-[profile.dev.package."sha2:0.11.0"]
-opt-level = 3
 
 [profile.ci]
 inherits = "dev"

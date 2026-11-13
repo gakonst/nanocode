@@ -1,5 +1,6 @@
 use crate::host::ModelClients;
 
+const ANTHROPIC_BASE_URL: &str = "NANOCODE_ANTHROPIC_BASE_URL";
 const BASE_URL: &str = "NANOCODE_OPENAI_BASE_URL";
 const MODELS_URL: &str = "NANOCODE_MODELS_URL";
 const LIST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
@@ -11,7 +12,8 @@ fn env(name: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-pub fn apply(mut clients: ModelClients) -> Result<ModelClients, String> {
+pub fn apply(clients: ModelClients) -> Result<ModelClients, String> {
+    let mut clients = anthropic(clients)?;
     let base = env(BASE_URL)
         .filter(|_| !clients.supplies_openai())
         .map(|url| url.trim_end_matches('/').to_owned());
@@ -43,6 +45,23 @@ pub fn apply(mut clients: ModelClients) -> Result<ModelClients, String> {
         });
     }
     Ok(clients)
+}
+
+fn anthropic(clients: ModelClients) -> Result<ModelClients, String> {
+    let Some(base) = env(ANTHROPIC_BASE_URL).filter(|_| !clients.supplies_claude()) else {
+        return Ok(clients);
+    };
+    let key = env("NANOCODE_ANTHROPIC_API_KEY")
+        .or_else(|| env("ANTHROPIC_API_KEY"))
+        .ok_or_else(|| {
+            format!("{ANTHROPIC_BASE_URL} needs NANOCODE_ANTHROPIC_API_KEY or ANTHROPIC_API_KEY")
+        })?;
+    let url = format!("{}/messages", base.trim_end_matches('/'));
+    nanocode::codex::transport::install_default_rustls_crypto_provider();
+    let http = nanocode_http::client();
+    Ok(clients.claude(move || {
+        nanocode::claude::ClaudeClient::new(http.clone(), url.clone(), key.clone())
+    }))
 }
 
 fn fetch_models(url: &str, key: Option<&str>) -> Result<Vec<String>, String> {

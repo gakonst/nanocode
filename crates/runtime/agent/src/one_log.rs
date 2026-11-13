@@ -1161,7 +1161,7 @@ impl CellJournalSink for OneLogJournals {
                     update: raw(&update).map_err(|error| error.to_string())?,
                 })
                 .map_err(|error| error.to_string())?;
-            if external.is_empty() {
+            if external.is_empty() && !fresh {
                 return Ok(());
             }
             for call in external {

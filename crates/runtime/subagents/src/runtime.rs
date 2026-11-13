@@ -29,7 +29,7 @@ use nanocode_tool_contracts::ToolReceipt;
 use serde::Serialize;
 use serde_json::Value;
 use std::{
-    collections::{BTreeSet, HashMap, HashSet, VecDeque},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque},
     sync::{
         Arc, Weak,
         atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering},
@@ -413,7 +413,9 @@ impl Sessions {
 
     fn parked_ids(&mut self) -> Vec<AgentId> {
         self.refresh();
-        self.parked.iter().copied().collect()
+        let mut ids = self.parked.iter().copied().collect::<Vec<_>>();
+        ids.sort_unstable();
+        ids
     }
 
     fn spawned_in(&mut self, contexts: &[&str]) -> Vec<AgentId> {
@@ -781,7 +783,7 @@ impl NoticeOutcome {
         parent: WeakAgent,
         mut steers: mpsc::UnboundedReceiver<SteerWatch>,
     ) {
-        let mut watched = HashMap::<String, (SteerWatch, Option<String>)>::new();
+        let mut watched = BTreeMap::<String, (SteerWatch, Option<String>)>::new();
         loop {
             let event = tokio::select! {
                 biased;
@@ -8702,10 +8704,11 @@ impl Registry {
     }
 
     async fn release_all(&self) {
-        let roots = self
+        let mut roots = self
             .state
             .call(|state| state.scopes.keys().cloned().collect::<Vec<_>>())
             .await;
+        roots.sort_unstable();
         let released = join_all(roots.iter().map(|root| self.release_scope(root))).await;
         for (root, result) in roots.iter().zip(released) {
             if let Err(error) = result {

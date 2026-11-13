@@ -56,7 +56,6 @@ default_table='
 1 canary_seal_skipped canary:4000 --scenario turns --live-seqs floor --mutation seal_skipped
 '
 default_known='
-runtime_kv_twice nondeterminism
 '
 discovered_weight=8
 discovered_twice_weight=2

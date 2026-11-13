@@ -30,7 +30,7 @@ const OPCODE_CLOSE: u8 = 0x8;
 const OPCODE_PING: u8 = 0x9;
 const OPCODE_PONG: u8 = 0xa;
 const MASK_WORD_BYTES: usize = 8;
-const MASK_POOL_BYTES: usize = 64 * MASK_BYTES;
+const MASK_POOL_BYTES: usize = 1024 * MASK_BYTES;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum OpCode {
@@ -301,25 +301,28 @@ pub(crate) fn apply_mask(buffer: &mut [u8], mask: [u8; MASK_BYTES]) {
 }
 
 pub(crate) struct MaskSource {
-    pool: [u8; MASK_POOL_BYTES],
+    pool: Option<Box<[u8; MASK_POOL_BYTES]>>,
     used: usize,
 }
 
 impl MaskSource {
     pub(crate) const fn new() -> Self {
         Self {
-            pool: [0; MASK_POOL_BYTES],
+            pool: None,
             used: MASK_POOL_BYTES,
         }
     }
 
     pub(crate) fn next(&mut self) -> Result<[u8; MASK_BYTES]> {
+        let pool = self
+            .pool
+            .get_or_insert_with(|| Box::new([0; MASK_POOL_BYTES]));
         if self.used == MASK_POOL_BYTES {
-            nanocode_platform::fill_random(&mut self.pool).map_err(Error::Io)?;
+            nanocode_platform::fill_random(pool.as_mut_slice()).map_err(Error::Io)?;
             self.used = 0;
         }
         let mut mask = [0; MASK_BYTES];
-        mask.copy_from_slice(&self.pool[self.used..self.used + MASK_BYTES]);
+        mask.copy_from_slice(&pool[self.used..self.used + MASK_BYTES]);
         self.used += MASK_BYTES;
         Ok(mask)
     }

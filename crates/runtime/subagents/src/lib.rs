@@ -46,4 +46,4 @@ pub const DEFAULT_MAX_RESIDENT_SUBAGENTS: usize = 16;
 
 pub const DURABLE_MAX_RESIDENT_SUBAGENTS: usize = 2;
 
-pub use tools::install_claude_tools;
+pub use tools::{install_claude_tools, install_direct_claude_tools, install_direct_tools};

@@ -1098,19 +1098,23 @@ async fn admit_budget(
 struct SpawnAgent {
     parent: AgentHandle,
     registry: Weak<Registry>,
+    code_mode: bool,
 }
 
 impl Tool for SpawnAgent {
     fn definition(&self) -> ToolDefinition {
         static LATEST: LazyLock<Atom<Option<Offered>>> = LazyLock::new(Atom::default);
         let Some(registry) = self.registry.upgrade() else {
-            return spawn_agent_definition(SpawnPolicy::default());
+            return spawn_agent_definition(SpawnPolicy::default(), self.code_mode);
         };
         let latest = registry.spawn_policy.read(|policy| {
             LATEST.read(|latest| {
                 latest
                     .as_ref()
-                    .filter(|latest| std::ptr::eq(Arc::as_ptr(&latest.policy), policy))
+                    .filter(|latest| {
+                        std::ptr::eq(Arc::as_ptr(&latest.policy), policy)
+                            && latest.code_mode == self.code_mode
+                    })
                     .map(|latest| latest.definition.clone())
             })
         });
@@ -1118,9 +1122,10 @@ impl Tool for SpawnAgent {
             return definition;
         }
         let policy = registry.spawn_policy.get();
-        let definition = spawn_agent_definition(SpawnPolicy::clone(&policy));
+        let definition = spawn_agent_definition(SpawnPolicy::clone(&policy), self.code_mode);
         LATEST.set(Some(Offered {
             policy,
+            code_mode: self.code_mode,
             definition: definition.clone(),
         }));
         definition
@@ -1147,26 +1152,33 @@ impl Tool for SpawnAgent {
 
 struct Offered {
     policy: Arc<SpawnPolicy>,
+    code_mode: bool,
     definition: ToolDefinition,
 }
 
-fn spawn_agent_definition(mut policy: SpawnPolicy) -> ToolDefinition {
+fn spawn_agent_definition(mut policy: SpawnPolicy, code_mode: bool) -> ToolDefinition {
     static DEFINITIONS: LazyLock<Atom<HashMap<String, ToolDefinition>>> =
         LazyLock::new(Atom::default);
     for provider in policy.providers.iter_mut().flatten() {
         provider.models.clear();
         provider.note = None;
     }
-    let key = format!("{policy:?}");
+    let key = format!("{policy:?} {code_mode}");
     if let Some(definition) = DEFINITIONS.read(|definitions| definitions.get(&key).cloned()) {
         return definition;
     }
-    let description = "Starts a reusable clean-room subagent without inherited conversation history and immediately returns its ID. When the root agent is durable, the task tree survives runtime restarts with the same IDs and interrupted children resume from their latest committed checkpoint; otherwise children are dropped when the parent runtime restarts. Delegate meaningful, separable work and handle trivial or tightly coupled work directly. When Code Mode is available, build multi-agent pipelines in it: start independent subtasks in parallel, await and reduce their results, then dispatch dependent stages. Do not repeat delegated work; double-check results against the relevant evidence before relying on them. Use output contracts that expose the fields downstream stages need, keep concurrent write scopes disjoint, and own final synthesis and verification.";
+    let description = format!(
+        "Starts a reusable clean-room subagent without inherited conversation history and immediately returns its ID. When the root agent is durable, the task tree survives runtime restarts with the same IDs and interrupted children resume from their latest committed checkpoint; otherwise children are dropped when the parent runtime restarts. Delegate meaningful, separable work and handle trivial or tightly coupled work directly. {}Do not repeat delegated work; double-check results against the relevant evidence before relying on them. Use output contracts that expose the fields downstream stages need, keep concurrent write scopes disjoint, and own final synthesis and verification.",
+        match code_mode {
+            true => "When Code Mode is available, build multi-agent pipelines in it: start independent subtasks in parallel, await and reduce their results, then dispatch dependent stages. ",
+            false => "Start independent subtasks in parallel, wait for and reduce their results, then dispatch dependent stages. ",
+        }
+    );
     let description = match policy.providers {
         Some(_) => format!(
             "{description} A model a provider serves runs as <provider>/<model>, paid as that provider charges (list_models lists them), so a question about models or providers can be answered by spawning a subagent on each."
         ),
-        None => description.to_owned(),
+        None => description,
     };
     let definition = ToolDefinition::function(
         SPAWN_AGENT_TOOL,
@@ -2069,7 +2081,11 @@ impl Tool for ChangeAgentLifecycle {
     }
 }
 
-fn shared_tools(parent: AgentHandle, registry: &Arc<Registry>) -> Vec<Arc<dyn Tool>> {
+fn shared_tools(
+    parent: AgentHandle,
+    registry: &Arc<Registry>,
+    code_mode: bool,
+) -> Vec<Arc<dyn Tool>> {
     registry.register_handle(parent.clone());
     let mut tools: Vec<Arc<dyn Tool>> = vec![
         Arc::new(SubmitResult {
@@ -2078,6 +2094,7 @@ fn shared_tools(parent: AgentHandle, registry: &Arc<Registry>) -> Vec<Arc<dyn To
         Arc::new(SpawnAgent {
             parent,
             registry: Arc::downgrade(registry),
+            code_mode,
         }),
         Arc::new(SendAgentMessage {
             registry: Arc::downgrade(registry),
@@ -2110,7 +2127,15 @@ pub fn install_tools<T: ToolCollection>(
     parent: AgentHandle,
     registry: Arc<Registry>,
 ) -> Result<T, T::Error> {
-    tools.add_shared_tools(shared_tools(parent, &registry))
+    tools.add_shared_tools(shared_tools(parent, &registry, true))
+}
+
+pub fn install_direct_tools<T: ToolCollection>(
+    tools: T,
+    parent: AgentHandle,
+    registry: Arc<Registry>,
+) -> Result<T, T::Error> {
+    tools.add_shared_tools(shared_tools(parent, &registry, false))
 }
 
 pub fn install_claude_tools<T: nanocode_tool_contracts::ToolCollection>(
@@ -2119,7 +2144,19 @@ pub fn install_claude_tools<T: nanocode_tool_contracts::ToolCollection>(
     registry: Arc<Registry>,
 ) -> Result<T, T::Error> {
     tools.add_shared_tools(
-        shared_tools(parent, &registry)
+        shared_tools(parent, &registry, true)
+            .into_iter()
+            .map(|tool| Arc::new(TurnAuthority(tool)) as Arc<dyn nanocode_tool_contracts::Tool>),
+    )
+}
+
+pub fn install_direct_claude_tools<T: nanocode_tool_contracts::ToolCollection>(
+    tools: T,
+    parent: AgentHandle,
+    registry: Arc<Registry>,
+) -> Result<T, T::Error> {
+    tools.add_shared_tools(
+        shared_tools(parent, &registry, false)
             .into_iter()
             .map(|tool| Arc::new(TurnAuthority(tool)) as Arc<dyn nanocode_tool_contracts::Tool>),
     )

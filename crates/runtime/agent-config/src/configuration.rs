@@ -79,6 +79,14 @@ pub trait DelegationTools: Send + Sync {
         parent: AgentHandle,
         authority: DelegationAuthority,
     ) -> Vec<Arc<dyn nanocode_tool_contracts::Tool>>;
+
+    fn direct_tools(
+        &self,
+        parent: AgentHandle,
+        authority: DelegationAuthority,
+    ) -> Vec<Arc<dyn nanocode_tool_contracts::Tool>> {
+        self.tools(parent, authority)
+    }
 }
 
 pub trait RuntimeBackend: Send + Sync + 'static {

@@ -221,10 +221,11 @@ impl RuntimeBackend for CodexHarness {
                         subagents
                             .as_ref()
                             .map(|subagents| {
-                                subagents.tools(
-                                    handle,
-                                    nanocode_agent_config::configuration::DelegationAuthority::Session,
-                                )
+                                let authority = nanocode_agent_config::configuration::DelegationAuthority::Session;
+                                match direct && !remote {
+                                    true => subagents.direct_tools(handle, authority),
+                                    false => subagents.tools(handle, authority),
+                                }
                             })
                             .into_iter()
                             .flatten()

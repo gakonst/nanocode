@@ -639,6 +639,26 @@ impl DelegationTools for Delegation {
         };
         tools
     }
+
+    fn direct_tools(
+        &self,
+        parent: AgentHandle,
+        authority: DelegationAuthority,
+    ) -> Vec<Arc<dyn nanocode_tool_contracts::Tool>> {
+        let Ok(SharedTools(tools)) = match authority {
+            DelegationAuthority::Session => nanocode_subagents::install_direct_tools(
+                SharedTools(Vec::new()),
+                parent,
+                self.0.clone(),
+            ),
+            DelegationAuthority::Turn => nanocode_subagents::install_direct_claude_tools(
+                SharedTools(Vec::new()),
+                parent,
+                self.0.clone(),
+            ),
+        };
+        tools
+    }
 }
 
 struct Registered(Arc<dyn RegisteredBackend>);

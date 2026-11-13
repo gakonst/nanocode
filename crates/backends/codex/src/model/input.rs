@@ -59,18 +59,25 @@ pub(in crate::model) fn turn_aborted() -> ResponseItem {
     )
 }
 
-pub(in crate::model) fn empty_response() -> ResponseItem {
+pub(in crate::model) fn empty_response(tools: &Tools) -> ResponseItem {
+    let text = if tools.exposure().is_available_in_code_mode() {
+        concat!(
+            "<empty_response>\n",
+            "Your last response had no message and no exec call, so nothing happened. ",
+            "Continue the task: call exec, or reply with your final message.\n",
+            "</empty_response>"
+        )
+    } else {
+        concat!(
+            "<empty_response>\n",
+            "Your last response had no message and no tool call, so nothing happened. ",
+            "Continue the task: call a tool, or reply with your final message.\n",
+            "</empty_response>"
+        )
+    };
     ResponseItem::message(
         MessageRole::User,
-        [ContentItem::InputText {
-            text: concat!(
-                "<empty_response>\n",
-                "Your last response had no message and no exec call, so nothing happened. ",
-                "Continue the task: call exec, or reply with your final message.\n",
-                "</empty_response>"
-            )
-            .into(),
-        }],
+        [ContentItem::InputText { text: text.into() }],
     )
 }
 

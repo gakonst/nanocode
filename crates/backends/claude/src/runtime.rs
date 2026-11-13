@@ -222,10 +222,11 @@ impl RuntimeBackend for ClaudeHarness {
                     shared.clone()
                 };
                 if let Some(subagents) = &subagents {
-                    additive.extend(subagents.tools(
-                        handle.clone(),
-                        nanocode_agent_config::configuration::DelegationAuthority::Turn,
-                    ));
+                    let authority = nanocode_agent_config::configuration::DelegationAuthority::Turn;
+                    additive.extend(match direct && !remote {
+                        true => subagents.direct_tools(handle.clone(), authority),
+                        false => subagents.tools(handle.clone(), authority),
+                    });
                 }
                 #[cfg(not(target_family = "wasm"))]
                 {

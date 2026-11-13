@@ -1018,7 +1018,7 @@ impl ModelRun {
                 }
                 if !reprompted {
                     reprompted = true;
-                    session.conversation.append([empty_response()]);
+                    session.conversation.append([empty_response(&self.tools)]);
                     session.conversation.clear_delta();
                     continue;
                 }

@@ -22,6 +22,15 @@ const LENGTH_BYTE_MAX: usize = 0xFF;
 const LITERAL_NIBBLE_SHIFT: u32 = 4;
 const WORD_BYTES: usize = 8;
 const WILD_COPY_BYTES: usize = 16;
+const OFFSET_BYTES: usize = 2;
+const SHORT_MATCH_BYTES_MAX: usize = NIBBLE_MAX - 1 + MATCH_LENGTH_MIN;
+const SHORT_SEQUENCE_INPUT_BYTES: usize = 1 + WILD_COPY_BYTES + OFFSET_BYTES;
+const OVERLAP_CHUNK_BYTES: usize = 8;
+const SHORT_MATCH_WRITE_BYTES: usize = SHORT_MATCH_BYTES_MAX.next_multiple_of(OVERLAP_CHUNK_BYTES);
+const SHORT_SEQUENCE_OUTPUT_BYTES: usize = NIBBLE_MAX - 1 + SHORT_MATCH_WRITE_BYTES;
+const OVERLAP_PATTERN_INDICES: [[usize; OVERLAP_CHUNK_BYTES]; OVERLAP_CHUNK_BYTES] =
+    overlap_pattern_indices();
+const OVERLAP_DISTANCES: [usize; OVERLAP_CHUNK_BYTES] = overlap_distances();
 const OUTPUT_BOUND_FIXED_BYTES: usize = 20;
 const OUTPUT_BOUND_PERCENT: u64 = 110;
 const PERCENT: u64 = 100;
@@ -262,8 +271,34 @@ fn decompress_block(block: &[u8], output: &mut [u8]) -> Result<usize, Lz4Error> 
     let mut written = 0;
     loop {
         let token = *block.get(position).ok_or(Lz4Error::ExpectedAnotherByte)?;
-        position += 1;
         let literal_nibble = usize::from(token >> LITERAL_NIBBLE_SHIFT);
+        let match_nibble = usize::from(token) & NIBBLE_MAX;
+        if literal_nibble != NIBBLE_MAX
+            && block.len() - position >= SHORT_SEQUENCE_INPUT_BYTES
+            && output.len() - written >= SHORT_SEQUENCE_OUTPUT_BYTES
+        {
+            let literals: [u8; WILD_COPY_BYTES] = read_array(block, position + 1);
+            write_array(output, written, literals);
+            position += 1 + literal_nibble;
+            written += literal_nibble;
+            let offset = usize::from(u16::from_le_bytes(read_array(block, position)));
+            position += OFFSET_BYTES;
+            check_offset(offset, written)?;
+            if match_nibble != NIBBLE_MAX {
+                let match_bytes = match_nibble + MATCH_LENGTH_MIN;
+                copy_short_match(output, written, offset, match_bytes);
+                written += match_bytes;
+                continue;
+            }
+            let match_bytes = read_length(block, &mut position, match_nibble)? + MATCH_LENGTH_MIN;
+            if match_bytes > output.len() - written {
+                return Err(Lz4Error::OutputOverflow);
+            }
+            copy_match(output, written, offset, match_bytes);
+            written += match_bytes;
+            continue;
+        }
+        position += 1;
         let literal_bytes = read_length(block, &mut position, literal_nibble)?;
         let literals = block
             .get(position..position.saturating_add(literal_bytes))
@@ -277,18 +312,14 @@ fn decompress_block(block: &[u8], output: &mut [u8]) -> Result<usize, Lz4Error> 
         if position == block.len() {
             return Ok(written);
         }
-        let offset_bytes = block
-            .get(position..position + 2)
-            .ok_or(Lz4Error::ExpectedAnotherByte)?;
-        let offset = usize::from(u16::from_le_bytes([offset_bytes[0], offset_bytes[1]]));
-        position += 2;
-        if offset == 0 {
-            return Err(Lz4Error::OffsetZero);
-        }
-        if offset > written {
-            return Err(Lz4Error::OffsetOutOfBounds);
-        }
-        let match_nibble = usize::from(token) & NIBBLE_MAX;
+        let offset_bytes: [u8; OFFSET_BYTES] = block
+            .get(position..position + OFFSET_BYTES)
+            .ok_or(Lz4Error::ExpectedAnotherByte)?
+            .try_into()
+            .expect("the offset slice is two bytes long");
+        let offset = usize::from(u16::from_le_bytes(offset_bytes));
+        position += OFFSET_BYTES;
+        check_offset(offset, written)?;
         let match_bytes = read_length(block, &mut position, match_nibble)? + MATCH_LENGTH_MIN;
         if match_bytes > output.len() - written {
             return Err(Lz4Error::OutputOverflow);
@@ -298,6 +329,70 @@ fn decompress_block(block: &[u8], output: &mut [u8]) -> Result<usize, Lz4Error> 
     }
 }
 
+const fn check_offset(offset: usize, written: usize) -> Result<(), Lz4Error> {
+    if offset == 0 {
+        return Err(Lz4Error::OffsetZero);
+    }
+    if offset > written {
+        return Err(Lz4Error::OffsetOutOfBounds);
+    }
+    Ok(())
+}
+
+fn write_array<const N: usize>(output: &mut [u8], position: usize, bytes: [u8; N]) {
+    output[position..position + N].copy_from_slice(&bytes);
+}
+
+fn copy_short_match(output: &mut [u8], written: usize, offset: usize, match_bytes: usize) {
+    if offset >= match_bytes {
+        let wild: [u8; SHORT_MATCH_BYTES_MAX] = read_array(output, written - offset);
+        write_array(output, written, wild);
+        return;
+    }
+    copy_overlapping(output, written, offset, match_bytes);
+}
+
+fn copy_overlapping(output: &mut [u8], written: usize, offset: usize, match_bytes: usize) {
+    let mut copied = 0;
+    let mut distance = offset;
+    if offset < OVERLAP_CHUNK_BYTES {
+        let history: [u8; OVERLAP_CHUNK_BYTES] = read_array(output, written - offset);
+        let pattern = OVERLAP_PATTERN_INDICES[offset].map(|index| history[index]);
+        write_array(output, written, pattern);
+        copied = OVERLAP_CHUNK_BYTES;
+        distance = OVERLAP_DISTANCES[offset];
+    }
+    while copied < match_bytes {
+        let chunk: [u8; OVERLAP_CHUNK_BYTES] = read_array(output, written + copied - distance);
+        write_array(output, written + copied, chunk);
+        copied += OVERLAP_CHUNK_BYTES;
+    }
+}
+
+const fn overlap_pattern_indices() -> [[usize; OVERLAP_CHUNK_BYTES]; OVERLAP_CHUNK_BYTES] {
+    let mut indices = [[0; OVERLAP_CHUNK_BYTES]; OVERLAP_CHUNK_BYTES];
+    let mut offset = 1;
+    while offset < OVERLAP_CHUNK_BYTES {
+        let mut index = 0;
+        while index < OVERLAP_CHUNK_BYTES {
+            indices[offset][index] = index % offset;
+            index += 1;
+        }
+        offset += 1;
+    }
+    indices
+}
+
+const fn overlap_distances() -> [usize; OVERLAP_CHUNK_BYTES] {
+    let mut distances = [0; OVERLAP_CHUNK_BYTES];
+    let mut offset = 1;
+    while offset < OVERLAP_CHUNK_BYTES {
+        distances[offset] = offset * OVERLAP_CHUNK_BYTES.div_ceil(offset);
+        offset += 1;
+    }
+    distances
+}
+
 fn copy_literals(
     output: &mut [u8],
     written: usize,
@@ -305,12 +400,14 @@ fn copy_literals(
     position: usize,
     literals: &[u8],
 ) {
-    if literals.len() <= WILD_COPY_BYTES
-        && block.len() - position >= WILD_COPY_BYTES
-        && output.len() - written >= WILD_COPY_BYTES
-    {
-        let wild: [u8; WILD_COPY_BYTES] = read_array(block, position);
-        output[written..written + WILD_COPY_BYTES].copy_from_slice(&wild);
+    let wild_bytes = literals.len().max(1).next_multiple_of(WILD_COPY_BYTES);
+    if block.len() - position >= wild_bytes && output.len() - written >= wild_bytes {
+        let mut copied = 0;
+        while copied < literals.len() {
+            let wild: [u8; WILD_COPY_BYTES] = read_array(block, position + copied);
+            write_array(output, written + copied, wild);
+            copied += WILD_COPY_BYTES;
+        }
         return;
     }
     output[written..written + literals.len()].copy_from_slice(literals);
@@ -318,16 +415,23 @@ fn copy_literals(
 
 fn copy_match(output: &mut [u8], written: usize, offset: usize, match_bytes: usize) {
     let source = written - offset;
-    if match_bytes <= WILD_COPY_BYTES
-        && offset >= WILD_COPY_BYTES
-        && output.len() - written >= WILD_COPY_BYTES
+    if offset >= WILD_COPY_BYTES
+        && output.len() - written >= match_bytes.next_multiple_of(WILD_COPY_BYTES)
     {
-        let wild: [u8; WILD_COPY_BYTES] = read_array(output, source);
-        output[written..written + WILD_COPY_BYTES].copy_from_slice(&wild);
+        let mut copied = 0;
+        while copied < match_bytes {
+            let wild: [u8; WILD_COPY_BYTES] = read_array(output, source + copied);
+            write_array(output, written + copied, wild);
+            copied += WILD_COPY_BYTES;
+        }
         return;
     }
     if offset >= match_bytes {
         output.copy_within(source..source + match_bytes, written);
+        return;
+    }
+    if output.len() - written >= match_bytes.next_multiple_of(OVERLAP_CHUNK_BYTES) {
+        copy_overlapping(output, written, offset, match_bytes);
         return;
     }
     let mut copied = 0;

@@ -1,8 +1,4 @@
-use std::borrow::Cow;
-
-use image::ColorType;
-
-use super::ImagePreparationError;
+use super::{ImagePreparationError, RgbLayout};
 
 pub(super) fn png_exif(bytes: &[u8]) -> Option<Vec<u8>> {
     let mut offset = 8usize;
@@ -14,10 +10,11 @@ pub(super) fn png_exif(bytes: &[u8]) -> Option<Vec<u8>> {
         let data = bytes.get(offset + 8..end)?;
         let crc = u32::from_be_bytes(bytes.get(end..end.checked_add(4)?)?.try_into().ok()?);
         if kind == b"eXIf" {
-            let mut hash = crc32fast::Hasher::new();
-            hash.update(kind);
-            hash.update(data);
-            return (hash.finalize() == crc).then(|| data.to_vec());
+            let checksum = nanocode_compression::checksum::crc32(
+                nanocode_compression::checksum::crc32(0, kind),
+                data,
+            );
+            return (checksum == crc).then(|| data.to_vec());
         }
         if kind == b"IDAT" || kind == b"IEND" {
             return None;
@@ -105,35 +102,26 @@ pub(super) fn gif_icc(bytes: &[u8]) -> Option<Vec<u8>> {
 }
 
 pub(super) fn encode_png(
-    output: &mut Vec<u8>,
     pixels: &[u8],
     width: u32,
     height: u32,
-    color: ColorType,
+    layout: RgbLayout,
     icc: Option<Vec<u8>>,
     exif: Option<Vec<u8>>,
-) -> Result<(), ImagePreparationError> {
-    let mut info = png::Info::with_size(width, height);
-    info.icc_profile = icc.filter(|data| !data.is_empty()).map(Cow::Owned);
-    info.exif_metadata = exif.filter(|data| !data.is_empty()).map(Cow::Owned);
-    let encode_error = |error: png::EncodingError| {
-        ImagePreparationError::Processing(format!("unable to encode image as Png: {error}"))
-    };
-    let mut encoder = png::Encoder::with_info(output, info).map_err(encode_error)?;
-    encoder.set_color(match color {
-        ColorType::Rgb8 => png::ColorType::Rgb,
-        ColorType::Rgba8 => png::ColorType::Rgba,
-        _ => unreachable!("pixels are converted to RGB or RGBA"),
-    });
-    encoder.set_depth(png::BitDepth::Eight);
-    encoder.set_compression(png::Compression::Fast);
-    encoder.set_filter(png::FilterType::Sub);
-    encoder.set_adaptive_filter(png::AdaptiveFilterType::Adaptive);
-    encoder
-        .write_header()
-        .map_err(encode_error)?
-        .write_image_data(pixels)
-        .map_err(encode_error)
+) -> Vec<u8> {
+    let icc = icc.filter(|data| !data.is_empty());
+    let exif = exif.filter(|data| !data.is_empty());
+    nanocode_png::encode(&nanocode_png::Encoding {
+        width,
+        height,
+        color: match layout {
+            RgbLayout::Rgb => nanocode_png::Color::Rgb8,
+            RgbLayout::Rgba => nanocode_png::Color::Rgba8,
+        },
+        pixels: nanocode_png::Pixels::Eight(pixels),
+        icc_profile: icc.as_deref(),
+        exif: exif.as_deref(),
+    })
 }
 
 pub(super) fn insert_jpeg_exif(

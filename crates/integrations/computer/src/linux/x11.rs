@@ -3,7 +3,6 @@ use crate::{
     keys::x11::{ALT_L, CONTROL_L, SHIFT_L, SUPER_L, keysym},
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use image::{ExtendedColorType, codecs::jpeg::JpegEncoder};
 use std::{
     collections::HashMap,
     sync::{
@@ -167,10 +166,9 @@ pub fn rgb(data: &[u8], width: usize, height: usize, layout: &Layout) -> Option<
 
 pub fn jpeg(width: u32, height: u32, rgb: &[u8], max: usize) -> Option<String> {
     [80, 50, 30].into_iter().find_map(|quality| {
-        let mut bytes = Vec::new();
-        JpegEncoder::new_with_quality(&mut bytes, quality)
-            .encode(rgb, width, height, ExtendedColorType::Rgb8)
-            .ok()?;
+        let bytes =
+            nanocode_jpeg::encode(rgb, width, height, nanocode_jpeg::Color::Rgb, quality, None)
+                .ok()?;
         Some(STANDARD.encode(bytes)).filter(|data| data.len() <= max)
     })
 }

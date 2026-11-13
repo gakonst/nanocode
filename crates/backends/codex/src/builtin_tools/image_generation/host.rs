@@ -178,14 +178,15 @@ impl HostImageGeneration {
                 ));
             }
         };
-        let mime = image::guess_format(&bytes)
-            .map_err(|error| {
+        let mime = nanocode_image::guess_format(&bytes)
+            .ok_or_else(|| {
                 format!(
-                    "unable to process referenced image at `{}`: {error}",
-                    path.display()
+                    "unable to process referenced image at `{}`: {}",
+                    path.display(),
+                    nanocode_image::DecodeError::UnknownFormat
                 )
             })?
-            .to_mime_type();
+            .mime_type();
         let mut url = format!("data:{mime};base64,");
         base64::engine::general_purpose::STANDARD.encode_string(&bytes, &mut url);
         Ok(url)

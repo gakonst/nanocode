@@ -477,11 +477,7 @@ fn original_image_bytes_estimate(image_url: &str) -> Option<usize> {
             .decode(payload)
             .ok()?;
 
-        let (width, height) = image::ImageReader::new(std::io::Cursor::new(bytes.as_slice()))
-            .with_guessed_format()
-            .ok()?
-            .into_dimensions()
-            .ok()?;
+        let (width, height) = nanocode_image::dimensions(&bytes)?;
         let patches_wide = width.div_ceil(ORIGINAL_IMAGE_PATCH_SIZE);
         let patches_high = height.div_ceil(ORIGINAL_IMAGE_PATCH_SIZE);
         let patches = usize::try_from(u64::from(patches_wide) * u64::from(patches_high))

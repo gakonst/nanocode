@@ -1,6 +1,5 @@
 use crate::{ContentBlock, Message, Role};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use image::ImageReader;
 use nanocode_agent_core::{
     NanocodeError, Result,
     input::{Prompt, PromptInput, PromptMessageRole, UserInput},
@@ -8,7 +7,6 @@ use nanocode_agent_core::{
 use nanocode_durability::BlobUrl;
 use nanocode_image::{ImageHistory, prepare_base64_images};
 use serde_json::json;
-use std::io::Cursor;
 
 const MAX_IMAGE_BYTES: usize = 5 * 1024 * 1024;
 
@@ -80,11 +78,7 @@ impl ImageResolution {
 }
 
 fn image_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
-    ImageReader::new(Cursor::new(bytes))
-        .with_guessed_format()
-        .ok()?
-        .into_dimensions()
-        .ok()
+    nanocode_image::dimensions(bytes)
 }
 
 const IMAGE_UNPROCESSABLE: &str = "image content omitted because it could not be processed";

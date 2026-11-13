@@ -30,7 +30,7 @@ libc.workspace = true
 atspi-common = { workspace = true }
 atspi-proxies = { workspace = true }
 futures-util.workspace = true
-image.workspace = true
+nanocode-jpeg.workspace = true
 x11rb = { workspace = true }
 zbus = { workspace = true }
 

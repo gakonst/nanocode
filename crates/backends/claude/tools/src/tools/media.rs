@@ -3,7 +3,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde_json::{Value, json};
 use std::{
     fs::File,
-    io::{Cursor, Read, Write},
+    io::{Read, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     time::{Duration, Instant},
@@ -11,6 +11,8 @@ use std::{
 
 const MAX_SOURCE: usize = 16 * 1024 * 1024;
 const MAX_IMAGE: usize = 5 * 1024 * 1024;
+const MAX_DECODE_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_DIMENSION: u32 = 32768;
 const MAX_MEDIA: usize = 20 * 1024 * 1024;
 const MAX_PDF: u64 = 20 * 1024 * 1024;
 const PDF_PAGES_AT_ONCE: u32 = 10;
@@ -51,7 +53,7 @@ pub(crate) fn read(
         .map_err(|e| format!("read: {e}"))?
         .read(&mut prefix)
         .map_err(|e| format!("read: {e}"))?;
-    let signature = image::guess_format(&prefix[..count]).ok();
+    let signature = nanocode_image::guess_format(&prefix[..count]);
     let pdf = prefix[..count].starts_with(b"%PDF-") || extension == "pdf";
     let is_image = signature.is_some()
         || matches!(extension.as_str(), "png" | "jpg" | "jpeg" | "gif" | "webp");
@@ -101,24 +103,31 @@ fn image_block(bytes: &[u8]) -> Result<ToolResultBlock, String> {
     if bytes.len() > MAX_SOURCE {
         return Err("image source exceeds 16 MiB limit".into());
     }
-    let format = image::guess_format(bytes).map_err(|e| format!("invalid image: {e}"))?;
+    let format = nanocode_image::guess_format(bytes).ok_or_else(|| {
+        format!(
+            "invalid image: {}",
+            nanocode_image::DecodeError::UnknownFormat
+        )
+    })?;
     let mut mime = match format {
-        image::ImageFormat::Png => "image/png",
-        image::ImageFormat::Jpeg => "image/jpeg",
-        image::ImageFormat::Gif => "image/gif",
-        image::ImageFormat::WebP => "image/webp",
+        nanocode_image::Format::Png => "image/png",
+        nanocode_image::Format::Jpeg => "image/jpeg",
+        nanocode_image::Format::Gif => "image/gif",
+        nanocode_image::Format::WebP => "image/webp",
         _ => return Err("unsupported image format; use PNG, JPEG, GIF or WebP".into()),
     };
 
-    let mut reader = image::ImageReader::with_format(Cursor::new(bytes), format);
-    let mut limits = image::Limits::default();
-    limits.max_image_width = Some(32768);
-    limits.max_image_height = Some(32768);
-    limits.max_alloc = Some(256 * 1024 * 1024);
-    reader.limits(limits);
-    let decoded = reader
-        .decode()
-        .map_err(|e| format!("invalid or oversized image: {e}"))?;
+    let limits = nanocode_image::Limits {
+        alloc_bytes_max: MAX_DECODE_BYTES,
+        dimension_max: Some(MAX_DIMENSION),
+    };
+    let decoded = nanocode_image::Decoder::new(bytes, format, limits)
+        .and_then(|mut decoder| {
+            decoder.reserve()?;
+            decoder.decode()
+        })
+        .map_err(|e| format!("invalid or oversized image: {e}"))?
+        .image;
 
     let pixels = f64::from(decoded.width()) * f64::from(decoded.height());
     let scale = (1568.0 / f64::from(decoded.width().max(decoded.height())))
@@ -136,26 +145,31 @@ fn image_block(bytes: &[u8]) -> Result<ToolResultBlock, String> {
     let mut encoded = bytes.to_vec();
     if scale < 1.0 {
         encoded.clear();
-        resized
-            .write_to(&mut Cursor::new(&mut encoded), image::ImageFormat::Png)
-            .map_err(|e| format!("image resize: {e}"))?;
+        encoded = nanocode_image::encode_png(&resized);
         mime = "image/png";
     }
     if encoded.len() > 500 * 1024 {
-        let rgba = resized.to_rgba8();
-        let rgb = image::RgbImage::from_fn(rgba.width(), rgba.height(), |x, y| {
-            let p = rgba.get_pixel(x, y).0;
-            let alpha = u16::from(p[3]);
-            image::Rgb(
+        let rgb: Vec<u8> = resized
+            .to_rgba8()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .flat_map(|p| {
+                let alpha = u16::from(p[3]);
                 [0, 1, 2]
-                    .map(|i| ((u16::from(p[i]) * alpha + 255 * (255 - alpha) + 127) / 255) as u8),
-            )
-        });
+                    .map(|i| ((u16::from(p[i]) * alpha + 255 * (255 - alpha) + 127) / 255) as u8)
+            })
+            .collect();
         for quality in [85, 70, 55, 40, 25, 10] {
-            encoded.clear();
-            image::codecs::jpeg::JpegEncoder::new_with_quality(&mut encoded, quality)
-                .encode_image(&rgb)
-                .map_err(|e| format!("image compression: {e}"))?;
+            encoded = nanocode_jpeg::encode(
+                &rgb,
+                resized.width(),
+                resized.height(),
+                nanocode_jpeg::Color::Rgb,
+                quality,
+                None,
+            )
+            .map_err(|e| format!("image compression: {e}"))?;
             if encoded.len() <= 500 * 1024 {
                 break;
             }
@@ -558,11 +572,11 @@ fn read_notebook(bytes: &[u8], input: &Value) -> Result<ToolOutput, String> {
                                 );
                             }
 
-                            let actual = match image::guess_format(&bytes).ok() {
-                                Some(image::ImageFormat::Png) => "image/png",
-                                Some(image::ImageFormat::Jpeg) => "image/jpeg",
-                                Some(image::ImageFormat::Gif) => "image/gif",
-                                Some(image::ImageFormat::WebP) => "image/webp",
+                            let actual = match nanocode_image::guess_format(&bytes) {
+                                Some(nanocode_image::Format::Png) => "image/png",
+                                Some(nanocode_image::Format::Jpeg) => "image/jpeg",
+                                Some(nanocode_image::Format::Gif) => "image/gif",
+                                Some(nanocode_image::Format::WebP) => "image/webp",
                                 _ => "unsupported",
                             };
                             if actual != mime {

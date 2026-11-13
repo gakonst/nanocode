@@ -1,6 +1,6 @@
 use std::ops::Range;
 
-use image::{DynamicImage, ImageBuffer, Pixel, imageops::FilterType};
+use crate::pixels::{Image, Pixels};
 
 const BAND_BYTES: usize = 2 << 20;
 
@@ -85,12 +85,21 @@ fn nearest(value: f32) -> u8 {
     floor.saturating_add(u8::from(value - f32::from(floor) >= 0.5))
 }
 
-fn resize<const N: usize>(
-    source: &[u8],
+fn nearest_wide(value: f32) -> u16 {
+    let floor = value as u16;
+    floor.saturating_add(u16::from(value - f32::from(floor) >= 0.5))
+}
+
+fn resize<S, const N: usize>(
+    source: &[S],
     width: usize,
     new_width: usize,
     new_height: usize,
-) -> Vec<u8> {
+    finish: impl Fn(f32) -> S + Copy,
+) -> Vec<S>
+where
+    S: Copy + Into<f32>,
+{
     let down = taps(source.len() / (width * N), new_height);
     let across = taps(width, new_width);
     let band = (BAND_BYTES / (width * N * size_of::<f32>())).clamp(1, new_height);
@@ -98,7 +107,7 @@ fn resize<const N: usize>(
     let mut rows = Vec::with_capacity(band * width * N);
     let mut columns = Vec::with_capacity(band * width);
     let mut narrowed = Vec::with_capacity(band * new_width * N);
-    let mut pixels: Vec<[u8; N]> = Vec::with_capacity(band * new_width);
+    let mut pixels: Vec<[S; N]> = Vec::with_capacity(band * new_width);
     for top in (0..new_height).step_by(band) {
         let count = band.min(new_height - top);
         rows.clear();
@@ -119,7 +128,7 @@ fn resize<const N: usize>(
             &across,
             0..new_width,
             &mut narrowed,
-            nearest,
+            finish,
         );
         pixels.clear();
         transpose(narrowed.as_chunks::<N>().0, count, &mut pixels);
@@ -128,47 +137,55 @@ fn resize<const N: usize>(
     target
 }
 
-fn resized<P, const N: usize>(
-    source: &ImageBuffer<P, Vec<u8>>,
-    width: u32,
-    height: u32,
-) -> Option<ImageBuffer<P, Vec<u8>>>
-where
-    P: Pixel<Subpixel = u8>,
-{
-    ImageBuffer::from_raw(
-        width,
-        height,
-        resize::<N>(
-            source.as_raw(),
-            source.width() as usize,
-            width as usize,
-            height as usize,
-        ),
-    )
-}
-
-pub fn lanczos3(image: &DynamicImage, width: u32, height: u32) -> DynamicImage {
+pub fn lanczos3(image: &Image, width: u32, height: u32) -> Image {
     let source = (image.width(), image.height());
-    let resampled = if source == (width, height) || [source.0, source.1, width, height].contains(&0)
-    {
-        None
+    if source == (width, height) {
+        return image.clone();
+    }
+    let pixels = if [source.0, source.1, width, height].contains(&0) {
+        empty(image.pixels(), width, height)
     } else {
-        match image {
-            DynamicImage::ImageLuma8(pixels) => {
-                resized::<_, 1>(pixels, width, height).map(DynamicImage::ImageLuma8)
+        let (from, to, new_height) = (source.0 as usize, width as usize, height as usize);
+        match image.pixels() {
+            Pixels::Luma8(samples) => {
+                Pixels::Luma8(resize::<_, 1>(samples, from, to, new_height, nearest))
             }
-            DynamicImage::ImageLumaA8(pixels) => {
-                resized::<_, 2>(pixels, width, height).map(DynamicImage::ImageLumaA8)
+            Pixels::LumaAlpha8(samples) => {
+                Pixels::LumaAlpha8(resize::<_, 2>(samples, from, to, new_height, nearest))
             }
-            DynamicImage::ImageRgb8(pixels) => {
-                resized::<_, 3>(pixels, width, height).map(DynamicImage::ImageRgb8)
+            Pixels::Rgb8(samples) => {
+                Pixels::Rgb8(resize::<_, 3>(samples, from, to, new_height, nearest))
             }
-            DynamicImage::ImageRgba8(pixels) => {
-                resized::<_, 4>(pixels, width, height).map(DynamicImage::ImageRgba8)
+            Pixels::Rgba8(samples) => {
+                Pixels::Rgba8(resize::<_, 4>(samples, from, to, new_height, nearest))
             }
-            _ => None,
+            Pixels::Luma16(samples) => {
+                Pixels::Luma16(resize::<_, 1>(samples, from, to, new_height, nearest_wide))
+            }
+            Pixels::LumaAlpha16(samples) => {
+                Pixels::LumaAlpha16(resize::<_, 2>(samples, from, to, new_height, nearest_wide))
+            }
+            Pixels::Rgb16(samples) => {
+                Pixels::Rgb16(resize::<_, 3>(samples, from, to, new_height, nearest_wide))
+            }
+            Pixels::Rgba16(samples) => {
+                Pixels::Rgba16(resize::<_, 4>(samples, from, to, new_height, nearest_wide))
+            }
         }
     };
-    resampled.unwrap_or_else(|| image.resize_exact(width, height, FilterType::Lanczos3))
+    Image::new(width, height, pixels).expect("resampling yields width * height pixels")
+}
+
+fn empty(pixels: &Pixels, width: u32, height: u32) -> Pixels {
+    let samples = width as usize * height as usize * pixels.channels();
+    match pixels {
+        Pixels::Luma8(_) => Pixels::Luma8(vec![0; samples]),
+        Pixels::LumaAlpha8(_) => Pixels::LumaAlpha8(vec![0; samples]),
+        Pixels::Rgb8(_) => Pixels::Rgb8(vec![0; samples]),
+        Pixels::Rgba8(_) => Pixels::Rgba8(vec![0; samples]),
+        Pixels::Luma16(_) => Pixels::Luma16(vec![0; samples]),
+        Pixels::LumaAlpha16(_) => Pixels::LumaAlpha16(vec![0; samples]),
+        Pixels::Rgb16(_) => Pixels::Rgb16(vec![0; samples]),
+        Pixels::Rgba16(_) => Pixels::Rgba16(vec![0; samples]),
+    }
 }

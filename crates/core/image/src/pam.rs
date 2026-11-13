@@ -1,8 +1,6 @@
-use image::{DynamicImage, ImageBuffer, LumaA, Rgba};
+use super::{Image, ImagePreparationError, MAX_PROMPT_IMAGE_DECODE_BYTES, Pixels};
 
-use super::{ImagePreparationError, MAX_PROMPT_IMAGE_DECODE_BYTES};
-
-pub(super) fn decode_alpha(bytes: &[u8]) -> Result<Option<DynamicImage>, ImagePreparationError> {
+pub(super) fn decode_alpha(bytes: &[u8]) -> Result<Option<Image>, ImagePreparationError> {
     if !bytes.starts_with(b"P7\n") && !bytes.starts_with(b"P7\r\n") {
         return Ok(None);
     }
@@ -83,15 +81,12 @@ pub(super) fn decode_alpha(bytes: &[u8]) -> Result<Option<DynamicImage>, ImagePr
                 .map(|value| (f32::from(*value) * factor).round() as u8)
                 .collect()
         };
-        if channels == 2 {
-            DynamicImage::ImageLumaA8(
-                ImageBuffer::<LumaA<u8>, _>::from_raw(width, height, pixels).ok_or_else(invalid)?,
-            )
+        let pixels = if channels == 2 {
+            Pixels::LumaAlpha8(pixels)
         } else {
-            DynamicImage::ImageRgba8(
-                ImageBuffer::<Rgba<u8>, _>::from_raw(width, height, pixels).ok_or_else(invalid)?,
-            )
-        }
+            Pixels::Rgba8(pixels)
+        };
+        Image::new(width, height, pixels).ok_or_else(invalid)?
     } else {
         let factor = f32::from(u16::MAX) / maxval as f32;
         let pixels = if maxval == u32::from(u16::MAX) {
@@ -109,16 +104,12 @@ pub(super) fn decode_alpha(bytes: &[u8]) -> Result<Option<DynamicImage>, ImagePr
                 .map(|value| (f32::from(u16::from_be_bytes(*value)) * factor).round() as u16)
                 .collect()
         };
-        if channels == 2 {
-            DynamicImage::ImageLumaA16(
-                ImageBuffer::<LumaA<u16>, _>::from_raw(width, height, pixels)
-                    .ok_or_else(invalid)?,
-            )
+        let pixels = if channels == 2 {
+            Pixels::LumaAlpha16(pixels)
         } else {
-            DynamicImage::ImageRgba16(
-                ImageBuffer::<Rgba<u16>, _>::from_raw(width, height, pixels).ok_or_else(invalid)?,
-            )
-        }
+            Pixels::Rgba16(pixels)
+        };
+        Image::new(width, height, pixels).ok_or_else(invalid)?
     };
     Ok(Some(dynamic))
 }

@@ -1,24 +1,29 @@
 use std::{
-    borrow::Cow,
     collections::{HashMap, VecDeque},
-    io::Cursor,
     path::Path,
     sync::{Arc, LazyLock},
 };
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use image::{
-    ColorType, DynamicImage, GenericImageView, ImageDecoder, ImageEncoder, ImageFormat,
-    ImageReader, codecs::jpeg::JpegEncoder,
-};
 use nanocode_sync::Swap;
+mod bmp;
+mod decode;
 mod history;
 mod metadata;
 mod pam;
+mod pixels;
+mod pnm;
 mod resample;
+mod thumbnail;
 
+pub use decode::{
+    DEFAULT_ALLOC_BYTES_MAX, DecodeError, Decoded, Decoder, Format, Limits, dimensions,
+    guess_format,
+};
 pub use history::{DEFAULT_INLINE_IMAGES, ImageHistory, SharedBlobStore};
+pub use pixels::{Image, Pixels, RgbLayout};
 pub use resample::lanczos3;
+pub use thumbnail::thumbnail;
 
 use nanocode_digest::Sha1;
 pub use nanocode_types_core::ImageDetail;
@@ -35,6 +40,7 @@ const REMOTE_IMAGE_URL_PLACEHOLDER: &str =
     "image content omitted because remote image URLs are not supported";
 
 const DATA_URL_PREFIX: &str = "data:";
+const JPEG_QUALITY: u8 = 85;
 const BASE64_ERROR: &str = "Base64Error";
 const PROMPT_IMAGE_PATCH_SIZE: u32 = 32;
 const MAX_PROMPT_IMAGE_INPUT_BYTES: usize = 1024 * 1024 * 1024;
@@ -649,14 +655,15 @@ fn load_for_prompt_bytes(
         return Ok(image);
     }
 
-    let guessed_format = image::guess_format(&file_bytes).map_err(|error| {
+    let guessed_format = guess_format(&file_bytes).ok_or_else(|| {
         ImagePreparationError::Processing(format!(
-            "unable to identify image at `{}`: {error}",
-            path.display()
+            "unable to identify image at `{}`: {}",
+            path.display(),
+            DecodeError::UnknownFormat
         ))
     })?;
     let preserved_format = match guessed_format {
-        ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::WebP => Some(guessed_format),
+        Format::Png | Format::Jpeg | Format::WebP => Some(guessed_format),
         _ => None,
     };
     if let Some(format) = preserved_format
@@ -668,7 +675,7 @@ fn load_for_prompt_bytes(
             mime: format_to_mime(format),
         });
     }
-    let gif_icc_profile = if guessed_format == ImageFormat::Gif {
+    let gif_icc_profile = if guessed_format == Format::Gif {
         let profile = metadata::gif_icc(&file_bytes);
         metadata::normalize_gif_header(&mut file_bytes)?;
         profile
@@ -684,17 +691,18 @@ fn load_for_prompt_bytes(
             },
         )
     } else {
-        let mut reader =
-            ImageReader::with_format(Cursor::new(file_bytes.as_slice()), guessed_format);
-        let mut decode_limits = image::Limits::default();
-        decode_limits.max_alloc = Some(MAX_PROMPT_IMAGE_DECODE_BYTES);
-        reader.limits(decode_limits);
-        let mut decoder = reader.into_decoder().map_err(|error| {
+        let decode_error = |error: DecodeError| {
             ImagePreparationError::Processing(format!(
                 "unable to decode image at `{}`: {error}",
                 path.display()
             ))
-        })?;
+        };
+        let decode_limits = Limits {
+            alloc_bytes_max: MAX_PROMPT_IMAGE_DECODE_BYTES,
+            dimension_max: None,
+        };
+        let decoder =
+            Decoder::new(&file_bytes, guessed_format, decode_limits).map_err(decode_error)?;
         let pixel_bytes = decoder.total_bytes();
         if pixel_bytes > MAX_PROMPT_IMAGE_DECODE_BYTES {
             return Err(ImagePreparationError::ImageTooLarge {
@@ -703,28 +711,24 @@ fn load_for_prompt_bytes(
                 max: usize::try_from(MAX_PROMPT_IMAGE_DECODE_BYTES).unwrap_or(usize::MAX),
             });
         }
+        let Decoded {
+            image,
+            icc_profile,
+            exif,
+        } = decoder.decode().map_err(decode_error)?;
         let metadata = ImageMetadata {
-            icc_profile: decoder
-                .icc_profile()
-                .ok()
-                .flatten()
+            icc_profile: icc_profile
                 .or(gif_icc_profile)
                 .filter(|profile| profile.get(16..20) == Some(b"RGB ")),
-            exif: decoder.exif_metadata().ok().flatten().or_else(|| {
-                (guessed_format == ImageFormat::Png)
+            exif: exif.or_else(|| {
+                (guessed_format == Format::Png)
                     .then(|| metadata::png_exif(&file_bytes))
                     .flatten()
             }),
         };
-        let dynamic = DynamicImage::from_decoder(decoder).map_err(|error| {
-            ImagePreparationError::Processing(format!(
-                "unable to decode image at `{}`: {error}",
-                path.display()
-            ))
-        })?;
-        (dynamic, metadata)
+        (image, metadata)
     };
-    let (width, height) = dynamic.dimensions();
+    let (width, height) = (dynamic.width(), dynamic.height());
     if preserved_format.is_some() {
         remember_size(key.digest, (width, height));
     }
@@ -738,16 +742,12 @@ fn load_for_prompt_bytes(
                 mime: format_to_mime(format),
             }
         } else {
-            encode_image(&dynamic, ImageFormat::Png, metadata)?
+            encode_image(&dynamic, Format::Png, metadata)?
         }
     } else {
-        let resized = dynamic.thumbnail_exact(target_width, target_height);
+        let resized = thumbnail(&dynamic, target_width, target_height);
         drop(dynamic);
-        encode_image(
-            &resized,
-            preserved_format.unwrap_or(ImageFormat::Png),
-            metadata,
-        )?
+        encode_image(&resized, preserved_format.unwrap_or(Format::Png), metadata)?
     };
 
     cache_image(key, image.clone());
@@ -825,89 +825,98 @@ fn floored_dimension(value: f64) -> u32 {
 }
 
 fn encode_image(
-    image: &DynamicImage,
-    preferred_format: ImageFormat,
+    image: &Image,
+    preferred_format: Format,
     metadata: ImageMetadata,
 ) -> Result<EncodedImage, ImagePreparationError> {
     let target_format = match preferred_format {
-        ImageFormat::Jpeg => ImageFormat::Jpeg,
-        ImageFormat::WebP => ImageFormat::WebP,
-        _ => ImageFormat::Png,
+        Format::Jpeg => Format::Jpeg,
+        Format::WebP => Format::WebP,
+        _ => Format::Png,
     };
-    let mut bytes = Vec::new();
     let ImageMetadata { icc_profile, exif } = metadata;
-    match target_format {
-        ImageFormat::Png => {
-            let (pixels, color) = rgb_or_rgba8_bytes(image);
+    let bytes = match target_format {
+        Format::Png => {
+            let (pixels, layout) = image.rgb_or_rgba8();
             metadata::encode_png(
-                &mut bytes,
                 pixels.as_ref(),
                 image.width(),
                 image.height(),
-                color,
+                layout,
                 icc_profile,
                 exif,
-            )?;
+            )
         }
-        ImageFormat::Jpeg => {
-            let mut encoder = JpegEncoder::new_with_quality(&mut bytes, 85);
-            if let Some(profile) = icc_profile {
-                encoder.set_icc_profile(profile).map_err(|error| {
-                    encode_error(target_format, &image::ImageError::Unsupported(error))
-                })?;
-            }
-            encoder
-                .encode_image(image)
-                .map_err(|error| encode_error(target_format, &error))?;
+        Format::Jpeg => {
+            let rgb = image.to_rgb8();
+            let mut bytes = nanocode_jpeg::encode(
+                &rgb,
+                image.width(),
+                image.height(),
+                nanocode_jpeg::Color::Rgb,
+                JPEG_QUALITY,
+                icc_profile.as_deref(),
+            )
+            .map_err(|error| encode_error(target_format, &error))?;
             if let Some(exif) = exif {
                 metadata::insert_jpeg_exif(&mut bytes, &exif)?;
             }
+            bytes
         }
-        ImageFormat::WebP => {
-            let (pixels, color) = rgb_or_rgba8_bytes(image);
-            let mut encoder = image_webp::WebPEncoder::new(&mut bytes);
-            if let Some(profile) = icc_profile {
-                encoder.set_icc_profile(profile);
-            }
-            if let Some(exif) = exif {
-                encoder.set_exif_metadata(exif);
-            }
-            let color = match color {
-                ColorType::Rgb8 => image_webp::ColorType::Rgb8,
-                ColorType::Rgba8 => image_webp::ColorType::Rgba8,
-                _ => unreachable!("pixels are converted to RGB or RGBA"),
-            };
-            encoder
-                .encode(pixels.as_ref(), image.width(), image.height(), color)
-                .map_err(|error| {
-                    ImagePreparationError::Processing(format!(
-                        "unable to encode image as WebP: {error}"
-                    ))
-                })?;
+        Format::WebP => {
+            let (pixels, layout) = image.rgb_or_rgba8();
+            nanocode_webp::encode(
+                pixels.as_ref(),
+                image.width(),
+                image.height(),
+                layout == RgbLayout::Rgba,
+                icc_profile.as_deref(),
+                exif.as_deref(),
+            )
+            .map_err(|error| {
+                ImagePreparationError::Processing(format!(
+                    "unable to encode image as WebP: {error}"
+                ))
+            })?
         }
         _ => unreachable!("target format is normalized above"),
-    }
+    };
     Ok(EncodedImage {
         bytes: bytes.into(),
         mime: format_to_mime(target_format),
     })
 }
 
-fn rgb_or_rgba8_bytes(image: &DynamicImage) -> (Cow<'_, [u8]>, ColorType) {
-    match image.color() {
-        color @ (ColorType::Rgb8 | ColorType::Rgba8) => (Cow::Borrowed(image.as_bytes()), color),
-        _ => (Cow::Owned(image.to_rgba8().into_raw()), ColorType::Rgba8),
-    }
+pub fn encode_png(image: &Image) -> Vec<u8> {
+    use nanocode_png::{Color, Pixels as Samples};
+    let (color, pixels) = match image.pixels() {
+        Pixels::Luma8(samples) => (Color::L8, Samples::Eight(samples)),
+        Pixels::LumaAlpha8(samples) => (Color::La8, Samples::Eight(samples)),
+        Pixels::Rgb8(samples) => (Color::Rgb8, Samples::Eight(samples)),
+        Pixels::Rgba8(samples) => (Color::Rgba8, Samples::Eight(samples)),
+        Pixels::Luma16(samples) => (Color::L16, Samples::Sixteen(samples)),
+        Pixels::LumaAlpha16(samples) => (Color::La16, Samples::Sixteen(samples)),
+        Pixels::Rgb16(samples) => (Color::Rgb16, Samples::Sixteen(samples)),
+        Pixels::Rgba16(samples) => (Color::Rgba16, Samples::Sixteen(samples)),
+    };
+    nanocode_png::encode(&nanocode_png::Encoding {
+        width: image.width(),
+        height: image.height(),
+        color,
+        pixels,
+        icc_profile: None,
+        exif: None,
+    })
 }
 
-fn encode_error(format: ImageFormat, error: &image::ImageError) -> ImagePreparationError {
+fn encode_error(format: Format, error: &dyn std::fmt::Display) -> ImagePreparationError {
     ImagePreparationError::Processing(format!("unable to encode image as {format:?}: {error}"))
 }
 
-const fn format_to_mime(format: ImageFormat) -> &'static str {
+const fn format_to_mime(format: Format) -> &'static str {
     match format {
-        ImageFormat::Jpeg => "image/jpeg",
-        ImageFormat::WebP => "image/webp",
+        Format::Jpeg => "image/jpeg",
+        Format::WebP => "image/webp",
         _ => "image/png",
     }
 }

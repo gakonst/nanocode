@@ -165,13 +165,18 @@ impl HostFileTool {
             .read_bytes(path)
             .await?
             .ok_or_else(|| format!("path: {} does not exist", path.display()))?;
-        let media_type = match image::guess_format(&bytes) {
-            Ok(image::ImageFormat::Png) => "image/png",
-            Ok(image::ImageFormat::Jpeg) => "image/jpeg",
-            Ok(image::ImageFormat::Gif) => "image/gif",
-            Ok(image::ImageFormat::WebP) => "image/webp",
-            Ok(_) => return Err("unsupported image format; use PNG, JPEG, GIF or WebP".into()),
-            Err(error) => return Err(format!("invalid image: {error}")),
+        let media_type = match nanocode_image::guess_format(&bytes) {
+            Some(nanocode_image::Format::Png) => "image/png",
+            Some(nanocode_image::Format::Jpeg) => "image/jpeg",
+            Some(nanocode_image::Format::Gif) => "image/gif",
+            Some(nanocode_image::Format::WebP) => "image/webp",
+            Some(_) => return Err("unsupported image format; use PNG, JPEG, GIF or WebP".into()),
+            None => {
+                return Err(format!(
+                    "invalid image: {}",
+                    nanocode_image::DecodeError::UnknownFormat
+                ));
+            }
         };
         Ok(
             crate::claude_output::media(vec![ToolOutputContent::InputImage {

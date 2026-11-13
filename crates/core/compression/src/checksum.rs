@@ -1,3 +1,4 @@
+use nanocode_sys::adler32::Adler32Instructions;
 use nanocode_sys::crc32::Crc32Instructions;
 
 const CRC32_POLYNOMIAL: u32 = 0xEDB8_8320;
@@ -83,7 +84,15 @@ fn crc32_block(crc: u32, block: &[u8; CRC32_TABLES]) -> u32 {
         ^ entry(15, block[15])
 }
 
+#[inline]
 pub fn adler32(start: u32, data: &[u8]) -> u32 {
+    match Adler32Instructions::detect() {
+        Some(instructions) => instructions.update(start, data),
+        None => adler32_lanes_sum(start, data),
+    }
+}
+
+fn adler32_lanes_sum(start: u32, data: &[u8]) -> u32 {
     let mut low = start & ADLER32_HALF_MASK;
     let mut high = start >> ADLER32_HALF_BITS;
     if let [byte] = data {

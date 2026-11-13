@@ -1,5 +1,6 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
+pub mod adler32;
 #[cfg(all(target_vendor = "apple", not(target_os = "macos")))]
 pub mod apple;
 #[cfg(all(target_vendor = "apple", not(target_os = "macos")))]

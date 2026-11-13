@@ -51,10 +51,6 @@ impl EvalBreaker {
         old & (1 << flag as u8) != 0
     }
 
-    fn is_empty(&self) -> bool {
-        self.0.load(Ordering::Relaxed) == 0
-    }
-
     #[cfg(all(test, feature = "threading"))]
     fn clear(&self) {
         self.0.store(0, Ordering::Release);
@@ -165,7 +161,7 @@ pub(crate) fn set_triggered() {
 /// Any eval-breaker bit pending? One relaxed load; checked per instruction.
 #[inline(always)]
 pub(crate) fn eval_breaker_pending() -> bool {
-    !EVAL_BREAKER.is_empty()
+    EVAL_BREAKER.0.load(Ordering::Relaxed) != 0
 }
 
 /// Extra eval-breaker bits used only when more than one thread can run.

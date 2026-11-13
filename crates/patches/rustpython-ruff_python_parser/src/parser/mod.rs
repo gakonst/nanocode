@@ -10,7 +10,9 @@ use ruff_python_ast::{
     ModModule, ParameterWithDefault, Stmt, StringFlags,
 };
 use ruff_python_trivia::is_python_whitespace;
-use ruff_text_size::{Ranged, TextLen, TextRange, TextSize};
+#[cfg(not(target_family = "wasm"))]
+use ruff_text_size::TextLen;
+use ruff_text_size::{Ranged, TextRange, TextSize};
 use ruff_python_trivia::fx_hash::FxHashSet;
 use unicode_normalization::UnicodeNormalization;
 
@@ -55,7 +57,9 @@ impl NameInterner {
 }
 
 const RECURSION_DEPTH_MAX: usize = 20_000;
+#[cfg(not(target_family = "wasm"))]
 const STACK_BYTES_PER_RECURSION_MAX: usize = 12 * 1024;
+#[cfg(not(target_family = "wasm"))]
 const PARSER_STACK_BYTES: usize = RECURSION_DEPTH_MAX * STACK_BYTES_PER_RECURSION_MAX;
 
 #[cfg(not(target_family = "wasm"))]

@@ -28,8 +28,7 @@ pub mod tz {
         static c_daylight: core::ffi::c_int;
         #[link_name = "timezone"]
         static c_timezone: core::ffi::c_long;
-        // Set by `build.rs` when `time.h` exposes `altzone` (CPython `HAVE_ALTZONE`).
-        #[cfg(has_altzone)]
+        #[cfg(any(target_os = "solaris", target_os = "illumos"))]
         #[link_name = "altzone"]
         static c_altzone: core::ffi::c_long;
         #[link_name = "tzname"]
@@ -53,11 +52,11 @@ pub mod tz {
     /// `timezone - 3600` (same as CPython without `HAVE_ALTZONE`).
     #[must_use]
     pub fn altzone() -> core::ffi::c_long {
-        #[cfg(has_altzone)]
+        #[cfg(any(target_os = "solaris", target_os = "illumos"))]
         {
             unsafe { c_altzone }
         }
-        #[cfg(not(has_altzone))]
+        #[cfg(not(any(target_os = "solaris", target_os = "illumos")))]
         {
             timezone() - 3600
         }

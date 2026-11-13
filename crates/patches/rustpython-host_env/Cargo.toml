@@ -15,7 +15,6 @@ rust-version = "1.95.0"
 name = "rustpython-host_env"
 version = "0.6.0"
 authors = ["RustPython Team"]
-build = "build.rs"
 autolib = false
 autobins = false
 autoexamples = false
@@ -103,9 +102,6 @@ optional = true
 [dependencies.x509-parser]
 version = "0.18"
 optional = true
-
-[build-dependencies.cc]
-version = "1"
 
 [target.'cfg(all(any(target_os = "linux", target_os = "macos", target_os = "windows", target_os = "android"), not(any(target_env = "musl", target_env = "sgx"))))'.dependencies.libffi]
 version = "5"

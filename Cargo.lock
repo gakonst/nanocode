@@ -1915,7 +1915,6 @@ dependencies = [
 name = "rustpython-host_env"
 version = "0.6.0"
 dependencies = [
- "cc",
  "junction",
  "libc",
  "memchr",

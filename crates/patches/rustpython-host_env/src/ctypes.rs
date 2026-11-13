@@ -1,3 +1,4 @@
+use crate::wide_string::WideCStr;
 use alloc::borrow::Cow;
 use core::ffi::{
     CStr, c_char, c_double, c_float, c_int, c_long, c_longlong, c_schar, c_short, c_uchar, c_uint,
@@ -36,7 +37,6 @@ use parking_lot::{Mutex, RwLock};
 use rustpython_wtf8::{Wtf8, Wtf8Buf};
 #[cfg(any(unix, windows))]
 use std::{collections::HashMap, ffi::OsStr, sync::OnceLock};
-use widestring::WideCStr;
 
 #[cfg(all(
     any(
@@ -2768,7 +2768,7 @@ pub fn open_library(name: impl AsRef<OsStr>) -> Result<usize, libloading::Error>
 /// `LoadLibraryExW` — the raw module handle `_ctypes.LoadLibrary` stores.
 #[cfg(windows)]
 pub fn load_library_ex_w(
-    name: &widestring::WideCStr,
+    name: &crate::wide_string::WideCStr,
     flags: u32,
 ) -> std::io::Result<windows_sys::Win32::Foundation::HMODULE> {
     let module = unsafe {

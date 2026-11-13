@@ -288,7 +288,7 @@ pub mod windows {
 
     // _Py_GetFileInformationByName in cpython
     pub fn get_file_information_by_name(
-        file_name: &widestring::WideCStr,
+        file_name: &crate::wide_string::WideCStr,
         file_information_class: FILE_INFO_BY_NAME_CLASS,
     ) -> std::io::Result<FILE_STAT_BASIC_INFORMATION> {
         static GET_FILE_INFORMATION_BY_NAME: OnceLock<

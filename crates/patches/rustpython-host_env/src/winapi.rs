@@ -169,7 +169,7 @@ impl Drop for AttrList {
 }
 
 pub fn create_file_w(
-    file_name: &widestring::WideCStr,
+    file_name: &crate::wide_string::WideCStr,
     desired_access: u32,
     share_mode: u32,
     creation_disposition: u32,
@@ -192,12 +192,12 @@ pub fn create_file_w(
 /// # Safety
 /// `startup_info` must point to a valid `STARTUPINFOW` (or extended).
 unsafe fn create_process_w_raw(
-    app_name: Option<&widestring::WideCStr>,
-    command_line: Option<&mut widestring::WideCStr>,
+    app_name: Option<&crate::wide_string::WideCStr>,
+    command_line: Option<&mut crate::wide_string::WideCStr>,
     inherit_handles: i32,
     creation_flags: u32,
     env: Option<&[u16]>,
-    current_dir: Option<&widestring::WideCStr>,
+    current_dir: Option<&crate::wide_string::WideCStr>,
     startup_info: *mut windows_sys::Win32::System::Threading::STARTUPINFOW,
 ) -> io::Result<PROCESS_INFORMATION> {
     let mut procinfo = core::mem::MaybeUninit::<PROCESS_INFORMATION>::uninit();
@@ -224,19 +224,19 @@ unsafe fn create_process_w_raw(
     reason = "This is the semantic host wrapper for Win32 CreateProcess parameters."
 )]
 pub fn create_process(
-    app_name: Option<&widestring::WideCStr>,
+    app_name: Option<&crate::wide_string::WideCStr>,
     command_line: Option<&mut [u16]>,
     inherit_handles: i32,
     creation_flags: u32,
     env: Option<&[u16]>,
-    current_dir: Option<&widestring::WideCStr>,
+    current_dir: Option<&crate::wide_string::WideCStr>,
     startup_info: StartupInfoData,
     handle_list: Option<Vec<usize>>,
 ) -> io::Result<ProcessInfo> {
     // Win32 `CreateProcessW` requires `lpCommandLine` to be NUL-terminated.
     // The buffer is passed `&mut [u16]` because `CreateProcessW` may modify it in place.
     let command_line = command_line
-        .map(widestring::WideCStr::from_slice_mut)
+        .map(crate::wide_string::WideCStr::from_slice_mut)
         .transpose()
         .map_err(|_| {
             io::Error::new(
@@ -429,7 +429,7 @@ pub fn create_pipe(size: u32) -> io::Result<(HANDLE, HANDLE)> {
 pub fn create_event_w(
     manual_reset: bool,
     initial_state: bool,
-    name: Option<&widestring::WideCStr>,
+    name: Option<&crate::wide_string::WideCStr>,
 ) -> io::Result<HANDLE> {
     let name_ptr = name.map_or(core::ptr::null(), |n| n.as_ptr());
     unsafe {
@@ -808,7 +808,7 @@ pub fn version_ex_triple() -> Option<(u32, u32, u32)> {
     ))
 }
 
-pub fn create_job_object_w(name: Option<&widestring::WideCStr>) -> io::Result<HANDLE> {
+pub fn create_job_object_w(name: Option<&crate::wide_string::WideCStr>) -> io::Result<HANDLE> {
     let name_ptr = name.map_or(core::ptr::null(), |n| n.as_ptr());
     unsafe { windows_sys::Win32::System::JobObjects::CreateJobObjectW(core::ptr::null(), name_ptr) }
         .check_nonnull()
@@ -853,14 +853,14 @@ pub fn get_module_file_name(module: HMODULE, buffer: &mut [u16]) -> u32 {
     }
 }
 
-pub fn get_short_path_name_w(path: &widestring::WideCStr) -> io::Result<Vec<u16>> {
+pub fn get_short_path_name_w(path: &crate::wide_string::WideCStr) -> io::Result<Vec<u16>> {
     get_path_name_impl(
         path,
         windows_sys::Win32::Storage::FileSystem::GetShortPathNameW,
     )
 }
 
-pub fn get_long_path_name_w(path: &widestring::WideCStr) -> io::Result<Vec<u16>> {
+pub fn get_long_path_name_w(path: &crate::wide_string::WideCStr) -> io::Result<Vec<u16>> {
     get_path_name_impl(
         path,
         windows_sys::Win32::Storage::FileSystem::GetLongPathNameW,
@@ -868,7 +868,7 @@ pub fn get_long_path_name_w(path: &widestring::WideCStr) -> io::Result<Vec<u16>>
 }
 
 fn get_path_name_impl(
-    path: &widestring::WideCStr,
+    path: &crate::wide_string::WideCStr,
     api_fn: unsafe extern "system" fn(*const u16, *mut u16, u32) -> u32,
 ) -> io::Result<Vec<u16>> {
     let size = unsafe { api_fn(path.as_ptr(), core::ptr::null_mut(), 0) };
@@ -888,7 +888,7 @@ fn get_path_name_impl(
 pub fn open_mutex_w(
     desired_access: u32,
     inherit_handle: bool,
-    name: &widestring::WideCStr,
+    name: &crate::wide_string::WideCStr,
 ) -> io::Result<HANDLE> {
     unsafe {
         windows_sys::Win32::System::Threading::OpenMutexW(
@@ -905,7 +905,7 @@ pub fn release_mutex(handle: HANDLE) -> i32 {
 }
 
 pub fn create_named_pipe_w(
-    name: &widestring::WideCStr,
+    name: &crate::wide_string::WideCStr,
     open_mode: u32,
     pipe_mode: u32,
     max_instances: u32,
@@ -933,7 +933,7 @@ pub fn create_file_mapping_w(
     protect: u32,
     max_size_high: u32,
     max_size_low: u32,
-    name: Option<&widestring::WideCStr>,
+    name: Option<&crate::wide_string::WideCStr>,
 ) -> io::Result<HANDLE> {
     let name_ptr = name.map_or(core::ptr::null(), |n| n.as_ptr());
     unsafe {
@@ -952,7 +952,7 @@ pub fn create_file_mapping_w(
 pub fn open_file_mapping_w(
     desired_access: u32,
     inherit_handle: bool,
-    name: &widestring::WideCStr,
+    name: &crate::wide_string::WideCStr,
 ) -> io::Result<HANDLE> {
     unsafe {
         windows_sys::Win32::System::Memory::OpenFileMappingW(
@@ -1013,8 +1013,8 @@ pub fn virtual_query_size(address: isize) -> io::Result<usize> {
 }
 
 pub fn copy_file2(
-    src: &widestring::WideCStr,
-    dst: &widestring::WideCStr,
+    src: &crate::wide_string::WideCStr,
+    dst: &crate::wide_string::WideCStr,
     flags: u32,
 ) -> io::Result<()> {
     let mut params: windows_sys::Win32::Storage::FileSystem::COPYFILE2_EXTENDED_PARAMETERS =
@@ -1139,7 +1139,7 @@ where
 }
 
 pub fn lc_map_string_ex(
-    locale: &widestring::WideCStr,
+    locale: &crate::wide_string::WideCStr,
     flags: u32,
     src: &[u16],
 ) -> io::Result<Vec<u16>> {
@@ -1201,7 +1201,7 @@ pub fn connect_named_pipe(handle: HANDLE) -> io::Result<()> {
     Ok(())
 }
 
-pub fn wait_named_pipe_w(name: &widestring::WideCStr, timeout: u32) -> io::Result<()> {
+pub fn wait_named_pipe_w(name: &crate::wide_string::WideCStr, timeout: u32) -> io::Result<()> {
     unsafe { windows_sys::Win32::System::Pipes::WaitNamedPipeW(name.as_ptr(), timeout) }
         .check_win32_bool()
 }
@@ -1350,7 +1350,7 @@ pub fn set_named_pipe_handle_state(
 
 pub fn create_mutex_w(
     initial_owner: bool,
-    name: Option<&widestring::WideCStr>,
+    name: Option<&crate::wide_string::WideCStr>,
 ) -> io::Result<HANDLE> {
     let name_ptr = name.map_or(core::ptr::null(), |n| n.as_ptr());
     unsafe {
@@ -1366,7 +1366,7 @@ pub fn create_mutex_w(
 pub fn open_event_w(
     desired_access: u32,
     inherit_handle: bool,
-    name: &widestring::WideCStr,
+    name: &crate::wide_string::WideCStr,
 ) -> io::Result<HANDLE> {
     unsafe {
         windows_sys::Win32::System::Threading::OpenEventW(
@@ -1378,7 +1378,7 @@ pub fn open_event_w(
     .check_nonnull()
 }
 
-pub fn need_current_directory_for_exe_path_w(exe_name: &widestring::WideCStr) -> bool {
+pub fn need_current_directory_for_exe_path_w(exe_name: &crate::wide_string::WideCStr) -> bool {
     unsafe {
         windows_sys::Win32::System::Environment::NeedCurrentDirectoryForExePathW(exe_name.as_ptr())
             != 0
@@ -1387,7 +1387,7 @@ pub fn need_current_directory_for_exe_path_w(exe_name: &widestring::WideCStr) ->
 
 pub type DllDirectoryCookie = *mut core::ffi::c_void;
 
-pub fn add_dll_directory(path: &widestring::WideCStr) -> io::Result<DllDirectoryCookie> {
+pub fn add_dll_directory(path: &crate::wide_string::WideCStr) -> io::Result<DllDirectoryCookie> {
     let cookie =
         unsafe { windows_sys::Win32::System::LibraryLoader::AddDllDirectory(path.as_ptr()) };
     if cookie.is_null() {
@@ -1403,7 +1403,10 @@ pub fn remove_dll_directory(cookie: DllDirectoryCookie) -> io::Result<()> {
 }
 
 /// `CreateHardLinkW(new, existing)` — `dst` is the new name, `src` the file it names.
-pub fn create_hard_link(dst: &widestring::WideCStr, src: &widestring::WideCStr) -> io::Result<()> {
+pub fn create_hard_link(
+    dst: &crate::wide_string::WideCStr,
+    src: &crate::wide_string::WideCStr,
+) -> io::Result<()> {
     unsafe {
         windows_sys::Win32::Storage::FileSystem::CreateHardLinkW(
             dst.as_ptr(),
@@ -1419,14 +1422,14 @@ pub const SW_SHOWNORMAL: i32 = 1;
 
 /// `ShellExecuteW` with a null owner window. Failure is a return of 32 or less.
 pub fn shell_execute_w(
-    file: &widestring::WideCStr,
-    operation: Option<&widestring::WideCStr>,
-    arguments: Option<&widestring::WideCStr>,
-    directory: Option<&widestring::WideCStr>,
+    file: &crate::wide_string::WideCStr,
+    operation: Option<&crate::wide_string::WideCStr>,
+    arguments: Option<&crate::wide_string::WideCStr>,
+    directory: Option<&crate::wide_string::WideCStr>,
     show_cmd: i32,
 ) -> io::Result<()> {
-    let as_ptr = |wide: Option<&widestring::WideCStr>| {
-        wide.map_or(core::ptr::null(), widestring::WideCStr::as_ptr)
+    let as_ptr = |wide: Option<&crate::wide_string::WideCStr>| {
+        wide.map_or(core::ptr::null(), crate::wide_string::WideCStr::as_ptr)
     };
     let rc = unsafe {
         windows_sys::Win32::UI::Shell::ShellExecuteW(

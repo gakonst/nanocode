@@ -196,9 +196,6 @@ optional = true
 [target.'cfg(not(any(unix, windows)))'.dependencies.nanocode-platform]
 path = "../../core/platform"
 
-[target."cfg(windows)".dependencies.widestring]
-version = "1.2.0"
-
 [lints.clippy]
 alloc_instead_of_core = "warn"
 assigning_clones = "warn"

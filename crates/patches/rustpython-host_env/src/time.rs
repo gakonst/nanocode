@@ -384,7 +384,8 @@ pub struct WindowsTimeZoneInfo {
 #[cfg(windows)]
 #[cfg(not(target_arch = "wasm32"))]
 fn decode_tz_name(name: &[u16]) -> String {
-    widestring::decode_utf16_lossy(name.iter().copied())
+    char::decode_utf16(name.iter().copied())
+        .map(|decoded| decoded.unwrap_or(char::REPLACEMENT_CHARACTER))
         .take_while(|&c| c != '\0')
         .collect()
 }
@@ -691,7 +692,7 @@ unsafe extern "C" {
 
 #[cfg(windows)]
 pub fn strftime_ascii(fmt: &str, tm: &libc::tm) -> Result<String, CheckedTmError> {
-    let fmt_wide = widestring::WideCString::from_str(fmt)
+    let fmt_wide = crate::wide_string::WideCString::from_str(fmt)
         .map_err(|_| CheckedTmError::EmbeddedNul)?
         .into_vec_with_nul();
     let mut size = 1024usize;

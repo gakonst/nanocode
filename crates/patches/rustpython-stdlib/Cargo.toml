@@ -209,9 +209,6 @@ version = "0.23.39"
 features = ["aws_lc_rs"]
 default-features = false
 
-[target."cfg(windows)".dependencies.widestring]
-version = "1.2.0"
-
 [lints.clippy]
 alloc_instead_of_core = "warn"
 assigning_clones = "warn"

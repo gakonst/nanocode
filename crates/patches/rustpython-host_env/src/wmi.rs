@@ -5,9 +5,9 @@
 #![allow(non_snake_case)]
 #![allow(unsafe_op_in_unsafe_fn)]
 
+use crate::wide_string::WideCString;
 use core::ffi::c_void;
 use core::ptr::{NonNull, null, null_mut};
-use widestring::WideCString;
 use windows_sys::Win32::Foundation::{
     CloseHandle, ERROR_BROKEN_PIPE, ERROR_INVALID_NAME, ERROR_MORE_DATA, ERROR_NOT_ENOUGH_MEMORY,
     GetLastError, HANDLE, SysAllocStringLen, SysFreeString, WAIT_OBJECT_0, WAIT_TIMEOUT,

@@ -325,7 +325,7 @@ pub fn open(path: &ffi::CStr, flags: i32, mode: i32) -> io::Result<Owned> {
 }
 
 #[cfg(windows)]
-pub fn wopen(path: &widestring::WideCStr, flags: i32, mode: i32) -> io::Result<Owned> {
+pub fn wopen(path: &crate::wide_string::WideCStr, flags: i32, mode: i32) -> io::Result<Owned> {
     cvt_fd(unsafe { suppress_iph!(c::wopen(path.as_ptr(), flags, mode)) })
 }
 

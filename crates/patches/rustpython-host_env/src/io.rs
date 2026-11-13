@@ -225,7 +225,11 @@ pub fn open_path(path: &CStr, flags: i32, mode: i32) -> io::Result<crt_fd::Owned
 }
 
 #[cfg(windows)]
-pub fn open_path(path: &widestring::WideCStr, flags: i32, mode: i32) -> io::Result<crt_fd::Owned> {
+pub fn open_path(
+    path: &crate::wide_string::WideCStr,
+    flags: i32,
+    mode: i32,
+) -> io::Result<crt_fd::Owned> {
     crt_fd::wopen(path, flags, mode)
 }
 

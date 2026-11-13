@@ -263,7 +263,10 @@ mod _tkinter {
                     Ok(PyObjectRef::from(vm.ctx.new_str(s)))
                 } else {
                     let v = unsafe { std::slice::from_raw_parts(data as *const u32, len as usize) };
-                    let s = widestring::U32String::from_vec(v).to_string_lossy();
+                    let s: String = v
+                        .iter()
+                        .map(|&unit| char::from_u32(unit).unwrap_or(char::REPLACEMENT_CHARACTER))
+                        .collect();
                     Ok(PyObjectRef::from(vm.ctx.new_str(s)))
                 };
             }

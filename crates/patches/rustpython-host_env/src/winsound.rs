@@ -28,7 +28,7 @@ pub enum PlaySoundSource<'a> {
     /// Play sound data from memory; pass with `SND_MEMORY` set in `flags`.
     Memory(&'a [u8]),
     /// Play sound by filename or system alias.
-    Name(&'a widestring::WideCStr),
+    Name(&'a crate::wide_string::WideCStr),
 }
 
 /// Returns `Ok(())` when `PlaySoundW` returns non-zero, an error otherwise.

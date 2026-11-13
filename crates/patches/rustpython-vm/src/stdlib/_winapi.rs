@@ -242,7 +242,9 @@ mod _winapi {
         let current_dir = args.current_dir.map(wcstring).transpose()?;
         let mut command_line = args
             .command_line
-            .map(|s| wcstring(s).map(widestring::WideCString::into_vec_with_nul))
+            .map(|s| {
+                wcstring(s).map(rustpython_host_env::wide_string::WideCString::into_vec_with_nul)
+            })
             .transpose()
             .map_err(|_| nul_char_error(vm))?;
 

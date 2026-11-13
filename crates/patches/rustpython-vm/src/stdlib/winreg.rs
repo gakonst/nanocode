@@ -19,9 +19,9 @@ mod winreg {
     use nanocode_numeric::Sign;
     use nanocode_numeric::ToPrimitive;
     use rustpython_common::wtf8::Wtf8Buf;
+    use rustpython_host_env::wide_string::WideCString;
     use rustpython_host_env::windows::ToWideString;
     use rustpython_host_env::winreg as host_winreg;
-    use widestring::{WideCString, WideString};
 
     /// Atomic HKEY handle type for lock-free thread-safe access
     type AtomicHKEY = AtomicCell<host_winreg::HKEY>;
@@ -629,9 +629,9 @@ mod winreg {
 
         let sub_key = WideCString::from_str(sub_key).map_err(|e| e.to_pyexception(vm))?;
         // Value can contain interior NULs.
-        let mut wide_value = WideString::with_capacity(value.len() + 1);
-        wide_value.push_str(&value);
-        wide_value.push_str("\0");
+        let mut wide_value: Vec<u16> = Vec::with_capacity(value.len() + 1);
+        wide_value.extend(value.encode_utf16());
+        wide_value.push(0);
         let res = host_winreg::set_default_value(hkey, &sub_key, typ, &wide_value);
 
         if res == 0 {

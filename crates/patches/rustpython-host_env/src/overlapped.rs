@@ -15,9 +15,9 @@ use std::{
     sync::{Mutex, OnceLock},
 };
 
+use crate::wide_string::WideCStr;
 use crate::windows::{CheckWin32Bool, CheckWin32Handle, ToWideString};
 use rustpython_wtf8::Wtf8;
-use widestring::WideCStr;
 use windows_sys::Win32::{
     Foundation::{CloseHandle, ERROR_IO_PENDING, ERROR_MORE_DATA, ERROR_SUCCESS, HANDLE},
     Networking::WinSock::{AF_INET, AF_INET6, SOCKADDR, SOCKADDR_IN, SOCKADDR_IN6},
@@ -1022,7 +1022,7 @@ pub fn bind_local(socket: isize, family: i32) -> io::Result<()> {
 }
 
 pub fn parse_address_v4_wide(
-    host_wide: &widestring::WideCStr,
+    host_wide: &crate::wide_string::WideCStr,
     port: u16,
 ) -> io::Result<(Vec<u8>, i32)> {
     use windows_sys::Win32::Networking::WinSock::{WSAGetLastError, WSAStringToAddressW};

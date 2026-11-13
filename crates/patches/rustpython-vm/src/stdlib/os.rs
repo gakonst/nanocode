@@ -569,7 +569,7 @@ pub(super) mod _os {
         }
         let env_str = format!("{name_str}={value_str}");
         // env_str is guaranteed nul-free by the checks above.
-        let wide = widestring::WideCString::from_str(&env_str)
+        let wide = rustpython_host_env::wide_string::WideCString::from_str(&env_str)
             .expect("env_str validated to contain no NUL");
         check_env_var_len(wide.len() + 1, vm)?;
 
@@ -617,7 +617,7 @@ pub(super) mod _os {
         // "name=" to unset (empty value removes the variable)
         let env_str = format!("{name_str}=");
         // env_str is guaranteed nul-free by the checks above.
-        let wide = widestring::WideCString::from_str(&env_str)
+        let wide = rustpython_host_env::wide_string::WideCString::from_str(&env_str)
             .expect("env_str validated to contain no NUL");
         check_env_var_len(wide.len() + 1, vm)?;
 

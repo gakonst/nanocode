@@ -212,8 +212,12 @@ impl OsPath {
     }
 
     #[cfg(windows)]
-    pub fn to_wide_cstring(&self, vm: &VirtualMachine) -> PyResult<widestring::WideCString> {
-        widestring::WideCString::from_os_str(&self.path).map_err(|err| err.to_pyexception(vm))
+    pub fn to_wide_cstring(
+        &self,
+        vm: &VirtualMachine,
+    ) -> PyResult<rustpython_host_env::wide_string::WideCString> {
+        rustpython_host_env::wide_string::WideCString::from_os_str(&self.path)
+            .map_err(|err| err.to_pyexception(vm))
     }
 
     pub fn filename(&self, vm: &VirtualMachine) -> PyObjectRef {

@@ -111,8 +111,8 @@ mod winsound {
         };
 
         // Check for embedded null characters
-        let wide_cstr =
-            widestring::WideCString::from_vec(path).map_err(|e| e.to_pyexception(vm))?;
+        let wide_cstr = rustpython_host_env::wide_string::WideCString::from_vec(path)
+            .map_err(|e| e.to_pyexception(vm))?;
         play_sound(PlaySoundSource::Name(&wide_cstr), flags).map_err(map_play_err(vm))
     }
 

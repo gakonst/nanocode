@@ -1677,7 +1677,6 @@ dependencies = [
  "parking_lot",
  "rustpython-wtf8",
  "schannel",
- "widestring",
  "windows-sys 0.61.2",
 ]
 
@@ -1772,7 +1771,6 @@ dependencies = [
  "rustpython-ruff_text_size",
  "rustpython-unicode",
  "rustpython-vm",
- "widestring",
 ]
 
 [[package]]
@@ -1809,7 +1807,6 @@ dependencies = [
  "rustpython-sre_engine",
  "rustpython-unicode",
  "tracing",
- "widestring",
 ]
 
 [[package]]
@@ -2079,12 +2076,6 @@ checksum = "58ec80e73fd8baf57bf0d9615554c75348bda990d6d5bbeab964dd068319fecb"
 dependencies = [
  "rustls-pki-types",
 ]
-
-[[package]]
-name = "widestring"
-version = "1.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "72069c3113ab32ab29e5584db3c6ec55d416895e60715417b5b883a357c3e471"
 
 [[package]]
 name = "windows-link"

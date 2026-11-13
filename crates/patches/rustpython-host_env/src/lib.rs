@@ -73,4 +73,6 @@ pub mod winreg;
 #[cfg(windows)]
 pub mod winsound;
 #[cfg(windows)]
+pub mod wide_string;
+#[cfg(windows)]
 pub mod wmi;

@@ -7,7 +7,7 @@
 use core::hint::cold_path;
 use std::{fs, io, path::Path};
 
-use widestring::WideCString;
+use crate::wide_string::WideCString;
 use windows_sys::Win32::{
     Foundation::FALSE,
     Storage::FileSystem::{MOVE_FILE_FLAGS, MOVEFILE_REPLACE_EXISTING, MoveFileExW},

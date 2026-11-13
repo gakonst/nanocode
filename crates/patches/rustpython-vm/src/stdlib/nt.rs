@@ -266,7 +266,10 @@ pub(crate) mod module {
     }
 
     /// _testFileTypeByName - test file type by path name
-    fn _test_file_type_by_name(path: &widestring::WideCStr, tested_type: u32) -> bool {
+    fn _test_file_type_by_name(
+        path: &rustpython_host_env::wide_string::WideCStr,
+        tested_type: u32,
+    ) -> bool {
         let tested_type = match tested_type {
             PY_IFREG => host_nt::TestType::RegularFile,
             PY_IFDIR => host_nt::TestType::Directory,
@@ -290,8 +293,10 @@ pub(crate) mod module {
                     false
                 }
             }
-            OsPathOrFd::Path(path) => widestring::WideCString::from_os_str(&path.path)
-                .is_ok_and(|path| _test_file_type_by_name(&path, tested_type)),
+            OsPathOrFd::Path(path) => {
+                rustpython_host_env::wide_string::WideCString::from_os_str(&path.path)
+                    .is_ok_and(|path| _test_file_type_by_name(&path, tested_type))
+            }
         }
     }
 
@@ -299,8 +304,10 @@ pub(crate) mod module {
     fn _test_file_exists(path_or_fd: &OsPathOrFd<'_>, follow_links: bool) -> bool {
         match path_or_fd {
             OsPathOrFd::Fd(fd) => host_nt::fd_exists(*fd),
-            OsPathOrFd::Path(path) => widestring::WideCString::from_os_str(&path.path)
-                .is_ok_and(|path| host_nt::test_file_exists_by_name(&path, follow_links)),
+            OsPathOrFd::Path(path) => {
+                rustpython_host_env::wide_string::WideCString::from_os_str(&path.path)
+                    .is_ok_and(|path| host_nt::test_file_exists_by_name(&path, follow_links))
+            }
         }
     }
 
@@ -409,7 +416,8 @@ pub(crate) mod module {
             return Err(vm.new_value_error("spawnv() arg 3 first element cannot be empty"));
         }
 
-        let argv_refs: Vec<&widestring::WideCStr> = argv.iter().map(|s| s.as_ref()).collect();
+        let argv_refs: Vec<&rustpython_host_env::wide_string::WideCStr> =
+            argv.iter().map(|s| s.as_ref()).collect();
         host_nt::spawnv(mode, &path, &argv_refs).map_err(|_| vm.new_last_errno_error())
     }
 
@@ -438,7 +446,8 @@ pub(crate) mod module {
         }
 
         // Build environment strings as "KEY=VALUE\0" wide strings
-        let mut env_strings: Vec<widestring::WideCString> = Vec::with_capacity(env.size().used);
+        let mut env_strings: Vec<rustpython_host_env::wide_string::WideCString> =
+            Vec::with_capacity(env.size().used);
         for (key, value) in env {
             let key = FsPath::try_from_path_like(key, true, vm)?;
             let value = FsPath::try_from_path_like(value, true, vm)?;
@@ -454,13 +463,14 @@ pub(crate) mod module {
 
             let env_str = format!("{key_str}={value_str}");
             env_strings.push(
-                widestring::WideCString::from_str(&env_str)
+                rustpython_host_env::wide_string::WideCString::from_str(&env_str)
                     .map_err(|err| err.to_pyexception(vm))?,
             );
         }
 
-        let argv_refs: Vec<&widestring::WideCStr> = argv.iter().map(|s| s.as_ref()).collect();
-        let envp_refs: Vec<&widestring::WideCStr> =
+        let argv_refs: Vec<&rustpython_host_env::wide_string::WideCStr> =
+            argv.iter().map(|s| s.as_ref()).collect();
+        let envp_refs: Vec<&rustpython_host_env::wide_string::WideCStr> =
             env_strings.iter().map(|s| s.as_ref()).collect();
         host_nt::spawnve(mode, &path, &argv_refs, &envp_refs).map_err(|_| vm.new_last_errno_error())
     }
@@ -481,7 +491,7 @@ pub(crate) mod module {
         let path = path.to_wide_cstring(vm)?;
         let argv = vm.extract_elements_with(argv.as_ref(), |obj| {
             let arg = PyStrRef::try_from_object(vm, obj)?;
-            widestring::WideCString::from_str(arg.expect_str())
+            rustpython_host_env::wide_string::WideCString::from_str(arg.expect_str())
                 .map_err(|err| err.to_pyexception(vm))
         })?;
 
@@ -493,7 +503,8 @@ pub(crate) mod module {
             return Err(vm.new_value_error("execv() arg 2 first element cannot be empty"));
         }
 
-        let argv_refs: Vec<&widestring::WideCStr> = argv.iter().map(|s| s.as_ref()).collect();
+        let argv_refs: Vec<&rustpython_host_env::wide_string::WideCStr> =
+            argv.iter().map(|s| s.as_ref()).collect();
         host_nt::execv(&path, &argv_refs).map_err(|_| vm.new_last_errno_error())
     }
 
@@ -514,7 +525,7 @@ pub(crate) mod module {
         let path = path.to_wide_cstring(vm)?;
         let argv = vm.extract_elements_with(argv.as_ref(), |obj| {
             let arg = PyStrRef::try_from_object(vm, obj)?;
-            widestring::WideCString::from_str(arg.expect_str())
+            rustpython_host_env::wide_string::WideCString::from_str(arg.expect_str())
                 .map_err(|err| err.to_pyexception(vm))
         })?;
 
@@ -528,7 +539,7 @@ pub(crate) mod module {
 
         let env = crate::stdlib::os::envobj_to_dict(env, vm)?;
         // Build environment strings as "KEY=VALUE\0" wide strings
-        let mut env_strings: Vec<widestring::WideCString> = Vec::new();
+        let mut env_strings: Vec<rustpython_host_env::wide_string::WideCString> = Vec::new();
         for (key, value) in env {
             let key = PyStrRef::try_from_object(vm, key)?;
             let value = PyStrRef::try_from_object(vm, value)?;
@@ -549,13 +560,14 @@ pub(crate) mod module {
             }
 
             let env_str = format!("{key_str}={value_str}");
-            // SAFETY: Interior NULs are rejected above. WideCString appends the trailing NUL.
-            let env_str = unsafe { widestring::WideCString::from_str_unchecked(&env_str) };
+            let env_str = rustpython_host_env::wide_string::WideCString::from_str(&env_str)
+                .expect("interior NULs are rejected above");
             env_strings.push(env_str);
         }
 
-        let argv_refs: Vec<&widestring::WideCStr> = argv.iter().map(|s| s.as_ref()).collect();
-        let envp_refs: Vec<&widestring::WideCStr> =
+        let argv_refs: Vec<&rustpython_host_env::wide_string::WideCStr> =
+            argv.iter().map(|s| s.as_ref()).collect();
+        let envp_refs: Vec<&rustpython_host_env::wide_string::WideCStr> =
             env_strings.iter().map(|s| s.as_ref()).collect();
         host_nt::execve(&path, &argv_refs, &envp_refs).map_err(|_| vm.new_last_errno_error())
     }
@@ -720,7 +732,7 @@ pub(crate) mod module {
 
     #[pyfunction]
     fn _path_splitroot(path: OsPath, vm: &VirtualMachine) -> PyResult<(Wtf8Buf, Wtf8Buf)> {
-        let orig: Vec<_> = widestring::WideCString::from_os_str(path.path)
+        let orig: Vec<_> = rustpython_host_env::wide_string::WideCString::from_os_str(path.path)
             .map_err(|e| e.to_pyexception(vm))?
             .into_vec();
         if orig.is_empty() {
@@ -733,7 +745,7 @@ pub(crate) mod module {
             .chain(core::iter::once(0)) // null-terminated
             .collect();
 
-        let backslashed_wide = widestring::WideCStr::from_slice(&backslashed)
+        let backslashed_wide = rustpython_host_env::wide_string::WideCStr::from_slice(&backslashed)
             .expect("backslashed is null-terminated and does not contain interior nulls");
         if let Some(len) = host_nt::path_skip_root(backslashed_wide) {
             assert!(
@@ -1064,9 +1076,14 @@ pub(crate) mod module {
 
     const DLL_DIRECTORY_COOKIE: &core::ffi::CStr = c"DLL directory cookie";
 
-    fn pystr_to_wide(s: &Py<PyStr>, vm: &VirtualMachine) -> PyResult<widestring::WideCString> {
-        widestring::WideCString::from_vec(s.as_wtf8().encode_wide().collect::<Vec<_>>())
-            .map_err(|_| vm.new_value_error("embedded null character"))
+    fn pystr_to_wide(
+        s: &Py<PyStr>,
+        vm: &VirtualMachine,
+    ) -> PyResult<rustpython_host_env::wide_string::WideCString> {
+        rustpython_host_env::wide_string::WideCString::from_vec(
+            s.as_wtf8().encode_wide().collect::<Vec<_>>(),
+        )
+        .map_err(|_| vm.new_value_error("embedded null character"))
     }
 
     #[pyfunction]

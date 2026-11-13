@@ -13,6 +13,7 @@ use std::{
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
+use crate::wide_string::WideCString;
 use crate::{
     crt_fd,
     fileutils::{
@@ -22,7 +23,6 @@ use crate::{
     windows::{CheckWin32Bool, CheckWin32Handle, CheckWin32Sentinel, HandleToOwned},
 };
 use libc::intptr_t;
-use widestring::WideCString;
 use windows_sys::{
     Win32::{
         Foundation::{
@@ -256,7 +256,7 @@ pub fn access(path: &Path, mode: u8) -> bool {
             || attr & FILE_ATTRIBUTE_DIRECTORY != 0)
 }
 
-pub fn remove(path: &widestring::WideCStr) -> io::Result<()> {
+pub fn remove(path: &crate::wide_string::WideCStr) -> io::Result<()> {
     let attrs = unsafe { GetFileAttributesW(path.as_ptr()) };
 
     let mut is_directory = false;
@@ -294,13 +294,13 @@ pub fn supports_virtual_terminal() -> bool {
 pub fn symlink(
     _src: &Path,
     _dst: &Path,
-    src_wide: &widestring::WideCStr,
-    dst_wide: &widestring::WideCStr,
+    src_wide: &crate::wide_string::WideCStr,
+    dst_wide: &crate::wide_string::WideCStr,
     target_is_directory: bool,
 ) -> io::Result<()> {
     static HAS_UNPRIVILEGED_FLAG: AtomicBool = AtomicBool::new(true);
 
-    fn check_dir(src: &widestring::WideCStr, dst: &widestring::WideCStr) -> bool {
+    fn check_dir(src: &crate::wide_string::WideCStr, dst: &crate::wide_string::WideCStr) -> bool {
         use windows_sys::Win32::Storage::FileSystem::GetFileExInfoStandard;
 
         // `_check_dirW`: two WCHAR[MAX_PATH] buffers; a join that does not
@@ -383,7 +383,7 @@ pub fn symlink(
 /// positive tick count. The arithmetic wraps: a second this filesystem cannot
 /// hold writes the bits the multiplication leaves.
 pub fn set_file_times(
-    path: &widestring::WideCStr,
+    path: &crate::wide_string::WideCStr,
     atime_sec: i64,
     atime_nsec: i64,
     mtime_sec: i64,
@@ -461,7 +461,11 @@ pub fn fchmod(fd: i32, mode: u32, write_bit: u32) -> io::Result<()> {
     win32_hchmod(handle.as_raw_handle() as HANDLE, mode, write_bit)
 }
 
-pub fn win32_lchmod(path: &widestring::WideCStr, mode: u32, write_bit: u32) -> io::Result<()> {
+pub fn win32_lchmod(
+    path: &crate::wide_string::WideCStr,
+    mode: u32,
+    write_bit: u32,
+) -> io::Result<()> {
     let attr = unsafe { GetFileAttributesW(path.as_ptr()) }.check_ne(INVALID_FILE_ATTRIBUTES)?;
     let new_attr = if mode & write_bit != 0 {
         attr & !FILE_ATTRIBUTE_READONLY
@@ -471,7 +475,11 @@ pub fn win32_lchmod(path: &widestring::WideCStr, mode: u32, write_bit: u32) -> i
     unsafe { SetFileAttributesW(path.as_ptr(), new_attr) }.check_win32_bool()
 }
 
-pub fn chmod_follow(path: &widestring::WideCStr, mode: u32, write_bit: u32) -> io::Result<()> {
+pub fn chmod_follow(
+    path: &crate::wide_string::WideCStr,
+    mode: u32,
+    write_bit: u32,
+) -> io::Result<()> {
     let handle = unsafe {
         CreateFileW(
             path.as_ptr(),
@@ -488,7 +496,7 @@ pub fn chmod_follow(path: &widestring::WideCStr, mode: u32, write_bit: u32) -> i
     win32_hchmod(handle.as_raw_handle() as HANDLE, mode, write_bit)
 }
 
-pub fn find_first_file_name(path: &widestring::WideCStr) -> io::Result<OsString> {
+pub fn find_first_file_name(path: &crate::wide_string::WideCStr) -> io::Result<OsString> {
     let mut find_data: WIN32_FIND_DATAW = unsafe { core::mem::zeroed() };
 
     let handle = unsafe { FindFirstFileW(path.as_ptr(), &mut find_data) }.check_valid()?;
@@ -643,7 +651,7 @@ impl core::fmt::Debug for Scandir {
 }
 
 /// `rposix_scandir.opendir`: join `*.*` onto the directory and open the walk.
-pub fn scandir(path: &widestring::WideCStr) -> io::Result<Scandir> {
+pub fn scandir(path: &crate::wide_string::WideCStr) -> io::Result<Scandir> {
     let dir = path.as_slice().to_vec();
     let mut mask = join_path_filename(&dir, &[b'*' as u16, b'.' as u16, b'*' as u16]);
     mask.push(0);
@@ -711,7 +719,7 @@ impl Drop for Scandir {
     }
 }
 
-pub fn path_isdevdrive(path: &widestring::WideCStr) -> io::Result<bool> {
+pub fn path_isdevdrive(path: &crate::wide_string::WideCStr) -> io::Result<bool> {
     const PERSISTENT_VOLUME_STATE_DEV_VOLUME: u32 = 0x0000_2000;
 
     #[repr(C)]
@@ -867,7 +875,7 @@ pub fn test_file_type_by_handle(handle: HANDLE, tested_type: TestType, disk_only
 }
 
 fn win32_xstat_attributes_from_dir(
-    path: &widestring::WideCStr,
+    path: &crate::wide_string::WideCStr,
 ) -> io::Result<(BY_HANDLE_FILE_INFORMATION, u32)> {
     let mut find_data: WIN32_FIND_DATAW = unsafe { core::mem::zeroed() };
 
@@ -891,7 +899,10 @@ fn win32_xstat_attributes_from_dir(
     Ok((info, reparse_tag))
 }
 
-fn win32_xstat_slow_impl(path: &widestring::WideCStr, traverse: bool) -> io::Result<StatStruct> {
+fn win32_xstat_slow_impl(
+    path: &crate::wide_string::WideCStr,
+    traverse: bool,
+) -> io::Result<StatStruct> {
     let access = FILE_READ_ATTRIBUTES;
     let mut flags = FILE_FLAG_BACKUP_SEMANTICS;
     if !traverse {
@@ -1084,7 +1095,7 @@ fn win32_xstat_slow_impl(path: &widestring::WideCStr, traverse: bool) -> io::Res
     result
 }
 
-pub fn win32_xstat(path: &widestring::WideCStr, traverse: bool) -> io::Result<StatStruct> {
+pub fn win32_xstat(path: &crate::wide_string::WideCStr, traverse: bool) -> io::Result<StatStruct> {
     match get_file_information_by_name(path, FILE_INFO_BY_NAME_CLASS::FileStatBasicByNameInfo) {
         Ok(stat_info) => {
             if (stat_info.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT == 0)
@@ -1120,7 +1131,7 @@ pub fn win32_xstat(path: &widestring::WideCStr, traverse: bool) -> io::Result<St
     Ok(result)
 }
 
-pub fn test_file_type_by_name(path: &widestring::WideCStr, tested_type: TestType) -> bool {
+pub fn test_file_type_by_name(path: &crate::wide_string::WideCStr, tested_type: TestType) -> bool {
     match get_file_information_by_name(path, FILE_INFO_BY_NAME_CLASS::FileStatBasicByNameInfo) {
         Ok(info) => {
             let disk_device = matches!(
@@ -1195,7 +1206,7 @@ pub fn test_file_type_by_name(path: &widestring::WideCStr, tested_type: TestType
     false
 }
 
-pub fn test_file_exists_by_name(path: &widestring::WideCStr, follow_links: bool) -> bool {
+pub fn test_file_exists_by_name(path: &crate::wide_string::WideCStr, follow_links: bool) -> bool {
     match get_file_information_by_name(path, FILE_INFO_BY_NAME_CLASS::FileStatBasicByNameInfo) {
         Ok(info) => {
             if (info.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0
@@ -1385,7 +1396,7 @@ pub fn pipe() -> io::Result<(i32, i32)> {
     Ok((read_fd, write_fd))
 }
 
-pub fn mkdir(path: &widestring::WideCStr, mode: i32) -> io::Result<()> {
+pub fn mkdir(path: &crate::wide_string::WideCStr, mode: i32) -> io::Result<()> {
     use windows_sys::Win32::Foundation::LocalFree;
     use windows_sys::Win32::Security::Authorization::{
         ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
@@ -1444,7 +1455,7 @@ pub fn umask(mask: i32) -> io::Result<i32> {
 
 /// Update the CRT environment via `_wputenv`.
 /// `envstring` must point to a nul-terminated wide string of the form `KEY=value`.
-pub fn wputenv(envstring: &widestring::WideCStr) -> io::Result<()> {
+pub fn wputenv(envstring: &crate::wide_string::WideCStr) -> io::Result<()> {
     let result = unsafe { crate::suppress_iph!(_wputenv(envstring.as_ptr())) };
     if result != 0 {
         Err(crate::os::errno_io_error())
@@ -1483,7 +1494,7 @@ pub fn dup2(fd: i32, fd2: i32, inheritable: bool) -> io::Result<i32> {
     Ok(fd2)
 }
 
-pub fn readlink(path: &widestring::WideCStr) -> Result<OsString, ReadlinkError> {
+pub fn readlink(path: &crate::wide_string::WideCStr) -> Result<OsString, ReadlinkError> {
     let handle = unsafe {
         CreateFileW(
             path.as_ptr(),
@@ -1581,7 +1592,7 @@ pub fn kill(pid: u32, sig: u32) -> io::Result<()> {
     }
 }
 
-pub fn getfinalpathname(path: &widestring::WideCStr) -> io::Result<OsString> {
+pub fn getfinalpathname(path: &crate::wide_string::WideCStr) -> io::Result<OsString> {
     use windows_sys::Win32::Storage::FileSystem::{GetFinalPathNameByHandleW, VOLUME_NAME_DOS};
 
     let handle = unsafe {
@@ -1620,7 +1631,7 @@ pub fn getfinalpathname(path: &widestring::WideCStr) -> io::Result<OsString> {
     result
 }
 
-pub fn getfullpathname(path: &widestring::WideCStr) -> io::Result<OsString> {
+pub fn getfullpathname(path: &crate::wide_string::WideCStr) -> io::Result<OsString> {
     let mut buffer = vec![0u16; MAX_PATH as usize];
     let mut ret = unsafe {
         windows_sys::Win32::Storage::FileSystem::GetFullPathNameW(
@@ -1644,10 +1655,10 @@ pub fn getfullpathname(path: &widestring::WideCStr) -> io::Result<OsString> {
         .check_ne(0)?;
     }
     let _ = ret;
-    Ok(widestring::WideCString::from_vec_truncate(buffer).to_os_string())
+    Ok(crate::wide_string::WideCString::from_vec_truncate(buffer).to_os_string())
 }
 
-pub fn getvolumepathname(path: &widestring::WideCStr) -> io::Result<OsString> {
+pub fn getvolumepathname(path: &crate::wide_string::WideCStr) -> io::Result<OsString> {
     let buflen = core::cmp::max(path.len(), MAX_PATH as usize);
     let mut buffer = vec![0u16; buflen];
     unsafe {
@@ -1658,10 +1669,10 @@ pub fn getvolumepathname(path: &widestring::WideCStr) -> io::Result<OsString> {
         )
     }
     .check_win32_bool()?;
-    Ok(widestring::WideCString::from_vec_truncate(buffer).to_os_string())
+    Ok(crate::wide_string::WideCString::from_vec_truncate(buffer).to_os_string())
 }
 
-pub fn getdiskusage(path: &widestring::WideCStr) -> io::Result<(u64, u64)> {
+pub fn getdiskusage(path: &crate::wide_string::WideCStr) -> io::Result<(u64, u64)> {
     let mut free_to_me = 0u64;
     let mut total = 0u64;
     let mut free = 0u64;
@@ -1674,7 +1685,7 @@ pub fn getdiskusage(path: &widestring::WideCStr) -> io::Result<(u64, u64)> {
     if err.raw_os_error() == Some(ERROR_DIRECTORY as i32)
         && let Some(parent) = Path::new(&path.to_os_string()).parent()
     {
-        let parent = widestring::WideCString::from_os_str(parent)
+        let parent = crate::wide_string::WideCString::from_os_str(parent)
             .expect("interior NULs are impossible because parent was constructed from a WideCStr");
         let ok =
             unsafe { GetDiskFreeSpaceExW(parent.as_ptr(), &mut free_to_me, &mut total, &mut free) };
@@ -1773,7 +1784,7 @@ pub fn listvolumes() -> io::Result<Vec<OsString>> {
     Ok(result)
 }
 
-pub fn listmounts(volume: &widestring::WideCStr) -> io::Result<Vec<OsString>> {
+pub fn listmounts(volume: &crate::wide_string::WideCStr) -> io::Result<Vec<OsString>> {
     let mut buflen: u32 = MAX_PATH + 1;
     let mut buffer = vec![0u16; buflen as usize];
 
@@ -1863,7 +1874,7 @@ pub fn getppid() -> u32 {
     }
 }
 
-pub fn path_skip_root(path: &widestring::WideCStr) -> Option<usize> {
+pub fn path_skip_root(path: &crate::wide_string::WideCStr) -> Option<usize> {
     let mut end: *const u16 = core::ptr::null();
     // SAFETY: `path` is a valid pointer to a nul terminated wide string without interior nuls.
     let hr = unsafe { windows_sys::Win32::UI::Shell::PathCchSkipRoot(path.as_ptr(), &mut end) };
@@ -2334,7 +2345,10 @@ pub fn write_console_utf8(handle: HANDLE, data: &[u8], max_bytes: usize) -> io::
     Ok(len)
 }
 
-pub fn open_console_path_fd(path: &widestring::WideCStr, writable: bool) -> io::Result<i32> {
+pub fn open_console_path_fd(
+    path: &crate::wide_string::WideCStr,
+    writable: bool,
+) -> io::Result<i32> {
     let access = if writable {
         GENERIC_WRITE
     } else {
@@ -2395,7 +2409,7 @@ pub fn cwait(pid: intptr_t, opt: i32) -> io::Result<(intptr_t, i32)> {
 }
 
 #[cfg(target_env = "msvc")]
-fn null_terminated_ptrs(strings: &[&widestring::WideCStr]) -> Vec<*const u16> {
+fn null_terminated_ptrs(strings: &[&crate::wide_string::WideCStr]) -> Vec<*const u16> {
     strings
         .iter()
         .map(|s| s.as_ptr())
@@ -2406,8 +2420,8 @@ fn null_terminated_ptrs(strings: &[&widestring::WideCStr]) -> Vec<*const u16> {
 #[cfg(target_env = "msvc")]
 pub fn spawnv(
     mode: i32,
-    path: &widestring::WideCStr,
-    argv: &[&widestring::WideCStr],
+    path: &crate::wide_string::WideCStr,
+    argv: &[&crate::wide_string::WideCStr],
 ) -> io::Result<intptr_t> {
     crate::os::ensure_drive_current_directory();
     let argv_ptrs = null_terminated_ptrs(argv);
@@ -2422,9 +2436,9 @@ pub fn spawnv(
 #[cfg(target_env = "msvc")]
 pub fn spawnve(
     mode: i32,
-    path: &widestring::WideCStr,
-    argv: &[&widestring::WideCStr],
-    envp: &[&widestring::WideCStr],
+    path: &crate::wide_string::WideCStr,
+    argv: &[&crate::wide_string::WideCStr],
+    envp: &[&crate::wide_string::WideCStr],
 ) -> io::Result<intptr_t> {
     crate::os::ensure_drive_current_directory();
     let argv_ptrs = null_terminated_ptrs(argv);
@@ -2445,7 +2459,10 @@ pub fn spawnve(
 }
 
 #[cfg(target_env = "msvc")]
-pub fn execv(path: &widestring::WideCStr, argv: &[&widestring::WideCStr]) -> io::Result<()> {
+pub fn execv(
+    path: &crate::wide_string::WideCStr,
+    argv: &[&crate::wide_string::WideCStr],
+) -> io::Result<()> {
     crate::os::ensure_drive_current_directory();
     let argv_ptrs = null_terminated_ptrs(argv);
     let result = unsafe { crate::suppress_iph!(_wexecv(path.as_ptr(), argv_ptrs.as_ptr())) };
@@ -2458,9 +2475,9 @@ pub fn execv(path: &widestring::WideCStr, argv: &[&widestring::WideCStr]) -> io:
 
 #[cfg(target_env = "msvc")]
 pub fn execve(
-    path: &widestring::WideCStr,
-    argv: &[&widestring::WideCStr],
-    envp: &[&widestring::WideCStr],
+    path: &crate::wide_string::WideCStr,
+    argv: &[&crate::wide_string::WideCStr],
+    envp: &[&crate::wide_string::WideCStr],
 ) -> io::Result<()> {
     crate::os::ensure_drive_current_directory();
     let argv_ptrs = null_terminated_ptrs(argv);

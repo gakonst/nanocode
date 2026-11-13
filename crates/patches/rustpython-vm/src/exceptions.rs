@@ -1321,21 +1321,21 @@ impl ToPyException for NulError {
 }
 
 #[cfg(windows)]
-impl<C> ToPyException for widestring::error::ContainsNul<C> {
+impl ToPyException for rustpython_host_env::wide_string::ContainsNul {
     fn to_pyexception(&self, vm: &VirtualMachine) -> PyBaseExceptionRef {
         nul_char_error(vm)
     }
 }
 
 #[cfg(windows)]
-impl ToPyException for widestring::error::MissingNulTerminator {
+impl ToPyException for rustpython_host_env::wide_string::MissingNulTerminator {
     fn to_pyexception(&self, vm: &VirtualMachine) -> PyBaseExceptionRef {
         nul_char_error(vm)
     }
 }
 
 #[cfg(windows)]
-impl<C> ToPyException for widestring::error::NulError<C> {
+impl ToPyException for rustpython_host_env::wide_string::NulError {
     fn to_pyexception(&self, vm: &VirtualMachine) -> PyBaseExceptionRef {
         nul_char_error(vm)
     }

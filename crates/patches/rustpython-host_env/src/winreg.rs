@@ -101,7 +101,7 @@ pub fn close_key(hkey: Registry::HKEY) -> u32 {
 }
 
 pub unsafe fn connect_registry(
-    computer_name: Option<&widestring::WideCStr>,
+    computer_name: Option<&crate::wide_string::WideCStr>,
     key: Registry::HKEY,
     out_key: *mut Registry::HKEY,
 ) -> u32 {
@@ -111,7 +111,7 @@ pub unsafe fn connect_registry(
 
 pub unsafe fn create_key(
     key: Registry::HKEY,
-    sub_key: &widestring::WideCStr,
+    sub_key: &crate::wide_string::WideCStr,
     out_key: *mut Registry::HKEY,
 ) -> u32 {
     unsafe { Registry::RegCreateKeyW(key, sub_key.as_ptr(), out_key) }
@@ -119,7 +119,7 @@ pub unsafe fn create_key(
 
 pub unsafe fn create_key_ex(
     key: Registry::HKEY,
-    sub_key: &widestring::WideCStr,
+    sub_key: &crate::wide_string::WideCStr,
     reserved: u32,
     class: *mut u16,
     options: u32,
@@ -143,20 +143,23 @@ pub unsafe fn create_key_ex(
     }
 }
 
-pub unsafe fn delete_key(key: Registry::HKEY, sub_key: &widestring::WideCStr) -> u32 {
+pub unsafe fn delete_key(key: Registry::HKEY, sub_key: &crate::wide_string::WideCStr) -> u32 {
     unsafe { Registry::RegDeleteKeyW(key, sub_key.as_ptr()) }
 }
 
 pub unsafe fn delete_key_ex(
     key: Registry::HKEY,
-    sub_key: &widestring::WideCStr,
+    sub_key: &crate::wide_string::WideCStr,
     sam: u32,
     reserved: u32,
 ) -> u32 {
     unsafe { Registry::RegDeleteKeyExW(key, sub_key.as_ptr(), sam, reserved) }
 }
 
-pub unsafe fn delete_value(key: Registry::HKEY, value_name: Option<&widestring::WideCStr>) -> u32 {
+pub unsafe fn delete_value(
+    key: Registry::HKEY,
+    value_name: Option<&crate::wide_string::WideCStr>,
+) -> u32 {
     let name_ptr = value_name.map_or(core::ptr::null(), |n| n.as_ptr());
     unsafe { Registry::RegDeleteValueW(key, name_ptr) }
 }
@@ -272,15 +275,15 @@ pub fn flush_key(key: Registry::HKEY) -> u32 {
 
 pub unsafe fn load_key(
     key: Registry::HKEY,
-    sub_key: &widestring::WideCStr,
-    file_name: &widestring::WideCStr,
+    sub_key: &crate::wide_string::WideCStr,
+    file_name: &crate::wide_string::WideCStr,
 ) -> u32 {
     unsafe { Registry::RegLoadKeyW(key, sub_key.as_ptr(), file_name.as_ptr()) }
 }
 
 pub unsafe fn open_key_ex(
     key: Registry::HKEY,
-    sub_key: &widestring::WideCStr,
+    sub_key: &crate::wide_string::WideCStr,
     options: u32,
     sam: u32,
     out_key: *mut Registry::HKEY,
@@ -290,7 +293,7 @@ pub unsafe fn open_key_ex(
 
 pub unsafe fn query_value_ex(
     key: Registry::HKEY,
-    value_name: Option<&widestring::WideCStr>,
+    value_name: Option<&crate::wide_string::WideCStr>,
     value_type: *mut u32,
     data: *mut u8,
     data_len: *mut u32,
@@ -308,13 +311,13 @@ pub unsafe fn query_value_ex(
     }
 }
 
-pub unsafe fn save_key(key: Registry::HKEY, file_name: &widestring::WideCStr) -> u32 {
+pub unsafe fn save_key(key: Registry::HKEY, file_name: &crate::wide_string::WideCStr) -> u32 {
     unsafe { Registry::RegSaveKeyW(key, file_name.as_ptr(), core::ptr::null_mut()) }
 }
 
 pub unsafe fn set_value_ex(
     key: Registry::HKEY,
-    value_name: Option<&widestring::WideCStr>,
+    value_name: Option<&crate::wide_string::WideCStr>,
     typ: u32,
     ptr: *const u8,
     len: u32,
@@ -347,7 +350,7 @@ pub enum QueryStringError {
 
 pub fn query_default_value(
     hkey: Registry::HKEY,
-    sub_key: Option<&widestring::WideCStr>,
+    sub_key: Option<&crate::wide_string::WideCStr>,
 ) -> Result<String, QueryStringError> {
     let child_key = if let Some(sub_key) = sub_key.filter(|s| !s.is_empty()) {
         let mut out_key = core::ptr::null_mut();
@@ -408,7 +411,7 @@ pub fn query_default_value(
 
 pub fn query_value_bytes(
     hkey: Registry::HKEY,
-    wide_name: &widestring::WideCStr,
+    wide_name: &crate::wide_string::WideCStr,
 ) -> Result<(Vec<u8>, u32), u32> {
     let mut buf_size: u32 = 0;
     let res = unsafe {
@@ -454,9 +457,9 @@ pub fn query_value_bytes(
 
 pub fn set_default_value(
     hkey: Registry::HKEY,
-    sub_key: &widestring::WideCStr,
+    sub_key: &crate::wide_string::WideCStr,
     typ: u32,
-    wide_value: &widestring::WideStr,
+    wide_value: &[u16],
 ) -> u32 {
     let child_key = if !sub_key.is_empty() {
         let mut out_key = core::ptr::null_mut();
@@ -499,7 +502,7 @@ pub fn set_default_value(
 }
 
 pub fn expand_environment_strings(
-    wide_input: &widestring::WideCStr,
+    wide_input: &crate::wide_string::WideCStr,
 ) -> Result<String, ExpandEnvironmentStringsError> {
     let required_size = unsafe {
         Environment::ExpandEnvironmentStringsW(wide_input.as_ptr(), core::ptr::null_mut(), 0)
@@ -522,7 +525,7 @@ pub fn expand_environment_strings(
 
 /// Same walk as [`expand_environment_strings`], keeping unpaired surrogates.
 pub fn expand_environment_strings_wide(
-    wide_input: &widestring::WideCStr,
+    wide_input: &crate::wide_string::WideCStr,
 ) -> Result<Vec<u16>, ExpandEnvironmentStringsError> {
     let required_size = unsafe {
         Environment::ExpandEnvironmentStringsW(wide_input.as_ptr(), core::ptr::null_mut(), 0)

@@ -1,6 +1,6 @@
+use crate::wide_string::{WideCStr, WideCString};
 use rustpython_wtf8::Wtf8;
 use std::{ffi::OsStr, io};
-use widestring::{WideCStr, WideCString};
 use windows_sys::{
     Win32::{
         Foundation::{
@@ -218,8 +218,8 @@ pub fn get_windows_version() -> io::Result<WindowsVersionInfo> {
 
     // szCSDVersion is at most 128 wide chars and represented as slice so overflow is impossible.
     let service_pack = WideCStr::from_slice_truncate(&version.szCSDVersion)
-        .map_err(|_| io::Error::other(NUL_ERROR))?
-        .to_string()
+        .map_err(|_| io::Error::other(NUL_ERROR))?;
+    let service_pack = String::from_utf16(service_pack.as_slice())
         .map_err(|_| io::Error::other("service pack is not ASCII"))?;
 
     let (major, minor, build) = get_kernel32_version()?;

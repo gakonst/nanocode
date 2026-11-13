@@ -425,12 +425,24 @@ async fn run(
                 .map(|instant| instant.elapsed())
                 .filter(|since| *since < window)
         {
-            let requested = poll_fn(|context| match drains.poll_recv(context) {
-                Poll::Ready(Some(drain)) => {
+            let requested = poll_fn(|context| {
+                if let Poll::Ready(Some(drain)) = drains.poll_recv(context) {
                     waiting.push(drain);
-                    Poll::Ready(())
+                    return Poll::Ready(());
                 }
-                Poll::Ready(None) | Poll::Pending => Poll::Pending,
+                loop {
+                    match sources.poll_batch(context) {
+                        Poll::Ready(Some(more)) => {
+                            let ends = more.iter().any(|event| event.delta().is_none());
+                            batch.extend(more);
+                            if ends {
+                                return Poll::Ready(());
+                            }
+                        }
+                        Poll::Ready(None) => return Poll::Ready(()),
+                        Poll::Pending => return Poll::Pending,
+                    }
+                }
             });
             select(
                 pin!(nanocode_platform::sleep(window - since)),
@@ -443,6 +455,7 @@ async fn run(
                 batch.extend(more);
             }
         }
+        let streamed = batch.iter().any(|event| event.delta().is_some());
         let batch = if sink.coalesces() {
             coalesce(batch)
         } else {
@@ -451,7 +464,7 @@ async fn run(
         if let Err(error) = sink.deliver(batch).await {
             break Err(format!("persist agent events: {error}"));
         }
-        flushed = Some(nanocode_platform::now());
+        flushed = streamed.then(nanocode_platform::now);
     };
     let _ = outcome.set(result.clone());
     drains.close();

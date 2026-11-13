@@ -1,0 +1,128 @@
+2026-11-13T16:14:03Z waiting for load 0.93 < 0.5; busiest:
+2026-11-13T16:14:43Z start smoke (load 0.47)
+{"lane":"fx","verified":"2026-11-10 (0.0.16, Linux x86_64): headless and terminal smoke pass, one stream request, no side requests; netaudit sees no outbound traffic","version":"0.0.16","headless":{"exit":0,"requests":["stream:fx:http"],"saw_last_token":true,"stdout_bytes":895}}
+{"lane":"fx","tui":{"first_frame_ms":1.931332,"first_byte_ms":0.792158,"max_token":199,"requests":["stream"],"exit_status":0,"screen_dump":"/home/ubuntu/bench/bench/cli/work/smoke-tui-fx.bin"}}
+{"lane":"pi","verified":"2026-11-10 (1.5.2, Linux x86_64): headless (-p --mode json, since plain -p prints only at the end) and terminal smoke pass, one stream request; netaudit sees no outbound traffic","version":"1.5.2","headless":{"exit":0,"requests":["stream:responses:http"],"saw_last_token":true,"stdout_bytes":73217}}
+{"lane":"pi","tui":{"first_frame_ms":138.853303,"first_byte_ms":125.595303,"max_token":199,"requests":["stream"],"exit_status":0,"screen_dump":"/home/ubuntu/bench/bench/cli/work/smoke-tui-pi.bin"}}
+{"lane":"nc","verified":"2026-11-10 (0.7.0 release, Linux x86_64): headless and terminal smoke pass, one stream request, no side requests. By default it connects to its Tempo tools (mercator.sh, gateway.tempo-dev.workers.dev MCP); that stays on (a default feature) and tools/netguard.sh blocks it","version":"nanocode 0.7.0","headless":{"exit":0,"requests":["stream:responses:http"],"saw_last_token":true,"stdout_bytes":895}}
+{"lane":"nc","tui":{"first_frame_ms":1.391741,"first_byte_ms":0.94665,"max_token":199,"requests":["stream"],"exit_status":0,"screen_dump":"/home/ubuntu/bench/bench/cli/work/smoke-tui-nc.bin"}}
+{"lane":"nclite","verified":"2026-11-11 (nc-lite 0.7.0 at nanocode 1da9dd20c, Linux x86_64): headless and terminal smoke pass, one stream request, no side requests; netaudit sees no outbound traffic. nanocode cut down to what fx ships: one harness (Codex), fx's system prompt, plain function tools (no Code Mode), any model through the AI Gateway, a JSONL home, exec, --continue, sessions and an inline terminal interface; no MCP, computer use or runners, web search and image generation off","version":"nc-lite 0.7.0","headless":{"exit":0,"requests":["stream:responses:http"],"saw_last_token":true,"stdout_bytes":896}}
+{"lane":"nclite","tui":{"first_frame_ms":0.801165,"first_byte_ms":0.674776,"max_token":199,"requests":["stream"],"exit_status":0,"screen_dump":"/home/ubuntu/bench/bench/cli/work/smoke-tui-nclite.bin"}}
+{"lane":"claude","verified":"2026-11-10 (2.1.322, Linux x86_64): headless and terminal smoke pass, one stream request, no side requests. The config is read from CLAUDE_CONFIG_DIR/.claude.json (onboarding and trust are pre-accepted there); the Auto mode notice is informational and does not block input. The marker is the prompt glyph, since the header is drawn with cursor moves. With the env below netaudit sees no outbound traffic except the official plugin marketplace clone (github.com), a default feature left on","version":"2.1.323 (Claude Code)","headless":{"exit":0,"requests":["stream:messages:http"],"saw_last_token":true,"stdout_bytes":61898}}
+{"lane":"claude","tui":{"first_frame_ms":158.540963,"first_byte_ms":85.741148,"max_token":199,"requests":["stream"],"exit_status":0,"screen_dump":"/home/ubuntu/bench/bench/cli/work/smoke-tui-claude.bin"}}
+{"lane":"codex","verified":"2026-11-10 (0.167.0, Linux x86_64): headless and terminal smoke pass, one stream request plus one side request (a thread title). No headless mode streams: exec prints the reply at the end both as text and with --json (item.completed only, no deltas); only app-server (JSON-RPC) emits deltas. The TUI needs about 150 ms between typing the prompt and Enter, or its paste-burst detection swallows the Enter (tui.py enter_gap_ms). config.toml turns off the update check, analytics and feedback; it still fetches announcement_tip.toml from raw.githubusercontent.com at TUI start (unconditional) and, headless too, syncs curated plugins from github.com, api.github.com and chatgpt.com (a default feature left on); tools/netguard.sh blocks both","version":"codex-cli 0.169.0","headless":{"exit":0,"requests":["stream:responses:http"],"saw_last_token":true,"stdout_bytes":1441}}
+{"lane":"codex","tui":{"first_frame_ms":117.470859,"first_byte_ms":4.44712,"max_token":199,"requests":["stream","side"],"exit_status":0,"screen_dump":"/home/ubuntu/bench/bench/cli/work/smoke-tui-codex.bin"}}
+{"lane":"opencode","verified":"2026-11-10 (1.19.5, Linux x86_64): headless and terminal smoke pass, one stream request plus one side request (title, via small_model). The env below stops the models.dev fetch and update check; it still resolves registry.npmjs.org at start, which tools/netguard.sh blocks. Its terminal interface takes about 3.4 s to first frame, also under netguard","version":"1.19.5","headless":{"exit":0,"requests":["side:chat:http","stream:chat:http"],"saw_last_token":true,"stdout_bytes":894}}
+{"lane":"opencode","tui":{"first_frame_ms":1310.227146,"first_byte_ms":289.690609,"max_token":199,"requests":["side","stream"],"exit_status":0,"screen_dump":"/home/ubuntu/bench/bench/cli/work/smoke-tui-opencode.bin"}}
+2026-11-13T16:15:13Z end rc=0
+2026-11-13T16:15:13Z start netaudit (load 0.35)
+node:events:497
+      throw er; // Unhandled 'error' event
+      ^
+
+Error: spawn strace ENOENT
+    at ChildProcess._handle.onexit (node:internal/child_process:285:19)
+    at onErrorNT (node:internal/child_process:483:16)
+    at process.processTicksAndRejections (node:internal/process/task_queues:89:21)
+Emitted 'error' event on ChildProcess instance at:
+    at ChildProcess._handle.onexit (node:internal/child_process:291:12)
+    at onErrorNT (node:internal/child_process:483:16)
+    at process.processTicksAndRejections (node:internal/process/task_queues:89:21) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'spawn strace',
+  path: 'strace',
+  spawnargs: [
+    '-f',
+    '-qq',
+    '-yy',
+    '-xx',
+    '-s',
+    '256',
+    '-e',
+    'signal=none',
+    '-e',
+    'trace=connect,sendto,sendmsg,sendmmsg,write,openat',
+    '-o',
+    '/home/ubuntu/bench/bench/cli/work/netaudit-fx-headless.strace',
+    '/home/ubuntu/bench/bench/cli/tools/install/fx/fx',
+    'ask',
+    '--yolo',
+    '--no-save',
+    'Stream it BENCH[run=netaudit-fx-headless-16909,mode=stream,tokens=20,rate=200]'
+  ]
+}
+
+Node.js v22.23.5
+2026-11-13T16:15:13Z end rc=1
+2026-11-13T16:15:13Z start startup (load 0.35)
+16:15:46 startup done
+2026-11-13T16:15:46Z end rc=0
+2026-11-13T16:15:46Z waiting for load 0.61 < 0.5; busiest:
+2026-11-13T16:16:01Z start coldstart (load 0.47)
+16:16:01 coldstart done
+2026-11-13T16:16:01Z end rc=0
+2026-11-13T16:16:01Z start firstframe (load 0.47)
+16:22:05 firstframe done
+2026-11-13T16:22:05Z end rc=0
+2026-11-13T16:22:05Z start coldframe (load 0.23)
+16:22:05 coldframe done
+2026-11-13T16:22:05Z end rc=0
+2026-11-13T16:22:05Z start idle (load 0.23)
+16:53:11 idle done
+2026-11-13T16:53:11Z end rc=0
+2026-11-13T16:53:11Z start keys (load 0.08)
+16:58:53 keys done
+2026-11-13T16:58:53Z end rc=0
+2026-11-13T16:58:53Z start oneshot (load 0.17)
+16:59:21 oneshot done
+2026-11-13T16:59:21Z end rc=0
+2026-11-13T16:59:21Z waiting for load 0.63 < 0.5; busiest:
+2026-11-13T16:59:36Z start tools (load 0.49)
+17:00:58 tools done
+2026-11-13T17:00:58Z end rc=0
+2026-11-13T17:00:58Z waiting for load 1.50 < 0.5; busiest:
+2026-11-13T17:01:58Z waiting for load 0.55 < 0.5; busiest:
+2026-11-13T17:02:08Z start fleet (load 0.46)
+17:09:19 fleet done
+2026-11-13T17:09:19Z end rc=0
+2026-11-13T17:09:19Z waiting for load 54.83 < 0.5; busiest:
+2026-11-13T17:10:19Z waiting for load 20.14 < 0.5; busiest:
+2026-11-13T17:11:19Z waiting for load 7.39 < 0.5; busiest:
+2026-11-13T17:12:19Z waiting for load 2.71 < 0.5; busiest:
+2026-11-13T17:13:19Z waiting for load 1.00 < 0.5; busiest:
+2026-11-13T17:14:04Z start store (load 0.47)
+17:36:55 store done
+2026-11-13T17:36:55Z end rc=0
+2026-11-13T17:36:55Z waiting for load 1.67 < 0.5; busiest:
+2026-11-13T17:37:14Z start disk (load 1.19)
+17:37:14 disk done
+2026-11-13T17:37:14Z end rc=0
+2026-11-13T17:37:14Z done
+2026-11-13T17:37:14Z start coldstart (load 1.19)
+netguard: unprivileged user namespaces unavailable, using sudo unshare --net
+17:37:17 coldstart done
+2026-11-13T17:37:17Z end rc=0
+2026-11-13T17:37:17Z done
+2026-11-13T17:37:17Z start coldframe (load 1.19)
+netguard: unprivileged user namespaces unavailable, using sudo unshare --net
+17:38:50 coldframe done
+2026-11-13T17:38:50Z end rc=0
+2026-11-13T17:38:50Z done
+2026-11-13T17:38:50Z start tuisize (load 0.78)
+netguard: unprivileged user namespaces unavailable, using sudo unshare --net
+{"h":"fx","rate":10000,"s":0,"secs":"10.6","p50":"22.76","p99":"39.01","cpu":"2605","rss":"28","missing":0}
+{"h":"pi","rate":10000,"s":0,"secs":"10.4","p50":"38.05","p99":"256.36","cpu":"4758","rss":"322","missing":0}
+{"h":"nc","rate":10000,"s":0,"secs":"14.5","p50":"3.43","p99":"8.68","cpu":"341","rss":"26","missing":0}
+{"h":"nclite","rate":10000,"s":0,"secs":"157.4","p50":"0.01","p99":"0.11","cpu":"359","rss":"12","missing":0}
+{"h":"claude","rate":10000,"s":0,"secs":"8.0","p50":"56.91","p99":"110.07","cpu":"2020","rss":"355","missing":0}
+{"h":"codex","rate":10000,"s":0,"secs":"22.0","p50":"440.59","p99":"1171.15","cpu":"8943","rss":"225","missing":0}
+{"h":"opencode","rate":10000,"s":0,"secs":"14.8","p50":"13.55","p99":"32.16","cpu":"9404","rss":"987","missing":0}
+{"h":"pi","rate":10000,"s":1,"secs":"10.3","p50":"38.86","p99":"242.66","cpu":"4754","rss":"309","missing":0}
+{"h":"nc","rate":10000,"s":1,"secs":"15.0","p50":"3.67","p99":"8.79","cpu":"340","rss":"26","missing":0}
+{"h":"nclite","rate":10000,"s":1,"secs":"154.5","p50":"0.01","p99":"0.11","cpu":"384","rss":"12","missing":0}
+{"h":"claude","rate":10000,"s":1,"secs":"7.9","p50":"56.00","p99":"106.03","cpu":"1838","rss":"345","missing":0}
+{"h":"codex","rate":10000,"s":1,"secs":"21.4","p50":"539.28","p99":"1051.17","cpu":"8738","rss":"220","missing":0}
+{"h":"opencode","rate":10000,"s":1,"secs":"14.8","p50":"13.22","p99":"32.37","cpu":"9414","rss":"975","missing":0}
+{"h":"fx","rate":10000,"s":1,"secs":"10.7","p50":"22.88","p99":"39.67","cpu":"2647","rss":"36","missing":0}
+{"h":"nc","rate":10000,"s":2,"secs":"15.9","p50":"3.67","p99":"8.79","cpu":"339","rss":"26","missing":0}

@@ -1,0 +1,19 @@
+{
+ "name": "epyc4245p6coreproces",
+ "cpu": "AMD EPYC 4245P 6-Core Processor",
+ "cores": 12,
+ "memory_gb": 46,
+ "os": "Ubuntu 24.04.5 LTS",
+ "kernel": "6.8.0-149-generic",
+ "arch": "x64",
+ "governor": "powersave",
+ "node": "v22.23.5",
+ "load_at_start": [
+  0.78,
+  1.28,
+  3.07
+ ],
+ "virtualization": null,
+ "at": "2026-11-13T17:38:50.203Z",
+ "commit": "5b313e9ec0ae228fff8f3ced7874a715ede82407"
+}

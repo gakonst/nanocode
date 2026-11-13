@@ -6,7 +6,7 @@ We ran seven terminal coding agents through the same scripted work on one AMD EP
 
 The CLIs: nc (nanocode master 4be51211a, built as releases are, with scripts/build-cli.sh: dist profile, no position-independent code, laid out by BOLT 19 from a training run), nc-lite (the same SDK cut down to what fx ships, at 7837aae16, lite profile, BOLT), Vercel fx 0.0.16, Pi 1.5.2, OpenCode 1.19.5, Claude Code 2.1.323 and Codex CLI 0.169.0. No lane talks to a real model: each points at a local fixture that streams a fixed reply, runs with its own empty HOME, inside a network namespace where only loopback works. Every number is a median with the sample count in parentheses. CPU and memory cover the CLI's whole process tree. The generated [REPORT.md](REPORT.md), the raw JSONL and [COMMANDS.md](COMMANDS.md) are next to this file.
 
-This run took 20 rounds (10 for idle, tool turns and fleets) where the 2026-11-12 run took 30, and 5 streaming samples per rate where we usually require 10, so the streaming rows are indicative. Cold-cache rows, the 240x70 and 50,000 tok/s sweeps and the session store were not rerun: the box had a two-hour lifetime.
+This run took 20 rounds (10 for idle, tool turns and fleets) where the 2026-11-12 run took 30, and 5 streaming samples per rate where we usually require 10, so the streaming rows are indicative. Cold-cache rows, the 240x70 sweep, the session store and nc's install size come from a second pass, below. The 50,000 tok/s sweep is still missing.
 
 ## Headline
 
@@ -23,7 +23,7 @@ This run took 20 rounds (10 for idle, tool turns and fleets) where the 2026-11-1
 | Token on screen at 100 tok/s, p50 ms | 0.064 (5) | 200 (5) | 7.68 (5) | 19.6 (5) | 151 (5) | 1.50 (5) | 0.017 (5) |
 | Main binary, MB | 72.7 | 12.2 | Node bundle | 204 | 346 | 281 | 18.2 |
 
-OpenCode's memory sample one second after its first frame came back empty in every round; its peak was 922 MB. nc's install-size step failed (the lane needs BENCH_INSTALL_NC for a local build); the binary size is from the build. Pi's install (159 MB) does not count the Node runtime.
+OpenCode's memory sample one second after its first frame came back empty in every round; its peak was 922 MB. nc's install size is in the second pass (69.8 MB at 223cb39ba). Pi's install (159 MB) does not count the Node runtime.
 
 ## What changed in nc since 2026-11-12
 
@@ -44,6 +44,35 @@ Three changes on the CLI track account for most of the memory: the terminal inte
 fx still draws less and holds less. Its first frame needs 3.78 ms of CPU where nc needs 5.48, its one-word reply 1.67 ms where nc needs 5.37, and it holds 8.92 MB after the first frame where nc holds 14.2. nc's binary is 72.7 MB against fx's 12.2: most of nc's resident memory is pages of its own code and read-only data, and BOLT reorders code, not data. nc-lite shows the floor for this SDK at fx's feature set: 1.04 ms to the first frame and 5.29 MB.
 
 The bundled python3 costs almost nothing until it runs: one 4 KB page of its 12,589 functions is resident after nc's first frame.
+
+## Second pass, 15:00 to 17:49 UTC: the rows left out above
+
+A second box of the same model (AMD EPYC 4245P) ran the suite again with nc at 223cb39ba, two commits after 4be51211a on this track: the trust store tells repeated root certificates apart by inode instead of resolving every path (18e5355b3, 800 `readlink` calls to 6 per start), and the paying proxy's certificate bundle is the system bundle file copied as-is rather than every root decoded and re-encoded (223cb39ba). The ring P-256 keys (f223811c7) came after this build. Raw data and REPORT.md are in [../2026-11-13-epyc4245p-b](../2026-11-13-epyc4245p-b/REPORT.md). The box's two-hour lifetime ran out during the 240x70 sweep (3 nc samples, 2 for the others) and before the 50,000 tok/s sweep, which is still missing. Cold-cache rows take 5 rounds.
+
+| | nc | fx | Pi | OpenCode | Claude Code | Codex | nc-lite |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| --version, cold page cache, ms | 7.21 (5) | 5.26 (5) | 115 (5) | 239 (5) | 33.9 (5) | 25.9 (5) | 7.38 (5) |
+| First frame, cold page cache, ms | 9.34 (5) | 9.43 (5) | 151 (5) | 1,434 (5) | 229 (5) | 240 (5) | 4.21 (5) |
+| 240x70 at 10,000 tok/s, on-screen lag p50 ms | 3.67 (3) | 22.8 (2) | 38.5 (2) | 13.4 (2) | 56.5 (2) | 490 (2) | 0.011 (2) |
+| Same, p99 ms | 8.79 (3) | 39.3 (2) | 250 (2) | 32.3 (2) | 108 (2) | 1,111 (2) | 0.111 (2) |
+| Same, CPU for the session, ms | 340 (3) | 2,626 (2) | 4,756 (2) | 9,409 (2) | 1,929 (2) | 8,840 (2) | 371 (2) |
+| Same, peak RSS MB | 25.6 (3) | 32.0 (2) | 315 (2) | 981 (2) | 350 (2) | 222 (2) | 11.6 (2) |
+| 1,000 sessions stored, KB per session | 4.34 | 12.8 | 8.15 | 16.6 | 132 | 65.7 | 4.22 |
+| CPU per saved session, ms | 3.91 | 1.60 | 196 | 1,770 | 190 | 63.9 | 10.4 |
+| Install size, MB | 69.8 | 12.2 | 159 | 409 | 346 | 403 | 18.2 |
+
+nc against the first pass (4be51211a, same CPU model, 20 rounds each):
+
+| nc | 4be51211a | 223cb39ba |
+|---|---:|---:|
+| One-word reply, ms | 5.12 (20) | 5.16 (20) |
+| CPU for that reply, ms | 5.37 (20) | 4.05 (20) |
+| First frame, ms | 1.73 (20) | 1.78 (20) |
+| CPU to the first frame, ms | 5.48 (20) | 4.17 (20) |
+| Memory 1 s after the first frame, RSS MB | 14.2 (20) | 14.5 (20) |
+| 50 shell steps in one turn, ms | 33.1 (10) | 33.0 (10) |
+
+The two commits take a quarter of nc's CPU off both the first frame and the one-word reply, but neither wall time moves: the work they remove runs on the paying proxy's own thread, beside the main thread rather than in front of it. The one-word reply is still about 0.3 ms slower than the 2026-11-12 build (4.83 ms at 7837aae16), so the trust store was not the cause. CPU to the first frame (4.17 ms) is now within 4% of fx (4.02). nc's cold --version is 2 ms behind fx's because it pages in more binary (69.8 MB against 12.2 MB). Its cold first frame ties fx.
 
 ## Method notes
 

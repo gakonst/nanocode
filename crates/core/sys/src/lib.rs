@@ -10,6 +10,7 @@ mod inline;
 mod random;
 pub mod sha1;
 pub mod sha256;
+pub mod sha512;
 mod swap;
 #[cfg(unix)]
 pub mod unix;

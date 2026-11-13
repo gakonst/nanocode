@@ -10,7 +10,7 @@ use core::ptr::{NonNull, null, null_mut};
 use widestring::WideCString;
 use windows_sys::Win32::Foundation::{
     CloseHandle, ERROR_BROKEN_PIPE, ERROR_INVALID_NAME, ERROR_MORE_DATA, ERROR_NOT_ENOUGH_MEMORY,
-    GetLastError, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT,
+    GetLastError, HANDLE, SysAllocStringLen, SysFreeString, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Storage::FileSystem::{ReadFile, WriteFile};
 use windows_sys::Win32::System::Pipes::CreatePipe;
@@ -18,8 +18,6 @@ use windows_sys::Win32::System::Threading::{
     CreateEventW, CreateThread, GetExitCodeThread, SetEvent, WaitForSingleObject,
 };
 use windows_sys::w;
-
-use crate::ctypes::wcslen;
 
 pub const BUFFER_SIZE: usize = 8192;
 
@@ -117,26 +115,40 @@ unsafe extern "system" {
     fn VariantClear(pvarg: *mut VARIANT) -> HRESULT;
 }
 
+unsafe fn wcslen(ptr: NonNull<u16>) -> usize {
+    let mut length = 0;
+    while unsafe { ptr.add(length).read() } != 0 {
+        length += 1;
+    }
+    length
+}
+
+fn sys_alloc_string_len(units: &[u16]) -> Option<*mut u16> {
+    let length = u32::try_from(units.len()).ok()?;
+    let bstr = unsafe { SysAllocStringLen(units.as_ptr(), length) };
+    (!bstr.is_null()).then_some(bstr.cast_mut())
+}
+
 fn alloc_bstr(wide: &[u16]) -> *mut u16 {
     let len = wide
         .iter()
         .position(|&unit| unit == 0)
         .unwrap_or(wide.len());
-    crate::ctypes::sys_alloc_string_len(&wide[..len]).unwrap_or(null_mut())
+    sys_alloc_string_len(&wide[..len]).unwrap_or(null_mut())
 }
 
 fn alloc_bstr_ptr(ptr: *const u16) -> *mut u16 {
     let Some(ptr) = NonNull::new(ptr.cast_mut()) else {
         return null_mut();
     };
-    let len = unsafe { crate::ctypes::wcslen(ptr) };
-    crate::ctypes::sys_alloc_string_len(unsafe { core::slice::from_raw_parts(ptr.as_ptr(), len) })
+    let len = unsafe { wcslen(ptr) };
+    sys_alloc_string_len(unsafe { core::slice::from_raw_parts(ptr.as_ptr(), len) })
         .unwrap_or(null_mut())
 }
 
 fn free_bstr(bstr: *mut u16) {
     if !bstr.is_null() {
-        crate::ctypes::sys_free_string(bstr);
+        unsafe { SysFreeString(bstr) };
     }
 }
 

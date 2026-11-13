@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     sync::{
-        Arc,
+        Arc, LazyLock, Weak,
         atomic::{AtomicU64, Ordering},
     },
 };
@@ -163,6 +163,26 @@ impl CodeModeToolset for LocalTools {
                 }))
             })
             .collect()
+    }
+
+    fn shared_nested_tool_metadata(&self) -> Arc<[Value]> {
+        static LIVE: LazyLock<Atom<Vec<Weak<[Value]>>>> = LazyLock::new(Atom::default);
+        let metadata = self.nested_tool_metadata();
+        let live = LIVE.read(|live| {
+            live.iter()
+                .filter_map(Weak::upgrade)
+                .find(|shared| **shared == *metadata)
+        });
+        if let Some(shared) = live {
+            return shared;
+        }
+        let shared: Arc<[Value]> = metadata.into();
+        let weak = Arc::downgrade(&shared);
+        LIVE.update(|live| {
+            live.retain(|entry| entry.strong_count() > 0);
+            live.push(Weak::clone(&weak));
+        });
+        shared
     }
 
     fn execute_nested<'a>(

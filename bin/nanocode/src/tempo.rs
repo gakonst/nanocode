@@ -1469,10 +1469,11 @@ impl Tempo {
     }
 
     pub(crate) async fn load(&self) {
-        futures_util::join!(
+        futures_util::future::join(
             self.listing.load(&self.payments),
-            self.catalog.load(&self.payments)
-        );
+            self.catalog.load(&self.payments),
+        )
+        .await;
     }
 
     pub(crate) fn offer(&self, subagents: &nanocode::SubagentControl) {

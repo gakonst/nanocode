@@ -25,7 +25,7 @@ test = false
 bench = false
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-futures-util = { workspace = true, features = ["async-await-macro"] }
+futures-util.workspace = true
 http.workspace = true
 http-body-util.workspace = true
 hyper = { workspace = true, features = ["http1", "server"] }

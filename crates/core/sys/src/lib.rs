@@ -10,6 +10,8 @@ mod atomic;
 pub mod base64;
 pub mod crc32;
 pub mod lz4;
+#[cfg(target_os = "macos")]
+pub mod core_foundation;
 mod inline;
 pub mod jpeg;
 #[cfg(any(unix, windows))]

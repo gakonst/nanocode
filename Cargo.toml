@@ -87,8 +87,6 @@ categories = ["api-bindings", "asynchronous", "development-tools"]
 publish = true
 
 [workspace.dependencies]
-core-foundation = "0.10.1"
-core-foundation-sys = "0.8.7"
 nanocode-backend-claude-tools = { version = "0.7.0", path = "crates/backends/claude/tools" }
 nanocode-agent-types = { version = "0.7.0", path = "crates/core/agent-types" }
 nanocode-durability-core = { version = "0.7.0", path = "crates/core/durability" }

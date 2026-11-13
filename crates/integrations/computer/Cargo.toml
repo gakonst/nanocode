@@ -22,9 +22,8 @@ serde_json.workspace = true
 tokio = { workspace = true, features = ["io-std", "io-util", "macros", "process", "rt", "sync", "time"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-core-foundation.workspace = true
-core-foundation-sys.workspace = true
 libc.workspace = true
+nanocode-sys.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 futures-util.workspace = true

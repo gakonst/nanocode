@@ -8,7 +8,7 @@ use ax::{
     AX_ACTION_UNSUPPORTED, AX_API_DISABLED, AX_ATTRIBUTE_UNSUPPORTED, AX_CANNOT_COMPLETE,
     AX_INVALID, AX_NOT_IMPLEMENTED, AX_SUCCESS, AXError, Element,
 };
-use core_foundation::base::CFType;
+use nanocode_sys::core_foundation::Object;
 use std::{
     env, fs,
     process::Command,
@@ -539,9 +539,9 @@ fn read_node(
         expanded,
         children,
     ] = element.many(&NODE);
-    let text = |value: Option<CFType>| value.as_ref().and_then(ax::text_of);
-    let label = |value: Option<CFType>| value.as_ref().and_then(ax::label_of);
-    let flag = |value: Option<CFType>| value.as_ref().and_then(ax::flag_of);
+    let text = |value: Option<Object>| value.as_ref().and_then(ax::text_of);
+    let label = |value: Option<Object>| value.as_ref().and_then(ax::label_of);
+    let flag = |value: Option<Object>| value.as_ref().and_then(ax::flag_of);
     let role = text(role).unwrap_or_else(|| "AXUnknown".into());
     let actions = element.actions();
     let actionable = INTERACTIVE.split(' ').any(|known| known == role)

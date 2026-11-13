@@ -4,7 +4,7 @@ use alloc::vec::Vec;
 use crate::boolean::{BooleanDecoder, tree};
 use crate::container::{LOSSY_DIMENSION_MASK, LOSSY_MAGIC};
 use crate::error::WebpError;
-use crate::loop_filter;
+use crate::loop_filter::{self, EdgeKind, Thresholds};
 use crate::lossy_tables::{
     AC_QUANTIZERS, DC_QUANTIZERS, INTRA_MODE_PROBABILITIES, TOKEN_PROBABILITIES,
     TOKEN_UPDATE_PROBABILITIES, TokenProbabilities,
@@ -791,45 +791,27 @@ struct Edges {
 impl Edges {
     fn filter_simple(&self, luma: &mut [u8]) {
         let stride = self.luma_width;
-        let x0 = self.column * MACROBLOCK_SIZE;
-        let y0 = self.row * MACROBLOCK_SIZE;
+        let origin = self.row * MACROBLOCK_SIZE * stride + self.column * MACROBLOCK_SIZE;
         if self.column > 0 {
-            for y in 0..MACROBLOCK_SIZE {
-                loop_filter::simple_segment(self.macroblock_edge, luma, (y0 + y) * stride + x0, 1);
-            }
+            loop_filter::simple_edge(luma, origin, stride, true, self.macroblock_edge);
         }
         if self.inner {
             for x in [4, 8, 12] {
-                for y in 0..MACROBLOCK_SIZE {
-                    loop_filter::simple_segment(
-                        self.subblock_edge,
-                        luma,
-                        (y0 + y) * stride + x0 + x,
-                        1,
-                    );
-                }
+                loop_filter::simple_edge(luma, origin + x, stride, true, self.subblock_edge);
             }
         }
         if self.row > 0 {
-            for x in 0..MACROBLOCK_SIZE {
-                loop_filter::simple_segment(
-                    self.macroblock_edge,
-                    luma,
-                    y0 * stride + x0 + x,
-                    stride,
-                );
-            }
+            loop_filter::simple_edge(luma, origin, stride, false, self.macroblock_edge);
         }
         if self.inner {
             for y in [4, 8, 12] {
-                for x in 0..MACROBLOCK_SIZE {
-                    loop_filter::simple_segment(
-                        self.subblock_edge,
-                        luma,
-                        (y0 + y) * stride + x0 + x,
-                        stride,
-                    );
-                }
+                loop_filter::simple_edge(
+                    luma,
+                    origin + y * stride,
+                    stride,
+                    false,
+                    self.subblock_edge,
+                );
             }
         }
     }
@@ -837,75 +819,74 @@ impl Edges {
     fn filter_normal(&self, frame: &mut Frame) {
         let luma_stride = self.luma_width;
         let chroma_stride = self.chroma_width;
-        let luma_x = self.column * MACROBLOCK_SIZE;
-        let luma_y = self.row * MACROBLOCK_SIZE;
-        let chroma_x = self.column * CHROMA_SIZE;
-        let chroma_y = self.row * CHROMA_SIZE;
-        let (hev, interior) = (self.hev_threshold, self.interior);
-        let macroblock = |pixels: &mut [u8], point: usize, stride: usize| {
-            loop_filter::macroblock_filter(
-                hev,
-                interior,
-                self.macroblock_edge,
-                pixels,
+        let luma_origin = self.row * MACROBLOCK_SIZE * luma_stride + self.column * MACROBLOCK_SIZE;
+        let chroma_origin = self.row * CHROMA_SIZE * chroma_stride + self.column * CHROMA_SIZE;
+        let macroblock = Thresholds {
+            edge: self.macroblock_edge,
+            interior: self.interior,
+            hev: self.hev_threshold,
+        };
+        let subblock = Thresholds {
+            edge: self.subblock_edge,
+            ..macroblock
+        };
+        let luma = |frame: &mut Frame, point: usize, vertical: bool, kind: EdgeKind| {
+            let thresholds = match kind {
+                EdgeKind::Macroblock => macroblock,
+                EdgeKind::Subblock => subblock,
+            };
+            loop_filter::luma_edge(
+                &mut frame.luma,
                 point,
-                stride,
+                luma_stride,
+                vertical,
+                kind,
+                thresholds,
             );
         };
-        let subblock = |pixels: &mut [u8], point: usize, stride: usize| {
-            loop_filter::subblock_filter(hev, interior, self.subblock_edge, pixels, point, stride);
+        let chroma = |frame: &mut Frame, point: usize, vertical: bool, kind: EdgeKind| {
+            let thresholds = match kind {
+                EdgeKind::Macroblock => macroblock,
+                EdgeKind::Subblock => subblock,
+            };
+            loop_filter::chroma_edge(
+                [&mut frame.chroma_blue, &mut frame.chroma_red],
+                point,
+                chroma_stride,
+                vertical,
+                kind,
+                thresholds,
+            );
         };
         if self.column > 0 {
-            for y in 0..MACROBLOCK_SIZE {
-                macroblock(&mut frame.luma, (luma_y + y) * luma_stride + luma_x, 1);
-            }
-            for y in 0..CHROMA_SIZE {
-                let point = (chroma_y + y) * chroma_stride + chroma_x;
-                macroblock(&mut frame.chroma_blue, point, 1);
-                macroblock(&mut frame.chroma_red, point, 1);
-            }
+            luma(frame, luma_origin, true, EdgeKind::Macroblock);
+            chroma(frame, chroma_origin, true, EdgeKind::Macroblock);
         }
         if self.inner {
             for x in [4, 8, 12] {
-                for y in 0..MACROBLOCK_SIZE {
-                    subblock(&mut frame.luma, (luma_y + y) * luma_stride + luma_x + x, 1);
-                }
+                luma(frame, luma_origin + x, true, EdgeKind::Subblock);
             }
-            for y in 0..CHROMA_SIZE {
-                let point = (chroma_y + y) * chroma_stride + chroma_x + 4;
-                subblock(&mut frame.chroma_blue, point, 1);
-                subblock(&mut frame.chroma_red, point, 1);
-            }
+            chroma(frame, chroma_origin + 4, true, EdgeKind::Subblock);
         }
         if self.row > 0 {
-            for x in 0..MACROBLOCK_SIZE {
-                macroblock(
-                    &mut frame.luma,
-                    luma_y * luma_stride + luma_x + x,
-                    luma_stride,
-                );
-            }
-            for x in 0..CHROMA_SIZE {
-                let point = chroma_y * chroma_stride + chroma_x + x;
-                macroblock(&mut frame.chroma_blue, point, chroma_stride);
-                macroblock(&mut frame.chroma_red, point, chroma_stride);
-            }
+            luma(frame, luma_origin, false, EdgeKind::Macroblock);
+            chroma(frame, chroma_origin, false, EdgeKind::Macroblock);
         }
         if self.inner {
             for y in [4, 8, 12] {
-                for x in 0..MACROBLOCK_SIZE {
-                    subblock(
-                        &mut frame.luma,
-                        (luma_y + y) * luma_stride + luma_x + x,
-                        luma_stride,
-                    );
-                }
+                luma(
+                    frame,
+                    luma_origin + y * luma_stride,
+                    false,
+                    EdgeKind::Subblock,
+                );
             }
-            for x in 0..CHROMA_SIZE {
-                let point = (chroma_y + 4) * chroma_stride + chroma_x + x;
-                subblock(&mut frame.chroma_blue, point, chroma_stride);
-                subblock(&mut frame.chroma_red, point, chroma_stride);
-            }
+            chroma(
+                frame,
+                chroma_origin + 4 * chroma_stride,
+                false,
+                EdgeKind::Subblock,
+            );
         }
     }
 }

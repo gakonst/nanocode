@@ -1521,6 +1521,9 @@ dependencies = [
 [[package]]
 name = "nanocode-webp"
 version = "0.7.0"
+dependencies = [
+ "nanocode-sys",
+]
 
 [[package]]
 name = "nanocode-websocket"

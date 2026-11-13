@@ -21,6 +21,7 @@ pub mod unix;
 pub mod certificate_store;
 #[cfg(target_os = "macos")]
 pub mod trust_settings;
+pub mod webp;
 
 pub use atomic::{AtomicArc, AtomicBox, AtomicStatic};
 pub use inline::{InlineVec, OwnedItems, new_arc_with};

@@ -10,6 +10,9 @@ description = "WebP decoding and lossless WebP encoding"
 autotests = false
 autobenches = false
 
+[dependencies]
+nanocode-sys.workspace = true
+
 [lints]
 workspace = true
 

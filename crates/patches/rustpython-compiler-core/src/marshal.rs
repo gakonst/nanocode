@@ -292,7 +292,7 @@ fn deserialize_code_inner<R: Read, Bag: ConstantBag>(
 
     // Bytecode already uses flat localsplus indices (no translation needed)
     let instructions = CodeUnits::try_from(code_bytes.as_slice())?;
-    let locations = linetable_to_locations(&linetable, first_line_raw, instructions.len());
+    let locations = Box::default();
 
     // Use original localspluskinds from marshal data (preserves CO_FAST_HIDDEN etc.)
     let localspluskinds = localspluskinds.into_boxed_slice();
@@ -1012,7 +1012,7 @@ fn deserialize_code_value_inner<R: Read, Bag: MarshalBag>(
         flags,
     )?;
     let instructions = bag.code_units_from_bytes(&code_bytes)?;
-    let locations = linetable_to_locations(&linetable, first_line_raw, instructions.len());
+    let locations = Box::default();
     let constant_bag = bag.constant_bag();
     let code = CodeObject {
         instructions,
@@ -1728,47 +1728,72 @@ pub fn linetable_to_locations(
     first_line: i32,
     num_instructions: usize,
 ) -> Box<[(SourceLocation, SourceLocation)]> {
-    let default_loc = || {
-        let line = if first_line > 0 {
-            OneIndexed::new(first_line as usize).unwrap_or(OneIndexed::MIN)
+    LineTableLocations::new(linetable, first_line, num_instructions)
+        .collect::<Vec<_>>()
+        .into_boxed_slice()
+}
+
+fn line_location(line: i32, column: u32) -> SourceLocation {
+    SourceLocation {
+        line: if line > 0 {
+            OneIndexed::new(line as usize).unwrap_or(OneIndexed::MIN)
         } else {
             OneIndexed::MIN
-        };
-        let loc = SourceLocation {
-            line,
-            character_offset: OneIndexed::from_zero_indexed(0),
-        };
-        (loc, loc)
-    };
-    if linetable.is_empty() {
-        return alloc::vec![default_loc(); num_instructions].into_boxed_slice();
+        },
+        character_offset: OneIndexed::from_zero_indexed(column as usize),
+    }
+}
+
+pub struct LineTableLocations<'a> {
+    linetable: &'a [u8],
+    pos: usize,
+    line: i32,
+    first_line: i32,
+    left: usize,
+    run: usize,
+    current: (SourceLocation, SourceLocation),
+    ended: bool,
+}
+
+impl<'a> LineTableLocations<'a> {
+    #[must_use]
+    pub fn new(linetable: &'a [u8], first_line: i32, num_instructions: usize) -> Self {
+        let start = line_location(first_line, 0);
+        Self {
+            linetable,
+            pos: 0,
+            line: first_line,
+            first_line,
+            left: num_instructions,
+            run: 0,
+            current: (start, start),
+            ended: linetable.is_empty(),
+        }
     }
 
-    let mut locations = Vec::with_capacity(num_instructions);
-    let mut pos = 0;
-    let mut line = first_line;
-
-    while pos < linetable.len() && locations.len() < num_instructions {
-        let first_byte = linetable[pos];
-        pos += 1;
+    fn entry(&mut self) -> bool {
+        let linetable = self.linetable;
+        let Some(&first_byte) = linetable.get(self.pos) else {
+            return false;
+        };
+        self.pos += 1;
         if first_byte & 0x80 == 0 {
-            break;
+            return false;
         }
         let code = (first_byte >> 3) & 0x0f;
         let length = ((first_byte & 0x07) + 1) as usize;
-        let kind = match PyCodeLocationInfoKind::from_code(code) {
-            Some(k) => k,
-            None => break,
+        let Some(kind) = PyCodeLocationInfoKind::from_code(code) else {
+            return false;
         };
-
+        let pos = &mut self.pos;
         let (line_delta, end_line_delta, col, end_col): (i32, i32, Option<u32>, Option<u32>) =
             match kind {
                 PyCodeLocationInfoKind::None => (0, 0, None, None),
                 PyCodeLocationInfoKind::Long => {
-                    let d = lt_read_signed_varint(linetable, &mut pos);
-                    let ed = lt_read_varint(linetable, &mut pos) as i32;
-                    let c = lt_read_varint(linetable, &mut pos);
-                    let ec = lt_read_varint(linetable, &mut pos);
+                    let d = lt_read_signed_varint(linetable, pos);
+                    let ed = lt_read_varint(linetable, pos) as i32;
+                    let c = lt_read_varint(linetable, pos);
+                    let ec = lt_read_varint(linetable, pos);
                     (
                         d,
                         ed,
@@ -1777,62 +1802,54 @@ pub fn linetable_to_locations(
                     )
                 }
                 PyCodeLocationInfoKind::NoColumns => {
-                    (lt_read_signed_varint(linetable, &mut pos), 0, None, None)
+                    (lt_read_signed_varint(linetable, pos), 0, None, None)
                 }
                 PyCodeLocationInfoKind::OneLine0
                 | PyCodeLocationInfoKind::OneLine1
                 | PyCodeLocationInfoKind::OneLine2 => {
-                    let c = lt_byte(linetable, &mut pos) as u32;
-                    let ec = lt_byte(linetable, &mut pos) as u32;
+                    let c = lt_byte(linetable, pos) as u32;
+                    let ec = lt_byte(linetable, pos) as u32;
                     (kind.one_line_delta().unwrap_or(0), 0, Some(c), Some(ec))
                 }
                 _ if kind.is_short() => {
-                    let d = lt_byte(linetable, &mut pos);
+                    let d = lt_byte(linetable, pos);
                     let g = kind.short_column_group().unwrap_or(0);
                     let c = ((g as u32) << 3) | ((d >> 4) as u32);
                     (0, 0, Some(c), Some(c + (d & 0x0f) as u32))
                 }
                 _ => (0, 0, None, None),
             };
-
-        line += line_delta;
-        let mk = |l: i32| {
-            if l > 0 {
-                OneIndexed::new(l as usize).unwrap_or(OneIndexed::MIN)
-            } else {
-                OneIndexed::MIN
-            }
+        self.line += line_delta;
+        self.current = if kind == PyCodeLocationInfoKind::None {
+            let loc = line_location(self.line, 0);
+            (loc, loc)
+        } else {
+            (
+                line_location(self.line, col.unwrap_or(0)),
+                line_location(self.line + end_line_delta, end_col.unwrap_or(0)),
+            )
         };
-        for _ in 0..length {
-            if locations.len() >= num_instructions {
-                break;
-            }
-            if kind == PyCodeLocationInfoKind::None {
-                let loc = SourceLocation {
-                    line: mk(line),
-                    character_offset: OneIndexed::from_zero_indexed(0),
-                };
-                locations.push((loc, loc));
-            } else {
-                locations.push((
-                    SourceLocation {
-                        line: mk(line),
-                        character_offset: OneIndexed::from_zero_indexed(col.unwrap_or(0) as usize),
-                    },
-                    SourceLocation {
-                        line: mk(line + end_line_delta),
-                        character_offset: OneIndexed::from_zero_indexed(
-                            end_col.unwrap_or(0) as usize
-                        ),
-                    },
-                ));
-            }
+        self.run = length;
+        true
+    }
+}
+
+impl Iterator for LineTableLocations<'_> {
+    type Item = (SourceLocation, SourceLocation);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.left == 0 {
+            return None;
         }
+        self.left -= 1;
+        if self.run == 0 && (self.ended || !self.entry()) {
+            self.ended = true;
+            let start = line_location(self.first_line, 0);
+            return Some((start, start));
+        }
+        self.run -= 1;
+        Some(self.current)
     }
-    while locations.len() < num_instructions {
-        locations.push(default_loc());
-    }
-    locations.into_boxed_slice()
 }
 
 fn lt_byte(data: &[u8], pos: &mut usize) -> u8 {

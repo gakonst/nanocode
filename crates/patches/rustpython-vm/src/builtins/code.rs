@@ -500,6 +500,14 @@ pub struct PyCode {
     /// this code cannot leave the slot unbalanced, so `with_frame` skips the
     /// exc_info save/restore. Computed once by scanning the instruction stream.
     pub has_exc_handling: bool,
+    locations: crate::common::lock::OnceCell<
+        Box<
+            [(
+                rustpython_compiler_core::SourceLocation,
+                rustpython_compiler_core::SourceLocation,
+            )],
+        >,
+    >,
 }
 
 impl Deref for PyCode {
@@ -592,6 +600,22 @@ impl MemberLayout for CodeFlags {
 }
 
 impl PyCode {
+    pub fn location(
+        &self,
+        idx: usize,
+    ) -> Option<(
+        rustpython_compiler_core::SourceLocation,
+        rustpython_compiler_core::SourceLocation,
+    )> {
+        if !self.code.locations.is_empty() {
+            return self.code.locations.get(idx).copied();
+        }
+        self.locations
+            .get_or_init(|| self.code.all_locations().into_owned().into_boxed_slice())
+            .get(idx)
+            .copied()
+    }
+
     pub fn new(code: CodeObject) -> Self {
         let sp = code.source_path as *const PyStrInterned as *mut PyStrInterned;
         let nlocals = i32::try_from(code.varnames.len()).unwrap_or(i32::MAX);
@@ -637,6 +661,7 @@ impl PyCode {
             monitoring_data: PyMutex::new(None),
             quickened: core::sync::atomic::AtomicBool::new(false),
             has_exc_handling,
+            locations: crate::common::lock::OnceCell::new(),
         }
     }
 

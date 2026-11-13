@@ -1287,6 +1287,24 @@ impl<N: AsRef<str>> fmt::Debug for Arguments<'_, N> {
 }
 
 impl<C: Constant> CodeObject<C> {
+    #[must_use]
+    pub fn all_locations(&self) -> alloc::borrow::Cow<'_, [(SourceLocation, SourceLocation)]> {
+        if self.locations.is_empty() {
+            alloc::borrow::Cow::Owned(self.decoded_locations().collect())
+        } else {
+            alloc::borrow::Cow::Borrowed(&self.locations)
+        }
+    }
+
+    fn decoded_locations(&self) -> crate::marshal::LineTableLocations<'_> {
+        let first_line = self.first_line_number.map_or(0, |line| line.get() as i32);
+        crate::marshal::LineTableLocations::new(
+            &self.linetable,
+            first_line,
+            self.instructions.len(),
+        )
+    }
+
     /// Get all arguments of the code object
     /// like inspect.getargs
     pub fn arg_names(&self) -> Arguments<'_, C::Name> {

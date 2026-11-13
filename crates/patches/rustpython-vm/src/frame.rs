@@ -1474,7 +1474,7 @@ impl InterpreterFrame {
         ) {
             return;
         }
-        if let Some((loc, _)) = self.code().locations.get(idx) {
+        if let Some((loc, _)) = self.code().location(idx) {
             self.prev_line.set(loc.line.get() as u32);
         }
     }
@@ -2027,7 +2027,11 @@ impl FrameObject {
                 character_offset: OneIndexed::from_zero_indexed(0),
             };
         }
-        self.iframe().code().locations[lasti - 1].0
+        self.iframe()
+            .code()
+            .location(lasti - 1)
+            .expect("lasti is inside its code")
+            .0
     }
 
     /// Get the previous InterpreterFrame in the chain.
@@ -2686,7 +2690,7 @@ pub(crate) fn trampoline_handle_exception(
     let idx = (exec.lasti() as usize).saturating_sub(1);
 
     // Add traceback entry at the call site.
-    if let Some((loc, _end_loc)) = exec.code.locations.get(idx) {
+    if let Some((loc, _end_loc)) = exec.code.location(idx) {
         let next = exception.traceback();
         let new_traceback = PyTraceback::new(next, exec.frame_object(vm), idx as i32 * 2, loc.line);
         exception.set_traceback(Some(new_traceback.into_ref(&vm.ctx)));
@@ -3602,7 +3606,7 @@ impl ExecutingFrame<'_> {
                     match vm.trace_event(crate::protocol::TraceEvent::Line, None) {
                         Ok(_) => {}
                         Err(exception) => {
-                            if let Some((loc, _end_loc)) = self.code.locations.get(idx) {
+                            if let Some((loc, _end_loc)) = self.code.location(idx) {
                                 let next = exception.traceback();
                                 let new_traceback = PyTraceback::new(
                                     next,
@@ -3715,7 +3719,7 @@ impl ExecutingFrame<'_> {
                     idx: usize,
                     vm: &VirtualMachine,
                 ) -> FrameResult {
-                    if let Some((loc, _end_loc)) = frame.code.locations.get(idx) {
+                    if let Some((loc, _end_loc)) = frame.code.location(idx) {
                         let next = exception.traceback();
                         let new_traceback = PyTraceback::new(
                             next,
@@ -3805,7 +3809,7 @@ impl ExecutingFrame<'_> {
                             // checking for duplicates. Each time an exception passes through
                             // a frame (e.g., in a loop with repeated raise statements),
                             // a new traceback entry is added.
-                            if let Some((loc, _end_loc)) = frame.code.locations.get(idx) {
+                            if let Some((loc, _end_loc)) = frame.code.location(idx) {
                                 let next = exception.traceback();
 
                                 let new_traceback = PyTraceback::new(
@@ -4016,8 +4020,7 @@ impl ExecutingFrame<'_> {
                 };
                 if let Err(err) = close_result {
                     let idx = self.lasti().saturating_sub(1) as usize;
-                    if idx < self.code.locations.len() {
-                        let (loc, _end_loc) = self.code.locations[idx];
+                    if let Some((loc, _end_loc)) = self.code.location(idx) {
                         let next = err.traceback();
                         let new_traceback =
                             PyTraceback::new(next, self.frame_object(vm), idx as i32 * 2, loc.line);
@@ -4074,8 +4077,7 @@ impl ExecutingFrame<'_> {
                         // which goes through error: → PyTraceBack_Here. We add the
                         // entry here before calling unwind_blocks.
                         let idx = self.lasti().saturating_sub(1) as usize;
-                        if idx < self.code.locations.len() {
-                            let (loc, _end_loc) = self.code.locations[idx];
+                        if let Some((loc, _end_loc)) = self.code.location(idx) {
                             let next = err.traceback();
                             let new_traceback = PyTraceback::new(
                                 next,
@@ -4123,8 +4125,7 @@ impl ExecutingFrame<'_> {
 
         // Add traceback entry for the generator frame at the yield site
         let idx = self.lasti().saturating_sub(1) as usize;
-        if idx < self.code.locations.len() {
-            let (loc, _end_loc) = self.code.locations[idx];
+        if let Some((loc, _end_loc)) = self.code.location(idx) {
             let next = exception.traceback();
             let new_traceback =
                 PyTraceback::new(next, self.frame_object(vm), idx as i32 * 2, loc.line);
@@ -8023,7 +8024,7 @@ impl ExecutingFrame<'_> {
             Instruction::InstrumentedResume | Instruction::InstrumentedLine
         ) {
             let idx = self.lasti() as usize - 1;
-            if let Some((loc, _)) = self.code.locations.get(idx) {
+            if let Some((loc, _)) = self.code.location(idx) {
                 self.prev_line.set(loc.line.get() as u32);
             }
         }
@@ -8340,7 +8341,7 @@ impl ExecutingFrame<'_> {
                 );
 
                 // Fire LINE event only if line changed
-                if let Some((loc, _)) = self.code.locations.get(idx) {
+                if let Some((loc, _)) = self.code.location(idx) {
                     let line = loc.line.get() as u32;
                     if line != self.prev_line.get() && line > 0 {
                         self.prev_line.set(line);

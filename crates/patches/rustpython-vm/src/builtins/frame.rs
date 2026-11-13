@@ -403,7 +403,7 @@ pub(crate) mod stack_analysis {
         let mut line_starts = vec![-1i32; len];
         let mut last_line: i32 = -1;
 
-        for (i, (loc, _)) in code.locations.iter().enumerate() {
+        for (i, (loc, _)) in code.all_locations().iter().enumerate() {
             if i >= len {
                 break;
             }

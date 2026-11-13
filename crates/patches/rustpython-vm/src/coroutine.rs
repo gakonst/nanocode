@@ -566,7 +566,10 @@ fn iframe_origin_lineno(frame: &InterpreterFrame) -> usize {
     if lasti == 0 {
         return frame.code().first_line_number.map_or(1, |n| n.get());
     }
-    frame.code().locations[lasti as usize - 1].0.line.get()
+    frame
+        .code()
+        .location(lasti as usize - 1)
+        .map_or(1, |(loc, _)| loc.line.get())
 }
 
 /// Capture the current call stack as a coroutine `cr_origin` tuple.

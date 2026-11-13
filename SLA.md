@@ -23,12 +23,12 @@ p50 / p99 on the mock, one Linux x86_64 host, per surface. A change that moves a
 
 | Measure | native CLI | nanocode-ts Node | nanocode-ts Workers/DO |
 |---|---|---|---|
-| Overhead, warm turn | 5 / 10 ms | 5 / 10 ms | 10 / 25 ms (est., not measured yet) |
-| Overhead, first turn of a session | 10 / 20 ms | 10 / 80 ms | cold start excluded |
-| Render | 2 / 5 ms | n/a (no renderer) | n/a |
-| Rendered tok/s | equal to the provider's up to 100k tok/s | n/a | n/a |
-| Tail | 10 / 20 ms | n/a | n/a |
-| First tool call / Code Mode cell | 20 / 40 ms | 20 / 40 ms | 40 / 80 ms (est.) |
+| Overhead, warm turn | 5 / 10 ms | 5 / 10 ms | 20 / 60 ms in local workerd |
+| Overhead, first turn of a session | 10 / 20 ms | 10 / 80 ms | 130 / 220 ms cold isolate in local workerd |
+| Render (token at provider to token drawn, or to the `?live=1` client) | 2 / 5 ms | n/a (no renderer) | 5 / 10 ms |
+| Rendered tok/s | equal to the provider's up to 100k tok/s | n/a | equal to the provider's (deltas at most once per `EVENT_COALESCE_MS`) |
+| Tail | 10 / 20 ms | n/a | 10 / 40 ms warm |
+| First tool call / Code Mode cell | 20 / 40 ms | 20 / 40 ms | 40 / 80 ms (est., not measured yet) |
 | Ready | 30 / 60 ms | n/a | n/a |
 | Resume after crash, restored | 50 / 100 ms | n/a | n/a |
 | New connection on a turn after the first | none | none | none |
@@ -60,11 +60,17 @@ Connections: before 2026-11-13 every model request opened a new connection (36 o
 
 Live, from the same host (Enter to the first token drawn, so mostly the model's own time; p50 with min and max, ChatGPT login, gpt-6-luna, a one-word reply): nanocode turn 1 1,330 ms (1,071 to 1,393, 8 sessions), turn 2 1,272 (989 to 3,885), turn 3 1,332 (870 to 2,939); Codex CLI turn 1 2,204 ms (1,739 to 2,340, 4 sessions), turn 2 1,562, turn 3 1,945. Ready 8.3 ms against Codex CLI's 452 ms. Against real endpoints that refuse the key at once (a 401 is the provider's fastest answer, so Enter to the error drawn is nanocode's path plus one round trip), 6 sessions, before and after the connection changes: Vercel AI Gateway turn 1 187.9 to 38.7 ms p50 (the DNS, TCP and TLS of a first request moved to session start), turns 2 and 3 about 37 ms both; api.anthropic.com 148 to 161 ms on every turn before and after, which is the endpoint's own time to refuse.
 
+First turn against later ones, bench/sla, 12 sessions of 3 turns, Enter to request at the mock, p50 (2026-11-13, after the first request's runtime, factory and system text are warmed at preconnect): Responses turn 1 2.33 ms against 3.34 before, turn 2 1.22; Claude turn 1 1.70 against 1.82, turn 2 1.19. The rest of the Responses gap is the first turn's own tool runtime and request factory, which can only be kept from preconnect once the tool catalog says MCP servers have not added tools since.
+
+nanocode-ts on Workers and Durable Objects, durable-cloudflare `scripts/measure-sla.mjs` in Miniflare's workerd with the provider in the Node process (hosted Hand, 5 cores, 6 fresh isolates of 3 turns, `EVENT_COALESCE_MS` 100), p50, Claude and Responses: 2,000 tokens at 1,000 tok/s, POST to the provider's request 11 to 15 ms warm and 93 to 128 ms cold (opening the runtime 43 ms and the first wasm entry 67 ms of it); provider's first token to the client's first delta 1.2 to 2.6 ms warm and 3.8 to 5.5 ms cold, where it was 96 to 101 ms on every turn before nanocode 61dfe4e8e stopped holding a reply's first delta for the coalescing window; POST to first delta 10 to 20 ms warm (111 to 118 before) and 98 to 121 ms cold (202 to 298 before); tail 1.9 to 3.2 ms on Responses (6.3 to 8.2 before) and 5.8 to 7.0 ms on Claude; the client sees 1,000 tok/s. 200 tokens unpaced: first delta 12 to 21 ms warm, 111 to 136 ms cold.
+
+Live Claude, claude-haiku-4-5 with an API key from the hosted Hand, whose egress goes through a TLS-terminating proxy (DNS 0.2 to 0.4 s and TLS 0.24 to 0.27 s per new connection), 8 sessions of 3 turns each, Enter to the first token drawn, p50 (min to max): nanocode 477 ms (446 to 568), 439, 446; the same without that day's connection changes 875, 1,071, 848; Claude Code 2.1.318 1,844 ms (1,427 to 2,416), 813, 799. Ready 45.5 ms against Claude Code's 1,132.
+
 ## Not measured yet
 
-- nanocode-ts on Workers and Durable Objects: no local workerd on the host; the deployed endpoint (`bench/targets/cloudflare.ts`) is the next lane.
-- Live Claude (no Anthropic key or Claude login on the host), DeepSeek and GLM (reachable through `NANOCODE_ANTHROPIC_BASE_URL` with their Anthropic-compatible endpoints).
-- The first turn's request build (about 4 to 7 ms against 1.5 ms on later turns: the environment context and tool catalog are built lazily on it), and request compression on a blocking thread.
+- The deployed Worker (nanocode.xyz/cloudflare) with a live provider, once a nanocode-ts release pins 61dfe4e8e; tool calls and Code Mode cells on Workers.
+- DeepSeek and GLM live (reachable through `NANOCODE_ANTHROPIC_BASE_URL` with their Anthropic-compatible endpoints), and live Claude from a host without an egress proxy.
+- Request compression on a blocking thread.
 
 ## Running it
 
@@ -79,5 +85,12 @@ node bench/sla/run.ts --lanes=nc,nc-claude,claude --mode=exec --label=exec
 node bench/sla/run.ts --lanes=nc --mode=resume --label=resume
 node bench/sla/run.ts --live --lanes=live-nc-codex,live-codex --turns=3 --settle=3000 --timeout=30000 --label=live
 node bench/sla/run.ts --live --rejected --lanes=rejected-nc-claude,rejected-nc-gateway,rejected-claude --turns=3 --settle=3000 --label=rejected
+node bench/sla/run.ts --live --rejected --key --lanes=rejected-nc-claude,rejected-claude --turns=3 --settle=3000 --timeout=30000 --label=live-claude
 node bench/sla/ts.ts --samples=10 --turns=3
+```
+
+From durable-cloudflare, after `npm run dry-run`:
+
+```
+node scripts/measure-sla.mjs --providers=claude,codex --rounds=6 --turns=3 --tokens=2000 --rate=1000 --label=paced
 ```

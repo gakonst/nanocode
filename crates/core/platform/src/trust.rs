@@ -3,6 +3,7 @@ use rustls_pki_types::{
     pem::{self, PemObject},
 };
 use std::{
+    collections::BTreeSet,
     env,
     error::Error as StdError,
     fmt, fs, io,
@@ -105,11 +106,13 @@ fn load_paths(file: Option<&Path>, directories: &[PathBuf]) -> NativeCertificate
     if file.is_none() && directories.is_empty() {
         return loaded;
     }
+    let mut read = BTreeSet::new();
     if let Some(file) = file {
+        read.insert(fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf()));
         load_pem(file, &mut loaded);
     }
     for directory in directories {
-        load_directory(directory, &mut loaded);
+        load_directory(directory, &mut read, &mut loaded);
     }
     loaded
         .certificates
@@ -118,7 +121,7 @@ fn load_paths(file: Option<&Path>, directories: &[PathBuf]) -> NativeCertificate
     loaded
 }
 
-fn load_directory(directory: &Path, loaded: &mut NativeCertificates) {
+fn load_directory(directory: &Path, read: &mut BTreeSet<PathBuf>, loaded: &mut NativeCertificates) {
     let entries = match fs::read_dir(directory) {
         Ok(entries) => entries,
         Err(error) => {
@@ -135,7 +138,15 @@ fn load_directory(directory: &Path, loaded: &mut NativeCertificates) {
             }
         };
         let path = entry.path();
-        let metadata = match fs::metadata(&path) {
+        let target = match fs::canonicalize(&path) {
+            Ok(target) => target,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                loaded.io_error(error, &path, "failed to open file");
+                continue;
+            }
+        };
+        let metadata = match fs::metadata(&target) {
             Ok(metadata) => metadata,
             Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
             Err(error) => {
@@ -143,7 +154,7 @@ fn load_directory(directory: &Path, loaded: &mut NativeCertificates) {
                 continue;
             }
         };
-        if metadata.is_file() {
+        if metadata.is_file() && read.insert(target) {
             load_pem(&path, loaded);
         }
     }

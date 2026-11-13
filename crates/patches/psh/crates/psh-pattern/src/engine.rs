@@ -69,8 +69,9 @@ impl Engine {
                 size_limit,
             },
         )?;
-        let prefilter =
-            literal::prefix_prefilter(hir).or_else(|| literal::first_byte_prefilter(hir));
+        let prefilter = literal::prefix_prefilter(hir)
+            .or_else(|| literal::first_byte_prefilter(hir))
+            .or_else(|| literal::line_start_prefilter(hir, config.line_terminator));
         let forward = Dfa::new(
             &nfa,
             Kind::LeftmostFirst,

@@ -5,7 +5,7 @@ use alloc::vec::Vec;
 use memchr::memmem;
 use nanocode_sys::teddy::{TEDDY_BUCKETS, TEDDY_PREFIX_BYTES_MAX, Teddy};
 
-use crate::hir::{Class, Hir, HirKind};
+use crate::hir::{Class, Hir, HirKind, Look};
 
 const LIMIT_CLASS: usize = 10;
 const LIMIT_REPEAT: u32 = 10;
@@ -335,6 +335,7 @@ pub enum Prefilter {
     Packed(Packed),
     Teddy(Box<TeddySet>),
     NonAscii,
+    LineStart(u8),
 }
 
 #[derive(Clone, Debug)]
@@ -500,6 +501,13 @@ pub fn first_byte_prefilter(hir: &Hir) -> Option<Prefilter> {
         return None;
     }
     Some(Prefilter::NonAscii)
+}
+
+pub fn line_start_prefilter(hir: &Hir, line_terminator: u8) -> Option<Prefilter> {
+    hir.properties()
+        .look_set_prefix
+        .contains(Look::StartLf)
+        .then_some(Prefilter::LineStart(line_terminator))
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -789,6 +797,12 @@ impl Prefilter {
                 .find(&haystack[..end], at)
                 .map(|(candidate, _)| candidate),
             Prefilter::NonAscii => find_non_ascii(&haystack[at..end]).map(|found| at + found),
+            Prefilter::LineStart(terminator) => {
+                if at == 0 || haystack[at - 1] == *terminator {
+                    return Some(at);
+                }
+                memchr::memchr(*terminator, &haystack[at..end]).map(|found| at + found + 1)
+            }
         }
     }
 }

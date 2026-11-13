@@ -46,11 +46,12 @@ fn horizontal(input: &[i16], output: &mut [i16]) -> Result<(), JpegError> {
     }
     output[0] = input[0];
     output[1] = (input[0] * 3 + input[1] + 2) >> 2;
-    for (pair, window) in output[2..]
+    let done = nanocode_sys::jpeg::upsample_horizontal(input, output);
+    for (pair, window) in output[2 + 2 * done..]
         .as_chunks_mut::<2>()
         .0
         .iter_mut()
-        .zip(input.windows(3))
+        .zip(input[done..].windows(3))
     {
         let sample = 3 * window[1] + 2;
         pair[0] = (sample + window[0]) >> 2;
@@ -67,11 +68,20 @@ fn vertical(input: &[i16], near: &[i16], far: &[i16], output: &mut [i16]) -> Res
     if input.len() * 2 != output.len() || near.len() != input.len() || far.len() != input.len() {
         return Err(JpegError::LayoutOutOfBounds);
     }
+    let done = nanocode_sys::jpeg::upsample_vertical(input, near, far, output);
     let (top, bottom) = output.split_at_mut(input.len());
-    for ((sample, neighbour), target) in input.iter().zip(near).zip(top) {
+    for ((sample, neighbour), target) in input[done..]
+        .iter()
+        .zip(&near[done..])
+        .zip(&mut top[done..])
+    {
         *target = (3 * sample + 2 + neighbour) >> 2;
     }
-    for ((sample, neighbour), target) in input.iter().zip(far).zip(bottom) {
+    for ((sample, neighbour), target) in input[done..]
+        .iter()
+        .zip(&far[done..])
+        .zip(&mut bottom[done..])
+    {
         *target = (3 * sample + 2 + neighbour) >> 2;
     }
     Ok(())

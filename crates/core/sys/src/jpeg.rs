@@ -13,17 +13,17 @@ use core::arch::aarch64::{
 #[cfg(target_arch = "x86_64")]
 use core::arch::x86_64::{
     __m128i, __m256i, _CMP_GE_OQ, _CMP_LE_OQ, _mm_loadu_si128, _mm_or_si128, _mm_packus_epi16,
-    _mm_set_epi64x, _mm_setzero_si128, _mm_shuffle_epi8, _mm_storeu_si128, _mm256_add_epi32,
-    _mm256_castps_si256, _mm256_castsi256_si128, _mm256_cmp_ps, _mm256_cvtepi32_ps,
-    _mm256_cvtepu8_epi32, _mm256_cvttps_epi32, _mm256_div_ps, _mm256_extract_epi64,
-    _mm256_extracti128_si256, _mm256_loadu_si256, _mm256_madd_epi16, _mm256_max_epi16,
-    _mm256_min_epi16, _mm256_mullo_epi32, _mm256_or_si256, _mm256_packs_epi32, _mm256_packus_epi16,
-    _mm256_packus_epi32, _mm256_permute2x128_si256, _mm256_permute4x64_epi64,
-    _mm256_permutevar8x32_epi32, _mm256_set1_epi16, _mm256_set1_epi32, _mm256_set1_ps,
-    _mm256_setr_epi32, _mm256_setzero_si256, _mm256_slli_epi32, _mm256_srai_epi32,
-    _mm256_srli_epi32, _mm256_storeu_si256, _mm256_sub_epi16, _mm256_sub_epi32, _mm256_sub_ps,
-    _mm256_testz_si256, _mm256_unpackhi_epi16, _mm256_unpackhi_epi32, _mm256_unpackhi_epi64,
-    _mm256_unpacklo_epi16, _mm256_unpacklo_epi32, _mm256_unpacklo_epi64,
+    _mm_set_epi64x, _mm_setzero_si128, _mm_shuffle_epi8, _mm_storeu_si128, _mm256_add_epi16,
+    _mm256_add_epi32, _mm256_castps_si256, _mm256_castsi256_si128, _mm256_cmp_ps,
+    _mm256_cvtepi32_ps, _mm256_cvtepu8_epi32, _mm256_cvttps_epi32, _mm256_div_ps,
+    _mm256_extract_epi64, _mm256_extracti128_si256, _mm256_loadu_si256, _mm256_madd_epi16,
+    _mm256_max_epi16, _mm256_min_epi16, _mm256_mullo_epi16, _mm256_mullo_epi32, _mm256_or_si256,
+    _mm256_packs_epi32, _mm256_packus_epi16, _mm256_packus_epi32, _mm256_permute2x128_si256,
+    _mm256_permute4x64_epi64, _mm256_permutevar8x32_epi32, _mm256_set1_epi16, _mm256_set1_epi32,
+    _mm256_set1_ps, _mm256_setr_epi32, _mm256_setzero_si256, _mm256_slli_epi32, _mm256_srai_epi16,
+    _mm256_srai_epi32, _mm256_srli_epi32, _mm256_storeu_si256, _mm256_sub_epi16, _mm256_sub_epi32,
+    _mm256_sub_ps, _mm256_testz_si256, _mm256_unpackhi_epi16, _mm256_unpackhi_epi32,
+    _mm256_unpackhi_epi64, _mm256_unpacklo_epi16, _mm256_unpacklo_epi32, _mm256_unpacklo_epi64,
 };
 
 const BLOCK_SIDE: usize = 8;
@@ -32,6 +32,11 @@ const CONVERSION_PIXELS: usize = 16;
 const RGB_BYTES: usize = 3;
 const ENCODE_ROW_BYTES: usize = BLOCK_SIDE * RGB_BYTES;
 const PLANES: usize = 3;
+const UPSAMPLE_CENTERS: usize = 16;
+#[cfg(target_arch = "x86_64")]
+const UPSAMPLE_OUTPUTS: usize = 2 * UPSAMPLE_CENTERS;
+#[cfg(target_arch = "x86_64")]
+const UPSAMPLE_WINDOW: usize = UPSAMPLE_CENTERS + 2;
 
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 mod factors {
@@ -177,6 +182,100 @@ pub fn ycbcr_to_rgb(luma: &[i16], blue: &[i16], red: &[i16], target: &mut [u8]) 
     pixels
 }
 
+pub fn upsample_horizontal(input: &[i16], output: &mut [i16]) -> usize {
+    if !cfg!(target_arch = "x86_64") || !vector_unit() {
+        return 0;
+    }
+    assert_eq!(
+        Some(output.len()),
+        input.len().checked_mul(2),
+        "the output holds two samples per input sample"
+    );
+    let centers = input.len().saturating_sub(2) / UPSAMPLE_CENTERS * UPSAMPLE_CENTERS;
+    if centers == 0 {
+        return 0;
+    }
+    run_upsample_horizontal(&input[..centers + 2], &mut output[2..2 + 2 * centers]);
+    centers
+}
+
+#[cfg(target_arch = "x86_64")]
+fn run_upsample_horizontal(input: &[i16], output: &mut [i16]) {
+    unsafe { x86::upsample_horizontal(input, output) }
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+fn run_upsample_horizontal(_: &[i16], _: &mut [i16]) {
+    unreachable!("only the x86_64 kernel is called");
+}
+
+pub fn upsample_vertical(input: &[i16], near: &[i16], far: &[i16], output: &mut [i16]) -> usize {
+    if !cfg!(target_arch = "x86_64") || !vector_unit() {
+        return 0;
+    }
+    assert_eq!(
+        near.len(),
+        input.len(),
+        "the near row matches the input row"
+    );
+    assert_eq!(far.len(), input.len(), "the far row matches the input row");
+    assert_eq!(
+        Some(output.len()),
+        input.len().checked_mul(2),
+        "the output holds two rows"
+    );
+    let samples = input.len() / UPSAMPLE_CENTERS * UPSAMPLE_CENTERS;
+    if samples == 0 {
+        return 0;
+    }
+    let (top, bottom) = output.split_at_mut(input.len());
+    run_upsample_vertical(&input[..samples], &near[..samples], &mut top[..samples]);
+    run_upsample_vertical(&input[..samples], &far[..samples], &mut bottom[..samples]);
+    samples
+}
+
+#[cfg(target_arch = "x86_64")]
+fn run_upsample_vertical(input: &[i16], neighbour: &[i16], output: &mut [i16]) {
+    unsafe {
+        x86::upsample_vertical(
+            input.as_chunks::<UPSAMPLE_CENTERS>().0,
+            neighbour.as_chunks::<UPSAMPLE_CENTERS>().0,
+            output.as_chunks_mut::<UPSAMPLE_CENTERS>().0,
+        );
+    }
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+fn run_upsample_vertical(_: &[i16], _: &[i16], _: &mut [i16]) {
+    unreachable!("only the x86_64 kernel is called");
+}
+
+#[cfg(target_arch = "x86_64")]
+fn lanes<const COUNT: usize>(window: &[i16; UPSAMPLE_WINDOW], start: usize) -> &[i16; COUNT] {
+    window[start..start + COUNT]
+        .try_into()
+        .expect("the lanes lie inside the window")
+}
+
+#[cfg(target_arch = "x86_64")]
+fn upsample_windows<'a>(
+    input: &'a [i16],
+    output: &'a mut [i16],
+) -> impl Iterator<Item = (&'a [i16; UPSAMPLE_WINDOW], &'a mut [i16; UPSAMPLE_OUTPUTS])> {
+    output
+        .as_chunks_mut::<UPSAMPLE_OUTPUTS>()
+        .0
+        .iter_mut()
+        .enumerate()
+        .map(move |(index, target)| {
+            let start = index * UPSAMPLE_CENTERS;
+            let window: &[i16; UPSAMPLE_WINDOW] = input[start..start + UPSAMPLE_WINDOW]
+                .try_into()
+                .expect("the window holds the centers and both neighbours");
+            (window, target)
+        })
+}
+
 pub fn forward_dct_quantize(
     samples: &[u8; BLOCK_COEFFICIENTS],
     table: &[u8; BLOCK_COEFFICIENTS],
@@ -291,6 +390,55 @@ fn run_inverse_dct(_: &[i32; BLOCK_COEFFICIENTS], _: Rows<'_>) {
 #[cfg(target_arch = "x86_64")]
 mod x86 {
     use super::*;
+
+    #[target_feature(enable = "avx2")]
+    pub(super) fn upsample_vertical(
+        input: &[[i16; UPSAMPLE_CENTERS]],
+        neighbour: &[[i16; UPSAMPLE_CENTERS]],
+        output: &mut [[i16; UPSAMPLE_CENTERS]],
+    ) {
+        let three = _mm256_set1_epi16(3);
+        let two = _mm256_set1_epi16(2);
+        for ((input, neighbour), output) in input.iter().zip(neighbour).zip(output) {
+            let sample = unsafe { _mm256_loadu_si256(input.as_ptr().cast()) };
+            let other = unsafe { _mm256_loadu_si256(neighbour.as_ptr().cast()) };
+            let sum = _mm256_add_epi16(
+                _mm256_add_epi16(_mm256_mullo_epi16(sample, three), two),
+                other,
+            );
+            unsafe { _mm256_storeu_si256(output.as_mut_ptr().cast(), _mm256_srai_epi16::<2>(sum)) };
+        }
+    }
+
+    #[target_feature(enable = "avx2")]
+    pub(super) fn upsample_horizontal(input: &[i16], output: &mut [i16]) {
+        let three = _mm256_set1_epi16(3);
+        let two = _mm256_set1_epi16(2);
+        for (window, target) in upsample_windows(input, output) {
+            let left =
+                unsafe { _mm256_loadu_si256(lanes::<UPSAMPLE_CENTERS>(window, 0).as_ptr().cast()) };
+            let center =
+                unsafe { _mm256_loadu_si256(lanes::<UPSAMPLE_CENTERS>(window, 1).as_ptr().cast()) };
+            let right =
+                unsafe { _mm256_loadu_si256(lanes::<UPSAMPLE_CENTERS>(window, 2).as_ptr().cast()) };
+            let base = _mm256_add_epi16(_mm256_mullo_epi16(center, three), two);
+            let even = _mm256_srai_epi16::<2>(_mm256_add_epi16(base, left));
+            let odd = _mm256_srai_epi16::<2>(_mm256_add_epi16(base, right));
+            let low = _mm256_unpacklo_epi16(even, odd);
+            let high = _mm256_unpackhi_epi16(even, odd);
+            let (first, second) = target.as_chunks_mut::<UPSAMPLE_CENTERS>().0.split_at_mut(1);
+            unsafe {
+                _mm256_storeu_si256(
+                    first[0].as_mut_ptr().cast(),
+                    _mm256_permute2x128_si256::<0x20>(low, high),
+                );
+                _mm256_storeu_si256(
+                    second[0].as_mut_ptr().cast(),
+                    _mm256_permute2x128_si256::<0x31>(low, high),
+                );
+            }
+        }
+    }
 
     #[target_feature(enable = "avx2")]
     fn times(value: __m256i, factor: i32) -> __m256i {

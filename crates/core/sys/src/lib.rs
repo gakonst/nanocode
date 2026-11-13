@@ -3,6 +3,7 @@
 pub mod adler32;
 #[cfg(all(target_vendor = "apple", not(target_os = "macos")))]
 pub mod apple;
+pub mod blake3;
 #[cfg(all(target_vendor = "apple", not(target_os = "macos")))]
 pub mod security;
 mod atomic;

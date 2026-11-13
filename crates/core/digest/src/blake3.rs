@@ -1,4 +1,5 @@
 use core::fmt;
+use nanocode_sys::blake3::Blake3Instructions;
 
 pub const BLAKE3_OUTPUT_BYTES: usize = 32;
 
@@ -6,6 +7,9 @@ const BLOCK_BYTES: usize = 64;
 const CHUNK_BYTES: usize = 1024;
 const BLOCK_WORDS: usize = 16;
 const CHAINING_WORDS: usize = 8;
+const CHAINING_BYTES: usize = 32;
+const SUBTREE_CHUNKS_MAX: usize = 256;
+const PARENTS_PER_PASS: usize = 16;
 const ROUNDS: usize = 7;
 const HEX_BYTES: usize = 2 * BLAKE3_OUTPUT_BYTES;
 const STACK_DEPTH_MAX: usize = (u64::BITS - CHUNK_BYTES.trailing_zeros()) as usize;
@@ -135,7 +139,7 @@ pub fn blake3(bytes: &[u8]) -> Hash {
 #[derive(Clone, Debug)]
 pub struct Blake3 {
     chunk: ChunkState,
-    stack: [[u32; CHAINING_WORDS]; STACK_DEPTH_MAX],
+    stack: [[u32; CHAINING_WORDS]; STACK_DEPTH_MAX + 1],
     stack_len: usize,
 }
 
@@ -149,51 +153,205 @@ impl Blake3 {
     pub const fn new() -> Self {
         Self {
             chunk: ChunkState::new(0),
-            stack: [[0; CHAINING_WORDS]; STACK_DEPTH_MAX],
+            stack: [[0; CHAINING_WORDS]; STACK_DEPTH_MAX + 1],
             stack_len: 0,
         }
     }
 
     pub fn update(&mut self, mut bytes: &[u8]) -> &mut Self {
-        while !bytes.is_empty() {
-            if self.chunk.len() == CHUNK_BYTES {
-                let chaining_value = self.chunk.output().chaining_value();
-                let total_chunks = self
-                    .chunk
-                    .counter
-                    .checked_add(1)
-                    .expect("BLAKE3 bounds the input below 2^64 chunks");
-                self.push_chunk(chaining_value, total_chunks);
-                self.chunk = ChunkState::new(total_chunks);
-            }
+        if self.chunk.len() > 0 {
             let taken = (CHUNK_BYTES - self.chunk.len()).min(bytes.len());
             let (now, later) = bytes.split_at(taken);
             self.chunk.update(now);
             bytes = later;
+            if bytes.is_empty() {
+                return self;
+            }
+            let counter = self.chunk.counter;
+            let chaining_value = self.chunk.output().chaining_value();
+            self.push_chaining_value(chaining_value, counter);
+            self.chunk = ChunkState::new(chunks_after(counter, 1));
+        }
+        if bytes.len() > CHUNK_BYTES {
+            let instructions = Blake3Instructions::detect();
+            while bytes.len() > CHUNK_BYTES {
+                bytes = self.update_subtree(instructions, bytes);
+            }
+        }
+        if !bytes.is_empty() {
+            self.chunk.update(bytes);
+            self.merge_stack(self.chunk.counter);
         }
         self
     }
 
     pub fn finalize(&self) -> Hash {
-        let mut output = self.chunk.output();
-        for left in self.stack[..self.stack_len].iter().rev() {
+        let stack = &self.stack[..self.stack_len];
+        let (mut output, lefts) = if self.chunk.len() > 0 || stack.is_empty() {
+            (self.chunk.output(), stack)
+        } else {
+            assert!(stack.len() >= 2);
+            let (lefts, children) = stack.split_at(stack.len() - 2);
+            (parent_output(&children[0], &children[1]), lefts)
+        };
+        for left in lefts.iter().rev() {
             output = parent_output(left, &output.chaining_value());
         }
         output.root_hash()
     }
 
-    fn push_chunk(&mut self, mut chaining_value: [u32; CHAINING_WORDS], mut total_chunks: u64) {
-        while total_chunks & 1 == 0 {
-            assert!(self.stack_len > 0);
-            self.stack_len -= 1;
-            chaining_value =
-                parent_output(&self.stack[self.stack_len], &chaining_value).chaining_value();
-            total_chunks >>= 1;
+    fn update_subtree<'a>(
+        &mut self,
+        instructions: Option<Blake3Instructions>,
+        bytes: &'a [u8],
+    ) -> &'a [u8] {
+        assert_eq!(self.chunk.len(), 0);
+        let counter = self.chunk.counter;
+        let chunks_available = bytes.len() / CHUNK_BYTES;
+        assert!(chunks_available > 0);
+        let subtree_log2 = chunks_available
+            .ilog2()
+            .min(counter.trailing_zeros())
+            .min(SUBTREE_CHUNKS_MAX.ilog2());
+        let subtree_chunks = 1usize << subtree_log2;
+        let (subtree, rest) = bytes.split_at(subtree_chunks * CHUNK_BYTES);
+        let (chunks, remainder) = subtree.as_chunks::<CHUNK_BYTES>();
+        assert!(remainder.is_empty());
+        if let [chunk] = chunks {
+            let chaining_value = chunk_chaining_value(chunk, counter);
+            self.push_chaining_value(chaining_value, counter);
+        } else {
+            let [left, right] = subtree_children(instructions, chunks, counter);
+            self.push_chaining_value(left, counter);
+            let right_counter = chunks_after(counter, subtree_chunks / 2);
+            self.push_chaining_value(right, right_counter);
         }
-        assert!(self.stack_len < STACK_DEPTH_MAX);
+        self.chunk = ChunkState::new(chunks_after(counter, subtree_chunks));
+        rest
+    }
+
+    fn push_chaining_value(&mut self, chaining_value: [u32; CHAINING_WORDS], counter: u64) {
+        self.merge_stack(counter);
+        assert!(self.stack_len < self.stack.len());
         self.stack[self.stack_len] = chaining_value;
         self.stack_len += 1;
     }
+
+    fn merge_stack(&mut self, total_chunks: u64) {
+        let kept = total_chunks.count_ones() as usize;
+        while self.stack_len > kept {
+            assert!(self.stack_len >= 2);
+            let right = self.stack[self.stack_len - 1];
+            let left = &self.stack[self.stack_len - 2];
+            self.stack[self.stack_len - 2] = parent_output(left, &right).chaining_value();
+            self.stack_len -= 1;
+        }
+    }
+}
+
+const fn chunks_after(counter: u64, chunks: usize) -> u64 {
+    counter
+        .checked_add(chunks as u64)
+        .expect("BLAKE3 bounds the input below 2^64 chunks")
+}
+
+fn subtree_children(
+    instructions: Option<Blake3Instructions>,
+    chunks: &[[u8; CHUNK_BYTES]],
+    counter: u64,
+) -> [[u32; CHAINING_WORDS]; 2] {
+    assert!(chunks.len() >= 2);
+    assert!(chunks.len() <= SUBTREE_CHUNKS_MAX);
+    assert!(chunks.len().is_power_of_two());
+    if chunks.len() <= PARENTS_PER_PASS {
+        let mut level = [[0u8; CHAINING_BYTES]; PARENTS_PER_PASS];
+        reduce_subtree(instructions, chunks, counter, &mut level)
+    } else {
+        let mut level = [[0u8; CHAINING_BYTES]; SUBTREE_CHUNKS_MAX];
+        reduce_subtree(instructions, chunks, counter, &mut level)
+    }
+}
+
+fn reduce_subtree(
+    instructions: Option<Blake3Instructions>,
+    chunks: &[[u8; CHUNK_BYTES]],
+    counter: u64,
+    level: &mut [[u8; CHAINING_BYTES]],
+) -> [[u32; CHAINING_WORDS]; 2] {
+    assert!(chunks.len() <= level.len());
+    let mut count = chunks.len();
+    hash_chunks(instructions, chunks, counter, &mut level[..count]);
+    while count > 2 {
+        let mut parents = [[0u8; CHAINING_BYTES]; PARENTS_PER_PASS];
+        for pass in 0..(count / 2).div_ceil(PARENTS_PER_PASS) {
+            let first = pass * PARENTS_PER_PASS;
+            let taken = PARENTS_PER_PASS.min(count / 2 - first);
+            let children = &level[2 * first..2 * (first + taken)];
+            let (blocks, remainder) = children.as_flattened().as_chunks::<BLOCK_BYTES>();
+            assert!(remainder.is_empty());
+            hash_parents(instructions, blocks, &mut parents[..taken]);
+            level[first..first + taken].copy_from_slice(&parents[..taken]);
+        }
+        count /= 2;
+    }
+    [chaining_words(&level[0]), chaining_words(&level[1])]
+}
+
+fn hash_chunks(
+    instructions: Option<Blake3Instructions>,
+    chunks: &[[u8; CHUNK_BYTES]],
+    counter: u64,
+    chaining_values: &mut [[u8; CHAINING_BYTES]],
+) {
+    assert_eq!(chunks.len(), chaining_values.len());
+    match instructions {
+        Some(instructions) => instructions.hash_chunks(chunks, &IV, counter, 0, chaining_values),
+        None => {
+            for (index, (chunk, chaining_value)) in chunks.iter().zip(chaining_values).enumerate() {
+                *chaining_value =
+                    chaining_bytes(&chunk_chaining_value(chunk, chunks_after(counter, index)));
+            }
+        }
+    }
+}
+
+fn hash_parents(
+    instructions: Option<Blake3Instructions>,
+    parents: &[[u8; BLOCK_BYTES]],
+    chaining_values: &mut [[u8; CHAINING_BYTES]],
+) {
+    assert_eq!(parents.len(), chaining_values.len());
+    match instructions {
+        Some(instructions) => instructions.hash_parents(parents, &IV, 0, chaining_values),
+        None => {
+            for (parent, chaining_value) in parents.iter().zip(chaining_values) {
+                let words = compress(&IV, &block_words(parent), 0, BLOCK_BYTES as u32, PARENT);
+                *chaining_value = chaining_bytes(&words);
+            }
+        }
+    }
+}
+
+fn chunk_chaining_value(chunk: &[u8; CHUNK_BYTES], counter: u64) -> [u32; CHAINING_WORDS] {
+    let mut state = ChunkState::new(counter);
+    state.update(chunk);
+    state.output().chaining_value()
+}
+
+fn chaining_words(bytes: &[u8; CHAINING_BYTES]) -> [u32; CHAINING_WORDS] {
+    let mut words = [0u32; CHAINING_WORDS];
+    for (word, bytes) in words.iter_mut().zip(bytes.as_chunks::<4>().0) {
+        *word = u32::from_le_bytes(*bytes);
+    }
+    words
+}
+
+fn chaining_bytes(words: &[u32; CHAINING_WORDS]) -> [u8; CHAINING_BYTES] {
+    let mut bytes = [0u8; CHAINING_BYTES];
+    for (slot, word) in bytes.as_chunks_mut::<4>().0.iter_mut().zip(words) {
+        *slot = word.to_le_bytes();
+    }
+    bytes
 }
 
 #[derive(Clone, Debug)]

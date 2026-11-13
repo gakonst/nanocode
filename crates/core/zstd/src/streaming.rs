@@ -152,8 +152,8 @@ impl StreamingDecoder {
             if !progress {
                 break;
             }
-            self.compact_input();
         }
+        self.compact_input();
         Ok(())
     }
     fn process_frame_header(&mut self) -> Result<bool> {

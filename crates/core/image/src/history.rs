@@ -9,16 +9,10 @@ pub const DEFAULT_INLINE_IMAGES: usize = 8;
 
 pub use nanocode_durability_core::SharedBlobStore;
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct ImageHistory {
-    inline_images: usize,
+    inline_images: Option<usize>,
     blobs: Option<SharedBlobStore>,
-}
-
-impl Default for ImageHistory {
-    fn default() -> Self {
-        Self::new(DEFAULT_INLINE_IMAGES)
-    }
 }
 
 impl std::fmt::Debug for ImageHistory {
@@ -35,8 +29,21 @@ impl ImageHistory {
     #[must_use]
     pub const fn new(inline_images: usize) -> Self {
         Self {
-            inline_images,
+            inline_images: Some(inline_images),
             blobs: None,
+        }
+    }
+
+    #[must_use]
+    pub fn or_inline_images(mut self, inline_images: usize) -> Self {
+        self.inline_images.get_or_insert(inline_images);
+        self
+    }
+
+    const fn limit(&self) -> usize {
+        match self.inline_images {
+            Some(limit) => limit,
+            None => DEFAULT_INLINE_IMAGES,
         }
     }
 
@@ -48,7 +55,7 @@ impl ImageHistory {
 
     #[must_use]
     pub fn evicted(&self, images: usize) -> usize {
-        let limit = self.inline_images;
+        let limit = self.limit();
         if images <= limit {
             return 0;
         }
@@ -64,7 +71,7 @@ impl ImageHistory {
             .map_or_else(|| reference.to_owned(), |media| format!("inline {media}"));
         format!(
             "[image omitted from this request, which keeps only the newest {} images: {reference}]",
-            self.inline_images
+            self.limit()
         )
     }
 

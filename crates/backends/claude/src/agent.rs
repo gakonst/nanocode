@@ -753,7 +753,7 @@ impl ClaudeBuilder {
             message_threads: false,
             context_window_tokens,
             auto_compact_window_tokens: None,
-            images: ImageHistory::new(request_images(context_window_tokens)),
+            images: ImageHistory::default(),
             system: String::new(),
             system_blocks: None,
             model_systems: Vec::new(),
@@ -1771,7 +1771,9 @@ impl ClaudeBuilder {
             context_window_tokens: self.context_window_tokens,
             auto_compact_window_tokens: self.auto_compact_window_tokens,
             auto_compact_token_limit: Atom::default(),
-            images: self.images,
+            images: self
+                .images
+                .or_inline_images(request_images(self.context_window_tokens)),
             session_id,
             lineage,
             conversation_id,

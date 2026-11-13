@@ -57,6 +57,10 @@ impl Matcher for RegexMatcher {
         self.inner.shortest_match_at(haystack, at)
     }
 
+    fn is_match(&self, haystack: &[u8]) -> bool {
+        self.inner.is_match(haystack)
+    }
+
     fn non_matching_bytes(&self) -> Option<ByteSet> {
         Some(self.non_matching)
     }

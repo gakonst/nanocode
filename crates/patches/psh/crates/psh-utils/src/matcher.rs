@@ -235,10 +235,6 @@ pub(crate) trait Matcher {
         self.shortest_match_at(haystack, 0).is_some()
     }
 
-    fn shortest_match(&self, haystack: &[u8]) -> Option<usize> {
-        self.shortest_match_at(haystack, 0)
-    }
-
     fn find_iter_at<F>(&self, haystack: &[u8], at: usize, mut matched: F)
     where
         F: FnMut(Match) -> bool,
@@ -323,10 +319,6 @@ impl<M: Matcher> Matcher for &M {
 
     fn is_match(&self, haystack: &[u8]) -> bool {
         (*self).is_match(haystack)
-    }
-
-    fn shortest_match(&self, haystack: &[u8]) -> Option<usize> {
-        (*self).shortest_match(haystack)
     }
 
     fn find_iter_at<F>(&self, haystack: &[u8], at: usize, matched: F)

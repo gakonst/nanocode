@@ -110,11 +110,8 @@ impl<'s, M: Matcher, S: Sink> Core<'s, M, S> {
         Some(found)
     }
 
-    fn shortest_match(&self, slice: &[u8]) -> Option<usize> {
-        if self.has_exceeded_match_limit() {
-            return None;
-        }
-        self.matcher.shortest_match(slice)
+    fn matches_within_limit(&self, slice: &[u8]) -> bool {
+        !self.has_exceeded_match_limit() && self.matcher.is_match(slice)
     }
 
     pub(crate) fn match_by_line(&mut self, buffer: &[u8]) -> io::Result<bool> {
@@ -239,7 +236,7 @@ impl<'s, M: Matcher, S: Sink> Core<'s, M, S> {
                 return Ok(false);
             }
             let slice = lines::without_terminator(&buffer[line], config.line_terminator);
-            let matched = self.shortest_match(slice).is_some();
+            let matched = self.matches_within_limit(slice);
             self.set_position(line.end());
             let success = matched != config.invert_match;
             if success {

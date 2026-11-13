@@ -5,7 +5,9 @@ use serde::Deserialize;
 
 use super::{StandardTool, Tool, ToolContext, ToolInput, ToolOutput, ToolResult};
 
-use nanocode_process_contracts::{ExecCommand, ExecCommandResult, ShellExecutor, WriteStdin};
+use nanocode_process_contracts::{
+    DEFAULT_MAX_OUTPUT_TOKENS, ExecCommand, ExecCommandResult, ShellExecutor, WriteStdin,
+};
 
 pub(crate) struct ExecCommandHandler {
     workspace: PathBuf,
@@ -62,7 +64,7 @@ impl Tool for ExecCommandHandler {
                     arguments.login,
                     arguments.tty,
                     arguments.yield_time_ms,
-                    arguments.max_output_tokens,
+                    Some(output_tokens(arguments.max_output_tokens, context)),
                 )
                 .from_caller(context.session_id());
                 let result = self.sessions.execute(command, &self.workspace).await;
@@ -109,7 +111,7 @@ impl Tool for WriteStdinHandler {
                     arguments.session_id,
                     arguments.chars,
                     arguments.yield_time_ms,
-                    arguments.max_output_tokens,
+                    Some(output_tokens(arguments.max_output_tokens, context)),
                 )
                 .from_caller(context.session_id());
                 let result = self.sessions.write_stdin(request).await;
@@ -118,6 +120,12 @@ impl Tool for WriteStdinHandler {
             output
         })
     }
+}
+
+fn output_tokens(requested: Option<usize>, context: ToolContext<'_>) -> usize {
+    requested
+        .unwrap_or(DEFAULT_MAX_OUTPUT_TOKENS)
+        .min(context.output_token_budget())
 }
 
 fn shell_execution(result: &ExecCommandResult) -> ToolOutput {

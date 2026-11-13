@@ -12,6 +12,9 @@ pub use responses::{ContentItem, FunctionOutputContent, ResponseEvent, ResponseI
 
 pub const MODEL: &str = Model::Astra.as_str();
 
+const UNKNOWN_MODEL_TOOL_OUTPUT_BYTES: usize = 10_000;
+const APPROX_BYTES_PER_TOKEN: usize = 4;
+
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 #[non_exhaustive]
@@ -161,6 +164,14 @@ impl Model {
             }
             Self::Terra | Self::Luna | Self::Custom(_) => true,
             Self::Astra | Self::Sol | Self::DaybreakBlue => !matches!(thinking, Thinking::None),
+        }
+    }
+
+    #[must_use]
+    pub const fn tool_output_token_budget(self) -> usize {
+        match self {
+            Self::Custom(_) => UNKNOWN_MODEL_TOOL_OUTPUT_BYTES / APPROX_BYTES_PER_TOKEN,
+            _ => tools::DEFAULT_TOOL_OUTPUT_TOKENS,
         }
     }
 

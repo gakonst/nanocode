@@ -1129,7 +1129,7 @@ impl ModelRun {
                 session_id,
                 &call.call_id,
                 &[],
-                DEFAULT_TOOL_OUTPUT_TOKENS,
+                model.tool_output_token_budget(),
             )
             .with_instruction_revision(instruction_revision)
             .with_host_context(host_context)

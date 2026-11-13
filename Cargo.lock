@@ -1860,6 +1860,7 @@ dependencies = [
  "nanocode-compression",
  "nanocode-numeric",
  "nanocode-platform",
+ "nanocode-sys",
  "rustpython-literal",
  "rustpython-unicode",
  "rustpython-wtf8",

@@ -1,3 +1,5 @@
+use nanocode_sys::sha1::Sha1Instructions;
+
 use super::block::BlockBuffer;
 
 pub(super) const BLOCK_BYTES: usize = 64;
@@ -51,6 +53,13 @@ impl Sha1 {
 }
 
 fn compress(state: &mut [u32; 5], block: &[u8; BLOCK_BYTES]) {
+    match Sha1Instructions::detect() {
+        Some(instructions) => instructions.compress(state, core::slice::from_ref(block)),
+        None => compress_portable(state, block),
+    }
+}
+
+fn compress_portable(state: &mut [u32; 5], block: &[u8; BLOCK_BYTES]) {
     let mut schedule = [0u32; SCHEDULE_WORDS];
     for (word, chunk) in schedule.iter_mut().zip(block.as_chunks::<4>().0) {
         *word = u32::from_be_bytes(*chunk);

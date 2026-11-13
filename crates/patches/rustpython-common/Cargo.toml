@@ -73,6 +73,9 @@ optional = true
 [dependencies.nanocode-platform]
 path = "../../core/platform"
 
+[dependencies.nanocode-sys]
+path = "../../core/sys"
+
 [dependencies.libc]
 version = "0.2.186"
 

@@ -1,3 +1,5 @@
+use nanocode_sys::sha512::Sha512Instructions;
+
 use super::block::BlockBuffer;
 
 pub(super) const BLOCK_BYTES: usize = 128;
@@ -146,6 +148,13 @@ impl Sha512 {
 }
 
 fn compress(state: &mut [u64; 8], block: &[u8; BLOCK_BYTES]) {
+    match Sha512Instructions::detect() {
+        Some(instructions) => instructions.compress(state, core::slice::from_ref(block)),
+        None => compress_portable(state, block),
+    }
+}
+
+fn compress_portable(state: &mut [u64; 8], block: &[u8; BLOCK_BYTES]) {
     let mut schedule = [0u64; SCHEDULE_WORDS];
     for (word, chunk) in schedule.iter_mut().zip(block.as_chunks::<8>().0) {
         *word = u64::from_be_bytes(*chunk);

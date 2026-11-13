@@ -12,6 +12,7 @@ pub(crate) use self::lines::{LineIter, LineStep};
 
 mod core;
 mod decode;
+mod encoding;
 mod line_buffer;
 mod lines;
 mod strategy;
@@ -50,11 +51,11 @@ impl BinaryDetection {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct Encoding(&'static encoding_rs::Encoding);
+pub(crate) struct Encoding(&'static encoding::Encoding);
 
 impl Encoding {
     pub(crate) fn new(label: &str) -> Result<Encoding, ConfigError> {
-        match encoding_rs::Encoding::for_label_no_replacement(label.as_bytes()) {
+        match encoding::Encoding::for_label_no_replacement(label.as_bytes()) {
             Some(encoding) => Ok(Encoding(encoding)),
             None => Err(ConfigError::UnknownEncoding {
                 label: label.as_bytes().to_vec(),

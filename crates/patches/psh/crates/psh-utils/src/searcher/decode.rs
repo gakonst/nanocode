@@ -1,6 +1,6 @@
 use std::io::{self, Read};
 
-use encoding_rs::{CoderResult, Decoder, Encoding, UTF_8};
+use super::encoding::{CoderResult, Decoder, Encoding, UTF_8};
 
 const BOM_BYTES_MAX: usize = 3;
 const STEP_OUTPUT_BYTES: usize = 7;
@@ -30,7 +30,7 @@ impl Bom {
         if self.length < BOM_BYTES_MAX {
             return None;
         }
-        Encoding::for_bom(&self.bytes).map(|(encoding, _)| encoding)
+        Encoding::for_bom(&self.bytes)
     }
 }
 
@@ -144,7 +144,7 @@ impl StepOutput {
             !last || input.is_empty(),
             "the last decoding step has input"
         );
-        let (result, read, written, _) = decoder.decode_to_utf8(input, &mut self.bytes, last);
+        let (result, read, written) = decoder.decode_to_utf8(input, &mut self.bytes, last);
         assert!(
             !last || result == CoderResult::InputEmpty,
             "the last decoding step left input"
@@ -251,14 +251,14 @@ fn transcode<R: Read>(
         return transcode_by_step(decoder, input, step_output, output);
     }
     loop {
-        let (_, read, written, _) = decoder.decode_to_utf8(input.pending(), output, false);
+        let (_, read, written) = decoder.decode_to_utf8(input.pending(), output, false);
         input.position += read;
         if written > 0 {
             return Ok(written);
         }
         input.fill()?;
         if input.length == 0 {
-            let (_, _, written, _) = decoder.decode_to_utf8(&[], output, true);
+            let (_, _, written) = decoder.decode_to_utf8(&[], output, true);
             return Ok(written);
         }
     }

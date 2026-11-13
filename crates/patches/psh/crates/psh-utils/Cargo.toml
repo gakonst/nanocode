@@ -16,8 +16,6 @@ psh-classify.workspace = true
 # back-reference matcher where psh-pattern cannot answer (D1131).
 psh-regex.workspace = true
 psh-pattern.workspace = true
-# The encoding tables behind rg -E and BOM sniffing; the streaming decoder is psh's own.
-encoding_rs = "0.8.44"
 # Byte and substring searches of the record readers.
 memchr = "2.8.3"
 

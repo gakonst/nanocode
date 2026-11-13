@@ -436,3 +436,39 @@ crates/psh-docs/assets/elanor/fonts/ (Mallos Serif and Commit Mono, SIL Open Fon
 crates/psh-docs/assets/elanor/icons/ (Material Symbols, Apache-2.0, icons/LICENSE and
   icons/NOTICE)
 crates/psh-docs/assets/elanor/logos/ (Earendil's marks, used as BRAND-GUIDELINES.md says)
+-------------------------------------------------------------------------------
+The WHATWG Encoding Standard (https://github.com/whatwg/encoding, commit 1d519bf),
+its index files indexes.json and encodings.json, used under the BSD 3-Clause License
+-------------------------------------------------------------------------------
+
+Copyright © WHATWG (Apple, Google, Mozilla, Microsoft).
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+3. Neither the name of the copyright holder nor the names of its
+   contributors may be used to endorse or promote products derived from
+   this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+Files containing data generated from the Encoding Standard's index files:
+
+crates/psh-utils/src/searcher/encoding/data.rs (the labels, the single-byte indexes and the
+  Big5, EUC-KR, gb18030, gb18030 ranges, jis0208 and jis0212 indexes, block-compressed)

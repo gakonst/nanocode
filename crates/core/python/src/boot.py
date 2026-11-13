@@ -214,6 +214,7 @@ class _Loader:
 
 
 _loaded = []
+_unfinished = False
 
 
 class _Namespace:
@@ -444,7 +445,13 @@ _bounded()
 
 
 def _start(argv, first):
+    global _unfinished
     posix._reset()
+    if _unfinished:
+        for name, module in list(sys.modules.items()):
+            if getattr(getattr(module, '__spec__', None), '_initializing', False):
+                del sys.modules[name]
+    _unfinished = True
     while _loaded:
         sys.modules.pop(_loaded.pop(), None)
     if 'os' in sys.modules:
@@ -511,3 +518,5 @@ def _finish(stopped):
     if main is not None:
         main.__dict__.clear()
     _flush()
+    global _unfinished
+    _unfinished = stopped

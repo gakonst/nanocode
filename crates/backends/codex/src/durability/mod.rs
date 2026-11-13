@@ -446,6 +446,15 @@ impl ExecutionPolicy for DurableExecution {
         })
     }
 
+    fn unfinished_operation<'a>(&'a self, id: String) -> ExecutionFuture<'a, AgentResult<bool>> {
+        Box::pin(async move {
+            self.owner
+                .unfinished_operation(id)
+                .await
+                .map_err(agent_error)
+        })
+    }
+
     fn steer_receipt<'a>(
         &'a self,
         message_id: String,
@@ -1130,6 +1139,10 @@ impl ExecutionPolicy for LazyExecution {
                 .identified_steer_accepted(message_id, input_json)
                 .await
         })
+    }
+
+    fn unfinished_operation<'a>(&'a self, id: String) -> ExecutionFuture<'a, AgentResult<bool>> {
+        Box::pin(async move { self.get().await?.unfinished_operation(id).await })
     }
 
     fn steer_receipt<'a>(

@@ -714,6 +714,19 @@ pub fn completion_continuation_prompt(id: AgentId, status: &AgentStatus) -> Stri
     }
 }
 
+fn completion_request_id(session_id: &str, revision: u64, attempt: u32) -> String {
+    match attempt {
+        0 => format!(
+            "{}{session_id}:{revision}",
+            crate::COMPLETION_REQUEST_PREFIX
+        ),
+        attempt => format!(
+            "{}{session_id}:{revision}:{attempt}",
+            crate::COMPLETION_REQUEST_PREFIX
+        ),
+    }
+}
+
 fn completion_retry_delay(attempt: u32) -> Duration {
     Duration::from_millis(1000_u64 << attempt.clamp(1, 9)).min(Duration::from_secs(300))
 }
@@ -6661,6 +6674,13 @@ impl Registry {
             else {
                 continue;
             };
+            let started = parent
+                .unfinished_request(&completion_request_id(&session_id, revision, attempt))
+                .await;
+            if !matches!(started, Ok(false)) {
+                groups.push((None, vec![(id, revision, status, session_id, attempt)]));
+                continue;
+            }
             let host_context = self.host_context(root_session_id, id).await;
             match groups
                 .iter_mut()
@@ -6739,16 +6759,7 @@ impl Registry {
             return;
         };
         let request_id = if let [(_, revision, _, session_id, attempt)] = &group[..] {
-            match attempt {
-                0 => format!(
-                    "{}{session_id}:{revision}",
-                    crate::COMPLETION_REQUEST_PREFIX
-                ),
-                attempt => format!(
-                    "{}{session_id}:{revision}:{attempt}",
-                    crate::COMPLETION_REQUEST_PREFIX
-                ),
-            }
+            completion_request_id(session_id, *revision, *attempt)
         } else {
             let members = group
                 .iter()
@@ -6886,16 +6897,7 @@ impl Registry {
         else {
             return Ok(false);
         };
-        let request_id = match attempt {
-            0 => format!(
-                "{}{session_id}:{revision}",
-                crate::COMPLETION_REQUEST_PREFIX
-            ),
-            attempt => format!(
-                "{}{session_id}:{revision}:{attempt}",
-                crate::COMPLETION_REQUEST_PREFIX
-            ),
-        };
+        let request_id = completion_request_id(&session_id, revision, attempt);
         let prompt = completion_continuation_prompt(id, &status);
         let steered = self.watch_steer(root_session_id, parent, &request_id, &prompt);
         match parent

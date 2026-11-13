@@ -953,6 +953,11 @@ impl Agent {
         self.backend.steer_receipt(id, prompt.into()).await
     }
 
+    #[doc(hidden)]
+    pub async fn unfinished_request(&self, id: &str) -> Result<bool> {
+        self.backend.unfinished_request(id.to_owned()).await
+    }
+
     pub async fn set_thinking(&self, thinking: Thinking) -> Result<()> {
         self.backend.set_thinking(thinking).await
     }

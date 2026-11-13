@@ -193,6 +193,10 @@ pub trait ExecutionPolicy: Send + Sync {
         Box::pin(async { Ok(false) })
     }
 
+    fn unfinished_operation<'a>(&'a self, _id: String) -> ExecutionFuture<'a, Result<bool>> {
+        Box::pin(async { Ok(false) })
+    }
+
     fn steer_receipt<'a>(
         &'a self,
         _message_id: String,
@@ -593,6 +597,13 @@ impl Execution {
                     .identified_steer_accepted(message_id, encode(input)?)
                     .await
             }
+            None => Ok(false),
+        }
+    }
+
+    pub(crate) async fn unfinished_operation(&self, id: String) -> Result<bool> {
+        match &self.policy {
+            Some(policy) => policy.unfinished_operation(id).await,
             None => Ok(false),
         }
     }

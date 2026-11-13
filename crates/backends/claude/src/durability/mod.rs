@@ -395,6 +395,10 @@ impl ClaudeExecutionPolicy for LazyClaudeExecution {
         })
     }
 
+    fn unfinished_operation(&self, id: String) -> PolicyFuture<'_, bool> {
+        Box::pin(async move { self.get().await?.unfinished_operation(id).await })
+    }
+
     fn steer_receipt(
         &self,
         message_id: String,
@@ -713,6 +717,15 @@ impl ClaudeExecutionPolicy for ClaudeExecution {
                 })?;
             self.owner
                 .identified_steer_accepted(message_id, &input)
+                .await
+                .map_err(agent_error)
+        })
+    }
+
+    fn unfinished_operation(&self, id: String) -> PolicyFuture<'_, bool> {
+        Box::pin(async move {
+            self.owner
+                .unfinished_operation(id)
                 .await
                 .map_err(agent_error)
         })

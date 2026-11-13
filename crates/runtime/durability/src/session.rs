@@ -366,6 +366,11 @@ enum Command {
         input: EncodedPayload,
         result: oneshot::Sender<Result<bool>>,
     },
+    UnfinishedOperation {
+        caller: Caller,
+        operation_id: String,
+        result: oneshot::Sender<Result<bool>>,
+    },
     SteerReceipt {
         caller: Caller,
         message_id: String,
@@ -506,6 +511,7 @@ impl Command {
             Self::AdmitAutomatic { result, .. } => drop(result.send(Err(error))),
             Self::AcceptSteer { result, .. } => drop(result.send(Err(error))),
             Self::IdentifiedSteerAccepted { result, .. } => drop(result.send(Err(error))),
+            Self::UnfinishedOperation { result, .. } => drop(result.send(Err(error))),
             Self::SteerReceipt { result, .. } => drop(result.send(Err(error))),
             Self::RetainedSteers { result, .. } => drop(result.send(Err(error))),
             Self::BeginStep { result, .. } => drop(result.send(Err(error))),
@@ -991,6 +997,18 @@ impl Driver {
                         }
                     }
                     Ok(accepted)
+                });
+                drop(result.send(outcome));
+            }
+            Command::UnfinishedOperation {
+                caller,
+                operation_id,
+                result,
+            } => {
+                let outcome = self.authorize(&caller).map(|()| {
+                    self.state
+                        .operation(&operation_id)
+                        .is_some_and(|operation| !operation.status.is_terminal())
                 });
                 drop(result.send(outcome));
             }
@@ -3730,6 +3748,17 @@ impl DurableOwner {
             caller: self.caller()?,
             message_id,
             input: EncodedPayload::encode(input)?,
+            result,
+        })
+        .await?;
+        receive(receiver).await
+    }
+
+    pub async fn unfinished_operation(&self, operation_id: String) -> Result<bool> {
+        let (result, receiver) = oneshot::channel();
+        self.send(Command::UnfinishedOperation {
+            caller: self.caller()?,
+            operation_id,
             result,
         })
         .await?;

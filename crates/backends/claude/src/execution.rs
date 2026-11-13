@@ -104,6 +104,10 @@ pub trait ClaudeExecutionPolicy: Send + Sync {
         Box::pin(async { Ok(false) })
     }
 
+    fn unfinished_operation(&self, _id: String) -> PolicyFuture<'_, bool> {
+        Box::pin(async { Ok(false) })
+    }
+
     fn steer_receipt(
         &self,
         _message_id: String,

@@ -427,6 +427,9 @@ impl LifecycleBackend for Owned {
     ) -> BackendFuture<Result<SteerReceiptStatus>> {
         self.0.backend().steer_receipt(id, prompt)
     }
+    fn unfinished_request(&self, id: String) -> BackendFuture<Result<bool>> {
+        self.0.backend().unfinished_request(id)
+    }
     fn cancel(&self, key: BackendTurnKey) -> BackendFuture<Result<()>> {
         self.0.backend().cancel(key)
     }

@@ -254,6 +254,11 @@ impl LifecycleBackend for LocalLifecycle {
         })
     }
 
+    fn unfinished_request(&self, id: String) -> BackendFuture<Result<bool>> {
+        let execution = self.execution.clone();
+        Box::pin(async move { execution.unfinished_operation(id).await })
+    }
+
     fn steer_receipt(
         &self,
         id: String,

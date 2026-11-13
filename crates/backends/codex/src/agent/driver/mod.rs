@@ -1591,19 +1591,27 @@ impl AgentDriver {
                                         }
                                     }
                                 }
-                                let outcome = accept_turn_steer(
-                                    &self.execution,
-                                    &input_events,
-                                    &steers,
-                                    &steer_preempt,
-                                    &mut accepted_steers,
-                                    request_id.clone(),
-                                    &execution_turn,
-                                    &model_call_index,
-                                    prompt.clone(),
-                                )
-                                .await
-                                .map(|()| PromptRouteKind::Steered);
+                                let unfinished = match &request_id {
+                                    Some(id) => self.execution.unfinished_operation(id.clone()).await,
+                                    None => Ok(false),
+                                };
+                                let outcome = match unfinished {
+                                    Ok(true) => Err(NanocodeError::TurnNotSteerable),
+                                    Ok(false) => accept_turn_steer(
+                                        &self.execution,
+                                        &input_events,
+                                        &steers,
+                                        &steer_preempt,
+                                        &mut accepted_steers,
+                                        request_id.clone(),
+                                        &execution_turn,
+                                        &model_call_index,
+                                        prompt.clone(),
+                                    )
+                                    .await
+                                    .map(|()| PromptRouteKind::Steered),
+                                    Err(error) => Err(error),
+                                };
                                 if matches!(outcome, Err(NanocodeError::TurnNotSteerable)) {
                                     let mut reopen = false;
                                     let routed = accept_idle_route(

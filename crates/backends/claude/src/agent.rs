@@ -8412,10 +8412,15 @@ impl LifecycleBackend for Driver {
                 {
                     return Ok(BackendPromptRoute::Steered);
                 }
-                if let Some((_, turn)) = turns
-                    .iter_mut()
-                    .filter(|(_, turn)| turn.accepting)
-                    .min_by_key(|(key, _)| key.0)
+                let unfinished = match (&state.policy, &request_id) {
+                    (Some(policy), Some(id)) => policy.unfinished_operation(id.clone()).await?,
+                    _ => false,
+                };
+                if !unfinished
+                    && let Some((_, turn)) = turns
+                        .iter_mut()
+                        .filter(|(_, turn)| turn.accepting)
+                        .min_by_key(|(key, _)| key.0)
                 {
                     state.accept_steer(turn, request_id, prompt).await?;
                     return Ok(BackendPromptRoute::Steered);
@@ -8434,6 +8439,15 @@ impl LifecycleBackend for Driver {
         prompt: Prompt,
     ) -> BackendFuture<Result<()>> {
         self.steer_input(key, Some(id), prompt)
+    }
+    fn unfinished_request(&self, id: String) -> BackendFuture<Result<bool>> {
+        let state = self.state.clone();
+        Box::pin(async move {
+            match &state.policy {
+                Some(policy) => policy.unfinished_operation(id).await,
+                None => Ok(false),
+            }
+        })
     }
     fn steer_receipt(
         &self,

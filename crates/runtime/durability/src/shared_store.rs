@@ -516,16 +516,20 @@ impl Drop for Completion {
 }
 
 async fn drive_concurrently<S: StateStore>(
-    mut store: S,
+    store: S,
     mut receiver: mpsc::UnboundedReceiver<StoreRequest>,
 ) {
-    let (finished, mut completions) = mpsc::unbounded_channel();
-    let mut in_flight = 0_usize;
+    let mut driver = Concurrent {
+        store,
+        finished: mpsc::unbounded_channel(),
+        in_flight: 0,
+        held: std::collections::BTreeMap::new(),
+    };
     loop {
         let request = tokio::select! {
             biased;
-            Some(_) = completions.recv(), if in_flight > 0 => {
-                in_flight -= 1;
+            Some(completed) = driver.finished.1.recv(), if driver.in_flight > 0 => {
+                driver.completed(completed);
                 continue;
             }
             request = receiver.recv() => match request {
@@ -535,21 +539,73 @@ async fn drive_concurrently<S: StateStore>(
         };
         let handle = match &request.command {
             Command::Flush { .. } => None,
-            _ => store.concurrent_handle(),
+            _ => driver.store.concurrent_handle(),
         };
-        let Some(mut handle) = handle else {
-            while in_flight > 0 && completions.recv().await.is_some() {
-                in_flight -= 1;
+        let Some(handle) = handle else {
+            while driver.in_flight > 0 {
+                let Some(completed) = driver.finished.1.recv().await else {
+                    break;
+                };
+                driver.completed(completed);
             }
-            run(&mut store, request).await;
+            run(&mut driver.store, request).await;
             continue;
         };
-        in_flight += 1;
-        let completion = Completion(finished.clone(), Vec::new());
+        if let Some(state_id) = command_state(&request.command) {
+            if let Some(waiting) = driver.held.get_mut(state_id) {
+                waiting.push_back(request);
+                continue;
+            }
+            driver
+                .held
+                .insert(state_id.to_owned(), std::collections::VecDeque::new());
+        }
+        driver.start(handle, request);
+    }
+}
+
+struct Concurrent<S> {
+    store: S,
+    finished: (
+        mpsc::UnboundedSender<Vec<String>>,
+        mpsc::UnboundedReceiver<Vec<String>>,
+    ),
+    in_flight: usize,
+    held: std::collections::BTreeMap<String, std::collections::VecDeque<StoreRequest>>,
+}
+
+impl<S: StateStore> Concurrent<S> {
+    fn start(&mut self, mut handle: Box<dyn StateStore>, request: StoreRequest) {
+        let states = command_state(&request.command)
+            .map(str::to_owned)
+            .into_iter()
+            .collect();
+        let completion = Completion(self.finished.0.clone(), states);
+        self.in_flight += 1;
         spawn_operation(async move {
             run(&mut *handle, request).await;
             drop(completion);
         });
+    }
+
+    fn completed(&mut self, states: Vec<String>) {
+        assert!(self.in_flight > 0, "a completion follows a started operation");
+        self.in_flight -= 1;
+        for state_id in states {
+            let waiting = self
+                .held
+                .get_mut(&state_id)
+                .expect("a state's write in flight keeps its queue until it completes");
+            let Some(request) = waiting.pop_front() else {
+                self.held.remove(&state_id);
+                continue;
+            };
+            let handle = self
+                .store
+                .concurrent_handle()
+                .expect("a store that gave a concurrent handle gives one for every operation");
+            self.start(handle, request);
+        }
     }
 }
 

@@ -16,6 +16,7 @@ pub mod sha256;
 pub mod sha512;
 mod stack;
 mod swap;
+pub mod teddy;
 #[cfg(unix)]
 pub mod unix;
 #[cfg(windows)]

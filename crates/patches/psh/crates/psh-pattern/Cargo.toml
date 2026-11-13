@@ -9,6 +9,7 @@ publish.workspace = true
 
 [dependencies]
 memchr = { version = "2.8.3", default-features = false, features = ["alloc"] }
+nanocode-sys.workspace = true
 
 [lints]
 workspace = true

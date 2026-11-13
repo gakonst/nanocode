@@ -3,6 +3,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use memchr::memmem;
+use nanocode_sys::teddy::{TEDDY_BUCKETS, TEDDY_PREFIX_BYTES_MAX, Teddy};
 
 use crate::hir::{Class, Hir, HirKind};
 
@@ -22,6 +23,8 @@ const PACKED_BLOCK_BYTES: usize = 64;
 const PACKED_GROUP_TESTS: usize = 3;
 const PACKED_GROUPS_MAX: usize = 8;
 const PACKED_REACH_BYTES_MAX: usize = 16;
+const TEDDY_PREFIX_BYTES_MIN: usize = 2;
+const TEDDY_RARE_BYTE_RANK_MAX: usize = 210;
 
 const BYTE_FREQUENCY_RANK: [u8; 256] = [
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 246, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
@@ -295,7 +298,118 @@ pub enum Prefilter {
         offset: usize,
     },
     Packed(Packed),
+    Teddy(Box<TeddySet>),
     NonAscii,
+}
+
+#[derive(Clone, Debug)]
+struct CaseGroup {
+    key: Vec<u8>,
+    members: Vec<Vec<u8>>,
+    every_case: bool,
+}
+
+impl CaseGroup {
+    fn matches(&self, rest: &[u8]) -> bool {
+        rest.len() >= self.key.len()
+            && rest[..self.key.len()].eq_ignore_ascii_case(&self.key)
+            && (self.every_case || self.members.iter().any(|member| rest.starts_with(member)))
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Verified {
+    Nothing,
+    One(usize),
+    Several,
+}
+
+#[derive(Clone, Debug)]
+pub struct TeddySet {
+    teddy: Teddy,
+    groups: Vec<CaseGroup>,
+    buckets: [Vec<usize>; TEDDY_BUCKETS],
+}
+
+impl TeddySet {
+    fn new(literals: &[Vec<u8>]) -> Option<TeddySet> {
+        let shortest = literals.iter().map(Vec::len).min()?;
+        if literals.len() < 2 || shortest < TEDDY_PREFIX_BYTES_MIN {
+            return None;
+        }
+        let prefix_len = shortest.min(TEDDY_PREFIX_BYTES_MAX);
+        let mut groups: Vec<CaseGroup> = Vec::new();
+        for literal in literals {
+            let key = literal.to_ascii_lowercase();
+            match groups.iter_mut().find(|group| group.key == key) {
+                Some(group) => {
+                    if !group.members.contains(literal) {
+                        group.members.push(literal.clone());
+                    }
+                }
+                None => groups.push(CaseGroup {
+                    key,
+                    members: vec![literal.clone()],
+                    every_case: false,
+                }),
+            }
+        }
+        for group in &mut groups {
+            let letters = group.key.iter().filter(|b| b.is_ascii_alphabetic()).count();
+            group.every_case = u32::try_from(letters)
+                .ok()
+                .and_then(|letters| 1usize.checked_shl(letters))
+                .is_some_and(|variants| variants == group.members.len());
+        }
+        let mut order: Vec<usize> = (0..groups.len()).collect();
+        order.sort_by(|&a, &b| groups[a].key[..prefix_len].cmp(&groups[b].key[..prefix_len]));
+        let mut buckets: [Vec<usize>; TEDDY_BUCKETS] = Default::default();
+        let mut prefixes: Vec<(usize, &[u8])> = Vec::new();
+        for (rank, &group) in order.iter().enumerate() {
+            let bucket = rank * TEDDY_BUCKETS / groups.len();
+            buckets[bucket].push(group);
+            for member in &groups[group].members {
+                prefixes.push((bucket, &member[..prefix_len]));
+            }
+        }
+        let teddy = Teddy::new(&prefixes, prefix_len)?;
+        Some(TeddySet {
+            teddy,
+            groups,
+            buckets,
+        })
+    }
+
+    fn verify(&self, haystack: &[u8], at: usize, buckets: u8) -> Verified {
+        let rest = &haystack[at..];
+        let mut found = Verified::Nothing;
+        let mut pending = buckets;
+        while pending != 0 {
+            let bucket = pending.trailing_zeros() as usize;
+            pending &= pending - 1;
+            for &group in &self.buckets[bucket] {
+                let group = &self.groups[group];
+                if group.matches(rest) {
+                    if found != Verified::Nothing {
+                        return Verified::Several;
+                    }
+                    found = Verified::One(group.key.len());
+                }
+            }
+        }
+        found
+    }
+
+    fn find(&self, haystack: &[u8], start: usize) -> Option<(usize, Verified)> {
+        let mut at = start;
+        loop {
+            let (candidate, buckets) = self.teddy.find(haystack, at)?;
+            match self.verify(haystack, candidate, buckets) {
+                Verified::Nothing => at = candidate + 1,
+                verified => return Some((candidate, verified)),
+            }
+        }
+    }
 }
 
 fn find_non_ascii(haystack: &[u8]) -> Option<usize> {
@@ -536,6 +650,10 @@ fn find_in_ranges(haystack: &[u8], ranges: &[(u8, u8)]) -> Option<usize> {
 
 impl Prefilter {
     fn from_literals(literals: &[Vec<u8>]) -> Option<Prefilter> {
+        Prefilter::from_literals_with(literals, true)
+    }
+
+    fn from_literals_with(literals: &[Vec<u8>], teddy: bool) -> Option<Prefilter> {
         if literals.len() == 1 {
             let literal = &literals[0];
             if literal.len() == 1 {
@@ -568,13 +686,23 @@ impl Prefilter {
             }
         }
         if let Some((cost, needles, offset)) = best {
-            if cost / RARE_BYTES_MAX <= RARE_BYTE_RANK_MAX {
+            let worst = cost / RARE_BYTES_MAX;
+            if worst <= TEDDY_RARE_BYTE_RANK_MAX {
+                return Some(Prefilter::Bytes { needles, offset });
+            }
+            if teddy && let Some(teddy) = TeddySet::new(literals) {
+                return Some(Prefilter::Teddy(Box::new(teddy)));
+            }
+            if worst <= RARE_BYTE_RANK_MAX {
                 return Some(Prefilter::Bytes { needles, offset });
             }
             if let Some(packed) = Packed::new(literals) {
                 return Some(Prefilter::Packed(packed));
             }
             return Some(Prefilter::Bytes { needles, offset });
+        }
+        if teddy && let Some(teddy) = TeddySet::new(literals) {
+            return Some(Prefilter::Teddy(Box::new(teddy)));
         }
         if let Some(packed) = Packed::new(literals) {
             return Some(Prefilter::Packed(packed));
@@ -622,6 +750,9 @@ impl Prefilter {
                 find_in_ranges(&haystack[from..end], ranges).map(|found| at + found)
             }
             Prefilter::Packed(packed) => packed.find(&haystack[..end], at),
+            Prefilter::Teddy(teddy) => teddy
+                .find(&haystack[..end], at)
+                .map(|(candidate, _)| candidate),
             Prefilter::NonAscii => find_non_ascii(&haystack[at..end]).map(|found| at + found),
         }
     }
@@ -674,6 +805,15 @@ impl LiteralSet {
     }
 
     pub fn find(&self, haystack: &[u8], start: usize) -> Option<(usize, usize)> {
+        if let Prefilter::Teddy(teddy) = &self.candidates {
+            let (candidate, verified) = teddy.find(haystack, start)?;
+            if let Verified::One(len) = verified {
+                return Some((candidate, candidate + len));
+            }
+            let found = self.matches_at(haystack, candidate);
+            assert!(found.is_some(), "a verified candidate starts a literal");
+            return found;
+        }
         if let Prefilter::Bytes { needles, offset } = &self.candidates {
             let from = start + offset;
             if from >= haystack.len() {
@@ -698,6 +838,11 @@ impl LiteralSet {
             at = candidate + 1;
         }
     }
+}
+
+pub fn accelerates(hir: &Hir) -> bool {
+    usable(&prefixes(hir))
+        .is_some_and(|literals| Prefilter::from_literals_with(&literals, false).is_some())
 }
 
 pub fn prefix_prefilter(hir: &Hir) -> Option<Prefilter> {
@@ -752,6 +897,7 @@ pub fn required_literals(hir: &Hir) -> Option<Required> {
     let mut best = None;
     required(hir, &mut best);
     let (_, literals) = best?;
+    Prefilter::from_literals_with(&literals, false)?;
     let prefilter = Prefilter::from_literals(&literals)?;
     Some(Required {
         prefilter,

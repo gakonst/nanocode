@@ -1487,6 +1487,7 @@ name = "psh-pattern"
 version = "0.0.0"
 dependencies = [
  "memchr",
+ "nanocode-sys",
 ]
 
 [[package]]

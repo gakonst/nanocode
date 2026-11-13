@@ -1,7 +1,7 @@
 use nanocode_compression::checksum::crc32;
 use nanocode_compression::inflate::{Inflate, InflateFlush, InflateStatus};
 
-use crate::filter::{Filter, unfilter};
+use crate::filter::{Filter, pairs_paeth, unfilter, unfilter_paeth_pair};
 use crate::{Color, FormatError, PngError};
 
 const SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n'];
@@ -467,8 +467,12 @@ impl<'a> Png<'a> {
                 rows.reset();
                 scratch.resize(info.output_row_bytes(pass_width), 0);
                 for line in 0..pass_height {
-                    let raw =
-                        rows.next(&mut stream, info.layout.raw_row_bytes(pass_width), stride)?;
+                    let raw = rows.next(
+                        &mut stream,
+                        info.layout.raw_row_bytes(pass_width),
+                        stride,
+                        line + 1 < pass_height,
+                    )?;
                     expand.row(raw, &mut scratch);
                     let image_line = (pass.line_step * line + pass.line_offset) as usize;
                     for (index, pixel) in scratch.chunks_exact(pixel_bytes).enumerate() {
@@ -482,8 +486,13 @@ impl<'a> Png<'a> {
         } else {
             let row_bytes = info.output_row_bytes(width);
             let raw_bytes = info.layout.raw_row_bytes(width);
-            for target in output.chunks_exact_mut(row_bytes).take(height as usize) {
-                let raw = rows.next(&mut stream, raw_bytes, stride)?;
+            let rows_total = height as usize;
+            for (line, target) in output
+                .chunks_exact_mut(row_bytes)
+                .take(rows_total)
+                .enumerate()
+            {
+                let raw = rows.next(&mut stream, raw_bytes, stride, line + 1 < rows_total)?;
                 expand.row(raw, target);
             }
         }
@@ -978,10 +987,12 @@ struct Rows {
     start: usize,
     end: usize,
     previous: Vec<u8>,
+    unfiltered: bool,
 }
 
 impl Rows {
     fn reset(&mut self) {
+        assert!(!self.unfiltered);
         self.previous.clear();
     }
 
@@ -990,7 +1001,17 @@ impl Rows {
         stream: &mut Stream<'_>,
         raw_bytes: usize,
         stride: usize,
+        followed: bool,
     ) -> Result<&[u8], PngError> {
+        if self.unfiltered {
+            assert!(self.end - self.start >= raw_bytes);
+            assert_eq!(self.previous.len() + 1, raw_bytes);
+            self.unfiltered = false;
+            let row = &self.data[self.start..self.start + raw_bytes];
+            self.start += raw_bytes;
+            self.previous.copy_from_slice(&row[1..]);
+            return Ok(&self.previous);
+        }
         if self.end - self.start < raw_bytes {
             self.data.copy_within(self.start..self.end, 0);
             self.end -= self.start;
@@ -1006,15 +1027,30 @@ impl Rows {
                 self.end += filled;
             }
         }
-        let row = &mut self.data[self.start..self.start + raw_bytes];
+        let row_start = self.start;
         self.start += raw_bytes;
-        let filter = Filter::from_byte(row[0]).ok_or(FormatError::UnknownFilterMethod(row[0]))?;
-        let pixels = &mut row[1..];
-        if self.previous.len() != pixels.len() {
+        let filter_byte = self.data[row_start];
+        let filter =
+            Filter::from_byte(filter_byte).ok_or(FormatError::UnknownFilterMethod(filter_byte))?;
+        let pixel_bytes = raw_bytes - 1;
+        if self.previous.len() != pixel_bytes {
             self.previous.clear();
-            self.previous.resize(pixels.len(), 0);
+            self.previous.resize(pixel_bytes, 0);
         }
-        unfilter(filter, stride, &self.previous, pixels);
+        let paired = followed
+            && filter == Filter::Paeth
+            && pairs_paeth(stride)
+            && self.end - self.start >= raw_bytes
+            && self.data[self.start] == Filter::Paeth as u8;
+        let rows = &mut self.data[row_start..self.start + if paired { raw_bytes } else { 0 }];
+        let (row, rest) = rows.split_at_mut(raw_bytes);
+        let pixels = &mut row[1..];
+        if paired {
+            unfilter_paeth_pair(stride, &self.previous, pixels, &mut rest[1..]);
+            self.unfiltered = true;
+        } else {
+            unfilter(filter, stride, &self.previous, pixels);
+        }
         self.previous.copy_from_slice(pixels);
         Ok(&self.previous)
     }

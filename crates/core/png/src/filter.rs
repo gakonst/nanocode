@@ -48,14 +48,145 @@ fn paeth_decode(left: u8, up: u8, up_left: u8) -> u8 {
 
 pub(crate) fn unfilter(filter: Filter, bytes_per_pixel: usize, previous: &[u8], row: &mut [u8]) {
     assert_eq!(previous.len(), row.len());
+    match (filter, bytes_per_pixel) {
+        (Filter::Paeth, 2) => paeth_wide::<2>(previous, row),
+        (Filter::Paeth, 4) => paeth_wide::<4>(previous, row),
+        (Filter::Paeth, 8) => paeth_wide::<8>(previous, row),
+        (_, 1) => unfilter_pixels::<1>(filter, previous, row),
+        (_, 2) => unfilter_pixels::<2>(filter, previous, row),
+        (_, 3) => unfilter_pixels::<3>(filter, previous, row),
+        (_, 4) => unfilter_pixels::<4>(filter, previous, row),
+        (_, 6) => unfilter_pixels::<6>(filter, previous, row),
+        (_, 8) => unfilter_pixels::<8>(filter, previous, row),
+        (_, other) => unreachable!("PNG pixels are 1, 2, 3, 4, 6 or 8 bytes, not {other}"),
+    }
+}
+
+pub(crate) const fn pairs_paeth(bytes_per_pixel: usize) -> bool {
+    matches!(bytes_per_pixel, 1 | 3 | 4 | 6)
+}
+
+pub(crate) fn unfilter_paeth_pair(
+    bytes_per_pixel: usize,
+    previous: &[u8],
+    first: &mut [u8],
+    second: &mut [u8],
+) {
+    assert_eq!(previous.len(), first.len());
+    assert_eq!(first.len(), second.len());
     match bytes_per_pixel {
-        1 => unfilter_pixels::<1>(filter, previous, row),
-        2 => unfilter_pixels::<2>(filter, previous, row),
-        3 => unfilter_pixels::<3>(filter, previous, row),
-        4 => unfilter_pixels::<4>(filter, previous, row),
-        6 => unfilter_pixels::<6>(filter, previous, row),
-        8 => unfilter_pixels::<8>(filter, previous, row),
-        other => unreachable!("PNG pixels are 1, 2, 3, 4, 6 or 8 bytes, not {other}"),
+        1 => paeth_pair::<1>(previous, first, second),
+        #[cfg(target_arch = "aarch64")]
+        3 => paeth_pair_wide::<3>(previous, first, second),
+        #[cfg(not(target_arch = "aarch64"))]
+        3 => paeth_pair::<3>(previous, first, second),
+        4 => paeth_pair::<4>(previous, first, second),
+        6 => paeth_pair::<6>(previous, first, second),
+        other => unreachable!(
+            "Paeth rows are decoded in pairs at 1, 3, 4 or 6 bytes per pixel, not {other}"
+        ),
+    }
+}
+
+#[inline(always)]
+fn paeth_decode_wide(left: i16, up: i16, up_left: i16) -> i16 {
+    let threshold = up_left * 3 - (left + up);
+    let low = left.min(up);
+    let high = left.max(up);
+    let near = if high <= threshold { low } else { up_left };
+    if threshold <= low { high } else { near }
+}
+
+fn paeth_wide<const N: usize>(previous: &[u8], row: &mut [u8]) {
+    let mut left = [0i16; N];
+    let mut corner = [0i16; N];
+    for (pixel, above) in row
+        .as_chunks_mut::<N>()
+        .0
+        .iter_mut()
+        .zip(previous.as_chunks::<N>().0)
+    {
+        let mut decoded = [0i16; N];
+        for lane in 0..N {
+            let up = i16::from(above[lane]);
+            decoded[lane] = (i16::from(pixel[lane])
+                + paeth_decode_wide(left[lane], up, corner[lane]))
+                & i16::from(u8::MAX);
+            pixel[lane] = decoded[lane] as u8;
+            corner[lane] = up;
+        }
+        left = decoded;
+    }
+}
+
+fn paeth_pair<const N: usize>(previous: &[u8], first: &mut [u8], second: &mut [u8]) {
+    let (aboves, _) = previous.as_chunks::<N>();
+    let (firsts, _) = first.as_chunks_mut::<N>();
+    let (seconds, _) = second.as_chunks_mut::<N>();
+    let pixels = firsts.len();
+    assert_eq!(aboves.len(), pixels);
+    assert_eq!(seconds.len(), pixels);
+    let mut first_left = [0u8; N];
+    let mut first_corner = [0u8; N];
+    let mut second_left = [0u8; N];
+    let mut second_corner = [0u8; N];
+    for index in 0..pixels {
+        let above = aboves[index];
+        let mut upper = firsts[index];
+        for lane in 0..N {
+            upper[lane] = upper[lane].wrapping_add(paeth_decode(
+                first_left[lane],
+                above[lane],
+                first_corner[lane],
+            ));
+        }
+        firsts[index] = upper;
+        let mut lower = seconds[index];
+        for lane in 0..N {
+            lower[lane] = lower[lane].wrapping_add(paeth_decode(
+                second_left[lane],
+                upper[lane],
+                second_corner[lane],
+            ));
+        }
+        seconds[index] = lower;
+        first_left = upper;
+        first_corner = above;
+        second_left = lower;
+        second_corner = upper;
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn paeth_pair_wide<const N: usize>(previous: &[u8], first: &mut [u8], second: &mut [u8]) {
+    let mut first_left = [0i16; N];
+    let mut first_corner = [0i16; N];
+    let mut second_left = [0i16; N];
+    let mut second_corner = [0i16; N];
+    for ((upper, lower), above) in first
+        .as_chunks_mut::<N>()
+        .0
+        .iter_mut()
+        .zip(second.as_chunks_mut::<N>().0.iter_mut())
+        .zip(previous.as_chunks::<N>().0)
+    {
+        let mut upper_decoded = [0i16; N];
+        let mut lower_decoded = [0i16; N];
+        for lane in 0..N {
+            let up = i16::from(above[lane]);
+            upper_decoded[lane] = (i16::from(upper[lane])
+                + paeth_decode_wide(first_left[lane], up, first_corner[lane]))
+                & i16::from(u8::MAX);
+            upper[lane] = upper_decoded[lane] as u8;
+            lower_decoded[lane] = (i16::from(lower[lane])
+                + paeth_decode_wide(second_left[lane], upper_decoded[lane], second_corner[lane]))
+                & i16::from(u8::MAX);
+            lower[lane] = lower_decoded[lane] as u8;
+            first_corner[lane] = up;
+        }
+        first_left = upper_decoded;
+        second_left = lower_decoded;
+        second_corner = upper_decoded;
     }
 }
 

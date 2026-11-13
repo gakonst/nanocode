@@ -2517,6 +2517,7 @@ impl App {
             "login" => self.login(argument),
             "fund" => self.fund(argument),
             "wallet" => self.wallet(),
+            "pass" => self.pass(argument),
             "resume" | "sessions" => self.open_session_picker(),
             "new" | "clear" => self.new_session(),
             "agents" => self.agents_command(argument),

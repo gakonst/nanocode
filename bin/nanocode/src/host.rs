@@ -17,6 +17,7 @@ pub type Error = Box<dyn std::error::Error + Send + Sync>;
 pub type Result<T> = std::result::Result<T, Error>;
 
 type WarmUp = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>;
+pub(crate) type Answer = std::sync::Arc<dyn Fn(&str) + Send + Sync>;
 pub(crate) type Notices = std::pin::Pin<Box<dyn futures_util::Stream<Item = String> + Send>>;
 
 #[derive(Clone, Default)]
@@ -26,6 +27,7 @@ pub struct ModelClients {
     warm_up: Option<std::sync::Arc<dyn Fn() -> WarmUp + Send + Sync>>,
     status: Option<std::sync::Arc<dyn Fn() -> Option<String> + Send + Sync>>,
     notices: Option<std::sync::Arc<dyn Fn() -> Notices + Send + Sync>>,
+    answer: Option<Answer>,
     panel: Option<PanelSource>,
     tool_environment: Vec<(String, String)>,
     mcp_servers: Vec<(String, nanocode::tools::mcp::McpServer)>,
@@ -216,6 +218,12 @@ impl ModelClients {
     }
 
     #[must_use]
+    pub fn answer(mut self, answer: impl Fn(&str) + Send + Sync + 'static) -> Self {
+        self.answer = Some(std::sync::Arc::new(answer));
+        self
+    }
+
+    #[must_use]
     pub fn panel(
         mut self,
         command: &'static str,
@@ -346,6 +354,10 @@ impl ModelClients {
 
     pub(crate) fn render_panel(&self) -> Option<Panel> {
         self.panel.as_ref().and_then(|source| (source.panel)())
+    }
+
+    pub(crate) fn answering(&self) -> Option<Answer> {
+        self.answer.clone()
     }
 
     pub(crate) fn notifying(&self) -> Option<Notices> {

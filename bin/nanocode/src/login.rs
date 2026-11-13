@@ -33,6 +33,16 @@ impl App {
         ));
     }
 
+    pub(crate) fn pass(&mut self, argument: &str) {
+        match self.host.config.clients.answering() {
+            Some(answer) => answer(argument),
+            None => self.notice(
+                NoticeLevel::Info,
+                "pass: no MPP service can ask for an email pass in this session",
+            ),
+        }
+    }
+
     pub(crate) fn wallet(&mut self) {
         let _span = tracing::info_span!(target: "nanocode", "nc.action", action.name = "wallet", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
         tokio::spawn(wallet(self.tx.clone()));

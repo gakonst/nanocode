@@ -29,6 +29,7 @@ use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs
 use super::error::Fault;
 use super::events::Events;
 use super::flow::{DEFAULT_MAX_PAYMENT_RETRIES, FlowError, Policy, send_with_exchange};
+use super::identity::{Identity, Proved};
 use super::provider::PaymentProvider;
 use super::x509::{self, CertificateFault, Issuer, KeyPair};
 
@@ -67,6 +68,7 @@ pub(crate) struct ForwardProxy<P> {
     providers: Providers<P>,
     events: Events,
     bypass: Vec<String>,
+    identity: Option<Arc<Identity>>,
 }
 
 impl<P: PaymentProvider + 'static> ForwardProxy<P> {
@@ -87,6 +89,7 @@ impl<P: PaymentProvider + 'static> ForwardProxy<P> {
             providers: Box::new(move |url| providers(url).map_err(|error| error.to_string())),
             events: Events::default(),
             bypass: Vec::new(),
+            identity: None,
         })
     }
 
@@ -99,6 +102,12 @@ impl<P: PaymentProvider + 'static> ForwardProxy<P> {
     #[must_use]
     pub(crate) fn events(mut self, events: Events) -> Self {
         self.events = events;
+        self
+    }
+
+    #[must_use]
+    pub(crate) fn identity(mut self, identity: Arc<Identity>) -> Self {
+        self.identity = Some(identity);
         self
     }
 
@@ -184,7 +193,7 @@ impl<P: PaymentProvider + 'static> ForwardProxy<P> {
         let credentials = x509::base64(format!("{PROXY_USER}:{}", self.token).as_bytes());
         let authorization = HeaderValue::from_str(&format!("Basic {credentials}"))
             .map_err(|error| Fault::config(format!("invalid proxy credentials: {error}")))?;
-        let (providers, events) = (self.providers, self.events);
+        let (providers, events, identity) = (self.providers, self.events, self.identity);
         std::thread::Builder::new()
             .name(THREAD_NAME.into())
             .spawn(move || {
@@ -197,6 +206,7 @@ impl<P: PaymentProvider + 'static> ForwardProxy<P> {
                         authority,
                         providers,
                         paying: Atom::default(),
+                        identity,
                     });
                     loop {
                         let Ok((stream, _)) = listener.accept().await else {
@@ -249,6 +259,7 @@ struct Proxy<P> {
     authority: CertificateAuthority,
     providers: Providers<P>,
     paying: Atom<HashMap<String, P>>,
+    identity: Option<Arc<Identity>>,
 }
 
 impl<P: PaymentProvider + 'static> Proxy<P> {
@@ -372,7 +383,10 @@ impl<P: PaymentProvider + 'static> Proxy<P> {
         };
         let response = match &provider {
             Some(provider) => send_with_exchange(
-                &mut self.client.clone(),
+                &mut Proved {
+                    exchange: self.client.clone(),
+                    identity: self.identity.as_deref(),
+                },
                 forwarded,
                 provider,
                 &self.policy,

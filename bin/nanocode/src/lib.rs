@@ -133,8 +133,7 @@ pub fn run_with(clients: ModelClients) -> ExitCode {
     #[cfg(unix)]
     {
         let chosen = shell.map(nanocode_home::shell::choose);
-        let embeds =
-            !matches!(&cli.command, Some(cli::Command::Hand(args)) if args.own_processes);
+        let embeds = !matches!(&cli.command, Some(cli::Command::Hand(args)) if args.own_processes);
         if !matches!(chosen, Ok(Ok(()))) || (embeds && nanocode_psh_embedded::embed().is_err()) {
             eprintln!("nanocode: failed to make psh the shell: {chosen:?}");
             return ExitCode::FAILURE;
@@ -153,7 +152,11 @@ pub fn run_with(clients: ModelClients) -> ExitCode {
         }
     };
     let (clients, closing) = match session_gateway(&cli) {
-        Some(gateway) => match tempo::apply(clients, &gateway) {
+        Some(gateway) => match tempo::apply(
+            clients,
+            &gateway,
+            matches!(cli.command, Some(Command::Exec(_))),
+        ) {
             Ok(applied) => applied,
             Err(error) => {
                 eprintln!("nanocode: {error}");
@@ -559,6 +562,14 @@ async fn exec(args: SessionArgs, clients: ModelClients) -> Result<()> {
             }
         });
     }
+    if let Some(answer) = host.config.clients.answering() {
+        std::thread::spawn(move || {
+            for line in std::io::stdin().lines().map_while(std::io::Result::ok) {
+                answer(&line);
+            }
+            answer("");
+        });
+    }
     let outcome: Result<()> = async {
         for pending in pending {
             eprintln!("nanocode: resuming interrupted turn {}", pending.id);
@@ -789,7 +800,9 @@ const fn hand_over() -> std::io::Result<()> {
 #[cfg(unix)]
 fn leave_reader() -> std::io::Result<()> {
     if nanocode_process::leave_reader(reader()?)? {
-        eprintln!("hand: ended; what its commands left running is read by a process of its own until it ends");
+        eprintln!(
+            "hand: ended; what its commands left running is read by a process of its own until it ends"
+        );
     }
     Ok(())
 }

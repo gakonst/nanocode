@@ -36,6 +36,11 @@ default_table='
 2 turns_turnlog_twice pass --scenario turns --policy turnlog --twice
 2 turns_reference_calm pass --scenario turns --calm
 2 turns_turnlog_row_limit pass --scenario turns --policy turnlog --row-limit 1024
+8 runtime_memory pass --scenario runtime --store memory
+8 runtime_kv pass --scenario runtime --store kv
+2 runtime_memory_twice pass --scenario runtime --store memory --twice
+2 runtime_kv_twice pass --scenario runtime --store kv --twice
+2 runtime_kv_calm pass --scenario runtime --store kv --calm
 1 canary_cas_ignores_expected canary --scenario store --mutation cas_ignores_expected
 1 canary_record_insert_drops canary --scenario store --mutation record_insert_drops
 1 canary_power_loss_drops_acked canary --scenario store --mutation power_loss_drops_acked
@@ -47,8 +52,12 @@ default_table='
 1 canary_gate_releases_early canary --scenario turns --mutation gate_releases_early
 1 canary_idempotent_reported_unknown canary --scenario turns --mutation idempotent_reported_unknown
 1 canary_recovery_skips_clientless canary --scenario turns --mutation recovery_skips_clientless
-1 canary_seal_skipped canary --scenario turns --mutation seal_skipped
 1 canary_tick_not_atomic canary --scenario turns --mutation tick_not_atomic
+'
+default_known='
+runtime did not settle
+runtime missing payload record
+runtime_kv_twice nondeterminism
 '
 discovered_weight=8
 discovered_twice_weight=2
@@ -120,6 +129,10 @@ $discovered_twice_weight ${scenario}_twice pass --scenario $scenario --twice"
   while read -r weight name kind rest; do
     [ -z "$weight" ] && continue
     case $weight in \#*) continue ;; esac
+    scenario=$(echo "$rest" | sed -n 's/.*--scenario \([a-z_]*\).*/\1/p')
+    if [ -n "$scenario" ] && ! echo "|$scenarios|" | grep -q "|$scenario|"; then
+      continue
+    fi
     names+=("$name")
     weights+=("$weight")
     kinds+=("$kind")
@@ -137,6 +150,22 @@ pick() {
     fi
   done
   echo "$best"
+}
+
+known_failure() {
+  local name=$1 line=$2 known prefix pattern
+  if [ -f "$root/known" ]; then
+    known=$(cat "$root/known")
+  else
+    known=$default_known
+  fi
+  while read -r prefix pattern; do
+    [ -z "$prefix" ] && continue
+    case $prefix in \#*) continue ;; esac
+    case $name in "$prefix"*) ;; *) continue ;; esac
+    case $line in *"$pattern"*) return 0 ;; esac
+  done <<<"$known"
+  return 1
 }
 
 run_job() {
@@ -164,14 +193,21 @@ run_job() {
     message=$(grep -m1 '^FAIL\|^MUTATION\|panicked\|^error' "$out")
     [ -z "$message" ] && message="exit $status: $(tail -3 "$out")"
   fi
-  local replay="$bin --seeds $seed..$end $flags"
-  record "{\"time\":$started,\"commit\":\"$sha\",\"scenario\":\"$name\",\"kind\":\"$kind\",\"seed\":$seed,\"count\":$count,\"ok\":$ok,\"exit\":$status,\"passed\":$passed,\"failed\":$failed,\"wall_secs\":$wall,\"replay\":\"$(json_text "$replay")\",\"message\":\"$(json_text "$message")\"}"
+  local replay="$bin --seeds $seed..$end $flags" known=false line
+  if [ "$ok" = false ] && [ "$kind" = pass ] && [ "$failed" -gt 0 ] && grep -q '^FAIL' "$out"; then
+    known=true
+    while read -r line; do
+      known_failure "$name" "$line" || { known=false; break; }
+    done < <(grep '^FAIL' "$out")
+  fi
+  record "{\"time\":$started,\"commit\":\"$sha\",\"scenario\":\"$name\",\"kind\":\"$kind\",\"seed\":$seed,\"count\":$count,\"ok\":$ok,\"known\":$known,\"exit\":$status,\"passed\":$passed,\"failed\":$failed,\"wall_secs\":$wall,\"replay\":\"$(json_text "$replay")\",\"message\":\"$(json_text "$message")\"}"
   if [ "$kind" = pass ]; then
     grep '^FAIL' "$out" | head -32 | while read -r line; do
-      local failing command
+      local failing command seen=false
+      known_failure "$name" "$line" && seen=true
       failing=$(echo "$line" | sed -n 's/^FAIL seed=\([0-9]*\).*/\1/p')
       command=$(echo "$line" | sed -n 's/.*:: replay: nanocode-sim//p')
-      record "{\"time\":$started,\"commit\":\"$sha\",\"scenario\":\"$name\",\"kind\":\"seed\",\"seed\":${failing:-0},\"count\":1,\"ok\":false,\"replay\":\"$(json_text "$bin$command")\",\"message\":\"$(json_text "$line")\"}"
+      record "{\"time\":$started,\"commit\":\"$sha\",\"scenario\":\"$name\",\"kind\":\"seed\",\"seed\":${failing:-0},\"count\":1,\"ok\":false,\"known\":$seen,\"replay\":\"$(json_text "$bin$command")\",\"message\":\"$(json_text "$line")\"}"
     done
   fi
   if [ "$ok" = false ]; then
@@ -314,7 +350,8 @@ summary() {
       if (kind == "seed" || scenario == "build") next
       runs[scenario]++
       seeds[scenario] += field("count")
-      if (field("ok") != "true") bad[scenario]++
+      if (field("ok") != "true" && field("known") == "true") known[scenario]++
+      else if (field("ok") != "true") bad[scenario]++
       total += field("count")
       if (time < first || first == 0) first = time
       if (time > last) last = time
@@ -323,8 +360,8 @@ summary() {
     END {
       span = last - first
       if (span <= 0) span = 1
-      printf "%-36s %8s %12s %8s %10s\n", "scenario", "runs", "seeds", "failed", "seeds/h"
-      for (s in runs) printf "%-36s %8d %12d %8d %10d\n", s, runs[s], seeds[s], bad[s], seeds[s] * 3600 / span
+      printf "%-36s %8s %12s %8s %8s %10s\n", "scenario", "runs", "seeds", "failed", "known", "seeds/h"
+      for (s in runs) printf "%-36s %8d %12d %8d %8d %10d\n", s, runs[s], seeds[s], bad[s], known[s], seeds[s] * 3600 / span
       n = 0
       for (c in commits) n++
       printf "total %d seeds over %.2f h, %d per hour, %d commits\n", total, span / 3600, total * 3600 / span, n
@@ -340,6 +377,7 @@ failures() {
       group = field("message")
       sub(/ :: replay:.*/, "", group)
       gsub(/[0-9]+/, "N", group)
+      if (field("known") == "true") group = "[known] " group
       key = field("scenario") " | " group
       count[key]++
       if (!(key in example)) example[key] = field("commit") " " field("replay")

@@ -27,7 +27,7 @@ tracing.workspace = true
 nanocode-tls.workspace = true
 reqwest.workspace = true
 serde.workspace = true
-tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "sync", "time"] }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "time"] }
 url.workspace = true
 
 [lints]

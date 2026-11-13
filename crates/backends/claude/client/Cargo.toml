@@ -20,7 +20,7 @@ base64.workspace = true
 url.workspace = true
 futures-util.workspace = true
 nanocode-http.workspace = true
-tokio = { workspace = true, features = ["macros", "sync", "time"] }
+tokio = { workspace = true, features = ["time"] }
 http.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -29,7 +29,7 @@ tracing.workspace = true
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 reqwest = { workspace = true, features = ["stream"] }
 bytes = "1.9"
-tokio = { workspace = true, features = ["fs", "io-util", "net", "process", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["fs", "io-util", "net", "process"] }
 nanocode-tls.workspace = true
 unicode-normalization.workspace = true
 

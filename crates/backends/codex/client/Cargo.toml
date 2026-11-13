@@ -35,7 +35,7 @@ tracing.workspace = true
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 nanocode-tls.workspace = true
 reqwest.workspace = true
-tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time", "rt"] }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "sync", "time", "rt"] }
 tokio-rustls.workspace = true
 nanocode-websocket.workspace = true
 url.workspace = true

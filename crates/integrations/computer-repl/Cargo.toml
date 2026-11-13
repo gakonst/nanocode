@@ -18,7 +18,7 @@ nanocode-tool-contracts.workspace = true
 nanocode-types.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tokio = { workspace = true, features = ["io-util", "macros", "process", "rt", "time"] }
+tokio = { workspace = true, features = ["io-util", "macros", "process", "rt", "sync", "time"] }
 
 [lints.rust]
 unsafe_code = "deny"

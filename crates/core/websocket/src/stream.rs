@@ -1,5 +1,5 @@
 use std::{
-    io::{self, Read, Write},
+    io::{self, IoSlice, Read, Write},
     pin::Pin,
     sync::Arc,
     task::{Context, Poll, Wake, Waker},
@@ -65,6 +65,13 @@ impl<S: AsyncWrite + Unpin> Write for Io<'_, '_, '_, S> {
         }
     }
 
+    fn write_vectored(&mut self, buffers: &[IoSlice<'_>]) -> io::Result<usize> {
+        match Pin::new(&mut *self.stream).poll_write_vectored(self.context, buffers) {
+            Poll::Ready(result) => result,
+            Poll::Pending => Err(io::ErrorKind::WouldBlock.into()),
+        }
+    }
+
     fn flush(&mut self) -> io::Result<()> {
         match Pin::new(&mut *self.stream).poll_flush(self.context) {
             Poll::Ready(result) => result,
@@ -103,9 +110,10 @@ enum Registration {
 impl<S: AsyncRead + AsyncWrite + Unpin> WebSocketStream<S> {
     fn new(stream: S, role: Role, read_ahead: Vec<u8>, config: Option<WebSocketConfig>) -> Self {
         let proxy = Arc::new(WakerProxy::default());
+        let vectored = stream.is_write_vectored();
         Self {
             stream,
-            protocol: Protocol::new(role, read_ahead, config.unwrap_or_default()),
+            protocol: Protocol::new(role, read_ahead, config.unwrap_or_default(), vectored),
             waker: Waker::from(Arc::clone(&proxy)),
             proxy,
             closing: false,

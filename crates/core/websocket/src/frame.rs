@@ -285,6 +285,19 @@ impl Frame {
             apply_mask(&mut output[start..], mask);
         }
     }
+
+    pub(crate) fn format_header_into(self, output: &mut Vec<u8>) -> Vec<u8> {
+        let Self {
+            header,
+            mut payload,
+        } = self;
+        let length = u64::try_from(payload.len()).expect("a payload length fits in 64 bits");
+        header.format(length, output);
+        if let Some(mask) = header.mask {
+            apply_mask(&mut payload, mask);
+        }
+        payload
+    }
 }
 
 pub(crate) fn apply_mask(buffer: &mut [u8], mask: [u8; MASK_BYTES]) {

@@ -1,5 +1,5 @@
 use std::{
-    io,
+    io::{self, IoSlice},
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
@@ -51,6 +51,24 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncWrite for MaybeTlsStream<S> {
         match self.get_mut() {
             Self::Plain(stream) => Pin::new(stream).poll_write(context, buffer),
             Self::Rustls(stream) => Pin::new(stream).poll_write(context, buffer),
+        }
+    }
+
+    fn poll_write_vectored(
+        self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        buffers: &[IoSlice<'_>],
+    ) -> Poll<io::Result<usize>> {
+        match self.get_mut() {
+            Self::Plain(stream) => Pin::new(stream).poll_write_vectored(context, buffers),
+            Self::Rustls(stream) => Pin::new(stream).poll_write_vectored(context, buffers),
+        }
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        match self {
+            Self::Plain(stream) => stream.is_write_vectored(),
+            Self::Rustls(stream) => stream.is_write_vectored(),
         }
     }
 

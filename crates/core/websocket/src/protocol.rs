@@ -1,6 +1,6 @@
 use std::{
-    io::{self, Read, Write},
-    mem::replace,
+    io::{self, IoSlice, Read, Write},
+    mem::{replace, swap},
 };
 
 use crate::{
@@ -228,11 +228,17 @@ pub(crate) struct Protocol {
     reader: FrameReader,
     output: Vec<u8>,
     output_start: usize,
+    large: LargePayload,
     masks: MaskSource,
 }
 
 impl Protocol {
-    pub(crate) fn new(role: Role, read_ahead: Vec<u8>, config: WebSocketConfig) -> Self {
+    pub(crate) fn new(
+        role: Role,
+        read_ahead: Vec<u8>,
+        config: WebSocketConfig,
+        vectored: bool,
+    ) -> Self {
         Self {
             role,
             config,
@@ -243,6 +249,7 @@ impl Protocol {
             reader: FrameReader::new(read_ahead, config.read_buffer_bytes),
             output: Vec::new(),
             output_start: 0,
+            large: LargePayload::new(vectored),
             masks: MaskSource::new(),
         }
     }
@@ -335,6 +342,9 @@ impl Protocol {
         if self.role == Role::Client {
             frame.header_mut().mask = Some(self.masks.next()?);
         }
+        if !self.large.is_idle() || self.large.takes(&frame) {
+            return self.buffer_large(stream, frame);
+        }
         if self.output_start == self.output.len() {
             self.output.clear();
             self.output_start = 0;
@@ -348,18 +358,63 @@ impl Protocol {
         self.state.check_connection_reset(result)
     }
 
+    #[cold]
+    fn buffer_large(&mut self, stream: &mut impl Write, frame: Frame) -> Result<()> {
+        if self.large.is_idle() {
+            if self.output_start == self.output.len() {
+                self.output.clear();
+                self.output_start = 0;
+            }
+            self.large.payload = frame.format_header_into(&mut self.output);
+            self.large.payload_start = 0;
+        } else {
+            frame.format_into(&mut self.large.behind);
+        }
+        let queued = self.output.len() - self.output_start + self.large.queued_bytes();
+        let result = if queued > WRITE_BUFFER_BYTES {
+            self.write_out(stream)
+        } else {
+            Ok(())
+        };
+        self.state.check_connection_reset(result)
+    }
+
     fn write_out(&mut self, stream: &mut impl Write) -> Result<()> {
+        if !self.large.is_idle() {
+            self.write_large(stream)?;
+        }
         while self.output_start < self.output.len() {
             let written = stream.write(&self.output[self.output_start..])?;
-            if written == 0 {
-                return Err(Error::Io(io::Error::new(
-                    io::ErrorKind::ConnectionReset,
-                    "Connection reset while sending",
-                )));
-            }
+            check_written(written)?;
             self.output_start += written;
         }
         self.output.clear();
+        self.output_start = 0;
+        Ok(())
+    }
+
+    #[cold]
+    fn write_large(&mut self, stream: &mut impl Write) -> Result<()> {
+        let large = &mut self.large;
+        while large.payload_start < large.payload.len() {
+            let buffered = &self.output[self.output_start..];
+            let payload = &large.payload[large.payload_start..];
+            let written = if buffered.is_empty() {
+                stream.write(payload)?
+            } else {
+                stream.write_vectored(&[IoSlice::new(buffered), IoSlice::new(payload)])?
+            };
+            check_written(written)?;
+            let from_output = written.min(buffered.len());
+            self.output_start += from_output;
+            large.payload_start += written - from_output;
+            assert!(large.payload_start <= large.payload.len());
+        }
+        assert_eq!(self.output_start, self.output.len());
+        large.payload = Vec::new();
+        large.payload_start = 0;
+        swap(&mut self.output, &mut large.behind);
+        large.behind.clear();
         self.output_start = 0;
         Ok(())
     }
@@ -490,6 +545,46 @@ impl Protocol {
             self.additional_send = Some(frame);
         }
     }
+}
+
+struct LargePayload {
+    vectored: bool,
+    payload: Vec<u8>,
+    payload_start: usize,
+    behind: Vec<u8>,
+}
+
+impl LargePayload {
+    const fn new(vectored: bool) -> Self {
+        Self {
+            vectored,
+            payload: Vec::new(),
+            payload_start: 0,
+            behind: Vec::new(),
+        }
+    }
+
+    const fn is_idle(&self) -> bool {
+        self.payload.is_empty()
+    }
+
+    fn takes(&self, frame: &Frame) -> bool {
+        self.vectored && frame.payload().len() >= WRITE_BUFFER_BYTES
+    }
+
+    const fn queued_bytes(&self) -> usize {
+        self.payload.len() - self.payload_start + self.behind.len()
+    }
+}
+
+fn check_written(written: usize) -> Result<()> {
+    if written == 0 {
+        return Err(Error::Io(io::Error::new(
+            io::ErrorKind::ConnectionReset,
+            "Connection reset while sending",
+        )));
+    }
+    Ok(())
 }
 
 fn check_size(size: usize, size_max: usize) -> Result<()> {

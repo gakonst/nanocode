@@ -924,6 +924,10 @@ impl DynamicToolProvider for Mcp {
         self.state.available_definitions()
     }
 
+    fn catalog_revision(&self) -> Option<u64> {
+        Some(self.state.revision())
+    }
+
     fn contains(&self, name: &str) -> bool {
         self.state
             .entry(name)

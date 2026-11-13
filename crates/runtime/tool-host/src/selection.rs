@@ -55,6 +55,10 @@ impl DynamicToolProvider for Gated {
         self.inner.model_catalog_visible()
     }
 
+    fn catalog_revision(&self) -> Option<u64> {
+        self.inner.catalog_revision()
+    }
+
     fn code_mode_tool_summaries(&self) -> Vec<(String, String)> {
         self.inner.code_mode_tool_summaries()
     }
@@ -682,6 +686,26 @@ impl Tools {
 
     #[cfg(target_family = "wasm")]
     pub const fn start_providers(&self) {}
+
+    #[must_use]
+    #[cfg(not(target_family = "wasm"))]
+    pub fn catalog_revision(&self) -> Option<Vec<u64>> {
+        self.runner_pool
+            .iter()
+            .map(RunnerRouting::catalog_revision)
+            .chain(
+                self.providers
+                    .iter()
+                    .map(|provider| provider.catalog_revision()),
+            )
+            .collect()
+    }
+
+    #[must_use]
+    #[cfg(target_family = "wasm")]
+    pub const fn catalog_revision(&self) -> Option<Vec<u64>> {
+        None
+    }
 
     #[must_use]
     #[cfg(not(target_family = "wasm"))]

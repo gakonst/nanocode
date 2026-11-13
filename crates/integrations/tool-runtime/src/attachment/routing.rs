@@ -64,6 +64,12 @@ impl From<RunnerPool> for RunnerRouting {
 struct AttachmentRouter;
 
 impl WorkspaceRouter for AttachmentRouter {
+    fn catalog_revision(&self, pool: &RunnerRouting) -> Option<u64> {
+        pool.pool()
+            .downcast_ref::<RunnerPool>()
+            .and_then(RunnerPool::catalog_revision)
+    }
+
     fn route(
         &self,
         catalog: &mut RoutingCatalog<'_>,

@@ -50,6 +50,7 @@ struct Catalog {
     search_index: Option<Arc<SearchIndex>>,
     pending_servers: BTreeSet<String>,
     generations: BTreeMap<String, u64>,
+    revision: u64,
 }
 
 pub(crate) struct ConnectedCatalog {
@@ -141,6 +142,7 @@ impl ProviderState {
                 search_index: None,
                 pending_servers,
                 generations,
+                revision: 0,
             }),
             remaining,
             discovery_timeout,
@@ -232,6 +234,7 @@ impl ProviderState {
         }
         catalog.pending_servers.remove(server_name);
         catalog.search_index = None;
+        catalog.revision += 1;
         catalog
             .pending_servers
             .is_empty()
@@ -248,6 +251,7 @@ impl ProviderState {
             catalog.failures.remove(server_name);
             catalog.refused.remove(server_name);
             catalog.pending_servers.insert(server_name.to_owned());
+            catalog.revision += 1;
             generation
         });
         self.publish_remaining();
@@ -303,6 +307,7 @@ impl ProviderState {
             for entry in &selected {
                 catalog.active.insert(entry.canonical_name.clone());
             }
+            catalog.revision += 1;
             catalog.active.len()
         });
         tracing::debug!(
@@ -358,6 +363,10 @@ impl ProviderState {
             "ready_servers": catalog.clients.keys().collect::<Vec<_>>(),
             "complete": catalog.pending_servers.is_empty(),
         })
+    }
+
+    pub(crate) fn revision(&self) -> u64 {
+        self.catalog.read(|catalog| catalog.revision)
     }
 
     pub(crate) fn available_definitions(&self) -> Vec<ToolDefinition> {

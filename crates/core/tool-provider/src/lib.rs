@@ -53,6 +53,10 @@ pub trait DynamicToolProvider: Send + Sync {
         true
     }
 
+    fn catalog_revision(&self) -> Option<u64> {
+        None
+    }
+
     fn code_mode_tool_summaries(&self) -> Vec<(String, String)> {
         Vec::new()
     }

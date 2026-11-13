@@ -135,6 +135,10 @@ pub trait WorkspaceRouter: Send + Sync + 'static {
         store: Option<Arc<dyn ProcessRouteStore>>,
         pool: Option<&RunnerRouting>,
     );
+
+    fn catalog_revision(&self, _pool: &RunnerRouting) -> Option<u64> {
+        None
+    }
 }
 
 #[derive(Clone)]
@@ -145,6 +149,11 @@ pub struct RunnerRouting {
 }
 
 impl RunnerRouting {
+    #[must_use]
+    pub fn catalog_revision(&self) -> Option<u64> {
+        self.router.catalog_revision(self)
+    }
+
     #[doc(hidden)]
     pub fn new(pool: Arc<dyn Any + Send + Sync>, router: Arc<dyn WorkspaceRouter>) -> Self {
         Self {

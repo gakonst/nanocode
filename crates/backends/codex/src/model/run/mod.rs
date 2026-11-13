@@ -90,6 +90,7 @@ pub(crate) struct ModelRun {
     stats: RunStats,
     transport_baseline: TransportStatsSnapshot,
     session: Option<ModelSessionState>,
+    prepared: Option<PreparedSession>,
     active_tools: Option<ToolRuntimeControl>,
     active_tool_calls: Vec<ActiveToolCall>,
     terminated_cell_output: Vec<(String, String)>,
@@ -300,6 +301,7 @@ impl ModelRun {
             stats: RunStats::default(),
             transport_baseline: TransportStatsSnapshot::default(),
             session: None,
+            prepared: None,
             active_tools: None,
             active_tool_calls: Vec::new(),
             terminated_cell_output: Vec::new(),
@@ -393,6 +395,7 @@ impl ModelRun {
                 context,
                 preserve_inherited_delta: checkpoint.preserve_inherited_delta,
             }),
+            prepared: None,
             active_tools: Some(active_tools),
             active_tool_calls: Vec::new(),
             terminated_cell_output: Vec::new(),
@@ -454,11 +457,7 @@ impl ModelRun {
     pub(crate) fn preconnect(
         &mut self,
     ) -> Option<crate::agent::execution::ExecutionFuture<'static, ()>> {
-        if self.session.is_none()
-            && let Ok(workspace) = self.context_source.resolve_workspace(None)
-        {
-            drop(self.attempt_factory(&tool_runtime(&workspace, &self.config, &self.tools)));
-        }
+        self.prepare_session();
         let factory = ResponsesAttemptFactory::new(
             RequestProfile::new(
                 self.provider_session_id.to_string(),
@@ -543,6 +542,66 @@ impl ModelRun {
             global_instructions: self.global_instructions.clone(),
             context_baseline: session.context.baseline(),
         })
+    }
+
+    fn prepared_matches(&self, prepared: &PreparedSession, workspace: &str) -> bool {
+        prepared.workspace == workspace
+            && Arc::ptr_eq(&prepared.config, &self.config)
+            && prepared.model == self.model
+            && prepared.request_id == self.events.request_id()
+            && self.tools.catalog_revision().as_ref() == Some(&prepared.catalog)
+    }
+
+    fn prepare_session(&mut self) {
+        if self.session.is_some() {
+            self.prepared = None;
+            return;
+        }
+        let Ok(workspace) = self.context_source.resolve_workspace(None) else {
+            return;
+        };
+        if self
+            .prepared
+            .as_ref()
+            .is_some_and(|prepared| self.prepared_matches(prepared, &workspace))
+        {
+            return;
+        }
+        self.prepared = None;
+        let catalog = self.tools.catalog_revision();
+        let tools = tool_runtime(&workspace, &self.config, &self.tools);
+        let Ok(factory) = self.attempt_factory(&tools) else {
+            return;
+        };
+        if let Some(catalog) =
+            catalog.filter(|catalog| self.tools.catalog_revision().as_ref() == Some(catalog))
+        {
+            self.prepared = Some(PreparedSession {
+                workspace,
+                config: Arc::clone(&self.config),
+                model: self.model,
+                request_id: self.events.request_id().to_owned(),
+                catalog,
+                tools,
+                factory,
+            });
+        }
+    }
+
+    fn session_tools(&mut self, workspace: &str) -> Result<(ToolRuntime, ResponsesAttemptFactory)> {
+        if let Some(PreparedSession {
+            tools, mut factory, ..
+        }) = self
+            .prepared
+            .take()
+            .filter(|prepared| self.prepared_matches(prepared, workspace))
+        {
+            factory.set_events(self.events.clone());
+            return Ok((tools, factory));
+        }
+        let tools = tool_runtime(workspace, &self.config, &self.tools);
+        let factory = self.attempt_factory(&tools)?;
+        Ok((tools, factory))
     }
 
     fn empty_session(&mut self, requested_workspace: Option<&str>) -> Result<ModelSessionState> {

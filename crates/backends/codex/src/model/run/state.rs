@@ -1,5 +1,15 @@
 use super::*;
 
+pub(super) struct PreparedSession {
+    pub(super) workspace: String,
+    pub(super) config: Arc<ModelConfig>,
+    pub(super) model: Model,
+    pub(super) request_id: String,
+    pub(super) catalog: Vec<u64>,
+    pub(super) tools: ToolRuntime,
+    pub(super) factory: ResponsesAttemptFactory,
+}
+
 pub(super) struct ModelSessionState {
     pub(super) workspace: String,
     pub(super) tools: ToolRuntime,

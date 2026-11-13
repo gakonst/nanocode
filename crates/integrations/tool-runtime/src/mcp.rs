@@ -77,6 +77,10 @@ impl DynamicToolProvider for Mcp {
         self.0.model_catalog_visible()
     }
 
+    fn catalog_revision(&self) -> Option<u64> {
+        self.0.catalog_revision()
+    }
+
     fn code_mode_tool_summaries(&self) -> Vec<(String, String)> {
         self.0.code_mode_tool_summaries()
     }

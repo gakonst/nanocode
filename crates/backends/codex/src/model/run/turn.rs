@@ -553,11 +553,11 @@ impl ModelRun {
                 .context_source
                 .project_instructions(&workspace)
                 .map(Arc::<str>::from);
-            let tools = tool_runtime(&workspace, &self.config, &self.tools);
+            let (tools, factory) = self.session_tools(&workspace)?;
             let tool_control = tools.control();
             tool_control.begin_turn();
             self.active_tools = Some(tool_control);
-            let factory = self.attempt_factory(&tools)?.for_logical_turn(logical_turn);
+            let factory = factory.for_logical_turn(logical_turn);
             let user_content = self
                 .images
                 .prepare_user_input(&task.instruction)

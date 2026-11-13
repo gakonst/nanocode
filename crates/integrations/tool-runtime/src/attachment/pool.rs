@@ -929,6 +929,12 @@ impl RunnerPool {
             Ok(())
         })
     }
+    pub(crate) fn catalog_revision(&self) -> Option<u64> {
+        self.inner.state.read(|state| {
+            (state.runners.is_empty() && state.executors.is_empty()).then_some(state.revision)
+        })
+    }
+
     pub(crate) fn routes(&self) -> Vec<Route> {
         self.inner.state.read(|state| {
             state

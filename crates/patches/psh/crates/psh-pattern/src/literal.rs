@@ -11,6 +11,8 @@ const LIMIT_CLASS: usize = 10;
 const LIMIT_REPEAT: u32 = 10;
 const LIMIT_LITERAL_LENGTH: usize = 100;
 const LIMIT_TOTAL: usize = 64;
+const TRIMMED_PREFIX_BYTES: usize = 4;
+const TRIMMED_SUFFIX_BYTES: [usize; 4] = [4, 3, 2, 1];
 const RARE_BYTES_MAX: usize = 3;
 const BYTE_RANGES_MAX: usize = 3;
 const WORD_BYTES: usize = 8;
@@ -84,6 +86,21 @@ impl Seq {
             .is_some_and(|literals| literals.iter().all(|l| !l.exact))
     }
 
+    fn keep_first_bytes(&mut self, len: usize) {
+        if let Some(literals) = &mut self.literals {
+            for literal in literals {
+                if literal.bytes.len() > len {
+                    literal.bytes.truncate(len);
+                    literal.exact = false;
+                }
+            }
+        }
+    }
+
+    fn over_limit(&self) -> bool {
+        self.literals.as_ref().is_some_and(|l| l.len() > LIMIT_TOTAL)
+    }
+
     fn dedup(&mut self) {
         if let Some(literals) = &mut self.literals {
             let mut out: Vec<Literal> = Vec::with_capacity(literals.len());
@@ -105,8 +122,12 @@ fn union(mut a: Seq, b: Seq) -> Seq {
     };
     x.extend(y);
     a.dedup();
-    if a.literals.as_ref().is_some_and(|l| l.len() > LIMIT_TOTAL) {
-        return Seq::infinite();
+    if a.over_limit() {
+        a.keep_first_bytes(TRIMMED_PREFIX_BYTES);
+        a.dedup();
+        if a.over_limit() {
+            return Seq::infinite();
+        }
     }
     a
 }
@@ -128,13 +149,27 @@ fn cross(a: Seq, b: Seq) -> Seq {
         return out;
     };
     let exact_count = left.iter().filter(|l| l.exact).count();
-    if exact_count * right.len() + left.len() > LIMIT_TOTAL {
-        let mut out = Seq {
-            literals: Some(left),
+    let fits = |right: &[Literal]| exact_count * right.len() + left.len() <= LIMIT_TOTAL;
+    let right = if fits(&right) {
+        right
+    } else {
+        let trimmed = TRIMMED_SUFFIX_BYTES.iter().find_map(|&len| {
+            let mut trimmed = Seq {
+                literals: Some(right.clone()),
+            };
+            trimmed.keep_first_bytes(len);
+            trimmed.dedup();
+            trimmed.literals.filter(|literals| fits(literals))
+        });
+        let Some(trimmed) = trimmed else {
+            let mut out = Seq {
+                literals: Some(left),
+            };
+            out.make_inexact();
+            return out;
         };
-        out.make_inexact();
-        return out;
-    }
+        trimmed
+    };
     let mut out = Vec::new();
     for literal in left {
         if !literal.exact {

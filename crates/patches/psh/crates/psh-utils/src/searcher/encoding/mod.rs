@@ -591,6 +591,13 @@ fn put_scalar(destination: &mut [u8], at: usize, scalar: u32) -> usize {
     }
 }
 
+fn ascii_word(source: &[u8], at: usize) -> bool {
+    let word: [u8; WORD_BYTES] = source[at..at + WORD_BYTES]
+        .try_into()
+        .expect("a word of input bytes");
+    u64::from_ne_bytes(word) & WORD_HIGH_BITS == 0
+}
+
 fn copy_ascii_run(source: &[u8], destination: &mut [u8]) -> usize {
     let length = source.len().min(destination.len());
     let ascii = ascii_prefix(&source[..length]);

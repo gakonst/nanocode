@@ -1,7 +1,7 @@
 use super::data::BIG5_ASTRAL_POINTERS;
 use super::{
     ASCII_END, AsciiRun, BIG5, BMP_BYTES_MAX, Decoded, DecoderResult, EUC_KR, JIS0208,
-    SCALAR_BYTES_MAX, Transcode, WORD_BYTES, WORD_HIGH_BITS, copy_ascii_run, put_scalar,
+    SCALAR_BYTES_MAX, Transcode, WORD_BYTES, ascii_word, copy_ascii_run, put_scalar,
 };
 
 const PUNCTUATION_END: u8 = 60;
@@ -258,13 +258,6 @@ const fn user_defined_table() -> [u32; BYTE_VALUES] {
 }
 
 static USER_DEFINED_UTF8: [u32; BYTE_VALUES] = user_defined_table();
-
-fn ascii_word(source: &[u8], at: usize) -> bool {
-    let word: [u8; WORD_BYTES] = source[at..at + WORD_BYTES]
-        .try_into()
-        .expect("a word of input bytes");
-    u64::from_ne_bytes(word) & WORD_HIGH_BITS == 0
-}
 
 fn byte_run(source: &[u8], destination: &mut [u8], table: &[u32; BYTE_VALUES]) -> ByteRun {
     let count = source.len().min(destination.len() / BMP_BYTES_MAX);

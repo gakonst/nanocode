@@ -1,5 +1,8 @@
 use super::data::JIS0212_INDEX;
-use super::{ASCII_END, AsciiRun, BMP_BYTES_MAX, Decoded, DecoderResult, Transcode};
+use super::{
+    ASCII_END, AsciiRun, BMP_BYTES_MAX, Decoded, DecoderResult, JIS0208, Transcode, WORD_BYTES,
+    ascii_word, copy_ascii_run, put_scalar,
+};
 
 const ROW_CELLS: usize = 94;
 const HALF_WIDTH_KATAKANA_FIRST: u32 = 0xFF61;
@@ -35,7 +38,7 @@ fn jis0208_trail(transcode: &mut Transcode<'_, '_>, lead: u8, byte: u8) -> Optio
     if !(0xA1..=0xFE).contains(&byte) {
         return Some(malformed(transcode, byte));
     }
-    match super::JIS0208.get(usize::from(lead) * ROW_CELLS + usize::from(byte - 0xA1)) {
+    match JIS0208.get(usize::from(lead) * ROW_CELLS + usize::from(byte - 0xA1)) {
         Some(code_point) => {
             transcode.write_scalar(u32::from(code_point));
             None
@@ -72,6 +75,65 @@ fn half_width_katakana(transcode: &mut Transcode<'_, '_>, byte: u8) -> Option<De
     None
 }
 
+fn euc_jp_character(source: &[u8], read: usize) -> Option<(u32, usize)> {
+    let first = source[read];
+    let second = *source.get(read + 1)?;
+    match first {
+        0xA1..=0xFE if (0xA1..=0xFE).contains(&second) => {
+            let pointer = usize::from(first - 0xA1) * ROW_CELLS + usize::from(second - 0xA1);
+            Some((u32::from(JIS0208.get(pointer)?), 2))
+        }
+        0x8E if (0xA1..=0xDF).contains(&second) => {
+            Some((HALF_WIDTH_KATAKANA_FIRST + u32::from(second - 0xA1), 2))
+        }
+        0x8F if (0xA1..=0xFE).contains(&second) => {
+            let third = *source.get(read + 2)?;
+            if !(0xA1..=0xFE).contains(&third) {
+                return None;
+            }
+            let pointer = usize::from(second - 0xA1) * ROW_CELLS + usize::from(third - 0xA1);
+            Some((u32::from(JIS0212_INDEX.get(pointer)?), 3))
+        }
+        _ => None,
+    }
+}
+
+fn characters(transcode: &mut Transcode<'_, '_>) -> bool {
+    let source = transcode.source;
+    let destination = &mut *transcode.destination;
+    let mut read = transcode.read;
+    let mut written = transcode.written;
+    let mut strict = true;
+    while read < source.len() && destination.len() - written >= BMP_BYTES_MAX {
+        let byte = source[read];
+        if byte < ASCII_END {
+            let limit = (destination.len() - written - BMP_BYTES_MAX + 1).min(source.len() - read);
+            let run = if limit >= WORD_BYTES && ascii_word(source, read) {
+                copy_ascii_run(
+                    &source[read..read + limit],
+                    &mut destination[written..written + limit],
+                )
+            } else {
+                destination[written] = byte;
+                1
+            };
+            read += run;
+            written += run;
+            strict = false;
+            continue;
+        }
+        let Some((scalar, length)) = euc_jp_character(source, read) else {
+            break;
+        };
+        written += put_scalar(destination, written, scalar);
+        read += length;
+        strict = true;
+    }
+    transcode.read = read;
+    transcode.written = written;
+    strict
+}
+
 impl EucJpDecoder {
     pub(super) fn new() -> EucJpDecoder {
         EucJpDecoder {
@@ -91,6 +153,9 @@ impl EucJpDecoder {
             loop {
                 if let Some(decoded) = self.character(transcode, last, non_ascii) {
                     return decoded;
+                }
+                if !characters(transcode) {
+                    continue 'run;
                 }
                 if !transcode.has_input() {
                     return transcode.end(DecoderResult::InputEmpty);
@@ -272,7 +337,51 @@ impl Iso2022JpDecoder {
             if let Some(decoded) = self.byte(transcode, byte) {
                 return decoded;
             }
+            self.run(transcode);
         }
+    }
+
+    fn run(&mut self, transcode: &mut Transcode<'_, '_>) {
+        let source = transcode.source;
+        let destination = &mut *transcode.destination;
+        let mut read = transcode.read;
+        let mut written = transcode.written;
+        match self.state {
+            State::Mode(Mode::Ascii) => {
+                while read < source.len() && destination.len() - written >= BMP_BYTES_MAX {
+                    let byte = source[read];
+                    if byte >= ASCII_END || byte == ESCAPE || byte == SHIFT_OUT || byte == SHIFT_IN
+                    {
+                        break;
+                    }
+                    destination[written] = byte;
+                    read += 1;
+                    written += 1;
+                }
+            }
+            State::Mode(Mode::LeadByte) => {
+                while read + 1 < source.len() && destination.len() - written >= BMP_BYTES_MAX {
+                    let lead = source[read];
+                    let trail = source[read + 1];
+                    if !(0x21..=0x7E).contains(&lead) || !(0x21..=0x7E).contains(&trail) {
+                        break;
+                    }
+                    let pointer = usize::from(lead - 0x21) * ROW_CELLS + usize::from(trail - 0x21);
+                    let Some(code_point) = JIS0208.get(pointer) else {
+                        break;
+                    };
+                    written += put_scalar(destination, written, u32::from(code_point));
+                    read += 2;
+                    self.lead = lead;
+                }
+            }
+            _ => return,
+        }
+        if read != transcode.read {
+            self.output_flag = false;
+        }
+        transcode.read = read;
+        transcode.written = written;
     }
 
     fn end_of_input(&mut self, transcode: &mut Transcode<'_, '_>) -> Decoded {
@@ -346,7 +455,7 @@ impl Iso2022JpDecoder {
             return Some(transcode.end(DecoderResult::Malformed));
         }
         let pointer = usize::from(self.lead - 0x21) * ROW_CELLS + usize::from(byte - 0x21);
-        match super::JIS0208.get(pointer) {
+        match JIS0208.get(pointer) {
             Some(code_point) => {
                 transcode.write_scalar(u32::from(code_point));
                 None

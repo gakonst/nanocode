@@ -27,6 +27,11 @@ const LUMA_TABLE: u8 = 0;
 const CHROMA_TABLE: u8 = 1;
 const DC_CLASS: u8 = 0;
 const AC_CLASS: u8 = 1;
+const BLOCK_SIDE: usize = 8;
+const RGB_BYTES: usize = 3;
+const ROW_BYTES: usize = BLOCK_SIDE * RGB_BYTES;
+const WORD_BITS: u32 = 32;
+const BYTE_BITS: u32 = 8;
 
 const LUMA_QUANTIZATION: [u8; 64] = [
     16, 11, 10, 16, 24, 40, 51, 61, 12, 12, 14, 19, 26, 58, 60, 55, 14, 13, 16, 24, 40, 57, 69, 56,
@@ -115,32 +120,63 @@ const COMPONENTS: [Component; 3] = [
 
 struct BitWriter {
     bytes: Vec<u8>,
-    accumulator: u32,
-    bit_count: u8,
+    accumulator: u64,
+    bit_count: u32,
 }
 
 impl BitWriter {
-    fn write_bits(&mut self, bits: u16, size: u8) {
+    fn write_bits(&mut self, bits: u32, size: u32) {
         if size == 0 {
             return;
         }
+        assert!(size <= WORD_BITS, "a write holds at most one word");
+        assert!(
+            self.bit_count < WORD_BITS,
+            "whole words are flushed after each write"
+        );
         self.bit_count += size;
-        self.accumulator |= u32::from(bits) << (32 - self.bit_count);
-        while self.bit_count >= 8 {
-            let byte = (self.accumulator >> 24) as u8;
-            self.bytes.push(byte);
-            if byte == 0xFF {
-                self.bytes.push(0x00);
+        self.accumulator |= u64::from(bits) << (u64::BITS - self.bit_count);
+        if self.bit_count >= WORD_BITS {
+            let word = (self.accumulator >> WORD_BITS) as u32;
+            let bytes = word.to_be_bytes();
+            if bytes.contains(&0xFF) {
+                for byte in bytes {
+                    self.push_byte(byte);
+                }
+            } else {
+                self.bytes.extend_from_slice(&bytes);
             }
-            self.bit_count -= 8;
-            self.accumulator <<= 8;
+            self.accumulator <<= WORD_BITS;
+            self.bit_count -= WORD_BITS;
+        }
+    }
+
+    fn push_byte(&mut self, byte: u8) {
+        self.bytes.push(byte);
+        if byte == 0xFF {
+            self.bytes.push(0x00);
+        }
+    }
+
+    fn flush_bytes(&mut self) {
+        while self.bit_count >= BYTE_BITS {
+            self.push_byte((self.accumulator >> (u64::BITS - BYTE_BITS)) as u8);
+            self.accumulator <<= BYTE_BITS;
+            self.bit_count -= BYTE_BITS;
         }
     }
 
     fn huffman(&mut self, value: u8, table: &CodeTable) {
         let (size, code) = table[usize::from(value)];
         assert!(size <= 16, "the symbol has a Huffman code");
-        self.write_bits(code, size);
+        self.write_bits(u32::from(code), u32::from(size));
+    }
+
+    fn symbol(&mut self, value: u8, table: &CodeTable, bits: u16, bit_size: u8) {
+        let (size, code) = table[usize::from(value)];
+        assert!(size <= 16, "the symbol has a Huffman code");
+        let combined = (u32::from(code) << bit_size) | u32::from(bits);
+        self.write_bits(combined, u32::from(size) + u32::from(bit_size));
     }
 
     fn write_block(
@@ -152,24 +188,29 @@ impl BitWriter {
     ) -> i32 {
         let dc = block[0];
         let (size, value) = encode_coefficient(dc - previous_dc);
-        self.huffman(size, dc_table);
-        self.write_bits(value, size);
-        let mut zero_run = 0_u8;
-        for &index in &UNZIGZAG[1..] {
-            if block[index] == 0 {
-                zero_run += 1;
-                continue;
-            }
+        self.symbol(size, dc_table, value, size);
+        let mut zigzag = [0_i32; 64];
+        for (target, &index) in zigzag.iter_mut().zip(&UNZIGZAG) {
+            *target = block[index];
+        }
+        let mut nonzero = 0_u64;
+        for (position, &coefficient) in zigzag.iter().enumerate().skip(1) {
+            nonzero |= u64::from(coefficient != 0) << position;
+        }
+        let mut last = 0_u32;
+        while nonzero != 0 {
+            let position = nonzero.trailing_zeros();
+            let mut zero_run = position - last - 1;
             while zero_run > 15 {
                 self.huffman(0xF0, ac_table);
                 zero_run -= 16;
             }
-            let (size, value) = encode_coefficient(block[index]);
-            self.huffman((zero_run << 4) | size, ac_table);
-            self.write_bits(value, size);
-            zero_run = 0;
+            let (size, value) = encode_coefficient(zigzag[position as usize]);
+            self.symbol(((zero_run as u8) << 4) | size, ac_table, value, size);
+            last = position;
+            nonzero &= nonzero - 1;
         }
-        if block[UNZIGZAG[63]] == 0 {
+        if last != 63 {
             self.huffman(0x00, ac_table);
         }
         dc
@@ -309,6 +350,7 @@ pub fn encode(
         Color::Rgb => encode_rgb(&mut writer, &image, &tables),
     }
     writer.write_bits(0x7F, 7);
+    writer.flush_bytes();
     writer.marker(END_OF_IMAGE);
     Ok(writer.bytes)
 }
@@ -345,49 +387,86 @@ fn round_half_away(value: f32) -> i32 {
     }
 }
 
+fn transform(samples: &[u8; 64], coefficients: &mut [i32; 64], table: &[u8; 64]) {
+    if nanocode_sys::jpeg::forward_dct_quantize(samples, table, coefficients) {
+        return;
+    }
+    forward_dct(samples, coefficients);
+    quantize(coefficients, table);
+}
+
+fn gather_gray(image: &Image<'_>, x: usize, y: usize, samples: &mut [u8; 64]) {
+    for (row, target) in samples
+        .as_chunks_mut::<BLOCK_SIDE>()
+        .0
+        .iter_mut()
+        .enumerate()
+    {
+        let source_row = (y + row).min(image.height - 1) * image.width;
+        if x + BLOCK_SIDE <= image.width {
+            target.copy_from_slice(&image.pixels[source_row + x..source_row + x + BLOCK_SIDE]);
+        } else {
+            for (column, sample) in target.iter_mut().enumerate() {
+                *sample = image.pixels[source_row + (x + column).min(image.width - 1)];
+            }
+        }
+    }
+}
+
+fn gather_rgb(image: &Image<'_>, x: usize, y: usize, rows: &mut [[u8; ROW_BYTES]; BLOCK_SIDE]) {
+    for (row, target) in rows.iter_mut().enumerate() {
+        let source_row = (y + row).min(image.height - 1) * image.width;
+        if x + BLOCK_SIDE <= image.width {
+            let start = (source_row + x) * RGB_BYTES;
+            target.copy_from_slice(&image.pixels[start..start + ROW_BYTES]);
+        } else {
+            for (column, pixel) in target.as_chunks_mut::<RGB_BYTES>().0.iter_mut().enumerate() {
+                let source = (source_row + (x + column).min(image.width - 1)) * RGB_BYTES;
+                pixel.copy_from_slice(&image.pixels[source..source + RGB_BYTES]);
+            }
+        }
+    }
+}
+
+fn convert_rows(rows: &[[u8; ROW_BYTES]; BLOCK_SIDE], planes: &mut [[u8; 64]; 3]) {
+    if nanocode_sys::jpeg::rgb_to_ycbcr(rows, planes) {
+        return;
+    }
+    for (row, pixels) in rows.iter().enumerate() {
+        for (column, pixel) in pixels.as_chunks::<RGB_BYTES>().0.iter().enumerate() {
+            let (luma, blue, red) = rgb_to_ycbcr(pixel[0], pixel[1], pixel[2]);
+            planes[0][row * BLOCK_SIDE + column] = luma;
+            planes[1][row * BLOCK_SIDE + column] = blue;
+            planes[2][row * BLOCK_SIDE + column] = red;
+        }
+    }
+}
+
 fn encode_gray(writer: &mut BitWriter, image: &Image<'_>, table: &[u8; 64]) {
     let mut samples = [0_u8; 64];
     let mut coefficients = [0_i32; 64];
     let mut previous = 0;
-    for y in (0..image.height).step_by(8) {
-        for x in (0..image.width).step_by(8) {
-            for row in 0..8 {
-                let source_row = (y + row).min(image.height - 1) * image.width;
-                for column in 0..8 {
-                    let source = source_row + (x + column).min(image.width - 1);
-                    samples[row * 8 + column] = image.pixels[source];
-                }
-            }
-            forward_dct(&samples, &mut coefficients);
-            quantize(&mut coefficients, table);
+    for y in (0..image.height).step_by(BLOCK_SIDE) {
+        for x in (0..image.width).step_by(BLOCK_SIDE) {
+            gather_gray(image, x, y, &mut samples);
+            transform(&samples, &mut coefficients, table);
             previous = writer.write_block(&coefficients, previous, &LUMA_DC_CODES, &LUMA_AC_CODES);
         }
     }
 }
 
 fn encode_rgb(writer: &mut BitWriter, image: &Image<'_>, tables: &[[u8; 64]; 2]) {
+    let mut rows = [[0_u8; ROW_BYTES]; BLOCK_SIDE];
     let mut planes = [[0_u8; 64]; 3];
     let mut coefficients = [[0_i32; 64]; 3];
     let mut previous = [0_i32; 3];
-    for y in (0..image.height).step_by(8) {
-        for x in (0..image.width).step_by(8) {
-            for row in 0..8 {
-                let source_row = (y + row).min(image.height - 1) * image.width;
-                for column in 0..8 {
-                    let source = (source_row + (x + column).min(image.width - 1)) * 3;
-                    let pixel = &image.pixels[source..source + 3];
-                    let (luma, blue, red) = rgb_to_ycbcr(pixel[0], pixel[1], pixel[2]);
-                    planes[0][row * 8 + column] = luma;
-                    planes[1][row * 8 + column] = blue;
-                    planes[2][row * 8 + column] = red;
-                }
-            }
-            for (plane, output) in planes.iter().zip(&mut coefficients) {
-                forward_dct(plane, output);
-            }
-            quantize(&mut coefficients[0], &tables[0]);
-            quantize(&mut coefficients[1], &tables[1]);
-            quantize(&mut coefficients[2], &tables[1]);
+    for y in (0..image.height).step_by(BLOCK_SIDE) {
+        for x in (0..image.width).step_by(BLOCK_SIDE) {
+            gather_rgb(image, x, y, &mut rows);
+            convert_rows(&rows, &mut planes);
+            transform(&planes[0], &mut coefficients[0], &tables[0]);
+            transform(&planes[1], &mut coefficients[1], &tables[1]);
+            transform(&planes[2], &mut coefficients[2], &tables[1]);
             previous[0] = writer.write_block(
                 &coefficients[0],
                 previous[0],

@@ -1,29 +1,37 @@
 #[cfg(target_arch = "aarch64")]
 use core::arch::aarch64::{
-    int16x8_t, int32x4_t, uint8x8_t, uint8x16x3_t, vaddq_s32, vcombine_s16, vcombine_u8,
-    vcombine_u16, vdupq_n_s16, vdupq_n_s32, vdupq_n_u16, vget_low_s16, vld1q_s16, vld1q_s32,
-    vmaxvq_u32, vminq_u16, vmlal_high_n_s16, vmlal_n_s16, vmulq_n_s32, vorrq_s32, vqmovun_s16,
-    vqmovun_s32, vqshrn_n_s32, vreinterpretq_s16_u16, vreinterpretq_s32_s64, vreinterpretq_s64_s32,
-    vreinterpretq_u32_s32, vshlq_n_s32, vshrq_n_s32, vst1q_s16, vst3q_u8, vsubq_s16, vsubq_s32,
-    vtrn1q_s32, vtrn2q_s32, vzip1q_s64, vzip2q_s64,
+    int16x8_t, int32x4_t, uint8x8_t, uint8x16x3_t, vaddq_s32, vcgeq_f32, vcleq_f32, vcombine_s16,
+    vcombine_u8, vcombine_u16, vcreate_u8, vcvtq_f32_s32, vcvtq_s32_f32, vdivq_f32, vdupq_n_f32,
+    vdupq_n_s16, vdupq_n_s32, vdupq_n_u16, vget_lane_u64, vget_low_s16, vld1q_s16, vld1q_s32,
+    vld3_u8, vmaxvq_u32, vminq_u16, vmlal_high_n_s16, vmlal_n_s16, vmlaq_n_s32, vmlsq_n_s32,
+    vmovl_high_s16, vmovl_s16, vmovl_u8, vmovn_s32, vmulq_n_s32, vorrq_s32, vqmovun_s16,
+    vqmovun_s32, vqshrn_n_s32, vreinterpret_u64_u8, vreinterpretq_s16_u16, vreinterpretq_s32_s64,
+    vreinterpretq_s32_u32, vreinterpretq_s64_s32, vreinterpretq_u32_s32, vshlq_n_s32, vshrq_n_s32,
+    vshrq_n_u32, vst1q_s16, vst1q_s32, vst3q_u8, vsubq_f32, vsubq_s16, vsubq_s32, vtrn1q_s32,
+    vtrn2q_s32, vzip1q_s64, vzip2q_s64,
 };
 #[cfg(target_arch = "x86_64")]
 use core::arch::x86_64::{
-    __m128i, __m256i, _mm_or_si128, _mm_packus_epi16, _mm_set_epi64x, _mm_setzero_si128,
-    _mm_shuffle_epi8, _mm_storeu_si128, _mm256_add_epi32, _mm256_castsi256_si128,
+    __m128i, __m256i, _CMP_GE_OQ, _CMP_LE_OQ, _mm_loadu_si128, _mm_or_si128, _mm_packus_epi16,
+    _mm_set_epi64x, _mm_setzero_si128, _mm_shuffle_epi8, _mm_storeu_si128, _mm256_add_epi32,
+    _mm256_castps_si256, _mm256_castsi256_si128, _mm256_cmp_ps, _mm256_cvtepi32_ps,
+    _mm256_cvtepu8_epi32, _mm256_cvttps_epi32, _mm256_div_ps, _mm256_extract_epi64,
     _mm256_extracti128_si256, _mm256_loadu_si256, _mm256_madd_epi16, _mm256_max_epi16,
-    _mm256_min_epi16, _mm256_mullo_epi32, _mm256_or_si256, _mm256_packs_epi32,
-    _mm256_permute2x128_si256, _mm256_permute4x64_epi64, _mm256_set1_epi16, _mm256_set1_epi32,
+    _mm256_min_epi16, _mm256_mullo_epi32, _mm256_or_si256, _mm256_packs_epi32, _mm256_packus_epi16,
+    _mm256_packus_epi32, _mm256_permute2x128_si256, _mm256_permute4x64_epi64,
+    _mm256_permutevar8x32_epi32, _mm256_set1_epi16, _mm256_set1_epi32, _mm256_set1_ps,
     _mm256_setr_epi32, _mm256_setzero_si256, _mm256_slli_epi32, _mm256_srai_epi32,
-    _mm256_sub_epi16, _mm256_sub_epi32, _mm256_testz_si256, _mm256_unpackhi_epi16,
-    _mm256_unpackhi_epi32, _mm256_unpackhi_epi64, _mm256_unpacklo_epi16, _mm256_unpacklo_epi32,
-    _mm256_unpacklo_epi64,
+    _mm256_srli_epi32, _mm256_storeu_si256, _mm256_sub_epi16, _mm256_sub_epi32, _mm256_sub_ps,
+    _mm256_testz_si256, _mm256_unpackhi_epi16, _mm256_unpackhi_epi32, _mm256_unpackhi_epi64,
+    _mm256_unpacklo_epi16, _mm256_unpacklo_epi32, _mm256_unpacklo_epi64,
 };
 
 const BLOCK_SIDE: usize = 8;
 const BLOCK_COEFFICIENTS: usize = BLOCK_SIDE * BLOCK_SIDE;
 const CONVERSION_PIXELS: usize = 16;
 const RGB_BYTES: usize = 3;
+const ENCODE_ROW_BYTES: usize = BLOCK_SIDE * RGB_BYTES;
+const PLANES: usize = 3;
 
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 mod factors {
@@ -53,6 +61,40 @@ mod factors {
     pub(super) const COLOR_PRECISION_BITS: i32 = 14;
     pub(super) const COLOR_ROUNDING: i16 = (1 << (COLOR_PRECISION_BITS - 1)) - 1;
     pub(super) const CHROMA_BIAS: i16 = 128;
+    pub(super) const FORWARD_FIX_0_298631336: i32 = 2446;
+    pub(super) const FORWARD_FIX_0_390180644: i32 = 3196;
+    pub(super) const FORWARD_FIX_0_541196100: i32 = 4433;
+    pub(super) const FORWARD_FIX_0_765366865: i32 = 6270;
+    pub(super) const FORWARD_FIX_0_899976223: i32 = 7373;
+    pub(super) const FORWARD_FIX_1_175875602: i32 = 9633;
+    pub(super) const FORWARD_FIX_1_501321110: i32 = 12_299;
+    pub(super) const FORWARD_FIX_1_847759065: i32 = 15_137;
+    pub(super) const FORWARD_FIX_1_961570560: i32 = 16_069;
+    pub(super) const FORWARD_FIX_2_053119869: i32 = 16_819;
+    pub(super) const FORWARD_FIX_2_562915447: i32 = 20_995;
+    pub(super) const FORWARD_FIX_3_072711026: i32 = 25_172;
+    pub(super) const FORWARD_CONSTANT_BITS: i32 = 13;
+    pub(super) const FORWARD_PASS_BITS: i32 = 2;
+    pub(super) const FORWARD_DC_BIAS: i32 = 8 * 128;
+    pub(super) const FORWARD_FIRST_SHIFT: i32 = FORWARD_CONSTANT_BITS - FORWARD_PASS_BITS;
+    pub(super) const FORWARD_SECOND_SHIFT: i32 = FORWARD_CONSTANT_BITS + FORWARD_PASS_BITS;
+    pub(super) const FORWARD_ODD_ROUNDING: i32 = 1 << (FORWARD_FIRST_SHIFT - 1);
+    pub(super) const FORWARD_SECOND_ROUNDING: i32 = 1 << (FORWARD_SECOND_SHIFT - 1);
+    pub(super) const FORWARD_SECOND_DC_ROUNDING: i32 = 1 << (FORWARD_PASS_BITS - 1);
+    pub(super) const QUANTIZE_SHIFT: i32 = 3;
+    pub(super) const QUANTIZE_HALF: f32 = 0.5;
+    pub(super) const SIGN_TO_DIVISOR_SHIFT: i32 = 32 - QUANTIZE_SHIFT;
+    pub(super) const LUMA_RED: i32 = 19595;
+    pub(super) const LUMA_GREEN: i32 = 38469;
+    pub(super) const LUMA_BLUE: i32 = 7471;
+    pub(super) const LUMA_ROUNDING: i32 = (1 << 15) - 1;
+    pub(super) const BLUE_RED: i32 = 11059;
+    pub(super) const BLUE_GREEN: i32 = 21709;
+    pub(super) const CHROMA_HALF: i32 = 32768;
+    pub(super) const CHROMA_ROUNDING: i32 = (128 * (1 << 16)) + ((1 << 15) - 1);
+    pub(super) const RED_GREEN: i32 = 27439;
+    pub(super) const RED_BLUE: i32 = 5329;
+    pub(super) const ENCODE_PRECISION_BITS: i32 = 16;
 }
 
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
@@ -133,6 +175,84 @@ pub fn ycbcr_to_rgb(luma: &[i16], blue: &[i16], red: &[i16], target: &mut [u8]) 
             .0,
     );
     pixels
+}
+
+pub fn forward_dct_quantize(
+    samples: &[u8; BLOCK_COEFFICIENTS],
+    table: &[u8; BLOCK_COEFFICIENTS],
+    output: &mut [i32; BLOCK_COEFFICIENTS],
+) -> bool {
+    if !vector_unit() {
+        return false;
+    }
+    assert!(
+        table.iter().all(|&factor| factor > 0),
+        "quantization factors are at least one"
+    );
+    run_forward_dct_quantize(samples, table, output);
+    true
+}
+
+pub fn rgb_to_ycbcr(
+    rows: &[[u8; ENCODE_ROW_BYTES]; BLOCK_SIDE],
+    planes: &mut [[u8; BLOCK_COEFFICIENTS]; PLANES],
+) -> bool {
+    if !vector_unit() {
+        return false;
+    }
+    run_rgb_to_ycbcr(rows, planes);
+    true
+}
+
+#[cfg(target_arch = "x86_64")]
+fn run_forward_dct_quantize(
+    samples: &[u8; BLOCK_COEFFICIENTS],
+    table: &[u8; BLOCK_COEFFICIENTS],
+    output: &mut [i32; BLOCK_COEFFICIENTS],
+) {
+    unsafe { x86::forward_dct_quantize(samples, table, output) }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn run_forward_dct_quantize(
+    samples: &[u8; BLOCK_COEFFICIENTS],
+    table: &[u8; BLOCK_COEFFICIENTS],
+    output: &mut [i32; BLOCK_COEFFICIENTS],
+) {
+    unsafe { arm::forward_dct_quantize(samples, table, output) }
+}
+
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+fn run_forward_dct_quantize(
+    _: &[u8; BLOCK_COEFFICIENTS],
+    _: &[u8; BLOCK_COEFFICIENTS],
+    _: &mut [i32; BLOCK_COEFFICIENTS],
+) {
+    unreachable!("vector_unit is false without a vector unit");
+}
+
+#[cfg(target_arch = "x86_64")]
+fn run_rgb_to_ycbcr(
+    rows: &[[u8; ENCODE_ROW_BYTES]; BLOCK_SIDE],
+    planes: &mut [[u8; BLOCK_COEFFICIENTS]; PLANES],
+) {
+    unsafe { x86::rgb_to_ycbcr(rows, planes) }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn run_rgb_to_ycbcr(
+    rows: &[[u8; ENCODE_ROW_BYTES]; BLOCK_SIDE],
+    planes: &mut [[u8; BLOCK_COEFFICIENTS]; PLANES],
+) {
+    unsafe { arm::rgb_to_ycbcr(rows, planes) }
+}
+
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+fn run_rgb_to_ycbcr(
+    _: &[[u8; ENCODE_ROW_BYTES]; BLOCK_SIDE],
+    _: &mut [[u8; BLOCK_COEFFICIENTS]; PLANES],
+) {
+    unreachable!("vector_unit is false without a vector unit");
 }
 
 type Pixels = [[u8; CONVERSION_PIXELS * RGB_BYTES]];
@@ -418,6 +538,236 @@ mod x86 {
             convert(luma, blue, red, target);
         }
     }
+
+    #[target_feature(enable = "avx2")]
+    fn odd_part(input: [__m256i; 4], rounding: __m256i) -> [__m256i; 4] {
+        let [t0, t1, t2, t3] = input;
+        let t12 = _mm256_add_epi32(t0, t2);
+        let t13 = _mm256_add_epi32(t1, t3);
+        let z1 = _mm256_add_epi32(
+            times(_mm256_add_epi32(t12, t13), FORWARD_FIX_1_175875602),
+            rounding,
+        );
+        let t12 = _mm256_add_epi32(times(t12, -FORWARD_FIX_0_390180644), z1);
+        let t13 = _mm256_add_epi32(times(t13, -FORWARD_FIX_1_961570560), z1);
+        let z1 = times(_mm256_add_epi32(t0, t3), -FORWARD_FIX_0_899976223);
+        let o0 = _mm256_add_epi32(
+            _mm256_add_epi32(times(t0, FORWARD_FIX_1_501321110), z1),
+            t12,
+        );
+        let o3 = _mm256_add_epi32(
+            _mm256_add_epi32(times(t3, FORWARD_FIX_0_298631336), z1),
+            t13,
+        );
+        let z1 = times(_mm256_add_epi32(t1, t2), -FORWARD_FIX_2_562915447);
+        let o1 = _mm256_add_epi32(
+            _mm256_add_epi32(times(t1, FORWARD_FIX_3_072711026), z1),
+            t13,
+        );
+        let o2 = _mm256_add_epi32(
+            _mm256_add_epi32(times(t2, FORWARD_FIX_2_053119869), z1),
+            t12,
+        );
+        [o0, o1, o2, o3]
+    }
+
+    #[target_feature(enable = "avx2")]
+    fn forward_pass<const FIRST: bool>(input: [__m256i; 8]) -> [__m256i; 8] {
+        let t0 = _mm256_add_epi32(input[0], input[7]);
+        let t1 = _mm256_add_epi32(input[1], input[6]);
+        let t2 = _mm256_add_epi32(input[2], input[5]);
+        let t3 = _mm256_add_epi32(input[3], input[4]);
+        let t10 = _mm256_add_epi32(t0, t3);
+        let t12 = _mm256_sub_epi32(t0, t3);
+        let t11 = _mm256_add_epi32(t1, t2);
+        let t13 = _mm256_sub_epi32(t1, t2);
+        let differences = [
+            _mm256_sub_epi32(input[0], input[7]),
+            _mm256_sub_epi32(input[1], input[6]),
+            _mm256_sub_epi32(input[2], input[5]),
+            _mm256_sub_epi32(input[3], input[4]),
+        ];
+        let odd = odd_part(differences, _mm256_set1_epi32(FORWARD_ODD_ROUNDING));
+        let even_product = times(_mm256_add_epi32(t12, t13), FORWARD_FIX_0_541196100);
+        let mut output = [_mm256_setzero_si256(); 8];
+        if FIRST {
+            let sum = _mm256_sub_epi32(
+                _mm256_add_epi32(t10, t11),
+                _mm256_set1_epi32(FORWARD_DC_BIAS),
+            );
+            output[0] = _mm256_slli_epi32::<FORWARD_PASS_BITS>(sum);
+            output[4] = _mm256_slli_epi32::<FORWARD_PASS_BITS>(_mm256_sub_epi32(t10, t11));
+            let z1 = _mm256_add_epi32(even_product, _mm256_set1_epi32(FORWARD_ODD_ROUNDING));
+            output[2] = _mm256_srai_epi32::<FORWARD_FIRST_SHIFT>(_mm256_add_epi32(
+                z1,
+                times(t12, FORWARD_FIX_0_765366865),
+            ));
+            output[6] = _mm256_srai_epi32::<FORWARD_FIRST_SHIFT>(_mm256_sub_epi32(
+                z1,
+                times(t13, FORWARD_FIX_1_847759065),
+            ));
+            output[1] = _mm256_srai_epi32::<FORWARD_FIRST_SHIFT>(odd[0]);
+            output[3] = _mm256_srai_epi32::<FORWARD_FIRST_SHIFT>(odd[1]);
+            output[5] = _mm256_srai_epi32::<FORWARD_FIRST_SHIFT>(odd[2]);
+            output[7] = _mm256_srai_epi32::<FORWARD_FIRST_SHIFT>(odd[3]);
+        } else {
+            let t10 = _mm256_add_epi32(t10, _mm256_set1_epi32(FORWARD_SECOND_DC_ROUNDING));
+            output[0] = _mm256_srai_epi32::<FORWARD_PASS_BITS>(_mm256_add_epi32(t10, t11));
+            output[4] = _mm256_srai_epi32::<FORWARD_PASS_BITS>(_mm256_sub_epi32(t10, t11));
+            let z1 = _mm256_add_epi32(even_product, _mm256_set1_epi32(FORWARD_SECOND_ROUNDING));
+            output[2] = _mm256_srai_epi32::<FORWARD_SECOND_SHIFT>(_mm256_add_epi32(
+                z1,
+                times(t12, FORWARD_FIX_0_765366865),
+            ));
+            output[6] = _mm256_srai_epi32::<FORWARD_SECOND_SHIFT>(_mm256_sub_epi32(
+                z1,
+                times(t13, FORWARD_FIX_1_847759065),
+            ));
+            output[1] = _mm256_srai_epi32::<FORWARD_SECOND_SHIFT>(odd[0]);
+            output[3] = _mm256_srai_epi32::<FORWARD_SECOND_SHIFT>(odd[1]);
+            output[5] = _mm256_srai_epi32::<FORWARD_SECOND_SHIFT>(odd[2]);
+            output[7] = _mm256_srai_epi32::<FORWARD_SECOND_SHIFT>(odd[3]);
+        }
+        output
+    }
+
+    #[target_feature(enable = "avx2")]
+    fn widen(bytes: &[u8; BLOCK_SIDE]) -> __m256i {
+        _mm256_cvtepu8_epi32(_mm_set_epi64x(0, i64::from_le_bytes(*bytes)))
+    }
+
+    #[target_feature(enable = "avx2")]
+    fn quantize(coefficients: __m256i, factors: &[u8; BLOCK_SIDE]) -> __m256i {
+        let sign =
+            _mm256_srli_epi32::<SIGN_TO_DIVISOR_SHIFT>(_mm256_srai_epi32::<31>(coefficients));
+        let divided = _mm256_srai_epi32::<QUANTIZE_SHIFT>(_mm256_add_epi32(coefficients, sign));
+        let value = _mm256_div_ps(
+            _mm256_cvtepi32_ps(divided),
+            _mm256_cvtepi32_ps(widen(factors)),
+        );
+        let whole = _mm256_cvttps_epi32(value);
+        let fraction = _mm256_sub_ps(value, _mm256_cvtepi32_ps(whole));
+        let up = _mm256_castps_si256(_mm256_cmp_ps::<_CMP_GE_OQ>(
+            fraction,
+            _mm256_set1_ps(QUANTIZE_HALF),
+        ));
+        let down = _mm256_castps_si256(_mm256_cmp_ps::<_CMP_LE_OQ>(
+            fraction,
+            _mm256_set1_ps(-QUANTIZE_HALF),
+        ));
+        _mm256_add_epi32(_mm256_sub_epi32(whole, up), down)
+    }
+
+    #[target_feature(enable = "avx2")]
+    pub(super) fn forward_dct_quantize(
+        samples: &[u8; BLOCK_COEFFICIENTS],
+        table: &[u8; BLOCK_COEFFICIENTS],
+        output: &mut [i32; BLOCK_COEFFICIENTS],
+    ) {
+        let mut rows = [_mm256_setzero_si256(); BLOCK_SIDE];
+        for (vector, line) in rows.iter_mut().zip(samples.as_chunks::<BLOCK_SIDE>().0) {
+            *vector = widen(line);
+        }
+        let first = forward_pass::<true>(transpose(rows));
+        let second = forward_pass::<false>(transpose(first));
+        for ((vector, factors), target) in second
+            .into_iter()
+            .zip(table.as_chunks::<BLOCK_SIDE>().0)
+            .zip(output.as_chunks_mut::<BLOCK_SIDE>().0)
+        {
+            let quantized = quantize(vector, factors);
+            unsafe { _mm256_storeu_si256(target.as_mut_ptr().cast(), quantized) };
+        }
+    }
+
+    const fn deinterleave_mask(channel: usize, from_high: bool) -> i64 {
+        let mut mask = 0_i64;
+        let mut index = 0;
+        while index < BLOCK_SIDE {
+            let position = index * RGB_BYTES + channel;
+            let byte = if from_high && position >= CONVERSION_PIXELS {
+                (position - CONVERSION_PIXELS) as u8
+            } else if !from_high && position < CONVERSION_PIXELS {
+                position as u8
+            } else {
+                SHUFFLE_ZERO
+            };
+            mask |= (byte as i64) << (8 * index);
+            index += 1;
+        }
+        mask
+    }
+
+    const DEINTERLEAVE_MASKS: [[i64; 2]; RGB_BYTES] = [
+        [deinterleave_mask(0, false), deinterleave_mask(0, true)],
+        [deinterleave_mask(1, false), deinterleave_mask(1, true)],
+        [deinterleave_mask(2, false), deinterleave_mask(2, true)],
+    ];
+
+    #[target_feature(enable = "avx2")]
+    fn weighted(
+        channels: [__m256i; RGB_BYTES],
+        weights: [i32; RGB_BYTES],
+        rounding: i32,
+    ) -> __m256i {
+        let sum = _mm256_add_epi32(
+            _mm256_add_epi32(
+                times(channels[0], weights[0]),
+                times(channels[1], weights[1]),
+            ),
+            _mm256_add_epi32(times(channels[2], weights[2]), _mm256_set1_epi32(rounding)),
+        );
+        _mm256_srai_epi32::<ENCODE_PRECISION_BITS>(sum)
+    }
+
+    #[target_feature(enable = "avx2")]
+    pub(super) fn rgb_to_ycbcr(
+        rows: &[[u8; ENCODE_ROW_BYTES]; BLOCK_SIDE],
+        planes: &mut [[u8; BLOCK_COEFFICIENTS]; PLANES],
+    ) {
+        let order = _mm256_setr_epi32(0, 4, 1, 5, 2, 6, 3, 7);
+        for (row, pixels) in rows.iter().enumerate() {
+            let (head, tail) = pixels.split_at(CONVERSION_PIXELS);
+            let head: &[u8; CONVERSION_PIXELS] =
+                head.try_into().expect("a row starts with sixteen bytes");
+            let tail: &[u8; BLOCK_SIDE] = tail.try_into().expect("a row ends with eight bytes");
+            let low = unsafe { _mm_loadu_si128(head.as_ptr().cast()) };
+            let high = _mm_set_epi64x(0, i64::from_le_bytes(*tail));
+            let mut channels = [_mm256_setzero_si256(); RGB_BYTES];
+            for (channel, masks) in channels.iter_mut().zip(DEINTERLEAVE_MASKS) {
+                let bytes = _mm_or_si128(
+                    _mm_shuffle_epi8(low, _mm_set_epi64x(0, masks[0])),
+                    _mm_shuffle_epi8(high, _mm_set_epi64x(0, masks[1])),
+                );
+                *channel = _mm256_cvtepu8_epi32(bytes);
+            }
+            let luma = weighted(channels, [LUMA_RED, LUMA_GREEN, LUMA_BLUE], LUMA_ROUNDING);
+            let blue = weighted(
+                channels,
+                [-BLUE_RED, -BLUE_GREEN, CHROMA_HALF],
+                CHROMA_ROUNDING,
+            );
+            let red = weighted(
+                channels,
+                [CHROMA_HALF, -RED_GREEN, -RED_BLUE],
+                CHROMA_ROUNDING,
+            );
+            let words = _mm256_packus_epi16(
+                _mm256_packus_epi32(luma, blue),
+                _mm256_packus_epi32(red, _mm256_setzero_si256()),
+            );
+            let bytes = _mm256_permutevar8x32_epi32(words, order);
+            let lanes = [
+                _mm256_extract_epi64::<0>(bytes),
+                _mm256_extract_epi64::<1>(bytes),
+                _mm256_extract_epi64::<2>(bytes),
+            ];
+            for (plane, lane) in planes.iter_mut().zip(lanes) {
+                plane[row * BLOCK_SIDE..(row + 1) * BLOCK_SIDE]
+                    .copy_from_slice(&lane.to_le_bytes());
+            }
+        }
+    }
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -628,6 +978,197 @@ mod arm {
                 vcombine_u8(low[2], high[2]),
             );
             unsafe { vst3q_u8(target.as_mut_ptr(), pixels) };
+        }
+    }
+
+    #[target_feature(enable = "neon")]
+    fn odd_part(input: [int32x4_t; 4], rounding: int32x4_t) -> [int32x4_t; 4] {
+        let [t0, t1, t2, t3] = input;
+        let t12 = vaddq_s32(t0, t2);
+        let t13 = vaddq_s32(t1, t3);
+        let z1 = vmlaq_n_s32(rounding, vaddq_s32(t12, t13), FORWARD_FIX_1_175875602);
+        let t12 = vmlaq_n_s32(z1, t12, -FORWARD_FIX_0_390180644);
+        let t13 = vmlaq_n_s32(z1, t13, -FORWARD_FIX_1_961570560);
+        let z1 = vmulq_n_s32(vaddq_s32(t0, t3), -FORWARD_FIX_0_899976223);
+        let o0 = vaddq_s32(vmlaq_n_s32(z1, t0, FORWARD_FIX_1_501321110), t12);
+        let o3 = vaddq_s32(vmlaq_n_s32(z1, t3, FORWARD_FIX_0_298631336), t13);
+        let z1 = vmulq_n_s32(vaddq_s32(t1, t2), -FORWARD_FIX_2_562915447);
+        let o1 = vaddq_s32(vmlaq_n_s32(z1, t1, FORWARD_FIX_3_072711026), t13);
+        let o2 = vaddq_s32(vmlaq_n_s32(z1, t2, FORWARD_FIX_2_053119869), t12);
+        [o0, o1, o2, o3]
+    }
+
+    #[target_feature(enable = "neon")]
+    fn forward_pass<const FIRST: bool>(input: [int32x4_t; 8]) -> [int32x4_t; 8] {
+        let t0 = vaddq_s32(input[0], input[7]);
+        let t1 = vaddq_s32(input[1], input[6]);
+        let t2 = vaddq_s32(input[2], input[5]);
+        let t3 = vaddq_s32(input[3], input[4]);
+        let t10 = vaddq_s32(t0, t3);
+        let t12 = vsubq_s32(t0, t3);
+        let t11 = vaddq_s32(t1, t2);
+        let t13 = vsubq_s32(t1, t2);
+        let differences = [
+            vsubq_s32(input[0], input[7]),
+            vsubq_s32(input[1], input[6]),
+            vsubq_s32(input[2], input[5]),
+            vsubq_s32(input[3], input[4]),
+        ];
+        let odd = odd_part(differences, vdupq_n_s32(FORWARD_ODD_ROUNDING));
+        let mut output = [vdupq_n_s32(0); 8];
+        if FIRST {
+            let sum = vsubq_s32(vaddq_s32(t10, t11), vdupq_n_s32(FORWARD_DC_BIAS));
+            output[0] = vshlq_n_s32::<FORWARD_PASS_BITS>(sum);
+            output[4] = vshlq_n_s32::<FORWARD_PASS_BITS>(vsubq_s32(t10, t11));
+            let z1 = vmlaq_n_s32(
+                vdupq_n_s32(FORWARD_ODD_ROUNDING),
+                vaddq_s32(t12, t13),
+                FORWARD_FIX_0_541196100,
+            );
+            output[2] =
+                vshrq_n_s32::<FORWARD_FIRST_SHIFT>(vmlaq_n_s32(z1, t12, FORWARD_FIX_0_765366865));
+            output[6] =
+                vshrq_n_s32::<FORWARD_FIRST_SHIFT>(vmlsq_n_s32(z1, t13, FORWARD_FIX_1_847759065));
+            output[1] = vshrq_n_s32::<FORWARD_FIRST_SHIFT>(odd[0]);
+            output[3] = vshrq_n_s32::<FORWARD_FIRST_SHIFT>(odd[1]);
+            output[5] = vshrq_n_s32::<FORWARD_FIRST_SHIFT>(odd[2]);
+            output[7] = vshrq_n_s32::<FORWARD_FIRST_SHIFT>(odd[3]);
+        } else {
+            let t10 = vaddq_s32(t10, vdupq_n_s32(FORWARD_SECOND_DC_ROUNDING));
+            output[0] = vshrq_n_s32::<FORWARD_PASS_BITS>(vaddq_s32(t10, t11));
+            output[4] = vshrq_n_s32::<FORWARD_PASS_BITS>(vsubq_s32(t10, t11));
+            let z1 = vmlaq_n_s32(
+                vdupq_n_s32(FORWARD_SECOND_ROUNDING),
+                vaddq_s32(t12, t13),
+                FORWARD_FIX_0_541196100,
+            );
+            output[2] =
+                vshrq_n_s32::<FORWARD_SECOND_SHIFT>(vmlaq_n_s32(z1, t12, FORWARD_FIX_0_765366865));
+            output[6] =
+                vshrq_n_s32::<FORWARD_SECOND_SHIFT>(vmlsq_n_s32(z1, t13, FORWARD_FIX_1_847759065));
+            output[1] = vshrq_n_s32::<FORWARD_SECOND_SHIFT>(odd[0]);
+            output[3] = vshrq_n_s32::<FORWARD_SECOND_SHIFT>(odd[1]);
+            output[5] = vshrq_n_s32::<FORWARD_SECOND_SHIFT>(odd[2]);
+            output[7] = vshrq_n_s32::<FORWARD_SECOND_SHIFT>(odd[3]);
+        }
+        output
+    }
+
+    #[target_feature(enable = "neon")]
+    fn widen(bytes: &[u8; BLOCK_SIDE]) -> (int32x4_t, int32x4_t) {
+        let words = vreinterpretq_s16_u16(vmovl_u8(vcreate_u8(u64::from_le_bytes(*bytes))));
+        (vmovl_s16(vget_low_s16(words)), vmovl_high_s16(words))
+    }
+
+    #[target_feature(enable = "neon")]
+    fn quantize(coefficients: int32x4_t, factors: int32x4_t) -> int32x4_t {
+        let sign = vreinterpretq_s32_u32(vshrq_n_u32::<SIGN_TO_DIVISOR_SHIFT>(
+            vreinterpretq_u32_s32(vshrq_n_s32::<31>(coefficients)),
+        ));
+        let divided = vshrq_n_s32::<QUANTIZE_SHIFT>(vaddq_s32(coefficients, sign));
+        let value = vdivq_f32(vcvtq_f32_s32(divided), vcvtq_f32_s32(factors));
+        let whole = vcvtq_s32_f32(value);
+        let fraction = vsubq_f32(value, vcvtq_f32_s32(whole));
+        let up = vreinterpretq_s32_u32(vcgeq_f32(fraction, vdupq_n_f32(QUANTIZE_HALF)));
+        let down = vreinterpretq_s32_u32(vcleq_f32(fraction, vdupq_n_f32(-QUANTIZE_HALF)));
+        vaddq_s32(vsubq_s32(whole, up), down)
+    }
+
+    #[target_feature(enable = "neon")]
+    pub(super) fn forward_dct_quantize(
+        samples: &[u8; BLOCK_COEFFICIENTS],
+        table: &[u8; BLOCK_COEFFICIENTS],
+        output: &mut [i32; BLOCK_COEFFICIENTS],
+    ) {
+        let mut low = [vdupq_n_s32(0); BLOCK_SIDE];
+        let mut high = [vdupq_n_s32(0); BLOCK_SIDE];
+        for ((low, high), line) in low
+            .iter_mut()
+            .zip(&mut high)
+            .zip(samples.as_chunks::<BLOCK_SIDE>().0)
+        {
+            (*low, *high) = widen(line);
+        }
+        let (low, high) = transpose(low, high);
+        let (low, high) = transpose(forward_pass::<true>(low), forward_pass::<true>(high));
+        let low = forward_pass::<false>(low);
+        let high = forward_pass::<false>(high);
+        for (row, (factors, target)) in table
+            .as_chunks::<BLOCK_SIDE>()
+            .0
+            .iter()
+            .zip(output.as_chunks_mut::<BLOCK_SIDE>().0)
+            .enumerate()
+        {
+            let ([left, right], []) = target.as_chunks_mut::<4>() else {
+                unreachable!("eight coefficients are two halves of four");
+            };
+            let (factors_low, factors_high) = widen(factors);
+            let quantized_low = quantize(low[row], factors_low);
+            let quantized_high = quantize(high[row], factors_high);
+            unsafe { vst1q_s32(left.as_mut_ptr(), quantized_low) };
+            unsafe { vst1q_s32(right.as_mut_ptr(), quantized_high) };
+        }
+    }
+
+    #[target_feature(enable = "neon")]
+    fn weighted(
+        channels: [int32x4_t; RGB_BYTES],
+        weights: [i32; RGB_BYTES],
+        rounding: i32,
+    ) -> int32x4_t {
+        let sum = vmlaq_n_s32(
+            vmlaq_n_s32(
+                vmlaq_n_s32(vdupq_n_s32(rounding), channels[0], weights[0]),
+                channels[1],
+                weights[1],
+            ),
+            channels[2],
+            weights[2],
+        );
+        vshrq_n_s32::<ENCODE_PRECISION_BITS>(sum)
+    }
+
+    #[target_feature(enable = "neon")]
+    fn narrow_plane(low: int32x4_t, high: int32x4_t) -> [u8; BLOCK_SIDE] {
+        let bytes = vqmovun_s16(vcombine_s16(vmovn_s32(low), vmovn_s32(high)));
+        vget_lane_u64::<0>(vreinterpret_u64_u8(bytes)).to_le_bytes()
+    }
+
+    #[target_feature(enable = "neon")]
+    pub(super) fn rgb_to_ycbcr(
+        rows: &[[u8; ENCODE_ROW_BYTES]; BLOCK_SIDE],
+        planes: &mut [[u8; BLOCK_COEFFICIENTS]; PLANES],
+    ) {
+        for (row, pixels) in rows.iter().enumerate() {
+            let channels = unsafe { vld3_u8(pixels.as_ptr()) };
+            let mut low = [vdupq_n_s32(0); RGB_BYTES];
+            let mut high = [vdupq_n_s32(0); RGB_BYTES];
+            for (index, channel) in [channels.0, channels.1, channels.2].into_iter().enumerate() {
+                let words = vreinterpretq_s16_u16(vmovl_u8(channel));
+                low[index] = vmovl_s16(vget_low_s16(words));
+                high[index] = vmovl_high_s16(words);
+            }
+            let luma_weights = [LUMA_RED, LUMA_GREEN, LUMA_BLUE];
+            let blue_weights = [-BLUE_RED, -BLUE_GREEN, CHROMA_HALF];
+            let red_weights = [CHROMA_HALF, -RED_GREEN, -RED_BLUE];
+            let values = [
+                narrow_plane(
+                    weighted(low, luma_weights, LUMA_ROUNDING),
+                    weighted(high, luma_weights, LUMA_ROUNDING),
+                ),
+                narrow_plane(
+                    weighted(low, blue_weights, CHROMA_ROUNDING),
+                    weighted(high, blue_weights, CHROMA_ROUNDING),
+                ),
+                narrow_plane(
+                    weighted(low, red_weights, CHROMA_ROUNDING),
+                    weighted(high, red_weights, CHROMA_ROUNDING),
+                ),
+            ];
+            for (plane, value) in planes.iter_mut().zip(values) {
+                plane[row * BLOCK_SIDE..(row + 1) * BLOCK_SIDE].copy_from_slice(&value);
+            }
         }
     }
 }

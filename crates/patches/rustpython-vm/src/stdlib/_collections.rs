@@ -34,7 +34,7 @@ mod _collections {
     };
     use alloc::collections::VecDeque;
     use core::{cmp::max, mem::size_of};
-    use crossbeam_utils::atomic::AtomicCell;
+    use rustpython_common::atomic::AtomicCell;
 
     #[derive(FromArgs)]
     struct RotateArgs {

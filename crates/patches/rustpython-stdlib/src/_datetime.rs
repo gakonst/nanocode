@@ -22,7 +22,7 @@ mod _datetime {
         protocol::{PyNumber, PyNumberMethods},
         types::{AsNumber, Comparable, Constructor, Hashable, PyComparisonOp, Representable},
     };
-    use crossbeam_utils::atomic::AtomicCell;
+    use rustpython_common::atomic::AtomicCell;
     use nanocode_numeric::{BigInt, ToBigInt};
     use nanocode_numeric::{Signed, ToPrimitive, Zero};
 

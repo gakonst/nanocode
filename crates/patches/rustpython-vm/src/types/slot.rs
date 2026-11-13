@@ -18,7 +18,7 @@ use crate::{
     vm::Context,
 };
 use core::{any::Any, any::TypeId, borrow::Borrow, cmp::Ordering, ops::Deref};
-use crossbeam_utils::atomic::AtomicCell;
+use rustpython_common::atomic::AtomicCell;
 use nanocode_numeric::{Signed, ToPrimitive};
 use rustpython_common::wtf8::Wtf8Buf;
 

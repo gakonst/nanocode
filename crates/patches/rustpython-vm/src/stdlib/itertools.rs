@@ -18,7 +18,7 @@ mod decl {
         types::{Constructor, IterNext, Iterable, Representable, SelfIter},
     };
     use core::sync::atomic::{AtomicBool, Ordering};
-    use crossbeam_utils::atomic::AtomicCell;
+    use rustpython_common::atomic::AtomicCell;
     use nanocode_numeric::BigInt;
     use nanocode_numeric::One;
     use rustpython_common::wtf8::Wtf8Buf;

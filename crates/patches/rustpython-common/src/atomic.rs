@@ -1,6 +1,14 @@
 use core::ptr::{self, NonNull};
 pub use core::sync::atomic::*;
 
+#[cfg(not(feature = "threading"))]
+mod cell;
+
+#[cfg(not(feature = "threading"))]
+pub use cell::AtomicCell;
+#[cfg(feature = "threading")]
+pub use crossbeam_utils::atomic::AtomicCell;
+
 mod sealed {
     pub trait Sealed {}
 }

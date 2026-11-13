@@ -9,7 +9,7 @@ use crate::{
     protocol::PyIterReturn,
     vm::GenFrameLink,
 };
-use crossbeam_utils::atomic::AtomicCell;
+use rustpython_common::atomic::AtomicCell;
 
 impl ExecutionResult {
     /// Turn an ExecutionResult into a PyResult that would be returned from a generator or coroutine

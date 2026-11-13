@@ -1,4 +1,4 @@
-use crossbeam_utils::atomic::AtomicCell;
+use rustpython_common::atomic::AtomicCell;
 
 use crate::{
     AsObject, PyObject, PyObjectRef, PyResult, VirtualMachine,

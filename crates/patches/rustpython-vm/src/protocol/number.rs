@@ -1,6 +1,6 @@
 use core::ops::Deref;
 
-use crossbeam_utils::atomic::AtomicCell;
+use rustpython_common::atomic::AtomicCell;
 
 use crate::{
     AsObject, Py, PyObject, PyObjectRef, PyPayload, PyRef, PyResult, TryFromBorrowedObject,

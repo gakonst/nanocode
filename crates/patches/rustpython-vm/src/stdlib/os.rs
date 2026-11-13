@@ -228,7 +228,7 @@ pub(super) mod _os {
     #[cfg(not(windows))]
     use core::marker::PhantomData;
     use core::{hint::cold_path, time::Duration};
-    use crossbeam_utils::atomic::AtomicCell;
+    use rustpython_common::atomic::AtomicCell;
     use rustpython_common::wtf8::Wtf8Buf;
     #[cfg(windows)]
     use rustpython_host_env::{nt as host_nt, windows::ToWideString};

@@ -18,7 +18,7 @@ use crate::{
 use core::cell::Cell;
 use core::cmp::max;
 use core::ptr::NonNull;
-use crossbeam_utils::atomic::AtomicCell;
+use rustpython_common::atomic::AtomicCell;
 use nanocode_numeric::{BigInt, Sign};
 use nanocode_numeric::Integer;
 use nanocode_numeric::{One, Signed, ToPrimitive, Zero};

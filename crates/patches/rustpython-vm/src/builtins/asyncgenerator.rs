@@ -13,7 +13,7 @@ use crate::{
 };
 
 use core::sync::atomic::{AtomicBool, Ordering};
-use crossbeam_utils::atomic::AtomicCell;
+use rustpython_common::atomic::AtomicCell;
 
 fn warn_unawaited_asyncgen_method(ag: &Py<PyAsyncGen>, method: &str, vm: &VirtualMachine) {
     let name = ag.as_coro().qualname();

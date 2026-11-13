@@ -4,7 +4,7 @@ use crate::{
     function::FuncArgs,
 };
 use core::sync::atomic::Ordering;
-use crossbeam_utils::atomic::AtomicCell;
+use rustpython_common::atomic::AtomicCell;
 use std::collections::{HashMap, HashSet};
 
 pub(crate) const TOOL_LIMIT: usize = 6;

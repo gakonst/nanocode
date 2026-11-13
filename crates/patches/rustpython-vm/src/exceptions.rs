@@ -1714,7 +1714,7 @@ pub(super) mod types {
         types::{Constructor, Initializer},
     };
     use core::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
-    use crossbeam_utils::atomic::AtomicCell;
+    use rustpython_common::atomic::AtomicCell;
     use rustpython_common::wtf8::iteration::Itertools;
     use rustpython_common::{
         str::UnicodeEscapeCodepoint,

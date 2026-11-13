@@ -14,7 +14,7 @@ use crate::{
 use alloc::borrow::Cow;
 use bitflags::bitflags;
 use core::{fmt::Debug, ops::Range};
-use crossbeam_utils::atomic::AtomicCell;
+use rustpython_common::atomic::AtomicCell;
 use rustpython_common::wtf8::iteration::Itertools;
 
 bitflags! {

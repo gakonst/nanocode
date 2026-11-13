@@ -2966,7 +2966,6 @@ dependencies = [
 name = "rustpython-stdlib"
 version = "0.6.0"
 dependencies = [
- "crossbeam-utils",
  "getrandom 0.4.3",
  "indexmap",
  "libc",
@@ -3000,7 +2999,6 @@ name = "rustpython-vm"
 version = "0.6.0"
 dependencies = [
  "bitflags",
- "crossbeam-utils",
  "indexmap",
  "itoa",
  "libc",

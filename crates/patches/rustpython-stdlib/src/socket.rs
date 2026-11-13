@@ -50,7 +50,7 @@ mod _socket {
         net::{Ipv4Addr, Ipv6Addr, SocketAddr},
         time::Duration,
     };
-    use crossbeam_utils::atomic::AtomicCell;
+    use rustpython_common::atomic::{AtomicCell, AtomicF64};
     use host_socket::raw::Socket;
     use nanocode_numeric::ToPrimitive;
     use std::{
@@ -1187,7 +1187,7 @@ mod _socket {
             let timeout = if socket_kind & c::SOCK_NONBLOCK != 0 {
                 0.0
             } else {
-                DEFAULT_TIMEOUT.load()
+                DEFAULT_TIMEOUT.load(Ordering::Acquire)
             };
             #[cfg(not(any(
                 target_os = "android",
@@ -1200,7 +1200,7 @@ mod _socket {
                 target_os = "openbsd",
                 target_os = "redox"
             )))]
-            let timeout = DEFAULT_TIMEOUT.load();
+            let timeout = DEFAULT_TIMEOUT.load(Ordering::Acquire);
             self.timeout.store(timeout);
             if timeout >= 0.0 {
                 sock.set_nonblocking(true)?;
@@ -3444,11 +3444,11 @@ mod _socket {
         }
     }
 
-    static DEFAULT_TIMEOUT: AtomicCell<f64> = AtomicCell::new(-1.0);
+    static DEFAULT_TIMEOUT: AtomicF64 = AtomicF64::new(-1.0);
 
     #[pyfunction]
     fn getdefaulttimeout() -> Option<f64> {
-        let timeout = DEFAULT_TIMEOUT.load();
+        let timeout = DEFAULT_TIMEOUT.load(Ordering::Acquire);
         if timeout >= 0.0 { Some(timeout) } else { None }
     }
 
@@ -3467,7 +3467,7 @@ mod _socket {
             }
             None => -1.0,
         };
-        DEFAULT_TIMEOUT.store(val);
+        DEFAULT_TIMEOUT.store(val, Ordering::Release);
         Ok(())
     }
 

@@ -22,7 +22,7 @@ pub(crate) mod _struct {
         protocol::PyIterReturn,
         types::{Constructor, Initializer, IterNext, Iterable, Representable, SelfIter},
     };
-    use crossbeam_utils::atomic::AtomicCell;
+    use rustpython_common::atomic::AtomicCell;
     use rustpython_common::wtf8::{Wtf8Buf, wtf8_concat};
 
     #[derive(Traverse)]

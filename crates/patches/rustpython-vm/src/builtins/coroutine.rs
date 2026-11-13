@@ -9,7 +9,7 @@ use crate::{
     protocol::PyIterReturn,
     types::{Destructor, IterNext, Iterable, Representable, SelfIter},
 };
-use crossbeam_utils::atomic::AtomicCell;
+use rustpython_common::atomic::AtomicCell;
 
 #[pyclass(module = false, name = "coroutine", traverse = "manual")]
 #[derive(Debug)]

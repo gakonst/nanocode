@@ -151,7 +151,7 @@ mod _io {
         ops::Range,
         sync::atomic::{AtomicBool, Ordering},
     };
-    use crossbeam_utils::atomic::AtomicCell;
+    use rustpython_common::atomic::AtomicCell;
     use nanocode_numeric::BigInt;
     use nanocode_numeric::ToPrimitive;
     use std::io::{self, Cursor, SeekFrom, prelude::*};
@@ -5946,7 +5946,7 @@ mod fileio {
         stdlib::os,
         types::{Constructor, DefaultConstructor, Destructor, Initializer, Representable},
     };
-    use crossbeam_utils::atomic::AtomicCell;
+    use rustpython_common::atomic::AtomicCell;
     use rustpython_host_env::io as host_io;
 
     #[pyattr]
@@ -6477,7 +6477,7 @@ mod winconsoleio {
         function::{ArgBytesLike, ArgMemoryBuffer},
         types::{Constructor, DefaultConstructor, Destructor, Initializer, Representable},
     };
-    use crossbeam_utils::atomic::AtomicCell;
+    use rustpython_common::atomic::AtomicCell;
     use rustpython_host_env::io as host_io;
     use rustpython_host_env::nt as host_nt;
     use rustpython_host_env::windows::ToWideString;

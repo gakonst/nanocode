@@ -72,7 +72,7 @@ mod _ssl {
             utils::ToCString,
         },
     };
-    use crossbeam_utils::atomic::AtomicCell;
+    use rustpython_common::atomic::AtomicCell;
     use foreign_types_shared::{ForeignType, ForeignTypeRef};
     use memchr::memchr;
     use openssl::{

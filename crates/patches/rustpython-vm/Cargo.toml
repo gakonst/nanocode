@@ -90,9 +90,6 @@ path = "src/lib.rs"
 [dependencies.bitflags]
 version = "2.11.0"
 
-[dependencies.crossbeam-utils]
-version = "0.8.21"
-
 [dependencies.flame]
 version = "0.2.2"
 optional = true

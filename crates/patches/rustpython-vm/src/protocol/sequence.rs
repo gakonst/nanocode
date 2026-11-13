@@ -1,6 +1,6 @@
 //! [Sequence Protocol](https://docs.python.org/3/c-api/sequence.html)
 
-use crossbeam_utils::atomic::AtomicCell;
+use rustpython_common::atomic::AtomicCell;
 use rustpython_common::wtf8::iteration::Itertools;
 
 use crate::{

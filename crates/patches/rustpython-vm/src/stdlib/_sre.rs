@@ -18,7 +18,7 @@ mod _sre {
         types::{AsMapping, Comparable, Hashable, Representable},
     };
     use core::str;
-    use crossbeam_utils::atomic::AtomicCell;
+    use rustpython_common::atomic::AtomicCell;
     use rustpython_common::wtf8::iteration::Itertools;
     use nanocode_numeric::ToPrimitive;
     use rustpython_sre_engine::{

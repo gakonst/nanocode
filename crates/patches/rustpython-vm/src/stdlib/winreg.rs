@@ -15,7 +15,7 @@ mod winreg {
     use crate::types::{AsNumber, Hashable};
     use crate::{Py, PyObjectRef, PyPayload, PyRef, PyResult, VirtualMachine};
     use core::ptr;
-    use crossbeam_utils::atomic::AtomicCell;
+    use rustpython_common::atomic::AtomicCell;
     use nanocode_numeric::Sign;
     use nanocode_numeric::ToPrimitive;
     use rustpython_common::wtf8::Wtf8Buf;

@@ -28,7 +28,7 @@ pub(crate) mod _asyncio {
         },
     };
     use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
-    use crossbeam_utils::atomic::AtomicCell;
+    use rustpython_common::atomic::AtomicCell;
 
     pub(crate) fn module_exec(vm: &VirtualMachine, module: &Py<PyModule>) -> PyResult<()> {
         __module_exec(vm, module);

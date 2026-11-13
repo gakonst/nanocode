@@ -22,7 +22,7 @@ mod mmap {
         types::{AsBuffer, AsMapping, AsSequence, Constructor, Representable},
     };
     use core::ops::{Deref, DerefMut};
-    use crossbeam_utils::atomic::AtomicCell;
+    use rustpython_common::atomic::AtomicCell;
     use nanocode_numeric::Signed;
     use std::io::Write;
     #[cfg(windows)]

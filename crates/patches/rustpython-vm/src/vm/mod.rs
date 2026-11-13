@@ -55,7 +55,7 @@ use core::{
     cell::{Cell, OnceCell, RefCell},
     sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering},
 };
-use crossbeam_utils::atomic::AtomicCell;
+use rustpython_common::atomic::AtomicCell;
 use std::{
     collections::{HashMap, HashSet},
     ffi::{OsStr, OsString},

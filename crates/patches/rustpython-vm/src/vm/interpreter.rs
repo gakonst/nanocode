@@ -75,7 +75,7 @@ where
     use crate::common::lock::PyMutex;
     use crate::warn::WarningsState;
     use core::sync::atomic::{AtomicBool, AtomicI64, AtomicU64};
-    use crossbeam_utils::atomic::AtomicCell;
+    use rustpython_common::atomic::AtomicCell;
 
     // Before any lock this interpreter's threads can contend on exists.
     #[cfg(feature = "threading")]

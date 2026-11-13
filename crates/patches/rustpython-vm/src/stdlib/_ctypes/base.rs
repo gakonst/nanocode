@@ -13,7 +13,7 @@ use crate::{
 };
 use alloc::borrow::Cow;
 use core::fmt::Debug;
-use crossbeam_utils::atomic::AtomicCell;
+use rustpython_common::atomic::AtomicCell;
 use nanocode_numeric::{Signed, ToPrimitive};
 use rustpython_common::lock::PyRwLock;
 use rustpython_common::wtf8::Wtf8;

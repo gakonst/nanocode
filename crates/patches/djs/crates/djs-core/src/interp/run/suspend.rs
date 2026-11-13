@@ -425,6 +425,12 @@ impl Exec<'_> {
         let a = self.async_state(self.imm_u16(1))?;
         let v = self.pop();
         let p = promise::plain_promise(self.heap, v);
+        if let Some(value) = self.settled_in_place(a, p, v) {
+            late::clear_kept_objects(self.heap);
+            self.push(value);
+            self.pc = next;
+            return Ok(None);
+        }
         if p.is_none() && !promise::plain_fulfillment(self.heap, v) {
             self.suspend_frame(a, AWAITING, next)?;
             return self.tail_call_builtin(ASYNC_AWAIT, [Value::object(a), v]);
@@ -451,6 +457,25 @@ impl Exec<'_> {
             Value::UNDEFINED
         };
         self.do_return(result)
+    }
+
+    /// The value an `await` of `v` resumes with when the resumption would be the very next
+    /// job: the frame is a job's bottom frame, so returning gives control to the job loop,
+    /// the queue is empty, and `v` fulfills without user code (a fulfilled plain promise,
+    /// or a value that is no thenable). Then nothing can run between the suspension and
+    /// the resumption but ClearKeptObjects, and the frame goes on in place.
+    fn settled_in_place(&self, a: Obj, p: Option<Obj>, v: Value) -> Option<Value> {
+        if Continuation::from_flags(self.header_int(frame::FLAGS) as i32) != Continuation::Job
+            || promise::has_jobs(self.heap)
+            || self.heap.object_slot(a, KIND).as_int() != Some(ASYNC)
+        {
+            return None;
+        }
+        match p {
+            Some(p) => (promise::state_of(self.heap, p) == promise::FULFILLED)
+                .then(|| promise::result_of(self.heap, p)),
+            None => promise::plain_fulfillment(self.heap, v).then_some(v),
+        }
     }
 
     /// `async_return loc` / `async_reject loc`: settles the result promise and returns it.

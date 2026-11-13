@@ -689,8 +689,13 @@ impl BashExecutor for LocalBash {
             match tokio::time::timeout(timeout, completion(&job)).await {
                 Ok(result) => {
                     self.jobs.forget(&id);
-                    discard(&job);
-                    return result.map(BashExecution::Completed);
+                    return match result {
+                        Ok(result) if result.truncated => Ok(kept(&job, result).await),
+                        result => {
+                            discard(&job);
+                            result.map(BashExecution::Completed)
+                        }
+                    };
                 }
                 Err(_) if sleeps(&job.command) => {
                     job.abort.abort();
@@ -717,6 +722,24 @@ impl BashExecutor for LocalBash {
             output_file: output_file.map(|path| path.display().to_string()),
             task_id: id,
         })
+    }
+}
+async fn kept(job: &Job, result: BashResult) -> BashExecution {
+    job.written.wait().await;
+    let size = match &job.output {
+        Some(path) => tokio::fs::metadata(path)
+            .await
+            .ok()
+            .map(|metadata| (path.display().to_string(), metadata.len())),
+        None => None,
+    };
+    match size {
+        Some((output_file, output_bytes)) => BashExecution::Cut {
+            result,
+            output_file,
+            output_bytes,
+        },
+        None => BashExecution::Completed(result),
     }
 }
 async fn completion(job: &Job) -> Outcome {

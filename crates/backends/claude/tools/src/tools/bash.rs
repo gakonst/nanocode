@@ -63,6 +63,12 @@ pub trait SandboxBashExecutor: Send + Sync {
 pub enum BashExecution {
     Completed(BashResult),
 
+    Cut {
+        result: BashResult,
+        output_file: String,
+        output_bytes: u64,
+    },
+
     Background {
         task_id: String,
         output_file: Option<String>,
@@ -217,8 +223,13 @@ impl<E: BashExecutor> ClaudeBash<E> {
                 let (bounded, _) = cap_utf8(&e, MAX_STREAM_BYTES);
                 format!("command executor: {bounded}")
             })?;
-        let result = match result {
-            BashExecution::Completed(result) => result,
+        let (result, kept) = match result {
+            BashExecution::Completed(result) => (result, None),
+            BashExecution::Cut {
+                result,
+                output_file,
+                output_bytes,
+            } => (result, Some((output_file, output_bytes))),
             BashExecution::Background {
                 task_id,
                 output_file,
@@ -234,27 +245,71 @@ impl<E: BashExecutor> ClaudeBash<E> {
                     "status": "running",
                     "task_id": task_id,
                     "output_file": output_file,
+                    "output_bytes": null,
                     "message": message,
                 })
                 .to_string());
             }
         };
-        let (stdout, stdout_cut) = cap_utf8(&result.stdout, stream_bytes);
-        let (stderr, stderr_cut) = cap_utf8(&result.stderr, stream_bytes);
+        let kept = kept.as_ref().map(|(file, bytes)| (file.as_str(), *bytes));
+        let (stdout, stderr, truncated) = bounded_output(&result, stream_bytes, kept);
         Ok(json!({
             "stdout": stdout,
             "stderr": stderr,
             "exit_code": result.exit_code,
             "interrupted": false,
-            "truncated": result.truncated || stdout_cut || stderr_cut,
+            "truncated": truncated,
             "background": false,
             "status": "completed",
             "task_id": null,
-            "output_file": null,
+            "output_file": kept.map(|(file, _)| file),
+            "output_bytes": kept.map(|(_, bytes)| bytes),
             "message": null,
         })
         .to_string())
     }
+}
+
+#[must_use]
+pub fn bounded_output(
+    result: &BashResult,
+    stream_bytes: usize,
+    kept: Option<(&str, u64)>,
+) -> (String, String, bool) {
+    let (stdout, stdout_cut) = cap_utf8(&result.stdout, stream_bytes);
+    let (stderr, stderr_cut) = cap_utf8(&result.stderr, stream_bytes);
+    let truncated = result.truncated || stdout_cut || stderr_cut;
+    let stderr_cut = stderr_cut || (result.truncated && stderr.len() >= stream_bytes);
+    let stdout_cut = stdout_cut || (truncated && (!stderr_cut || stdout.len() >= stream_bytes));
+    (
+        with_cut_notice("stdout", stdout, stdout_cut, kept),
+        with_cut_notice("stderr", stderr, stderr_cut, kept),
+        truncated,
+    )
+}
+
+fn with_cut_notice(stream: &str, text: &str, cut: bool, kept: Option<(&str, u64)>) -> String {
+    if !cut {
+        return text.to_owned();
+    }
+    let rest = match kept {
+        Some((file, bytes)) => format!(
+            "the command printed {bytes} bytes in all, stdout and stderr together, and {file} holds them"
+        ),
+        None => {
+            "the rest was not kept, so send the command's output to a file and read it in parts"
+                .to_owned()
+        }
+    };
+    let line = if text.is_empty() || text.ends_with('\n') {
+        ""
+    } else {
+        "\n"
+    };
+    format!(
+        "{text}{line}[{stream} cut after its first {} bytes: {rest}]\n",
+        text.len()
+    )
 }
 
 fn leading_sleep(command: &str) -> Option<String> {

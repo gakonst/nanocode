@@ -241,6 +241,7 @@ struct HostJobs {
 
 struct HostJob {
     command: String,
+    stream_bytes: usize,
     result: Atom<Option<Outcome>>,
     finished: Signal,
     stopped: AtomicBool,
@@ -298,10 +299,12 @@ impl BashExecutor for HostBash {
         let shell = Arc::clone(&self.shell);
         let workspace = Arc::clone(&self.workspace);
         let command = request.command.clone();
+        let stream_bytes = request.max_stdout_bytes;
         let (task, abort) =
             abortable(async move { run(shell.as_ref(), &workspace, &request).await });
         let job = Arc::new(HostJob {
             command,
+            stream_bytes,
             result: Atom::new(None),
             finished: Signal::new(),
             stopped: AtomicBool::new(false),
@@ -400,15 +403,19 @@ impl HostTaskTool {
                 "truncated": false,
                 "error": error,
             }),
-            Some(Ok(result)) => json!({
-                "task_id": id,
-                "status": job.status(),
-                "stdout": result.stdout,
-                "stderr": result.stderr,
-                "exit_code": result.exit_code,
-                "truncated": result.truncated,
-                "error": null,
-            }),
+            Some(Ok(result)) => {
+                let (stdout, stderr, truncated) =
+                    crate::tools::bash::bounded_output(result, job.stream_bytes, None);
+                json!({
+                    "task_id": id,
+                    "status": job.status(),
+                    "stdout": stdout,
+                    "stderr": stderr,
+                    "exit_code": result.exit_code,
+                    "truncated": truncated,
+                    "error": null,
+                })
+            }
         })
     }
 }

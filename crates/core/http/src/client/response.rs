@@ -68,6 +68,23 @@ impl Incoming {
             pool.checkin(key, self.reader.into_connection());
         }
     }
+
+    fn release(mut self) {
+        if self.reuse.is_none() {
+            return;
+        }
+        self.settle();
+        if !self.reader.is_done()
+            && self.failed.is_none()
+            && let Some(Ok(Some(chunk))) = self.reader.next().now_or_never()
+        {
+            self.buffered.push_back(chunk);
+            self.settle();
+        }
+        if self.reader.is_done() && self.failed.is_none() {
+            self.finish();
+        }
+    }
 }
 
 enum Body {
@@ -247,7 +264,7 @@ impl Response {
 
     pub fn error_for_status(self) -> Result<Self> {
         if self.status.is_client_error() || self.status.is_server_error() {
-            Err(Error::for_status(self.status, self.url))
+            Err(Error::for_status(self.status, self.url.clone()))
         } else {
             Ok(self)
         }
@@ -280,6 +297,14 @@ impl Response {
             url,
             body: Body::Stream(body(stripped.bytes_stream())),
             extensions,
+        }
+    }
+}
+
+impl Drop for Response {
+    fn drop(&mut self) {
+        if let Body::Incoming(incoming) = std::mem::replace(&mut self.body, Body::Done) {
+            incoming.release();
         }
     }
 }

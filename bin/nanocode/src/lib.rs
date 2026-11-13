@@ -214,6 +214,7 @@ pub fn run_with(clients: ModelClients) -> ExitCode {
     {
         nanocode_platform::spawn_on(runtime.handle(), warming);
     }
+    let one_shot = matches!(cli.command, Some(Command::Exec(_)));
     let outcome = runtime.block_on(async move {
         match cli.command {
             Some(Command::Hand(args)) => hand(args).await,
@@ -239,7 +240,11 @@ pub fn run_with(clients: ModelClients) -> ExitCode {
     if let Some(closing) = closing {
         runtime.block_on(tempo::close(closing));
     }
-    runtime.shutdown_timeout(std::time::Duration::from_secs(1));
+    if one_shot {
+        runtime.shutdown_background();
+    } else {
+        runtime.shutdown_timeout(std::time::Duration::from_secs(1));
+    }
     drop(telemetry);
     match outcome {
         Ok(()) => ExitCode::SUCCESS,

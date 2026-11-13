@@ -86,7 +86,7 @@
     ? () => globalThis.performance.now()
     : () => Date.now();
   const EXIT = Symbol("exit");
-  const pendingTools = new Map();
+  const pendingTools = [];
   const timers = new Map();
   let stopCell = () => {};
   let settle = () => {};
@@ -429,7 +429,7 @@
   function callTool(name, encodedInput, host) {
     const id = nativeTool(name, encodedInput, host);
     return new Promise((resolve, reject) => {
-      pendingTools.set(id, [resolve, reject, name]);
+      pendingTools[id] = [resolve, reject, name];
     });
   }
 
@@ -445,8 +445,8 @@
       } else if (Array.isArray(event)) {
         for (const reason of event) uncaught(reason, true);
       } else {
-        const settlers = pendingTools.get(event.id);
-        pendingTools.delete(event.id);
+        const settlers = pendingTools[event.id];
+        pendingTools[event.id] = undefined;
         if (settlers) {
           try {
             const value = jsonParse(event.value);

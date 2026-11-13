@@ -1912,12 +1912,18 @@ dependencies = [
 name = "nanocode-store-sql"
 version = "0.7.0"
 dependencies = [
+ "base64 0.22.1",
  "futures-util",
+ "nanocode-digest",
  "nanocode-durability-core",
+ "nanocode-platform",
  "nanocode-sync",
+ "nanocode-tls",
  "nanocode-zstd",
+ "rustls",
  "sqlx",
  "tokio",
+ "tokio-rustls",
 ]
 
 [[package]]

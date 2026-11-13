@@ -12,12 +12,18 @@ repository.workspace = true
 description = "Postgres hosts for Nanocode's SQL stores over a host's own sqlx connections"
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
+base64.workspace = true
 futures-util.workspace = true
+nanocode-digest.workspace = true
 nanocode-durability-core.workspace = true
+nanocode-platform.workspace = true
 nanocode-sync.workspace = true
-sqlx.workspace = true
-tokio = { workspace = true, features = ["rt", "sync", "time"] }
+nanocode-tls.workspace = true
 nanocode-zstd.workspace = true
+rustls.workspace = true
+sqlx.workspace = true
+tokio = { workspace = true, features = ["io-util", "net", "rt", "sync", "time"] }
+tokio-rustls.workspace = true
 
 [lints]
 workspace = true

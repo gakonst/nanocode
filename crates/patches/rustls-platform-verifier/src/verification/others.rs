@@ -203,6 +203,12 @@ pub mod system {
             tracing::warn!("Error loading CA root certificate: {error}");
         }
         tracing::debug!("Loaded {added} CA root certificates from the system");
+        if store.is_empty() {
+            let (bundled, _) = store.add_parsable_certificates(
+                webpki_root_certs::TLS_SERVER_ROOT_CERTS.iter().cloned(),
+            );
+            tracing::warn!("No CA certificates were loaded from the system; trusting {bundled} bundled Mozilla root certificates");
+        }
         let roots = Arc::new(store);
         ROOTS.store(Some(Arc::new(Loaded {
             at: Instant::now(),

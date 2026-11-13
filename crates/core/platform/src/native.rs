@@ -14,6 +14,9 @@ pub trait Host: Send + Sync + 'static {
     fn sleep(&self, duration: Duration) -> HostFuture;
     fn fill_random(&self, bytes: &mut [u8]) -> std::io::Result<()>;
     fn spawn(&self, future: HostFuture);
+    fn uuid_stamps(&self) -> Option<&std::sync::atomic::AtomicU64> {
+        None
+    }
 }
 
 static HOST: OnceLock<&'static dyn Host> = OnceLock::new();

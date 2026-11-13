@@ -181,11 +181,13 @@ pub fn uuid_v7() -> Uuid {
     );
     let floor = (millis as u64) << 12;
     let next = |last: u64| floor.max(last + 1);
+    let stamps = host().and_then(Host::uuid_stamps).unwrap_or(&LAST);
     let stamp = next(
-        LAST.try_update(Ordering::Relaxed, Ordering::Relaxed, |last| {
-            Some(next(last))
-        })
-        .unwrap_or_else(|last| last),
+        stamps
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |last| {
+                Some(next(last))
+            })
+            .unwrap_or_else(|last| last),
     );
     let [.., high, low] = stamp.to_be_bytes();
     let mut bytes = [0; 10];

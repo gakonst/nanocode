@@ -1,7 +1,7 @@
-use super::GB18030;
 use super::data::GB18030_RANGES_INDEX;
 use super::{
-    ASCII_END, AsciiRun, BMP_BYTES_MAX, Decoded, DecoderResult, SCALAR_BYTES_MAX, Transcode,
+    ASCII_END, AsciiRun, BMP_BYTES_MAX, Decoded, DecoderResult, GB18030, SCALAR_BYTES_MAX,
+    Transcode, WORD_BYTES, ascii_word, copy_ascii_run, put_scalar,
 };
 
 const TWO_BYTE_TRAIL_COUNT: usize = 190;
@@ -63,6 +63,9 @@ impl Gb18030Decoder {
                 };
                 if let Some(decoded) = self.after_first(transcode, last, first) {
                     return decoded;
+                }
+                if !characters(transcode) {
+                    continue 'run;
                 }
                 if !transcode.has_input() {
                     return transcode.end(DecoderResult::InputEmpty);
@@ -201,6 +204,59 @@ impl Gb18030Decoder {
         transcode.write_scalar(scalar);
         None
     }
+}
+
+fn characters(transcode: &mut Transcode<'_, '_>) -> bool {
+    let source = transcode.source;
+    let destination = &mut *transcode.destination;
+    let mut read = transcode.read;
+    let mut written = transcode.written;
+    let mut strict = true;
+    while read < source.len() && destination.len() - written >= SCALAR_BYTES_MAX {
+        let byte = source[read];
+        if byte < ASCII_END {
+            let limit =
+                (destination.len() - written - SCALAR_BYTES_MAX + 1).min(source.len() - read);
+            let run = if limit >= WORD_BYTES && ascii_word(source, read) {
+                copy_ascii_run(
+                    &source[read..read + limit],
+                    &mut destination[written..written + limit],
+                )
+            } else {
+                destination[written] = byte;
+                1
+            };
+            read += run;
+            written += run;
+            strict = false;
+            continue;
+        }
+        if byte == ASCII_END {
+            written += put_scalar(destination, written, EURO_SIGN);
+            read += 1;
+            strict = false;
+            continue;
+        }
+        let Some(&second) = source.get(read + 1) else {
+            break;
+        };
+        let low = (0x40..=0x7E).contains(&second);
+        let high = (0x80..=0xFE).contains(&second);
+        if byte == 0xFF || !(low | high) {
+            break;
+        }
+        let pointer = usize::from(byte - 0x81) * TWO_BYTE_TRAIL_COUNT
+            + usize::from(second - 0x40 - u8::from(high));
+        let Some(code_point) = GB18030.get(pointer) else {
+            break;
+        };
+        written += put_scalar(destination, written, u32::from(code_point));
+        read += 2;
+        strict = true;
+    }
+    transcode.read = read;
+    transcode.written = written;
+    strict
 }
 
 fn two_byte(transcode: &mut Transcode<'_, '_>, first: u8, second: u8) -> Option<Decoded> {

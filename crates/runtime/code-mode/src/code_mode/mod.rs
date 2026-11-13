@@ -13,7 +13,7 @@ use std::{
     time::Duration,
 };
 
-use futures_util::{FutureExt, StreamExt, stream::FuturesUnordered};
+use futures_util::{FutureExt, StreamExt};
 
 #[cfg(not(target_family = "wasm"))]
 type CallFuture<'a> = futures_util::future::BoxFuture<'a, CompletedNestedCall>;
@@ -53,7 +53,7 @@ use serde::Deserialize;
 use serde_json::{Value, value::RawValue};
 
 use nanocode_platform::Instant;
-use nanocode_sync::{Atom, Leased, Owned, Sequencer, Signal, Slot, Turn};
+use nanocode_sync::{Atom, InOrder, Leased, Owned, Sequencer, Signal, Slot, Turn};
 use tokio::sync::{Notify, mpsc, oneshot, watch};
 use tracing::{Instrument, info_span};
 
@@ -2350,7 +2350,7 @@ fn observed_execution(
 }
 
 struct CellCalls<'a, 'b> {
-    pending_calls: &'b mut FuturesUnordered<CallFuture<'a>>,
+    pending_calls: &'b mut InOrder<CallFuture<'a>>,
     pending_receipts: &'b mut PendingCallReceipts,
     unlogged: &'b mut UnloggedCalls,
     deferred: &'b mut std::collections::VecDeque<(u64, String, Box<str>, bool)>,
@@ -2580,7 +2580,7 @@ impl EmbeddedHost {
         mut hold: Option<watch::Receiver<bool>>,
         limits: Limits,
     ) -> Result<CellTerminal, HostFailure> {
-        let mut pending_calls: FuturesUnordered<CallFuture<'_>> = FuturesUnordered::new();
+        let mut pending_calls: InOrder<CallFuture<'_>> = InOrder::new();
         let mut deferred = std::collections::VecDeque::new();
         let mut unlogged = UnloggedCalls {
             parent_call_id: parent_call_id.to_owned(),

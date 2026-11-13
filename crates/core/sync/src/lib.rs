@@ -2,6 +2,7 @@ use std::{future::Future, pin::Pin, sync::Arc};
 
 mod armed;
 mod hasher;
+mod in_order;
 #[cfg(not(target_family = "wasm"))]
 mod lanes;
 #[cfg(not(target_family = "wasm"))]
@@ -24,6 +25,7 @@ mod wakes;
 mod weighed;
 
 pub use armed::Armed;
+pub use in_order::InOrder;
 #[cfg(not(target_family = "wasm"))]
 pub use lanes::{Bounds, Lanes, together};
 #[cfg(not(target_family = "wasm"))]

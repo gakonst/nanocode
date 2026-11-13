@@ -7702,7 +7702,7 @@ impl State {
                 for batch in batches {
                     let timing = nanocode_durability::ResultTiming::of_batch(batch.len());
                     let mut writes = journal.take();
-                    let mut calls = futures_util::stream::FuturesUnordered::new();
+                    let mut calls = nanocode_sync::InOrder::new();
                     for position in batch {
                         let (id, name, input, handler) = &tool_calls[position];
                         let cursor = &cursor;
@@ -7736,7 +7736,7 @@ impl State {
                         interrupted = true;
                         break;
                     }
-                    let mut calls = futures_util::stream::FuturesUnordered::new();
+                    let mut calls = nanocode_sync::InOrder::new();
                     let mut remaining = batch.len();
                     for position in batch {
                         let (id, name, input, handler) = &tool_calls[position];

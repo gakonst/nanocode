@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 const SIMULATED: &[&str] = &[
+    "crates/backends/claude/src",
     "crates/core/agent/src",
     "crates/core/durability/src",
     "crates/core/sync/src",
@@ -8,20 +9,31 @@ const SIMULATED: &[&str] = &[
     "crates/integrations/store-jsonl/src",
     "crates/integrations/store-sql/src",
     "crates/runtime/agent/src",
+    "crates/runtime/code-mode-engine/src",
+    "crates/runtime/code-mode/src/code_mode",
     "crates/runtime/durability/src",
     "crates/runtime/subagents/src",
+    "crates/runtime/tool-host/src",
 ];
 
-const BANNED: &[&str] = &[
-    "SystemTime::now",
-    "Instant::now",
-    "thread::spawn",
-    "thread::Builder",
-    "getrandom",
-    "tokio::time",
-    "tokio::spawn",
-    "Handle::try_current",
+const BYPASSES_HOST: &str = "bypasses nanocode-platform's host";
+const WAKE_ORDER: &str = "yields its futures in the order they were woken, which tokio's watch and HashMap iteration draw at random; use nanocode_sync::InOrder";
+const UNBIASED: &str = "draws its first branch from tokio's thread RNG; start it with biased;";
+
+const BANNED: &[(&str, &str)] = &[
+    ("SystemTime::now", BYPASSES_HOST),
+    ("Instant::now", BYPASSES_HOST),
+    ("thread::spawn", BYPASSES_HOST),
+    ("thread::Builder", BYPASSES_HOST),
+    ("getrandom", BYPASSES_HOST),
+    ("tokio::time", BYPASSES_HOST),
+    ("tokio::spawn", BYPASSES_HOST),
+    ("Handle::try_current", BYPASSES_HOST),
+    ("FuturesUnordered", WAKE_ORDER),
 ];
+
+const SELECT: &str = "select!";
+const BIASED: &str = "biased;";
 
 const TOKIO_GROUP: &str = "use tokio::{";
 
@@ -33,6 +45,42 @@ struct Allowed {
 }
 
 const ALLOWED: &[Allowed] = &[
+    Allowed {
+        path: "crates/backends/claude/src/claude_bash.rs",
+        call: "Instant::now",
+        uses: 3,
+        why: "Claude Code's Bash tool watches a real shell process for silence on Tokio's clock; the simulator registers no Bash tool",
+    },
+    Allowed {
+        path: "crates/backends/claude/src/claude_bash.rs",
+        call: "select!",
+        uses: 1,
+        why: "Claude Code's Bash tool races a real process's exit against its output; the simulator registers no Bash tool",
+    },
+    Allowed {
+        path: "crates/backends/claude/src/claude_bash.rs",
+        call: "tokio::spawn",
+        uses: 5,
+        why: "Claude Code's Bash tool reads and reaps real shell processes from Tokio tasks; the simulator registers no Bash tool",
+    },
+    Allowed {
+        path: "crates/backends/claude/src/claude_bash.rs",
+        call: "tokio::time",
+        uses: 6,
+        why: "Claude Code's Bash tool times real shell processes on Tokio's clock; the simulator registers no Bash tool",
+    },
+    Allowed {
+        path: "crates/backends/claude/src/claude_tools.rs",
+        call: "Handle::try_current",
+        uses: 1,
+        why: "a dropped tool runtime guard cancels its real tool runtime on the caller's Tokio runtime; the simulator builds no tool runtime",
+    },
+    Allowed {
+        path: "crates/backends/claude/src/host_tools.rs",
+        call: "tokio::spawn",
+        uses: 1,
+        why: "Claude Code's host tools run real files and processes in the background on Tokio; the simulator registers no host tools",
+    },
     Allowed {
         path: "crates/core/agent/src/agent/handle.rs",
         call: "Handle::try_current",
@@ -263,7 +311,7 @@ impl Group {
 fn found(line: &str, group: &mut Group) -> Vec<&'static str> {
     let mut calls: Vec<&'static str> = BANNED
         .iter()
-        .copied()
+        .map(|(call, _)| *call)
         .filter(|call| line.contains(*call))
         .collect();
     for call in group.calls(line) {
@@ -272,6 +320,13 @@ fn found(line: &str, group: &mut Group) -> Vec<&'static str> {
         }
     }
     calls
+}
+
+fn problem(call: &str) -> &'static str {
+    BANNED
+        .iter()
+        .find(|(banned, _)| *banned == call)
+        .map_or(UNBIASED, |(_, problem)| problem)
 }
 
 pub fn check(root: &Path) -> std::io::Result<Vec<String>> {
@@ -288,16 +343,30 @@ pub fn check(root: &Path) -> std::io::Result<Vec<String>> {
                 .into_owned();
             let text = std::fs::read_to_string(&file)?;
             let mut group = Group::default();
+            let mut opened = None;
             for (number, line) in text.lines().enumerate() {
-                for call in found(line, &mut group) {
+                let mut calls: Vec<(&'static str, usize)> = found(line, &mut group)
+                    .into_iter()
+                    .map(|call| (call, number))
+                    .collect();
+                if let Some(select) = opened.take()
+                    && !line.trim_start().starts_with(BIASED)
+                {
+                    calls.push((SELECT, select));
+                }
+                if line.contains(SELECT) && line.trim_end().ends_with('{') {
+                    opened = Some(number);
+                }
+                for (call, at) in calls {
                     let allowed = ALLOWED
                         .iter()
                         .position(|allowed| allowed.path == relative && allowed.call == call);
                     match allowed {
-                        Some(at) => used[at] += 1,
+                        Some(index) => used[index] += 1,
                         None => problems.push(format!(
-                            "{relative}:{}: {call} bypasses nanocode-platform's host",
-                            number + 1
+                            "{relative}:{}: {call} {}",
+                            at + 1,
+                            problem(call)
                         )),
                     }
                 }

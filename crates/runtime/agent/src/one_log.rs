@@ -1,16 +1,15 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap},
     sync::Arc,
 };
 
 use nanocode_subagents::{AgentUpdate, ScopedAgentUpdate};
 use nanocode_sync::Atom;
-#[cfg(not(target_family = "wasm"))]
-use nanocode_tool_host::code_mode::{
-    CellJournal, CellJournalSink, CellJournalUpdate, CellJournals, JournaledCallState,
-};
 use nanocode_tool_host::{
     ToolInput, ToolOutput,
+    code_mode::{
+        CellJournal, CellJournalSink, CellJournalUpdate, CellJournals, JournaledCallState,
+    },
     effects::{EffectCall, EffectGate},
     embedded::HostFuture,
 };
@@ -37,7 +36,6 @@ use crate::{
     turn_log::{EventLog, Logged, Recording, TurnLog},
 };
 
-#[cfg(not(target_family = "wasm"))]
 const TOOLS_MARK: &str = "$nanocode_tools";
 
 #[derive(Clone, Debug, Default)]
@@ -60,7 +58,6 @@ pub struct OneLog {
 #[derive(Clone)]
 pub struct OneLogStore(Arc<OneLog>);
 
-#[cfg(not(target_family = "wasm"))]
 pub struct OneLogJournals(Arc<OneLog>);
 
 #[derive(Serialize)]
@@ -295,16 +292,14 @@ impl OneLog {
         Arc::clone(self) as Arc<dyn EffectGate>
     }
 
-    #[cfg(not(target_family = "wasm"))]
     pub async fn journals(self: &Arc<Self>) -> Result<CellJournals, StoreError> {
         let journals = CellJournals::with_sink(Arc::new(OneLogJournals(Arc::clone(self))));
         for (session_id, cells) in self.cells(None).await? {
-            journals.restore(&session_id, cells, None, std::collections::HashMap::new());
+            journals.restore(&session_id, cells, None, HashMap::new());
         }
         Ok(journals)
     }
 
-    #[cfg(not(target_family = "wasm"))]
     async fn cells(
         &self,
         only: Option<&str>,
@@ -1117,7 +1112,6 @@ impl EffectGate for OneLog {
     }
 }
 
-#[cfg(not(target_family = "wasm"))]
 impl CellJournalSink for OneLogJournals {
     fn save(&self, mut update: CellJournalUpdate) -> HostFuture<'static, Result<(), String>> {
         let log = Arc::clone(&self.0);

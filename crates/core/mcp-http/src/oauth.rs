@@ -1299,7 +1299,7 @@ pub fn begin_login(
         let authorization_url = session.authorization_url.clone();
 
         let parent = tracing::Span::current();
-        let completion = tokio::spawn(
+        let completion = nanocode_platform::spawn_task(
             complete_login(
                 listener,
                 client,

@@ -787,7 +787,7 @@ impl<S: 'static> Actor<S> {
         }
         let runtime = tokio::runtime::Handle::try_current().map_err(std::io::Error::other)?;
         let (jobs, received) = mpsc::unbounded_channel();
-        drop(runtime.spawn(Self::serve(state, received)));
+        drop(nanocode_platform::spawn_on(&runtime, Self::serve(state, received)));
         Ok(Self { jobs })
     }
 
@@ -1015,7 +1015,7 @@ fn hand_off<S: Send + 'static>(room: &Arc<Mailroom<S>>) -> bool {
         return false;
     };
     let room = Arc::clone(room);
-    drop(runtime.spawn(async move { deliver(&room, hand_off::<S>) }));
+    drop(nanocode_platform::spawn_on(&runtime, async move { deliver(&room, hand_off::<S>) }));
     true
 }
 
@@ -1029,7 +1029,7 @@ fn hand_off<S: Send + 'static>(room: &Arc<Mailroom<S>>) -> bool {
 #[cfg(not(target_family = "wasm"))]
 async fn detached<T: Send + 'static>(future: impl Future<Output = T> + Send + 'static) -> T {
     let Some(host) = nanocode_platform::host() else {
-        return match tokio::spawn(future).await {
+        return match nanocode_platform::spawn_task(future).await {
             Ok(output) => output,
             Err(stopped) => match stopped.try_into_panic() {
                 Ok(panic) => std::panic::resume_unwind(panic),

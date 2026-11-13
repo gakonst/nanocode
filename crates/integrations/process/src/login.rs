@@ -41,7 +41,7 @@ pub(crate) async fn environment(
                 (shell.to_owned(), workdir.to_owned(), environment.to_vec());
             PROBE
                 .run(|| async move {
-                    tokio::spawn(async move {
+                    nanocode_platform::spawn_task(async move {
                         let snapshot = Arc::new(probe(&shell, &workdir, launched).await?);
                         SNAPSHOT.set(Some(Arc::clone(&snapshot)));
                         Ok(snapshot)

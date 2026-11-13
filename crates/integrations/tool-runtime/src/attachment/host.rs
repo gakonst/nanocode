@@ -1025,7 +1025,7 @@ impl RunnerHost {
         let listener = TcpListener::bind(address).await.map_err(transport_error)?;
         let address = listener.local_addr().map_err(transport_error)?;
         let runners = Runners::default();
-        let accept = tokio::spawn(accept_runners(listener, Arc::clone(&runners)));
+        let accept = nanocode_platform::spawn_task(accept_runners(listener, Arc::clone(&runners)));
         Ok(Self {
             endpoint: format!("ws://{address}/").into(),
             runners,
@@ -1337,7 +1337,7 @@ impl RemoteRunner {
             .headers_mut()
             .insert(http::header::AUTHORIZATION, authorization);
         let runner = self.clone();
-        Ok(RunnerConnection(tokio::spawn(async move {
+        Ok(RunnerConnection(nanocode_platform::spawn_task(async move {
             let mut backoff = super::driver::INITIAL_TRANSPORT_BACKOFF;
             loop {
                 let connected = match initial.take() {

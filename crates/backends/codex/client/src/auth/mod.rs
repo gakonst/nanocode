@@ -303,7 +303,7 @@ impl ChatGptHomeAuth {
     async fn load(&self) -> Result<&OpenAiAuth, OpenAiAuthError> {
         self.loaded
             .get_or_try_init(|| async {
-                tokio::task::spawn_blocking(|| {
+                nanocode_platform::spawn_blocking(|| {
                     let path = chatgpt_auth_file().map_err(|error| {
                         OpenAiAuthError::Unavailable(Arc::from(error.to_string()))
                     })?;

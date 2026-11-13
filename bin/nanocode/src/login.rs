@@ -13,13 +13,13 @@ impl App {
         let tx = self.tx.clone();
         match argument.trim() {
             "codex" | "chatgpt" | "openai" => {
-                tokio::spawn(codex(tx));
+                nanocode_platform::spawn_task(codex(tx));
             }
             "claude" | "anthropic" => {
-                tokio::spawn(claude(tx));
+                nanocode_platform::spawn_task(claude(tx));
             }
             "tempo" => {
-                tokio::spawn(tempo(tx));
+                nanocode_platform::spawn_task(tempo(tx));
             }
             _ => self.notice(NoticeLevel::Info, "usage: /login codex|claude|tempo"),
         }
@@ -27,7 +27,7 @@ impl App {
 
     pub(crate) fn fund(&mut self, argument: &str) {
         let _span = tracing::info_span!(target: "nanocode", "nc.action", action.name = "fund", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
-        tokio::spawn(fund(
+        nanocode_platform::spawn_task(fund(
             self.tx.clone(),
             argument.trim().trim_start_matches('$').to_owned(),
         ));
@@ -45,7 +45,7 @@ impl App {
 
     pub(crate) fn wallet(&mut self) {
         let _span = tracing::info_span!(target: "nanocode", "nc.action", action.name = "wallet", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
-        tokio::spawn(wallet(self.tx.clone()));
+        nanocode_platform::spawn_task(wallet(self.tx.clone()));
     }
 }
 

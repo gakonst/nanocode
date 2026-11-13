@@ -65,7 +65,7 @@ impl<M: Send + 'static> MessageWriter<M> {
         Si: Sink<M> + Unpin + Send + 'static,
     {
         let (writer, writing) = Self::new(sink);
-        tokio::spawn(writing);
+        nanocode_platform::spawn_task(writing);
         writer
     }
 

@@ -196,7 +196,7 @@ impl<P: Pipe> Capture<P> {
             match pipe.ready(&mut buffer)? {
                 None => {
                     let open = pipe.open();
-                    drop(tokio::spawn(crate::output::discard(pipe, open)));
+                    drop(nanocode_platform::spawn_task(crate::output::discard(pipe, open)));
                 }
                 Some(0) => {}
                 Some(read) => {

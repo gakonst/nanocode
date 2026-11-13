@@ -1141,7 +1141,7 @@ impl SessionProvider {
         let headers = context.headers.clone();
         let challenge = challenge.clone();
         let channel_id = channel_id.to_owned();
-        runtime.spawn(async move {
+        nanocode_platform::spawn_on(&runtime, async move {
             let _ = provider
                 .top_up_in_background(
                     &client,
@@ -2663,7 +2663,7 @@ impl SessionProvider {
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
             let provider = self.clone();
             let id = channel_id.clone();
-            runtime.spawn(async move { provider.save_server_spent(&id).await });
+            nanocode_platform::spawn_on(&runtime, async move { provider.save_server_spent(&id).await });
         }
         if self.is_pending_open(&channel_id)
             && let Some(entry) = self.channel_by_id(&channel_id)

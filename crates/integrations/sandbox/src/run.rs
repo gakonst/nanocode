@@ -448,7 +448,7 @@ fn read_tail<R>(pipe: Option<R>, most: usize) -> Reading<Vec<u8>>
 where
     R: AsyncRead + Unpin + Send + 'static,
 {
-    tokio::spawn(async move {
+    nanocode_platform::spawn_task(async move {
         let mut pipe = pipe.ok_or_else(|| missing("no pipe"))?;
         let mut tail = VecDeque::new();
         let mut chunk = vec![0; PIPE];
@@ -469,7 +469,7 @@ fn read_all<R>(pipe: Option<R>, most: usize, overflow: Arc<Signal>) -> Reading<O
 where
     R: AsyncRead + Unpin + Send + 'static,
 {
-    tokio::spawn(async move {
+    nanocode_platform::spawn_task(async move {
         let mut bytes = Vec::new();
         let pipe = pipe.ok_or_else(|| missing("no pipe"))?;
         let limit = u64::try_from(most)

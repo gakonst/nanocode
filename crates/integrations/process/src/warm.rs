@@ -51,7 +51,7 @@ pub(super) async fn spawn(
             .is_ok();
     if fill || !evicted.is_empty() || !discarded.is_empty() {
         let refill = Arc::clone(&lane);
-        drop(tokio::task::spawn_blocking(move || {
+        drop(nanocode_platform::spawn_blocking(move || {
             evicted.into_iter().chain(discarded).for_each(Idle::kill);
             if fill {
                 pool.fill(&refill);

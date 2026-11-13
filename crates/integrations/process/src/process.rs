@@ -111,7 +111,7 @@ impl ProcessChild {
         let mut guard = ProcessGroupGuard::new(pid);
         let exited = Arc::new(Exit::default());
         let reaped = Arc::clone(&exited);
-        let wait = tokio::spawn(async move {
+        let wait = nanocode_platform::spawn_task(async move {
             let mut listening = true;
             #[cfg(unix)]
             let mut exited = if io_driver_available {
@@ -184,7 +184,7 @@ impl ProcessChild {
         let process_group = SharedProcessGroup(commands);
         let exited = Arc::new(Exit::default());
         let reaped = Arc::clone(&exited);
-        let wait = tokio::spawn(async move {
+        let wait = nanocode_platform::spawn_task(async move {
             let mut listening = true;
             let result = loop {
                 tokio::select! {
@@ -306,7 +306,7 @@ impl ProcessStdin {
     fn pty(terminal: std::os::fd::OwnedFd) -> Self {
         let mut writer = std::fs::File::from(terminal);
         let (sender, mut writes) = mpsc::unbounded_channel::<PtyWrite>();
-        drop(tokio::task::spawn_blocking(move || {
+        drop(nanocode_platform::spawn_blocking(move || {
             while let Some((bytes, reply)) = writes.blocking_recv() {
                 drop(reply.send(writer.write_all(&bytes).and_then(|()| writer.flush())));
             }

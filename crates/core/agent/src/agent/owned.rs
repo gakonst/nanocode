@@ -292,7 +292,7 @@ fn spawn_detached(future: impl Future<Output = ()> + Send + 'static) {
     if let Some(host) = nanocode_platform::host() {
         host.spawn(Box::pin(future));
     } else if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-        drop(runtime.spawn(future));
+        drop(nanocode_platform::spawn_on(&runtime, future));
     }
 }
 

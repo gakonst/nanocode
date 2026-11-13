@@ -180,7 +180,7 @@ type Flights = HashMap<RequestId, AbortHandle>;
 
 #[cfg(not(target_family = "wasm"))]
 fn spawn_background(future: impl Future<Output = ()> + Send + 'static) -> Background {
-    tokio::spawn(future)
+    nanocode_platform::spawn_task(future)
 }
 
 #[cfg(target_family = "wasm")]

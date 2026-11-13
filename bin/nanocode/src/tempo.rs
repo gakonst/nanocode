@@ -767,7 +767,7 @@ impl Wallet {
                     Gas::Held => Some(self.held().await?),
                 };
                 let opening = self.clone();
-                let wallet = tokio::task::spawn_blocking(move || opening.open(fee))
+                let wallet = nanocode_platform::spawn_blocking(move || opening.open(fee))
                     .await
                     .map_err(|error| error.to_string())??;
                 self.loaded.set(Some(wallet.clone()));
@@ -782,7 +782,7 @@ impl Wallet {
 
     async fn held(&self) -> std::result::Result<Address, String> {
         let host = self.url.host_str().unwrap_or_default().to_owned();
-        let account = tokio::task::spawn_blocking(accounts::default_active_account)
+        let account = nanocode_platform::spawn_blocking(accounts::default_active_account)
             .await
             .map_err(|error| error.to_string())?
             .map_err(|error| {
@@ -1501,7 +1501,7 @@ impl Tempo {
         let providers = catalog(self);
         subagents.update_spawn_policy(|policy| policy.providers = Some(providers.clone()));
         let (tempo, subagents) = (self.clone(), subagents.clone());
-        tokio::spawn(async move {
+        nanocode_platform::spawn_task(async move {
             tempo.load().await;
             let providers = catalog(&tempo);
             subagents.update_spawn_policy(|policy| policy.providers = Some(providers.clone()));
@@ -1637,7 +1637,7 @@ pub(crate) struct Closing {
 
 pub(crate) async fn close(closing: Closing) {
     if let Some(certificates) = closing.certificates {
-        let _ = tokio::task::spawn_blocking(move || std::fs::remove_file(certificates)).await;
+        let _ = nanocode_platform::spawn_blocking(move || std::fs::remove_file(certificates)).await;
     }
     let sessions = closing.payments.closing.get();
     if sessions.is_empty() {

@@ -209,7 +209,7 @@ impl Login {
 async fn write_file(path: &Path, bytes: &[u8]) -> Result<(), ClaudeAuthUnavailable> {
     let path = path.to_path_buf();
     let bytes = bytes.to_vec();
-    tokio::task::spawn_blocking(move || {
+    nanocode_platform::spawn_blocking(move || {
         use std::io::Write as _;
         let directory = path.parent().unwrap_or_else(|| Path::new("."));
         let temporary = directory.join(format!(
@@ -305,7 +305,7 @@ async fn write_keychain(
 
 async fn lock(directory: &Path) -> Result<std::fs::File, ClaudeAuthUnavailable> {
     let path = directory.join(LOCK_FILE);
-    tokio::task::spawn_blocking(move || {
+    nanocode_platform::spawn_blocking(move || {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -339,7 +339,7 @@ impl ClaudeCodeLogin {
         let refresh = self.clone();
         let directory = login.directory;
         let rejected = rejected.cloned();
-        tokio::spawn(
+        nanocode_platform::spawn_task(
             async move { refresh.refresh(&directory, rejected.as_ref()).await }.in_current_span(),
         )
         .await

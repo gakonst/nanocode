@@ -525,7 +525,7 @@ impl Serving {
     ) -> Self {
         let (notify, notes) = mpsc::unbounded_channel();
         let core = core.clone();
-        let task = tokio::spawn(async move {
+        let task = nanocode_platform::spawn_task(async move {
             let moved = notify.clone();
             serve(
                 socket,

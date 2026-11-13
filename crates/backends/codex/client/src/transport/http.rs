@@ -179,7 +179,7 @@ impl ResponsesHttp {
             );
         let body = request.json().to_owned();
         builder = if auth.mode() == OpenAiAuthMode::ChatGpt && self.gateway.is_none() {
-            let encoded = tokio::task::spawn_blocking(move || {
+            let encoded = nanocode_platform::spawn_blocking(move || {
                 nanocode_zstd::compress(body.as_bytes(), ZSTD_LEVEL)
             })
             .await

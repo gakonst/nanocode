@@ -538,7 +538,7 @@ impl RunnerPool {
             self.inner.code_mode.await_replacement(true);
         }
         tokio::runtime::Handle::try_current().map_err(error)?;
-        tokio::spawn(supervise(Arc::downgrade(&self.inner), config));
+        nanocode_platform::spawn_task(supervise(Arc::downgrade(&self.inner), config));
         Ok(())
     }
     pub fn connect<'call>(
@@ -1019,7 +1019,7 @@ impl RunnerPool {
                 Ok(())
             };
             self.inner.state.read(admissible)?;
-            let task = tokio::spawn(accept(
+            let task = nanocode_platform::spawn_task(accept(
                 listener,
                 weak,
                 token.clone(),
@@ -1150,7 +1150,7 @@ fn executor_monitor(
     host: Arc<dyn CodeModeHost>,
     mut closed: watch::Receiver<Option<String>>,
 ) -> AbortHandle {
-    tokio::spawn(async move {
+    nanocode_platform::spawn_task(async move {
         let reason = match closed.wait_for(Option::is_some).await {
             Ok(reason) => reason.clone().unwrap_or_default(),
             Err(_) => crate::remote::LOCAL_CLOSED.to_owned(),
@@ -1265,7 +1265,7 @@ fn monitor(
     remote: RemoteRunner,
     identity: Arc<()>,
 ) -> AbortHandle {
-    tokio::spawn(async move {
+    nanocode_platform::spawn_task(async move {
         let mut connected = remote.connection_status();
         let mut failure = remote.failure_status();
         loop {

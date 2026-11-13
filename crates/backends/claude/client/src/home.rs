@@ -99,7 +99,7 @@ impl ClaudeSubscriptionHost for HomeHost {
     {
         let path = self.path.clone();
         Box::pin(async move {
-            let mut entries = tokio::task::spawn_blocking(move || Self::read(&path))
+            let mut entries = nanocode_platform::spawn_blocking(move || Self::read(&path))
                 .await
                 .map_err(|_| ClaudeSubscriptionHostError)?
                 .map_err(|_| ClaudeSubscriptionHostError)?;
@@ -122,7 +122,7 @@ impl ClaudeSubscriptionHost for HomeHost {
     ) -> ClaudeAuthFuture<'a, Result<ClaudeSubscriptionCommit, ClaudeSubscriptionHostError>> {
         let (path, key, payload) = (self.path.clone(), key.to_owned(), payload.to_owned());
         Box::pin(async move {
-            tokio::task::spawn_blocking(move || {
+            nanocode_platform::spawn_blocking(move || {
                 Self::swap(&path, &key, expected_revision, &payload)
             })
             .await

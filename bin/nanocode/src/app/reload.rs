@@ -229,7 +229,7 @@ impl App {
             let runtime = self.host.runtime.clone();
             let tx = self.tx.clone();
             let runner = hand.runner();
-            tokio::spawn(async move {
+            nanocode_platform::spawn_task(async move {
                 let (level, message) = match runtime.connect_runner(runner).await {
                     Ok(handle) => (
                         NoticeLevel::Info,
@@ -330,7 +330,7 @@ impl Instance {
         }
         let socket = std::sync::Arc::new(tokio::net::UnixDatagram::bind(&path)?);
         let receiver = socket.clone();
-        let listener = tokio::spawn(async move {
+        let listener = nanocode_platform::spawn_task(async move {
             let mut message = [0; REQUEST.len() + 1];
             loop {
                 match receiver.recv(&mut message).await {

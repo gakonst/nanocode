@@ -157,7 +157,7 @@ impl OAuthRuntime {
         refresh
             .run(|| async move {
                 let server_name = runtime.server_name.clone();
-                let task = tokio::spawn(async move {
+                let task = nanocode_platform::spawn_task(async move {
                     let result = runtime
                         .refresh_transaction(rejected_access_token.as_deref())
                         .await;

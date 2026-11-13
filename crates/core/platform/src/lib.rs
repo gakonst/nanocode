@@ -30,7 +30,7 @@ pub use zone::{
 #[cfg(not(target_family = "wasm"))]
 mod native;
 #[cfg(not(target_family = "wasm"))]
-pub use native::{Host, HostFuture, host, install, now, sleep, spawn, system_time, timeout};
+pub use native::{Host, HostFuture, host, install, now, sleep, spawn, spawn_blocking, spawn_on, spawn_task, system_time, timeout};
 
 #[cfg(not(target_family = "wasm"))]
 pub mod trust;

@@ -655,7 +655,7 @@ async fn connect_session(
 
 #[cfg(not(target_family = "wasm"))]
 fn drain_server_stderr(server_name: String, stderr: tokio::process::ChildStderr) {
-    drop(tokio::spawn(async move {
+    drop(nanocode_platform::spawn_task(async move {
         let mut stderr = stderr;
         let mut chunk = [0_u8; MCP_STDERR_CHUNK_BYTES];
         let mut chunk_index = 0_u64;

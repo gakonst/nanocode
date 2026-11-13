@@ -170,7 +170,7 @@ pub async fn cua(args: CuaArgs) -> Result<()> {
         CuaCommand::DriverMcp => run(Command::new(embedded_driver()?).arg("mcp"))?,
         CuaCommand::BrowserHost { .. } => {
             let socket = browser_socket(&home);
-            tokio::task::spawn_blocking(move || browser::serve_host(&socket)).await??;
+            nanocode_platform::spawn_blocking(move || browser::serve_host(&socket)).await??;
         }
     }
     Ok(())

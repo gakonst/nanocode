@@ -48,7 +48,7 @@ impl Tool for ApplyPatchHandler {
                 let input = input.into_freeform()?;
                 let workspace = self.workspace.clone();
                 Ok(
-                    match tokio::task::spawn_blocking(move || apply(&input, &workspace)).await {
+                    match nanocode_platform::spawn_blocking(move || apply(&input, &workspace)).await {
                         Ok(Ok(output)) => {
                             ToolOutput::text(output).with_structured_result(json!({}))
                         }

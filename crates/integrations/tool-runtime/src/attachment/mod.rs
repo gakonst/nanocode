@@ -347,7 +347,7 @@ impl AttachmentConnector {
         let (status_tx, status_rx) = watch::channel(AttachmentStatus::Connecting);
         let (closed_tx, closed_rx) = watch::channel(None);
         let refs = Arc::new(HandleRefs { command_tx });
-        tokio::spawn(initialize_and_run(
+        nanocode_platform::spawn_task(initialize_and_run(
             prepared,
             self.target,
             self.metadata,

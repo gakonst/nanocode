@@ -20,6 +20,6 @@ pub(crate) fn spawn_driver(
 ) -> Result<()> {
     let runtime = tokio::runtime::Handle::try_current()
         .map_err(|_| NanocodeError::TokioRuntimeUnavailable)?;
-    drop(runtime.spawn(driver));
+    drop(nanocode_platform::spawn_on(&runtime, driver));
     Ok(())
 }

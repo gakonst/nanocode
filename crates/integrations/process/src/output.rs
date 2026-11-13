@@ -140,7 +140,7 @@ pub(super) async fn drain<P: AsyncRead + Ready + Unpin + Send + 'static>(
                 }
             }
             Ok(None) => {
-                drop(tokio::spawn(discard(pipe, open)));
+                drop(nanocode_platform::spawn_task(discard(pipe, open)));
                 return;
             }
         }
@@ -153,7 +153,7 @@ pub(super) fn drain_blocking(
     activity: Arc<LastActivity>,
 ) -> tokio::task::JoinHandle<()> {
     let runtime = tokio::runtime::Handle::current();
-    tokio::task::spawn_blocking(move || {
+    nanocode_platform::spawn_blocking(move || {
         let _open = Open::new(&pipe);
         let mut buffer = [0_u8; READ_BUFFER_LENGTH];
         loop {

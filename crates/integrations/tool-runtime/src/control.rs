@@ -69,7 +69,7 @@ where
                 failures = 0;
                 active += 1;
                 let (answer, ended) = (answer.clone(), Ended(ended.clone()));
-                tokio::spawn(async move {
+                nanocode_platform::spawn_task(async move {
                     converse(stream, limits, answer).await;
                     drop(ended);
                 });

@@ -248,7 +248,7 @@ impl Drop for RuntimeGuard {
         }
         let control = self.control.clone();
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-            runtime.spawn(async move { control.cancel().await });
+            nanocode_platform::spawn_on(&runtime, async move { control.cancel().await });
         }
     }
 }

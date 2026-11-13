@@ -335,7 +335,7 @@ impl App {
         }
         let store = self.host.config.store.clone();
         let tx = self.tx.clone();
-        tokio::spawn(async move {
+        nanocode_platform::spawn_task(async move {
             let ready = async {
                 let entry = control
                     .agents(&root)
@@ -428,7 +428,7 @@ impl App {
             view.transcript.scroll_to_bottom();
         }
         let tx = self.tx.clone();
-        tokio::spawn(async move {
+        nanocode_platform::spawn_task(async move {
             if let Err(error) = control
                 .send_user_message(&root, id, MessagePriority::Urgent, text)
                 .await
@@ -584,7 +584,7 @@ impl App {
             return;
         };
         let tx = self.tx.clone();
-        tokio::spawn(async move {
+        nanocode_platform::spawn_task(async move {
             let result = match control.agents(&root).await {
                 Ok(entries) if entries.is_empty() => Ok("no subagents in this session".to_owned()),
                 Ok(entries) => {
@@ -636,7 +636,7 @@ impl App {
             return;
         };
         let tx = self.tx.clone();
-        tokio::spawn(async move {
+        nanocode_platform::spawn_task(async move {
             let result = control
                 .agents(&root)
                 .await
@@ -785,7 +785,7 @@ impl App {
         };
         self.flash(format!("stopping {}…", self.agent_label(scope, id)));
         let tx = self.tx.clone();
-        tokio::spawn(async move {
+        nanocode_platform::spawn_task(async move {
             let result = control
                 .close(&root, id)
                 .await
@@ -845,7 +845,7 @@ impl App {
         };
         self.flash(format!("interrupting {}#{id}", scope.prefix()));
         let tx = self.tx.clone();
-        tokio::spawn(async move {
+        nanocode_platform::spawn_task(async move {
             if let Err(error) = control.interrupt(&root, id).await {
                 drop(tx.send(AppEvent::Notice(
                     NoticeLevel::Error,

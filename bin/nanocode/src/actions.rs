@@ -85,7 +85,7 @@ impl App {
             && (!tier_changed || mutable(mutability.service_tier));
         if in_place {
             self.starting = true;
-            tokio::spawn(async move {
+            nanocode_platform::spawn_task(async move {
                 let applied = async {
                     if model_changed {
                         agent.set_harness_model(model.clone()).await?;
@@ -114,7 +114,7 @@ impl App {
         let previous = self.route.label(&self.model);
         let previous_family = self.model.family();
         self.starting = true;
-        tokio::spawn(async move {
+        nanocode_platform::spawn_task(async move {
             let ready = async {
                 let session_id = agent.session_id().to_owned();
                 let (next, events) = if started {
@@ -346,7 +346,7 @@ impl App {
         };
         let workspace = self.host.config.workspace.clone();
         let tx = self.tx.clone();
-        tokio::spawn(async move {
+        nanocode_platform::spawn_task(async move {
             let sessions = store
                 .list()
                 .await
@@ -379,7 +379,7 @@ impl App {
         let tx = self.tx.clone();
         self.starting = true;
         self.generation += 1;
-        tokio::spawn(async move {
+        nanocode_platform::spawn_task(async move {
             if let Some(previous) = previous {
                 drop(previous.flush().await);
                 drop(previous.shutdown().await);
@@ -407,7 +407,7 @@ impl App {
         let tx = self.tx.clone();
         self.starting = true;
         self.generation += 1;
-        tokio::spawn(async move {
+        nanocode_platform::spawn_task(async move {
             if let Some(previous) = previous {
                 drop(previous.flush().await);
                 drop(previous.shutdown().await);
@@ -461,7 +461,7 @@ impl App {
         }
         let tx = self.tx.clone();
         self.flash("compacting…");
-        tokio::spawn(async move {
+        nanocode_platform::spawn_task(async move {
             let event = match agent.compact().await {
                 Ok(()) => AppEvent::Notice(NoticeLevel::Info, "context compacted".into()),
                 Err(error) => {

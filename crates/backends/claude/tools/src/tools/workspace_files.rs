@@ -169,7 +169,7 @@ impl ClaudeWorkspaceFiles {
     ) -> Result<ToolOutput, String> {
         let this = self.clone();
         let name = name.to_owned();
-        tokio::task::spawn_blocking(move || {
+        nanocode_platform::spawn_blocking(move || {
             let mut media = None;
             if name == "Read" {
                 let fields = input.as_object().ok_or("Read input must be an object")?;

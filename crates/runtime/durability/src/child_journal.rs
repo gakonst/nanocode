@@ -715,7 +715,7 @@ fn spawn_writer(writer: impl Future<Output = ()> + Send + 'static) {
         return;
     }
     if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-        drop(runtime.spawn(writer));
+        drop(nanocode_platform::spawn_on(&runtime, writer));
     }
 }
 

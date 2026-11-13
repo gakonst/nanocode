@@ -737,7 +737,7 @@ fn start_call(
         call: Some(events),
         events: event_sender.clone(),
     };
-    let task = tokio::spawn(
+    let task = nanocode_platform::spawn_task(
         async move {
             let started = Instant::now();
             timing.update(|clock| clock.task_started = Some(started));

@@ -671,7 +671,7 @@ fn spawn_driver(driver: impl Future<Output = ()> + Send + 'static) -> crate::Res
         return Ok(());
     }
     let runtime = tokio::runtime::Handle::try_current().map_err(|_| Error::RuntimeUnavailable)?;
-    drop(runtime.spawn(driver));
+    drop(nanocode_platform::spawn_on(&runtime, driver));
     Ok(())
 }
 

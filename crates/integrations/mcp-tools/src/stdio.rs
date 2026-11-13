@@ -42,8 +42,8 @@ pub fn spawn(
         .ok_or_else(|| io::Error::other("spawned MCP server without stdin"))?;
     let stderr = child.stderr.take();
 
-    drop(tokio::spawn(read_messages(stdout, inbound.clone())));
-    drop(tokio::spawn(async move {
+    drop(nanocode_platform::spawn_task(read_messages(stdout, inbound.clone())));
+    drop(nanocode_platform::spawn_task(async move {
         let mut outgoing = outgoing;
         while let Some(message) = outgoing.next().await {
             if let Err(error) = write_message(&mut stdin, &message).await {

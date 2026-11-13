@@ -423,7 +423,7 @@ impl ShellSessions {
                 Some(spawned) => Ok(spawned),
                 None => {
                     let (directory, tty) = (workdir.clone(), command.tty);
-                    tokio::task::spawn_blocking(move || {
+                    nanocode_platform::spawn_blocking(move || {
                         process::spawn(&script, &directory, &shell, login, tty, &environment)
                     })
                     .await
@@ -479,7 +479,7 @@ impl ShellSessions {
             });
             let pruned = self.sessions.insert(&session);
             if let Some(pruned) = pruned {
-                tokio::spawn(async move {
+                nanocode_platform::spawn_task(async move {
                     pruned.terminate().await;
                 });
             }
@@ -713,13 +713,13 @@ impl Session {
         let exited = spawned.child.exited();
         let drains = match spawned.output {
             process::ProcessOutput::Pipes { stdout, stderr } => vec![
-                tokio::spawn(output::drain(
+                nanocode_platform::spawn_task(output::drain(
                     stdout,
                     chunks.clone(),
                     Arc::clone(&activity),
                     Arc::clone(&exited),
                 )),
-                tokio::spawn(output::drain(
+                nanocode_platform::spawn_task(output::drain(
                     stderr,
                     chunks,
                     Arc::clone(&activity),
@@ -733,13 +733,13 @@ impl Session {
             )],
             #[cfg(any(target_os = "macos", target_os = "linux"))]
             process::ProcessOutput::Streams { stdout, stderr } => vec![
-                tokio::spawn(output::drain(
+                nanocode_platform::spawn_task(output::drain(
                     Some(stdout),
                     chunks.clone(),
                     Arc::clone(&activity),
                     Arc::clone(&exited),
                 )),
-                tokio::spawn(output::drain(
+                nanocode_platform::spawn_task(output::drain(
                     Some(stderr),
                     chunks,
                     Arc::clone(&activity),
@@ -747,7 +747,7 @@ impl Session {
                 )),
             ],
             #[cfg(any(target_os = "macos", target_os = "linux"))]
-            process::ProcessOutput::Stream(both) => vec![tokio::spawn(output::drain(
+            process::ProcessOutput::Stream(both) => vec![nanocode_platform::spawn_task(output::drain(
                 Some(both),
                 chunks,
                 Arc::clone(&activity),
@@ -1061,7 +1061,7 @@ impl Drop for CancelExecution {
     fn drop(&mut self) {
         if let Some(session) = self.session.take() {
             self.sessions.remove(session.id);
-            tokio::spawn(async move {
+            nanocode_platform::spawn_task(async move {
                 session.terminate().await;
             });
         }

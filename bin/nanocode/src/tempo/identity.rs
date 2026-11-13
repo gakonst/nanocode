@@ -508,7 +508,7 @@ impl Identity {
         let directory = self.passes.clone()?;
         let (issuers, email) = (self.issuers.clone(), self.email.read(Clone::clone));
         let path = pass_path(&directory, key);
-        let entry = tokio::task::spawn_blocking(move || read_pass(&path))
+        let entry = nanocode_platform::spawn_blocking(move || read_pass(&path))
             .await
             .ok()?
             .ok()?;
@@ -522,7 +522,7 @@ impl Identity {
             return Err("nanocode found no home directory to keep it in".to_owned());
         };
         let (key, entry, email) = (key.to_owned(), entry.clone(), email.to_owned());
-        tokio::task::spawn_blocking(move || save(&directory, &key, &entry, &email))
+        nanocode_platform::spawn_blocking(move || save(&directory, &key, &entry, &email))
             .await
             .map_err(|error| error.to_string())?
             .map_err(|error| error.to_string())
@@ -533,7 +533,7 @@ impl Identity {
             return;
         };
         let (key, token) = (key.to_owned(), token.to_owned());
-        let forgotten = tokio::task::spawn_blocking(move || forget(&directory, &key, &token)).await;
+        let forgotten = nanocode_platform::spawn_blocking(move || forget(&directory, &key, &token)).await;
         if let Ok(Err(error)) = forgotten {
             tracing::warn!(target: "nanocode", error = %error, "a refused email pass stays on disk");
         }

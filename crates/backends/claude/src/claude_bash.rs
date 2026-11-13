@@ -193,7 +193,7 @@ async fn output_file(
     let (sender, mut chunks) = mpsc::unbounded_channel::<Vec<u8>>();
     let written = Arc::new(Signal::new());
     let done = Arc::clone(&written);
-    drop(tokio::spawn(async move {
+    drop(nanocode_platform::spawn_task(async move {
         let mut total = 0_u64;
         while let Some(chunk) = chunks.recv().await {
             total = total.saturating_add(chunk.len() as u64);
@@ -311,7 +311,7 @@ fn prompting(tail: &str) -> bool {
         .any(|pattern| line.contains(pattern))
 }
 fn route(binding: Binding, id: String, text: String) {
-    drop(tokio::spawn(async move {
+    drop(nanocode_platform::spawn_task(async move {
         if binding.ends_with_turn {
             if !(binding.steer)(text).await {
                 tracing::debug!(task_id = %id, "background Bash notification found no running turn");
@@ -449,7 +449,7 @@ impl Jobs {
         } else {
             Watch::Notified
         };
-        drop(tokio::spawn(async move {
+        drop(nanocode_platform::spawn_task(async move {
             let finished = async {
                 let outcome = completion(&job).await;
                 job.written.wait().await;
@@ -520,7 +520,7 @@ fn discard(job: &Job) {
     let (Some(path), written) = (job.output.clone(), Arc::clone(&job.written)) else {
         return;
     };
-    drop(tokio::spawn(async move {
+    drop(nanocode_platform::spawn_task(async move {
         written.wait().await;
         let _ = tokio::fs::remove_file(path).await;
     }));
@@ -619,7 +619,7 @@ impl BashExecutor for LocalBash {
             let owner = call_id
                 .as_ref()
                 .and_then(|id| self.jobs.owners.read(|owners| owners.get(id).cloned()));
-            let task = tokio::spawn(async move {
+            let task = nanocode_platform::spawn_task(async move {
                 let _finished = guard;
                 start.wait().await;
                 let deadline = async move {

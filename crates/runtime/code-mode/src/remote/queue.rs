@@ -163,7 +163,7 @@ pub async fn serve_queue<Q: CommandQueue>(
     let pending = first.calls.iter().map(QueuedCall::request_id).collect();
     let (client, driver, resumed) =
         RemoteClient::resuming(link, options.operation_timeout, pending);
-    let mut driver = tokio::spawn(driver);
+    let mut driver = nanocode_platform::spawn_task(driver);
     let mut replies: FuturesUnordered<Replied> = FuturesUnordered::new();
     for (call, (request, reply)) in first.calls.iter().zip(resumed) {
         let command = call.context.call_id.clone();
@@ -174,7 +174,7 @@ pub async fn serve_queue<Q: CommandQueue>(
     }
     let (done, settling) = mpsc::unbounded_channel();
     let (release, mut released) = mpsc::unbounded_channel();
-    tokio::spawn(settle(
+    nanocode_platform::spawn_task(settle(
         Arc::clone(&queue),
         client.clone(),
         settling,
@@ -348,7 +348,7 @@ pub async fn serve_queue<Q: CommandQueue>(
 
 fn notify(client: &RemoteClient, operation: RemoteOperation) {
     let client = client.clone();
-    tokio::spawn(async move {
+    nanocode_platform::spawn_task(async move {
         drop(client.request(operation, Vec::new(), None).await);
     });
 }

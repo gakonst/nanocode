@@ -212,7 +212,7 @@ pub fn run_with(clients: ModelClients) -> ExitCode {
         None | Some(Command::Exec(_) | Command::Resume { .. })
     ) && let Some(warming) = clients.warming()
     {
-        runtime.spawn(warming);
+        nanocode_platform::spawn_on(runtime.handle(), warming);
     }
     let outcome = runtime.block_on(async move {
         match cli.command {
@@ -251,7 +251,7 @@ pub fn run_with(clients: ModelClients) -> ExitCode {
 }
 
 async fn on_worker(work: impl Future<Output = Result<()>> + Send + 'static) -> Result<()> {
-    tokio::spawn(work).await?
+    nanocode_platform::spawn_task(work).await?
 }
 
 struct Prepared {
@@ -554,7 +554,7 @@ async fn exec(args: SessionArgs, clients: ModelClients) -> Result<()> {
     }
     drop(events);
     if let Some(mut notices) = host.config.clients.notifying() {
-        tokio::spawn(async move {
+        nanocode_platform::spawn_task(async move {
             while let Some(notice) = notices.next().await {
                 eprintln!("{notice}");
             }

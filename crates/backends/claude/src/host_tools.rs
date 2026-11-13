@@ -28,7 +28,7 @@ const BACKGROUND_NOTE: &str = "Nothing notifies you when it finishes, and it sto
 
 #[cfg(not(target_family = "wasm"))]
 fn spawn(future: impl std::future::Future<Output = ()> + Send + 'static) {
-    drop(tokio::spawn(future));
+    drop(nanocode_platform::spawn_task(future));
 }
 
 #[cfg(target_family = "wasm")]

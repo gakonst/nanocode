@@ -1883,7 +1883,7 @@ fn spawn_driver(driver: impl Future<Output = ()> + Send + 'static) -> crate::Res
         })
         .as_ref()
         .ok_or(Error::RuntimeUnavailable)?;
-    drop(runtime.spawn(driver));
+    drop(nanocode_platform::spawn_on(runtime, driver));
     Ok(())
 }
 

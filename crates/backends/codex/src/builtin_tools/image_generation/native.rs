@@ -198,7 +198,7 @@ async fn local_image_url(path: PathBuf) -> Result<String, String> {
         )
     })?;
     let display_path = path.clone();
-    tokio::task::spawn_blocking(move || {
+    nanocode_platform::spawn_blocking(move || {
         load_for_prompt_data_url(&path, bytes, ImageDetail::Original)
     })
     .await

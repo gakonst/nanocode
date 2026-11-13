@@ -718,7 +718,7 @@ impl ManagedChatGptAuth {
         self.inner
             .refreshing
             .run(|| async move {
-                tokio::spawn(
+                nanocode_platform::spawn_task(
                     inner
                         .refresh_if_current(rejected_revision)
                         .in_current_span(),
@@ -1074,7 +1074,7 @@ async fn run_blocking<T: Send + 'static>(
     task: impl FnOnce(&Path) -> Result<T, ChatGptAuthError> + Send + 'static,
 ) -> Result<T, ChatGptAuthError> {
     let task_path = path.clone();
-    tokio::task::spawn_blocking(move || task(&task_path))
+    nanocode_platform::spawn_blocking(move || task(&task_path))
         .await
         .map_err(|source| ChatGptAuthError::Storage {
             path,

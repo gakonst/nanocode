@@ -149,7 +149,7 @@ fn tracked(
         host.spawn(Box::pin(forward));
     } else {
         match tokio::runtime::Handle::try_current() {
-            Ok(runtime) => drop(runtime.spawn(forward)),
+            Ok(runtime) => drop(nanocode_platform::spawn_on(&runtime, forward)),
             Err(_) => {
                 return Box::pin(async move {
                     forward.await;

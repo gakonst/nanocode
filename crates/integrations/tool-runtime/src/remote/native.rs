@@ -571,7 +571,7 @@ fn writer<S: Sink<Message, Error = nanocode_websocket::Error> + Unpin + Send + '
     reason: Arc<Atom<Option<&'static str>>>,
 ) -> (mpsc::UnboundedSender<String>, Writer) {
     let (tx, mut rx) = mpsc::unbounded_channel();
-    let task = tokio::spawn(async move {
+    let task = nanocode_platform::spawn_task(async move {
         let period = policy.request_timeout / 2;
         let mut heartbeat = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
         heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -754,7 +754,7 @@ impl SocketTransport {
         );
         let closed = Arc::new(watch::channel(None).0);
         let published = Arc::clone(&closed);
-        tokio::spawn(async move {
+        nanocode_platform::spawn_task(async move {
             let message = driver.await;
             published.send_replace(Some(message));
         });
@@ -988,7 +988,7 @@ impl HandHost for NativeHost {
     }
 
     fn spawn(&self, task: HostFuture<'static, ()>) {
-        tokio::spawn(task);
+        nanocode_platform::spawn_task(task);
     }
 }
 
@@ -1103,7 +1103,7 @@ pub(super) fn hand_core(
 ) -> HandCore {
     let (core, driver) =
         HandCore::new(Arc::new(NativeHost { workspace, tools }), options, activity);
-    tokio::spawn(driver);
+    nanocode_platform::spawn_task(driver);
     core
 }
 
@@ -1285,7 +1285,7 @@ async fn serve_link<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
         Some(meter) => {
             let (metered, mut frames) = mpsc::unbounded_channel::<String>();
             let meter = Arc::clone(meter);
-            tokio::spawn(async move {
+            nanocode_platform::spawn_task(async move {
                 while let Some(frame) = frames.recv().await {
                     if wire.send(meter.stamp(frame)).is_err() {
                         return;

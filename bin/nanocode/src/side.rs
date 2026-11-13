@@ -384,7 +384,7 @@ impl App {
         if owner.is_none() || restore.is_some() {
             let tx = self.tx.clone();
             let host = self.host.clone();
-            tokio::spawn(async move {
+            nanocode_platform::spawn_task(async move {
                 let send = |update| tx.send(AppEvent::Side { pane: id, update }).is_ok();
                 if let Some((session, current)) = restore {
                     let restored = async {
@@ -584,7 +584,7 @@ impl App {
         let owner = side.owner;
         self.btw.insert(id, (owner, cell));
         let tx = self.tx.clone();
-        let task = tokio::spawn(async move {
+        let task = nanocode_platform::spawn_task(async move {
             let send = |update| drop(tx.send(AppEvent::Btw { id, update }));
             let answer = match (owner, root, control) {
                 (None, Some(agent), _) => agent.side_question(prompt).await,
@@ -653,7 +653,7 @@ impl App {
         let shown = self.panes.active || !self.panes.zoomed;
         let Some(side) = self.panes.side.as_mut().filter(|side| side.id == pane) else {
             if let SideUpdate::Forked(agent) = update {
-                tokio::spawn(async move { drop(agent.shutdown().await) });
+                nanocode_platform::spawn_task(async move { drop(agent.shutdown().await) });
             }
             return Redraw::None;
         };
@@ -803,7 +803,7 @@ impl App {
                 return;
             };
             let tx = self.tx.clone();
-            tokio::spawn(async move {
+            nanocode_platform::spawn_task(async move {
                 if let Err(error) = control.cancel().await {
                     drop(tx.send(AppEvent::Notice(
                         NoticeLevel::Error,
@@ -859,7 +859,7 @@ impl App {
         };
         if let Mode::Fork(agent) = side.mode {
             let control = side.control;
-            tokio::spawn(async move {
+            nanocode_platform::spawn_task(async move {
                 if let Some(control) = control {
                     drop(control.cancel().await);
                 }
@@ -903,7 +903,7 @@ impl App {
         };
         let text = collapse_prompt(&side.exchanges);
         if let Mode::Fork(agent) = side.mode {
-            tokio::spawn(async move { drop(agent.shutdown().await) });
+            nanocode_platform::spawn_task(async move { drop(agent.shutdown().await) });
         }
         match side.owner {
             None => self.deliver_to_main(text),
@@ -964,7 +964,7 @@ impl App {
         let home = self.home.clone();
         let workspace = self.host.config.workspace.clone();
         let tx = self.tx.clone();
-        tokio::spawn(async move {
+        nanocode_platform::spawn_task(async move {
             let notice = |level, text| drop(tx.send(AppEvent::Notice(level, text)));
             if let Err(error) = agent.flush().await {
                 drop(agent.shutdown().await);
@@ -987,7 +987,7 @@ impl App {
             }
             let launched = {
                 let session = session.clone();
-                tokio::task::spawn_blocking(move || split.launch(&session, &home, &workspace)).await
+                nanocode_platform::spawn_blocking(move || split.launch(&session, &home, &workspace)).await
             };
             match launched {
                 Ok(Ok(destination)) => notice(

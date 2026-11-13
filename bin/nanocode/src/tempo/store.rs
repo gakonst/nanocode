@@ -801,7 +801,7 @@ impl FileChannelStore {
         work: impl FnOnce(&FileStore) -> Result<T, StoreFault> + Send + 'static,
     ) -> Result<T, StoreFault> {
         let store = self.inner.clone();
-        tokio::task::spawn_blocking(move || work(&store))
+        nanocode_platform::spawn_blocking(move || work(&store))
             .await
             .map_err(io_error)?
     }

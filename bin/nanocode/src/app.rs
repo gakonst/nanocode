@@ -651,7 +651,7 @@ fn runner_info(info: &RunnerInfo) -> String {
 
 fn forward_runners(runtime: &nanocode::Nanocode, tx: UnboundedSender<AppEvent>) {
     let mut events = runtime.runner_events();
-    tokio::spawn(async move {
+    nanocode_platform::spawn_task(async move {
         while let Some(event) = events.recv().await {
             let (level, message) = match event {
                 RunnerEvent::StatusChanged { info } => (NoticeLevel::Info, runner_info(&info)),
@@ -667,7 +667,7 @@ fn forward_runners(runtime: &nanocode::Nanocode, tx: UnboundedSender<AppEvent>) 
 }
 
 fn forward_notices(mut notices: crate::host::Notices, tx: UnboundedSender<AppEvent>) {
-    tokio::spawn(async move {
+    nanocode_platform::spawn_task(async move {
         while let Some(notice) = notices.next().await {
             if tx
                 .send(AppEvent::Notice(NoticeLevel::Info, notice))
@@ -680,7 +680,7 @@ fn forward_notices(mut notices: crate::host::Notices, tx: UnboundedSender<AppEve
 }
 
 fn forward_subagents(mut updates: nanocode::SubagentUpdates, tx: UnboundedSender<AppEvent>) {
-    tokio::spawn(async move {
+    nanocode_platform::spawn_task(async move {
         while let Some(update) = updates.recv().await {
             if tx.send(AppEvent::Subagent(update)).is_err() {
                 break;
@@ -880,7 +880,7 @@ impl App {
         }
         let ready = self.connection(resume);
         let tx = self.tx.clone();
-        tokio::spawn(async move {
+        nanocode_platform::spawn_task(async move {
             let event = match ready.await {
                 Ok(ready) => AppEvent::AgentReady(Box::new(ready)),
                 Err(error) => AppEvent::AgentFailed(error.to_string()),
@@ -1125,7 +1125,7 @@ impl App {
                 self.ready(*ready);
                 if let Some(path) = self.reload_file.take() {
                     let tx = self.tx.clone();
-                    tokio::spawn(async move {
+                    nanocode_platform::spawn_task(async move {
                         if let Err(error) = tokio::fs::remove_file(&path).await {
                             drop(tx.send(AppEvent::Notice(
                                 NoticeLevel::Error,
@@ -1281,7 +1281,7 @@ impl App {
         let generation = self.generation;
         let tx = self.tx.clone();
         let mut events = ready.events;
-        tokio::spawn(async move {
+        nanocode_platform::spawn_task(async move {
             while let Some(event) = events.recv().await {
                 if tx.send(AppEvent::Agent { generation, event }).is_err() {
                     break;
@@ -1367,7 +1367,7 @@ impl App {
         let session_id = agent.session_id().to_owned();
         let generation = self.generation;
         let tx = self.tx.clone();
-        tokio::spawn(async move {
+        nanocode_platform::spawn_task(async move {
             let result = match store.turns(&session_id).await {
                 Ok(turns) => pending_turns(&turns, None).map_err(|error| error.to_string()),
                 Err(error) => Err(error.to_string()),
@@ -1794,7 +1794,7 @@ impl App {
             };
             self.interrupting = true;
             let tx = self.tx.clone();
-            tokio::spawn(async move {
+            nanocode_platform::spawn_task(async move {
                 match agent.cancel_active_turn().await {
                     Ok(()) | Err(nanocode::NanocodeError::TurnNotCancellable) => {}
                     Err(error) => drop(tx.send(AppEvent::Notice(
@@ -1813,7 +1813,7 @@ impl App {
         };
         let control = control.clone();
         let tx = self.tx.clone();
-        tokio::spawn(async move {
+        nanocode_platform::spawn_task(async move {
             if let Err(error) = control.cancel().await {
                 drop(tx.send(AppEvent::Notice(
                     NoticeLevel::Error,
@@ -1840,7 +1840,7 @@ impl App {
                 let control = control_of(&self.turn);
                 if let Some(control) = control {
                     let id = id.clone();
-                    tokio::spawn(async move {
+                    nanocode_platform::spawn_task(async move {
                         drop(control.withdraw_steer(id).await);
                     });
                 }
@@ -2294,7 +2294,7 @@ impl App {
             let id = item.id.clone();
             let tx = self.tx.clone();
             let text = item.text.clone();
-            tokio::spawn(async move {
+            nanocode_platform::spawn_task(async move {
                 match control.withdraw_steer(id).await {
                     Ok(true) => {}
                     Ok(false) => drop(tx.send(AppEvent::Notice(
@@ -2423,7 +2423,7 @@ impl App {
             }
             "model" | "m" if argument.is_empty() => {
                 if let Some(tempo) = self.host.config.clients.tempo_models().cloned() {
-                    tokio::spawn(async move { tempo.load().await });
+                    nanocode_platform::spawn_task(async move { tempo.load().await });
                 }
                 let (picker, choices) = models::model_picker(
                     &self.model,
@@ -2693,7 +2693,7 @@ impl App {
                     .agent
                     .as_ref()
                     .map(|agent| agent.session_id().to_owned());
-                tokio::spawn(async move {
+                nanocode_platform::spawn_task(async move {
                     let (level, message) = match runtime.connect_runner(runner).await {
                         Ok(handle) => {
                             let info = handle.info();
@@ -2724,7 +2724,7 @@ impl App {
                 if let Some(token) = token {
                     config = config.token(token);
                 }
-                tokio::spawn(async move {
+                nanocode_platform::spawn_task(async move {
                     let result = runtime
                         .listen_for_runners(config)
                         .await
@@ -2764,7 +2764,7 @@ impl App {
                 self.notice(NoticeLevel::Info, message);
             }
             crate::commands::RunnerAction::Disconnect { name } => {
-                tokio::spawn(async move {
+                nanocode_platform::spawn_task(async move {
                     let (level, message) = match runtime.disconnect_runner(&name).await {
                         Ok(_) => (NoticeLevel::Info, format!("disconnected runner {name}")),
                         Err(error) => (
@@ -2777,7 +2777,7 @@ impl App {
             }
             crate::commands::RunnerAction::StopListening => {
                 let servers = runtime.runner_servers();
-                tokio::spawn(async move {
+                nanocode_platform::spawn_task(async move {
                     for server in servers {
                         if let Err(error) = server.stop().await {
                             drop(tx.send(AppEvent::Notice(NoticeLevel::Error, error.to_string())));

@@ -4141,7 +4141,7 @@ fn spawn_claim_ack(
     if let Some(host) = nanocode_platform::host() {
         host.spawn(Box::pin(release));
     } else if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-        drop(runtime.spawn(release));
+        drop(nanocode_platform::spawn_on(&runtime, release));
     }
 }
 
@@ -4178,7 +4178,7 @@ fn spawn_driver(mut driver: Driver) -> Result<()> {
         return Ok(());
     }
     let runtime = tokio::runtime::Handle::try_current().map_err(|_| Error::RuntimeUnavailable)?;
-    drop(runtime.spawn(async move { driver.run().await }));
+    drop(nanocode_platform::spawn_on(&runtime, async move { driver.run().await }));
     Ok(())
 }
 

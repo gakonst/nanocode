@@ -174,7 +174,7 @@ impl App {
                 self.files_loading = true;
                 let workspace = self.host.config.workspace.clone();
                 let tx = self.tx.clone();
-                tokio::task::spawn_blocking(move || {
+                nanocode_platform::spawn_blocking(move || {
                     drop(tx.send(AppEvent::Files(workspace_files(&workspace))));
                 });
             }
@@ -228,7 +228,7 @@ impl App {
         let tx = self.tx.clone();
         let started = std::time::Instant::now();
         let span = tracing::info_span!(target: "nanocode", "nc.shell", command.bytes = command.len(), session.id = self.agent.as_ref().map(|agent| agent.session_id()), exit.code = tracing::field::Empty, otel.status_code = tracing::field::Empty);
-        tokio::spawn(tracing::Instrument::instrument(
+        nanocode_platform::spawn_task(tracing::Instrument::instrument(
             async move {
                 let output = tokio::process::Command::new("sh")
                     .arg("-c")
@@ -308,7 +308,7 @@ impl App {
         let path = directory.join(format!("{}.png", nanocode::platform::uuid_v7()));
         let tx = self.tx.clone();
         self.flash("reading the clipboard…");
-        tokio::task::spawn_blocking(move || {
+        nanocode_platform::spawn_blocking(move || {
             let result = std::fs::create_dir_all(&directory)
                 .map_err(|error| format!("could not create {}: {error}", directory.display()))
                 .and_then(|()| clipboard_image(&path))

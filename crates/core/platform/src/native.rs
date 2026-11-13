@@ -87,8 +87,34 @@ pub fn timeout<F: Future>(
 }
 
 pub fn spawn(future: impl Future<Output = ()> + Send + 'static) {
+    let future: HostFuture = Box::pin(future);
     match host() {
-        Some(host) => host.spawn(Box::pin(future)),
+        Some(host) => host.spawn(future),
         None => drop(tokio::spawn(future)),
     }
+}
+
+#[track_caller]
+pub fn spawn_task<T: Send + 'static>(
+    future: impl Future<Output = T> + Send + 'static,
+) -> tokio::task::JoinHandle<T> {
+    let future: Pin<Box<dyn Future<Output = T> + Send + 'static>> = Box::pin(future);
+    tokio::spawn(future)
+}
+
+#[track_caller]
+pub fn spawn_on<T: Send + 'static>(
+    runtime: &tokio::runtime::Handle,
+    future: impl Future<Output = T> + Send + 'static,
+) -> tokio::task::JoinHandle<T> {
+    let future: Pin<Box<dyn Future<Output = T> + Send + 'static>> = Box::pin(future);
+    runtime.spawn(future)
+}
+
+#[track_caller]
+pub fn spawn_blocking<T: Send + 'static>(
+    work: impl FnOnce() -> T + Send + 'static,
+) -> tokio::task::JoinHandle<T> {
+    let work: Box<dyn FnOnce() -> T + Send + 'static> = Box::new(work);
+    tokio::task::spawn_blocking(work)
 }

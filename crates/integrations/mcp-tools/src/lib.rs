@@ -771,7 +771,7 @@ impl McpHandle {
         let handle = self.clone();
         let name = server_name.to_owned();
         let completion_span = span.clone();
-        let completion = tokio::spawn(
+        let completion = nanocode_platform::spawn_task(
             async move {
                 let result = async {
                     flow.completion

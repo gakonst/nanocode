@@ -199,7 +199,7 @@ impl ResponsesSocket {
     ) -> Result<SendOutcome, ResponsesError> {
         let text = request.into_string();
         let message = if self.deflate {
-            let payload = tokio::task::spawn_blocking(move || deflate::deflate(text.as_bytes()))
+            let payload = nanocode_platform::spawn_blocking(move || deflate::deflate(text.as_bytes()))
                 .await
                 .map_err(|error| deflate_error(&error))?
                 .map_err(|error| deflate_error(&error))?;
@@ -292,7 +292,7 @@ impl SocketPump {
         let (message_sender, messages) = mpsc::channel(SOCKET_BATCH_CAPACITY);
         let stopped = Arc::new(AtomicBool::new(false));
         let completion = Arc::clone(&stopped);
-        let task = tokio::spawn(async move {
+        let task = nanocode_platform::spawn_task(async move {
             loop {
                 tokio::select! {
                     command = command_receiver.recv() => {

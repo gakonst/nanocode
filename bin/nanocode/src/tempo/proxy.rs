@@ -202,7 +202,7 @@ impl<P: PaymentProvider + 'static> ForwardProxy<P> {
                             continue;
                         };
                         let proxy = proxy.clone();
-                        tokio::spawn(async move {
+                        nanocode_platform::spawn_task(async move {
                             let _ = server::serve(
                                 Box::new(stream),
                                 server::Options::default(),
@@ -284,7 +284,7 @@ impl<P: PaymentProvider + 'static> Proxy<P> {
         let intercept =
             Url::parse(&format!("https://{authority}/")).is_ok_and(|url| self.policy.allows(&url));
         if intercept {
-            tokio::spawn(async move {
+            nanocode_platform::spawn_task(async move {
                 if let Ok(upgraded) = upgrade.await {
                     self.intercept(upgraded, authority).await;
                 }
@@ -293,7 +293,7 @@ impl<P: PaymentProvider + 'static> Proxy<P> {
         }
         match tokio::net::TcpStream::connect(authority.as_str()).await {
             Ok(mut server) => {
-                tokio::spawn(async move {
+                nanocode_platform::spawn_task(async move {
                     if let Ok(mut upgraded) = upgrade.await {
                         let _ = tokio::io::copy_bidirectional(&mut upgraded, &mut server).await;
                     }
@@ -420,7 +420,7 @@ impl<P: PaymentProvider + 'static> Proxy<P> {
                 let Some(work) = provider.stream_event(&client, url.as_str(), &name, &data) else {
                     continue;
                 };
-                tokio::spawn(async move {
+                nanocode_platform::spawn_task(async move {
                     let _ = work.await;
                 });
             }

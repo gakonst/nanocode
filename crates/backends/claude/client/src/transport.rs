@@ -41,7 +41,7 @@ pub(crate) async fn post(
     span.record("request.bytes", body.len());
     let body = if gzip {
         let padded = gzip_padded(&body)?;
-        let encoded = tokio::task::spawn_blocking(move || nanocode_http::gzip(&padded, GZIP_LEVEL))
+        let encoded = nanocode_platform::spawn_blocking(move || nanocode_http::gzip(&padded, GZIP_LEVEL))
             .await
             .map_err(|error| encode_error(&error))?
             .map_err(|error| encode_error(&error))?;

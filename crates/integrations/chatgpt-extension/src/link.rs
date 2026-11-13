@@ -105,7 +105,7 @@ impl ExtensionLink {
 
     async fn missing(&self) -> ToolOutput {
         if let Some(diagnose) = self.diagnose.clone()
-            && let Ok(Some(reason)) = tokio::task::spawn_blocking(move || diagnose()).await
+            && let Ok(Some(reason)) = nanocode_platform::spawn_blocking(move || diagnose()).await
         {
             return ToolOutput::error(reason);
         }
@@ -131,7 +131,7 @@ impl ExtensionLink {
                 .map_err(io::Error::other)?;
             let (stream, _) = listener.accept().await?;
             let link = Arc::clone(&self);
-            tokio::spawn(async move {
+            nanocode_platform::spawn_task(async move {
                 link.connection(stream).await;
                 drop(permit);
             });
@@ -163,7 +163,7 @@ impl ExtensionLink {
             .send(json!({"type": "hello", "hand": self.name}).to_string())
             .await;
         drop(out);
-        let writer = tokio::spawn(async move {
+        let writer = nanocode_platform::spawn_task(async move {
             while let Some(line) = lines_out.recv().await {
                 if write.write_all(line.as_bytes()).await.is_err()
                     || write.write_all(b"\n").await.is_err()

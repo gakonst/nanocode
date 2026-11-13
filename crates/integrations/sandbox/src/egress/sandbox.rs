@@ -107,7 +107,7 @@ impl Egress {
         let port = listener.local_addr()?.port();
         let log = Arc::default();
         let proxy = proxy(allowlist, &log);
-        let task = tokio::spawn(proxy.accept(move || {
+        let task = nanocode_platform::spawn_task(proxy.accept(move || {
             let listener = Arc::clone(&listener);
             async move {
                 let (stream, _) = listener.accept().await.ok()?;
@@ -128,7 +128,7 @@ impl Egress {
         let listener = Arc::new(UnixListener::bind(path)?);
         let log = Arc::default();
         let proxy = proxy(allowlist, &log);
-        let task = tokio::spawn(proxy.accept(move || {
+        let task = nanocode_platform::spawn_task(proxy.accept(move || {
             let listener = Arc::clone(&listener);
             async move { Some((listener.accept().await.ok()?.0, LOCAL)) }
         }));

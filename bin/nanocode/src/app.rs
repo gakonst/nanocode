@@ -72,10 +72,13 @@ pub enum AppEvent {
         control: TurnControl,
     },
     Files(std::result::Result<Vec<String>, String>),
+    ShellOutput {
+        index: usize,
+        bytes: Vec<u8>,
+    },
     ShellDone {
         index: usize,
-        result: std::result::Result<(Option<i32>, String), String>,
-        duration: Duration,
+        result: std::result::Result<(i32, bool), String>,
     },
     ImagePasted(std::result::Result<PathBuf, String>),
     TurnFinished {
@@ -146,6 +149,7 @@ impl AppEvent {
             Self::TurnStarted { .. } => "turn_started",
             Self::RoutedTurn { .. } => "routed_turn",
             Self::Files(_) => "files",
+            Self::ShellOutput { .. } => "shell_output",
             Self::ShellDone { .. } => "shell_done",
             Self::ImagePasted(_) => "image_pasted",
             Self::TurnFinished { .. } => "turn_finished",
@@ -309,6 +313,7 @@ pub struct App {
     pub(crate) reload_focus: Option<nanocode::subagents::AgentId>,
     quit_armed: Option<Instant>,
     esc_armed: Option<Instant>,
+    pub(crate) shells: Vec<crate::extras::Shell>,
     stashed_draft: Option<String>,
     dragging: Option<bool>,
     autoscroll_at: Option<Instant>,
@@ -387,6 +392,7 @@ pub async fn run(launch: Launch, mut terminal: TerminalSession) -> Result<()> {
         reload_focus: None,
         quit_armed: None,
         esc_armed: None,
+        shells: Vec::new(),
         stashed_draft: None,
         dragging: None,
         autoscroll_at: None,
@@ -1004,12 +1010,12 @@ impl App {
                 self.files_loaded(files);
                 Redraw::Immediate
             }
-            AppEvent::ShellDone {
-                index,
-                result,
-                duration,
-            } => {
-                self.shell_done(index, result, duration);
+            AppEvent::ShellOutput { index, bytes } => {
+                self.shell_output(index, &bytes);
+                Redraw::Streaming
+            }
+            AppEvent::ShellDone { index, result } => {
+                self.shell_done(index, result);
                 Redraw::Immediate
             }
             AppEvent::ImagePasted(result) => {
@@ -1836,6 +1842,8 @@ impl App {
 
     fn interrupt(&mut self) {
         let _span = nanocode_trace::info_span!(target: "nanocode", "nc.action", action.name = "interrupt", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
+        let shells = self.shells_running();
+        self.interrupt_shells();
         if matches!(self.turn, TurnState::External(_)) {
             let Some(agent) = self.agent.clone() else {
                 return;
@@ -1854,7 +1862,7 @@ impl App {
             return;
         }
         let TurnState::Running { control, .. } = &self.turn else {
-            if matches!(self.turn, TurnState::Starting(_)) {
+            if matches!(self.turn, TurnState::Starting(_)) && !shells {
                 self.flash("turn is starting; press esc again once it runs");
             }
             return;
@@ -2067,7 +2075,7 @@ impl App {
         if self.composer.is_empty() && matches!(key.code, KeyCode::Char(_)) && !control && !alt {
             self.prepare_turn();
         }
-        let busy = !matches!(self.turn, TurnState::Idle);
+        let busy = !matches!(self.turn, TurnState::Idle) || self.shells_running();
         if key.code != KeyCode::Esc {
             self.esc_armed = None;
         }

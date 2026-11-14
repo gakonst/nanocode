@@ -7,7 +7,7 @@ mod bounded;
 #[cfg(unix)]
 pub use bounded::{Bounded, Input, bounded};
 mod foreground;
-pub use foreground::{ForegroundOutput, run_bash};
+pub use foreground::{ForegroundOutput, OutputSink, run_bash};
 #[cfg(unix)]
 mod handover;
 #[cfg(unix)]

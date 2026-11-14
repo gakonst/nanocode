@@ -1,5 +1,6 @@
 use std::{
     path::{Path, PathBuf},
+    sync::atomic::{AtomicUsize, Ordering},
     time::Duration,
 };
 
@@ -14,6 +15,35 @@ use nanocode_tui::{
 use crate::app::{App, AppEvent, Overlay, PickerPurpose};
 
 pub const IMAGE_EXTENSIONS: [&str; 5] = ["png", "jpg", "jpeg", "gif", "webp"];
+
+const SHELL_TIMEOUT: Duration = Duration::from_secs(2 * 60 * 60);
+const SHELL_OUTPUT_BYTES: usize = 1024 * 1024;
+
+pub(crate) struct Shell {
+    index: usize,
+    started: std::time::Instant,
+    pending: Vec<u8>,
+    task: tokio::task::AbortHandle,
+}
+
+struct ShellSink {
+    index: usize,
+    tx: tokio::sync::mpsc::UnboundedSender<AppEvent>,
+    sent: AtomicUsize,
+}
+
+impl nanocode_process::OutputSink for ShellSink {
+    fn write(&self, bytes: &[u8]) {
+        let sent = self.sent.fetch_add(bytes.len(), Ordering::Relaxed);
+        let room = SHELL_OUTPUT_BYTES.saturating_sub(sent).min(bytes.len());
+        if room > 0 {
+            drop(self.tx.send(AppEvent::ShellOutput {
+                index: self.index,
+                bytes: bytes[..room].to_vec(),
+            }));
+        }
+    }
+}
 
 pub struct Finder {
     pub start: usize,
@@ -222,26 +252,33 @@ impl App {
         let _span = nanocode_trace::info_span!(target: "nanocode", "nc.action", action.name = "run_shell", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
         let mut cell = ToolCell::new(self.local_id_pub("shell"), "shell");
         cell.title = command.clone();
+        cell.output_body = ToolBody::Text;
         let index = self.transcript.push(CellKind::Tool(cell));
         self.transcript.scroll_to_bottom();
         let workspace = self.host.config.workspace.clone();
         let tx = self.tx.clone();
-        let started = std::time::Instant::now();
         let span = nanocode_trace::info_span!(target: "nanocode", "nc.shell", command.bytes = command.len(), session.id = self.agent.as_ref().map(|agent| agent.session_id()), exit.code = nanocode_trace::field::Empty, otel.status_code = nanocode_trace::field::Empty);
-        nanocode_platform::spawn_task(nanocode_trace::Instrument::instrument(
+        let task = nanocode_platform::spawn_task(nanocode_trace::Instrument::instrument(
             async move {
-                let output = tokio::process::Command::new("sh")
-                    .arg("-c")
-                    .arg(&command)
-                    .current_dir(&workspace)
-                    .stdin(std::process::Stdio::null())
-                    .kill_on_drop(true)
-                    .output()
-                    .await;
-                match &output {
+                let sink = ShellSink {
+                    index,
+                    tx: tx.clone(),
+                    sent: AtomicUsize::new(0),
+                };
+                let outcome = nanocode_process::run_bash(
+                    &workspace,
+                    &command,
+                    SHELL_TIMEOUT,
+                    SHELL_OUTPUT_BYTES,
+                    SHELL_OUTPUT_BYTES,
+                    None,
+                    Some(&sink),
+                )
+                .await;
+                match &outcome {
                     Ok(output) => {
-                        nanocode_trace::Span::current().record("exit.code", output.status.code());
-                        if !output.status.success() {
+                        nanocode_trace::Span::current().record("exit.code", output.exit_code);
+                        if output.exit_code != 0 {
                             nanocode_trace::Span::current().record("otel.status_code", "ERROR");
                         }
                     }
@@ -249,54 +286,101 @@ impl App {
                         nanocode_trace::Span::current().record("otel.status_code", "ERROR");
                     }
                 }
-                let result = output
-                    .map(|output| {
-                        let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
-                        let stderr = String::from_utf8_lossy(&output.stderr);
-                        if !stderr.trim().is_empty() {
-                            if !text.is_empty() && !text.ends_with('\n') {
-                                text.push('\n');
-                            }
-                            text.push_str(&stderr);
-                        }
-                        (output.status.code(), text)
-                    })
-                    .map_err(|error| error.to_string());
+                let cut = sink.sent.load(Ordering::Relaxed) > SHELL_OUTPUT_BYTES;
                 drop(tx.send(AppEvent::ShellDone {
                     index,
-                    result,
-                    duration: started.elapsed(),
+                    result: outcome.map(|output| (output.exit_code, cut || output.truncated)),
                 }));
             },
             span,
         ));
+        self.shells.push(Shell {
+            index,
+            started: std::time::Instant::now(),
+            pending: Vec::new(),
+            task: task.abort_handle(),
+        });
     }
 
-    pub(crate) fn shell_done(
-        &mut self,
-        index: usize,
-        result: Result<(Option<i32>, String), String>,
-        duration: Duration,
-    ) {
+    pub(crate) const fn shells_running(&self) -> bool {
+        !self.shells.is_empty()
+    }
+
+    pub(crate) fn shell_output(&mut self, index: usize, bytes: &[u8]) {
+        let Some(shell) = self.shells.iter_mut().find(|shell| shell.index == index) else {
+            return;
+        };
+        shell.pending.extend_from_slice(bytes);
+        let whole = match std::str::from_utf8(&shell.pending) {
+            Ok(_) => shell.pending.len(),
+            Err(error) if error.error_len().is_none() => error.valid_up_to(),
+            Err(_) => shell.pending.len(),
+        };
+        let text = String::from_utf8_lossy(&shell.pending[..whole]).into_owned();
+        shell.pending.drain(..whole);
+        self.transcript.update(index, |cell| {
+            if let CellKind::Tool(tool) = cell {
+                tool.output.push_str(&text);
+            }
+        });
+    }
+
+    pub(crate) fn interrupt_shells(&mut self) {
+        for shell in std::mem::take(&mut self.shells) {
+            shell.task.abort();
+            let duration = shell.started.elapsed();
+            let rest = String::from_utf8_lossy(&shell.pending).into_owned();
+            self.transcript.update(shell.index, |cell| {
+                if let CellKind::Tool(tool) = cell {
+                    tool.duration = Some(duration);
+                    tool.status = ToolStatus::Cancelled;
+                    tool.output.push_str(&rest);
+                    if !tool.output.is_empty() && !tool.output.ends_with('\n') {
+                        tool.output.push('\n');
+                    }
+                    tool.output.push_str(&format!(
+                        "interrupted after {:.1}s; its process group was killed",
+                        duration.as_secs_f64()
+                    ));
+                }
+            });
+        }
+    }
+
+    pub(crate) fn shell_done(&mut self, index: usize, result: Result<(i32, bool), String>) {
+        let Some(position) = self.shells.iter().position(|shell| shell.index == index) else {
+            return;
+        };
+        let shell = self.shells.swap_remove(position);
+        let duration = shell.started.elapsed();
+        let rest = String::from_utf8_lossy(&shell.pending).into_owned();
         self.transcript.update(index, |cell| {
             if let CellKind::Tool(tool) = cell {
                 tool.duration = Some(duration);
-                tool.output_body = ToolBody::Text;
-                match result {
-                    Ok((Some(0), output)) => {
+                tool.output.push_str(&rest);
+                let ending = match result {
+                    Ok((0, cut)) => {
                         tool.status = ToolStatus::Completed;
-                        tool.output = output;
+                        cut.then(|| format!("output past {SHELL_OUTPUT_BYTES} bytes not shown"))
                     }
-                    Ok((code, output)) => {
+                    Ok((code, cut)) => {
                         tool.status = ToolStatus::Failed;
-                        let code =
-                            code.map_or_else(|| "signal".to_owned(), |code| code.to_string());
-                        tool.output = format!("{output}\nexit {code}");
+                        Some(if cut {
+                            format!("output past {SHELL_OUTPUT_BYTES} bytes not shown\nexit {code}")
+                        } else {
+                            format!("exit {code}")
+                        })
                     }
                     Err(error) => {
                         tool.status = ToolStatus::Failed;
-                        tool.output = error;
+                        Some(error)
                     }
+                };
+                if let Some(ending) = ending {
+                    if !tool.output.is_empty() && !tool.output.ends_with('\n') {
+                        tool.output.push('\n');
+                    }
+                    tool.output.push_str(&ending);
                 }
             }
         });

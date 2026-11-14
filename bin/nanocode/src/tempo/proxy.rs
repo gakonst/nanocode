@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::future::Future;
+use std::io::Write as _;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -147,9 +148,8 @@ impl<P: PaymentProvider + 'static> ForwardProxy<P> {
         policy: impl Future<Output = Policy> + Send + 'static,
     ) -> Result<(), Fault> {
         let (authority, root) = CertificateAuthority::generate()?;
-        let mut bundle = x509::pem(&root).into_bytes();
-        match nanocode_platform::trust::native_bundle_file() {
-            Some(file) => bundle.extend(std::fs::read(file)?),
+        let system = match nanocode_platform::trust::native_bundle_file() {
+            Some(file) => Ok(std::fs::File::open(file)?),
             None => {
                 let native = nanocode_platform::trust::load_native_certificates();
                 if native.certificates.is_empty() {
@@ -158,15 +158,22 @@ impl<P: PaymentProvider + 'static> ForwardProxy<P> {
                         native.errors
                     )));
                 }
-                bundle.extend(
-                    native
-                        .certificates
-                        .iter()
-                        .flat_map(|certificate| x509::pem(certificate.as_ref()).into_bytes()),
-                );
+                Err(native.certificates)
+            }
+        };
+        let mut bundle = std::fs::File::create(&self.certificates)?;
+        bundle.write_all(x509::pem(&root).as_bytes())?;
+        match system {
+            Ok(mut file) => {
+                std::io::copy(&mut file, &mut bundle)?;
+            }
+            Err(certificates) => {
+                for certificate in &certificates {
+                    bundle.write_all(x509::pem(certificate.as_ref()).as_bytes())?;
+                }
             }
         }
-        std::fs::write(&self.certificates, bundle)?;
+        drop(bundle);
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;

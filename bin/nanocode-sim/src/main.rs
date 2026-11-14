@@ -5,6 +5,7 @@ mod executor;
 mod faults;
 mod host;
 mod httpd;
+mod httpserver;
 mod log;
 mod model;
 mod onelog;
@@ -33,6 +34,7 @@ use crate::{
     store::Mutation,
     turns::{Invariant, PolicyKind, TurnMutation, TurnOptions, TurnStats},
     httpd::WireMutation,
+    httpserver::{HttpServerMutation, HttpServerStats},
     websocket::{WebSocketMutation, WebSocketStats},
     whole::{StoreKind, WholeOptions, WholeStats, WireKind},
 };
@@ -47,6 +49,7 @@ enum Scenario {
     Turns,
     Runtime,
     Websocket,
+    HttpServer,
 }
 
 struct Args {
@@ -57,18 +60,21 @@ struct Args {
     turns: TurnOptions,
     whole: WholeOptions,
     websocket: WebSocketMutation,
+    http_server: HttpServerMutation,
 }
 
 type Caught = BTreeMap<Invariant, (u64, u64, (u64, u64))>;
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: nanocode-sim --tidy | (--seed S | --seeds A..B) [--scenario store|agents|turns|runtime|websocket] [--ops N] [--twice] [--mutation {}] [--records content|slots] [--verbose]\n       turns: [--mutation {}] [--without {}]... [--live-seqs temporary|floor|gap|reuse] [--calm] [--policy reference|turnlog] [--row-limit BYTES] [--long TURNS] [--snapshot-ratio K] [--snapshot-rows N] [--retain TURNS] [--state-bytes N]\n       runtime: [--store memory|kv] [--calm] [--wire transport|http] [--mutation {}]\n       websocket: [--mutation {}]",
+        "usage: nanocode-sim --tidy | (--seed S | --seeds A..B) [--scenario store|agents|turns|runtime|websocket|http_server] [--ops N] [--twice] [--mutation {}] [--records content|slots] [--verbose]\n       turns: [--mutation {}] [--without {}]... [--live-seqs temporary|floor|gap|reuse] [--calm] [--policy reference|turnlog] [--row-limit BYTES] [--long TURNS] [--snapshot-ratio K] [--snapshot-rows N] [--retain TURNS] [--state-bytes N]\n       runtime: [--store memory|kv] [--calm] [--wire transport|http] [--mutation {}]\n       websocket: [--mutation {}]
+       http_server: [--mutation {}]",
         Mutation::names(),
         TurnMutation::names(),
         onelog::PROTECTIONS.join("|"),
         WireMutation::NAMES,
-        WebSocketMutation::names()
+        WebSocketMutation::names(),
+        HttpServerMutation::names()
     );
     ExitCode::from(2)
 }
@@ -107,6 +113,7 @@ fn parse_args(args: &[String]) -> Option<Args> {
     };
     let mut whole = WholeOptions::default();
     let mut websocket = WebSocketMutation::None;
+    let mut http_server = HttpServerMutation::None;
     let mut rest = args.iter();
     while let Some(flag) = rest.next() {
         match flag.as_str() {
@@ -133,6 +140,7 @@ fn parse_args(args: &[String]) -> Option<Args> {
                     "turns" => Scenario::Turns,
                     "runtime" => Scenario::Runtime,
                     "websocket" => Scenario::Websocket,
+                    "http_server" => Scenario::HttpServer,
                     _ => return None,
                 };
             }
@@ -153,6 +161,7 @@ fn parse_args(args: &[String]) -> Option<Args> {
         (Scenario::Turns, Some(name)) => turns.mutation = TurnMutation::parse(name)?,
         (Scenario::Runtime, Some(name)) => whole.mutation = WireMutation::parse(name)?,
         (Scenario::Websocket, Some(name)) => websocket = WebSocketMutation::parse(name)?,
+        (Scenario::HttpServer, Some(name)) => http_server = HttpServerMutation::parse(name)?,
         (Scenario::Agents, Some(_)) => return None,
     }
     turns.verbose = options.verbose;
@@ -166,6 +175,7 @@ fn parse_args(args: &[String]) -> Option<Args> {
         turns,
         whole,
         websocket,
+        http_server,
     })
 }
 
@@ -173,6 +183,9 @@ fn replay(seed: u64, args: &Args) -> String {
     let options = args.options;
     if args.scenario == Scenario::Websocket {
         return websocket::replay(seed, args.websocket);
+    }
+    if args.scenario == Scenario::HttpServer {
+        return httpserver::replay(seed, args.http_server);
     }
     if args.scenario == Scenario::Agents {
         return format!("nanocode-sim --scenario agents --seed {seed}");
@@ -437,13 +450,15 @@ fn main() -> ExitCode {
         && (args.turns.mutation != TurnMutation::None
             || args.turns.protections != Protections::ALL))
         || (args.scenario == Scenario::Runtime && args.whole.mutation != WireMutation::None)
-        || (args.scenario == Scenario::Websocket && args.websocket != WebSocketMutation::None);
+        || (args.scenario == Scenario::Websocket && args.websocket != WebSocketMutation::None)
+        || (args.scenario == Scenario::HttpServer && args.http_server != HttpServerMutation::None);
     let (mut passed, mut failed) = (0_u64, 0_u64);
     let mut totals = Stats::default();
     let mut agent_totals = AgentStats::default();
     let mut turn_totals = TurnStats::default();
     let mut whole_totals = WholeStats::default();
     let mut websocket_totals = WebSocketStats::default();
+    let mut http_server_totals = HttpServerStats::default();
     let mut caught = Caught::new();
     for seed in args.seeds.clone() {
         let verdict = match args.scenario {
@@ -457,6 +472,13 @@ fn main() -> ExitCode {
                 args.twice,
                 args.options.verbose,
                 &mut websocket_totals,
+            ),
+            Scenario::HttpServer => httpserver::judge(
+                seed,
+                args.http_server,
+                args.twice,
+                args.options.verbose,
+                &mut http_server_totals,
             ),
         };
         let Some(message) = verdict else {
@@ -479,6 +501,16 @@ fn main() -> ExitCode {
             args.twice,
             args.websocket,
             &websocket_totals,
+        );
+    }
+    if args.scenario == Scenario::HttpServer {
+        return httpserver::report(
+            &args.seeds,
+            passed,
+            failed,
+            args.twice,
+            args.http_server,
+            &http_server_totals,
         );
     }
     if args.scenario == Scenario::Turns {

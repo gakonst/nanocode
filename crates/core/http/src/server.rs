@@ -297,6 +297,7 @@ async fn respond(
     }
     let no_body = bodiless(status) || upgrades(method, status) || method == Method::HEAD;
     let mut keep = true;
+    let mut bounded = None;
     let chunked = match &body {
         _ if bodiless(status) || upgrades(method, status) => {
             headers.remove(CONTENT_LENGTH);
@@ -317,7 +318,11 @@ async fn respond(
             }
             headers.contains_key(TRANSFER_ENCODING)
         }
-        Outgoing::Stream(_) if headers.contains_key(CONTENT_LENGTH) => false,
+        Outgoing::Stream(_) if headers.contains_key(CONTENT_LENGTH) => {
+            bounded = declared_length(&headers);
+            keep = bounded.is_some();
+            false
+        }
         Outgoing::Stream(_) if version == Version::HTTP_11 => {
             headers.insert(TRANSFER_ENCODING, HeaderValue::from_static("chunked"));
             true
@@ -350,6 +355,16 @@ async fn respond(
                     }
                     if chunked {
                         connection.write_all(&wire::chunk(&chunk)).await?;
+                    } else if let Some(left) = bounded {
+                        let take =
+                            usize::try_from(left).map_or(chunk.len(), |left| left.min(chunk.len()));
+                        connection.write_all(&chunk[..take]).await?;
+                        bounded =
+                            Some(left - u64::try_from(take).expect("a chunk length fits in u64"));
+                        if take < chunk.len() {
+                            connection.flush().await?;
+                            return Ok(false);
+                        }
                     } else {
                         connection.write_all(&chunk).await?;
                     }
@@ -357,6 +372,10 @@ async fn respond(
                 }
                 if chunked {
                     connection.write_all(wire::LAST_CHUNK).await?;
+                }
+                if bounded.is_some_and(|left| left > 0) {
+                    connection.flush().await?;
+                    return Ok(false);
                 }
             }
         }
@@ -438,6 +457,16 @@ async fn final_head(connection: &mut Connection) -> Result<ResponseHead, WireErr
             return Ok(head);
         }
     }
+}
+
+fn declared_length(headers: &HeaderMap) -> Option<u64> {
+    headers
+        .get(CONTENT_LENGTH)?
+        .to_str()
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
 }
 
 #[must_use]

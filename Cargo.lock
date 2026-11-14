@@ -863,6 +863,7 @@ dependencies = [
 name = "nanocode-sim"
 version = "0.7.0"
 dependencies = [
+ "bytes",
  "http",
  "nanocode",
  "nanocode-agent-core",

@@ -170,6 +170,7 @@ pub struct ResponsesAttempt {
     pub(crate) observer: ResponsesObserver,
     pub(crate) attempt: u32,
     pub(crate) max_attempts: u32,
+    pub(crate) reconnects: u32,
     pub(crate) logical_turn: u64,
     session_transport: Arc<SessionTransport>,
     pub(crate) model_call_started_at: Option<Instant>,
@@ -224,6 +225,7 @@ impl ResponsesAttempt {
             observer,
             attempt: 1,
             max_attempts: 1,
+            reconnects: 0,
             logical_turn: 0,
             session_transport,
             model_call_started_at: None,
@@ -262,6 +264,7 @@ impl ResponsesAttempt {
             observer,
             attempt: 1,
             max_attempts: RESPONSE_MAX_ATTEMPTS.get(),
+            reconnects: 0,
             logical_turn: 0,
             session_transport,
             model_call_started_at: None,
@@ -301,6 +304,7 @@ impl ResponsesAttempt {
             observer,
             attempt: 1,
             max_attempts: COMPACTION_MAX_ATTEMPTS,
+            reconnects: 0,
             logical_turn: 0,
             session_transport,
             model_call_started_at: None,
@@ -479,6 +483,12 @@ impl ResponsesAttempt {
         self.attempt += 1;
         self.replay = Replay::Full;
         true
+    }
+
+    pub(crate) fn prepare_reconnect(&mut self) {
+        self.reconnects += 1;
+        self.attempt = 1;
+        self.replay = Replay::Full;
     }
 
     pub(crate) fn prepare_transport_fallback(&mut self) {

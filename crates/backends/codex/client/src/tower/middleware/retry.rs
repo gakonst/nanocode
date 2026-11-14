@@ -72,6 +72,79 @@ impl Policy<ResponsesAttempt, ResponsesServiceResponse, ResponsesServiceError>
         request: &mut ResponsesAttempt,
         result: &mut Result<ResponsesServiceResponse, ResponsesServiceError>,
     ) -> Option<Self::Future> {
+        if let Some(future) = self.retry_attempt(request, result) {
+            return Some(future);
+        }
+        let failure = result.as_ref().err()?;
+        if !matches!(request.kind, ResponsesAttemptKind::Generation)
+            || request.reconnects >= STREAM_MAX_RETRIES
+            || !failure.responses_error().is_some_and(reconnectable)
+        {
+            return None;
+        }
+        let delay = reconnect_delay(request.reconnects + 1);
+        let message = failure.source.to_string();
+        if let Err(error) = request.observer.emit(
+            AgentEventKind::ModelAttemptRetrying,
+            AttemptRetrying {
+                phase: request.kind,
+                model_call_index: request.call_index,
+                attempt: request.attempt,
+                next_attempt: 1,
+                max_attempts: request.max_attempts,
+                failure_phase: failure.phase,
+                error_class: "reconnect",
+                delay_ns: duration_ns(delay),
+                server_requested_delay: false,
+                opens_new_socket: true,
+                replay_mode: "full_history",
+                connection_generation: failure.connection_generation,
+                error: &message,
+            },
+        ) {
+            *result = Err(ResponsesServiceError::event(
+                error,
+                FailurePhase::Output,
+                failure.connection_generation,
+            ));
+            return None;
+        }
+        request.prepare_reconnect();
+        nanocode_trace::warn!(
+            target: "nanocode_codex",
+            phase = request.kind.phase(),
+            model.call_index = request.call_index,
+            reconnect = request.reconnects,
+            delay_ms = u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
+            "reconnecting Responses stream"
+        );
+        request
+            .observer
+            .stats
+            .response_retries
+            .fetch_add(1, Ordering::Relaxed);
+        Some(wait_for_retry(
+            self.delay.clone_for_retry(),
+            request.profile.thread_id().to_owned(),
+            Arc::clone(&request.observer.stats),
+            None,
+            delay,
+        ))
+    }
+
+    fn clone_request(&mut self, request: &ResponsesAttempt) -> Option<ResponsesAttempt> {
+        let mut request = request.clone();
+        request.limit_attempts(self.max_attempts);
+        Some(request)
+    }
+}
+
+impl ResponsesRetryPolicy {
+    fn retry_attempt(
+        &mut self,
+        request: &mut ResponsesAttempt,
+        result: &mut Result<ResponsesServiceResponse, ResponsesServiceError>,
+    ) -> Option<RetryFuture> {
         request.limit_attempts(self.max_attempts);
         let failure = result.as_ref().err()?;
         let checkpoint_missing =
@@ -262,12 +335,24 @@ impl Policy<ResponsesAttempt, ResponsesServiceResponse, ResponsesServiceError>
             delay,
         ))
     }
+}
 
-    fn clone_request(&mut self, request: &ResponsesAttempt) -> Option<ResponsesAttempt> {
-        let mut request = request.clone();
-        request.limit_attempts(self.max_attempts);
-        Some(request)
+const STREAM_MAX_RETRIES: u32 = 5;
+
+fn reconnectable(error: &ResponsesError) -> bool {
+    if error.is_terminal_provider_error() {
+        return false;
     }
+    match error {
+        ResponsesError::HttpRejected { status, .. }
+        | ResponsesError::HandshakeRejected { status, .. } => !matches!(status, 400 | 429),
+        ResponsesError::Api { .. } => true,
+        _ => error.retry_advice().is_some(),
+    }
+}
+
+fn reconnect_delay(reconnect: u32) -> Duration {
+    Duration::from_millis(200 * 2_u64.pow(reconnect.saturating_sub(1)))
 }
 
 fn wait_for_retry(

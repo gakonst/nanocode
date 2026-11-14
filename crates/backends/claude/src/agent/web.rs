@@ -202,7 +202,7 @@ impl Side {
             .map_err(|error| error.to_string())?;
         let mut hops = 0;
         let response = loop {
-            let response = tokio::time::timeout(
+            let response = nanocode_platform::timeout(
                 FETCH_TIMEOUT,
                 client
                     .get(current.clone())

@@ -80,9 +80,22 @@ pub fn encode_output_sharing_images(
     output_prefix: bool,
     shared_images: bool,
 ) -> Result<Value, CodeModeHostError> {
-    let mut value = serde_json::to_value(output.into_wire().map_err(error)?).map_err(error)?;
+    let wire = output.into_wire().map_err(error)?;
+    let null_result = wire
+        .structured_result
+        .as_deref()
+        .is_some_and(|raw| serde_json::from_str::<()>(raw.get()).is_ok());
+    let mut value = serde_json::to_value(wire).map_err(error)?;
     if let Some(fields) = value.as_object_mut() {
-        if fields.get("structured_result") == fields.get("output") {
+        if compact
+            && null_result
+            && fields
+                .get("output")
+                .and_then(Value::as_str)
+                .is_some_and(|text| encodes(text, &Value::Null))
+        {
+            fields.remove("output");
+        } else if fields.get("structured_result") == fields.get("output") {
             fields.insert("structured_result".into(), Value::Null);
         } else if compact && shared_images && fields.get("output").is_some_and(Value::is_array) {
             share_images(fields);
@@ -208,6 +221,11 @@ fn restore_images(fields: &mut Map<String, Value>) -> Result<(), CodeModeHostErr
 }
 
 pub fn output_from_wire(mut value: Value) -> Result<ToolOutput, CodeModeHostError> {
+    let null_result = value.as_object().is_some_and(|fields| {
+        !fields.contains_key("output")
+            && !fields.contains_key("output_prefix")
+            && fields.get("structured_result").is_some_and(Value::is_null)
+    });
     if let Some(fields) = value.as_object_mut() {
         restore_images(fields)?;
     }
@@ -222,8 +240,14 @@ pub fn output_from_wire(mut value: Value) -> Result<ToolOutput, CodeModeHostErro
             fields.insert("output".into(), Value::String(text));
         }
     }
-    ToolOutput::from_wire(serde_json::from_value::<ToolOutputWire>(value).map_err(error)?)
-        .map_err(error)
+    let output =
+        ToolOutput::from_wire(serde_json::from_value::<ToolOutputWire>(value).map_err(error)?)
+            .map_err(error)?;
+    Ok(if null_result {
+        output.with_structured_result(Value::Null)
+    } else {
+        output
+    })
 }
 
 #[must_use]

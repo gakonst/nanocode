@@ -27,6 +27,7 @@ nanocode-digest.workspace = true
 nanocode-durability-core.workspace = true
 nanocode-durability.workspace = true
 nanocode-http.workspace = true
+nanocode-mpp.workspace = true
 nanocode-platform.workspace = true
 nanocode-sandbox = { path = "../../crates/integrations/sandbox" }
 nanocode-subagents.workspace = true

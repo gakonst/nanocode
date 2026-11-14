@@ -50,6 +50,8 @@ default_table='
 2 http_server_twice pass --scenario http_server --twice
 8 egress pass --scenario egress
 2 egress_twice pass --scenario egress --twice
+8 mpp pass --scenario mpp
+2 mpp_twice pass --scenario mpp --twice
 1 canary_cas_ignores_expected canary --scenario store --mutation cas_ignores_expected
 1 canary_record_insert_drops canary --scenario store --mutation record_insert_drops
 1 canary_power_loss_drops_acked canary --scenario store --mutation power_loss_drops_acked
@@ -79,6 +81,8 @@ default_table='
 1 canary_alloc_scribble canary --scenario alloc --mutation scribble
 1 canary_egress_widen_allowlist canary --scenario egress --mutation widen_allowlist
 1 canary_egress_corrupt_tunnel_byte canary --scenario egress --mutation corrupt_tunnel_byte
+1 canary_mpp_drop_abandon canary --scenario mpp --mutation drop_abandon
+1 canary_mpp_receipt_on_refusal canary --scenario mpp --mutation receipt_on_refusal
 '
 default_known='
 '

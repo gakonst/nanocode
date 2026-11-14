@@ -158,7 +158,11 @@ pub(crate) async fn run(
     argv: Vec<Vec<u8>>,
     assigns: Vec<(String, Vec<u8>)>,
 ) -> R {
-    run_with(vp, entry, argv, assigns, false).await
+    let r = run_with(vp, entry, argv, assigns, false).await;
+    if vp.top && !is_nested_shell(entry) {
+        vp.sigs.child_ended(&vp.core);
+    }
+    r
 }
 
 /// Runs a utility for `exec`, in place of the shell: a `bash` run so keeps the
@@ -1248,7 +1252,10 @@ mod tests {
             sandbox: true,
             ..on()
         };
-        assert_eq!(run_with("stand; argv", sandbox.clone()).1, "stand 1 W=\nargv 1 W=\n");
+        assert_eq!(
+            run_with("stand; argv", sandbox.clone()).1,
+            "stand 1 W=\nargv 1 W=\n"
+        );
         assert_eq!(
             run_with("type stand", sandbox).1,
             "stand is a psh utility\n"

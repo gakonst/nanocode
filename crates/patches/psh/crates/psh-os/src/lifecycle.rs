@@ -17,7 +17,7 @@ use std::sync::{Condvar, Mutex, MutexGuard};
 use std::task::{Context, Poll, Waker};
 use std::time::Instant;
 
-use psh_engine::host::ExitStatus;
+use psh_engine::host::{ExitStatus, Signal};
 
 /// Who holds the process now.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -38,6 +38,7 @@ pub struct Life {
     owner: Owner,
     term_sent: bool,
     reaped: bool,
+    stopped: Option<Signal>,
     waker: Option<Waker>,
 }
 
@@ -100,6 +101,7 @@ impl Tracker {
                 owner: Owner::Engine,
                 term_sent: false,
                 reaped: false,
+                stopped: None,
                 waker: None,
             }),
             exited: Condvar::new(),
@@ -125,6 +127,25 @@ impl Tracker {
                 Poll::Pending
             }
         }
+    }
+
+    pub fn poll_stop(&self, cx: &mut Context<'_>) -> Poll<Signal> {
+        let mut life = self.lock();
+        match life.stopped.take() {
+            Some(sig) => Poll::Ready(sig),
+            None => {
+                if !life.waker.as_ref().is_some_and(|w| w.will_wake(cx.waker())) {
+                    life.waker = Some(cx.waker().clone());
+                }
+                Poll::Pending
+            }
+        }
+    }
+
+    pub fn stopped(&self, sig: Signal) -> Option<Waker> {
+        let mut life = self.lock();
+        life.stopped = Some(sig);
+        life.waker.take()
     }
 
     /// A waiter observed the exit (the process is still unreaped). A released process

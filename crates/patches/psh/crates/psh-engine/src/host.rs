@@ -36,6 +36,9 @@ pub const SIGQUIT: Signal = 3;
 pub const SIGKILL: Signal = 9;
 pub const SIGPIPE: Signal = 13;
 pub const SIGTERM: Signal = 15;
+pub const SIGCHLD: Signal = 17;
+pub const SIGCONT: Signal = 18;
+pub const SIGSTOP: Signal = 19;
 
 /// An open file, pipe end or terminal of the host. Shared between descriptors (`2>&1`
 /// shares one object), hence `&self`.
@@ -252,6 +255,7 @@ pub struct SpawnSpec {
     /// Resource limits for the child (`ulimit`), soft and hard; the others are the
     /// process's.
     pub rlimits: Vec<(Rlimit, Limit, Limit)>,
+    pub group: bool,
 }
 
 /// A resource limit `ulimit` reports and sets. Values are in the resource's own unit:
@@ -301,6 +305,9 @@ pub type Limit = Option<u64>;
 /// is done (psh-os: by default, when the host is dropped).
 pub trait ExtProc {
     fn poll_wait(&mut self, cx: &mut Context<'_>) -> Poll<ExitStatus>;
+    fn poll_stop(&mut self, _cx: &mut Context<'_>) -> Poll<Signal> {
+        Poll::Pending
+    }
     fn signal(&mut self, sig: Signal);
     /// Lets the process run on: no signal, reaped in the background (`nohup`, and
     /// background jobs still running when the shell exits, as bash leaves them).

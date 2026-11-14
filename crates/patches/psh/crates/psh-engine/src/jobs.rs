@@ -46,6 +46,7 @@ pub(crate) struct Job {
     /// The job's task (`Sched::drop_task`), while it runs.
     task: Cell<Option<usize>>,
     pub coproc: RefCell<Option<String>>,
+    stopped: Cell<Option<Signal>>,
 }
 
 impl Job {
@@ -82,9 +83,61 @@ impl Job {
     pub(crate) fn finish(&self, status: i32) {
         self.task.set(None);
         self.status.set(Some(status));
+        self.stopped.set(None);
+        self.wake();
+    }
+
+    fn wake(&self) {
         for w in self.waiters.borrow_mut().drain(..) {
             w.wake();
         }
+    }
+
+    pub(crate) fn stopped(&self) -> Option<Signal> {
+        self.stopped.get()
+    }
+
+    pub(crate) fn stop(&self, sig: Signal) {
+        if self.status.get().is_none() {
+            self.stopped.set(Some(sig));
+            self.wake();
+        }
+    }
+
+    fn live_procs(&self) -> Vec<Rc<ProcCell>> {
+        self.procs
+            .borrow()
+            .iter()
+            .filter_map(Weak::upgrade)
+            .filter(|p| p.borrow().is_some())
+            .collect()
+    }
+
+    pub(crate) fn resume(&self) {
+        if self.stopped.take().is_some() {
+            for p in self.live_procs() {
+                if let Some(p) = p.borrow_mut().as_mut() {
+                    p.signal(crate::host::SIGCONT);
+                }
+            }
+        }
+    }
+
+    pub(crate) async fn wait_change(&self) -> Result<i32, Signal> {
+        std::future::poll_fn(|cx| {
+            if let Some(s) = self.status.get() {
+                return Poll::Ready(Ok(s));
+            }
+            if let Some(sig) = self.stopped.get() {
+                return Poll::Ready(Err(sig));
+            }
+            let mut ws = self.waiters.borrow_mut();
+            if !ws.iter().any(|w| w.will_wake(cx.waker())) {
+                ws.push(cx.waker().clone());
+            }
+            Poll::Pending
+        })
+        .await
     }
 
     /// Waits until the job is done; its status.
@@ -124,18 +177,17 @@ impl Job {
         if self.status.get().is_some() {
             return;
         }
-        let procs: Vec<Rc<ProcCell>> = self
-            .procs
-            .borrow()
-            .iter()
-            .filter_map(Weak::upgrade)
-            .filter(|p| p.borrow().is_some())
-            .collect();
+        let procs = self.live_procs();
         if self.direct && !procs.is_empty() {
             for p in procs {
                 if let Some(p) = p.borrow_mut().as_mut() {
                     p.signal(sig);
                 }
+            }
+            if sig == crate::host::SIGTERM || sig == crate::host::SIGHUP {
+                self.resume();
+            } else if sig == crate::host::SIGCONT {
+                self.stopped.set(None);
             }
             return;
         }
@@ -248,6 +300,7 @@ impl JobTable {
             direct,
             task: Cell::new(None),
             coproc: RefCell::new(None),
+            stopped: Cell::new(None),
         });
         self.jobs.push(job.clone());
         job

@@ -94,6 +94,8 @@ pub(crate) fn find(name: &[u8]) -> Option<Builtin> {
         b"kill" => (builtin!(jobs::kill), false),
         b"jobs" => (builtin!(jobs::jobs), false),
         b"disown" => (builtin!(jobs::disown), false),
+        b"fg" => (builtin!(jobs::fg), false),
+        b"bg" => (builtin!(jobs::bg), false),
         b"caller" => (builtin!(command::caller), false),
         b"help" => (builtin!(help::help), false),
         b"umask" => (builtin!(umask::umask), false),

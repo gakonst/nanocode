@@ -294,6 +294,7 @@ async fn real_program(sub: &mut Vp, argv: &[Vec<u8>]) -> Option<i32> {
     argv[0] = program;
     let opts = crate::exec::ExtOpts {
         arg0: Some(name.clone()),
+        real: true,
         ..Default::default()
     };
     let r = crate::exec::run_external_with(sub, argv, Vec::new(), opts).await;
@@ -410,8 +411,15 @@ impl ExtProc for NestedProc {
         }
     }
 
+    fn poll_stop(&mut self, cx: &mut Context<'_>) -> Poll<Signal> {
+        self.sigs.poll_stop(cx)
+    }
+
     fn signal(&mut self, sig: Signal) {
         if self.status.is_none() {
+            if sig == crate::host::SIGCONT {
+                self.sigs.cont.set(true);
+            }
             self.sigs.raise(sig);
         }
     }

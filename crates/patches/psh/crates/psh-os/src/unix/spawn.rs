@@ -11,10 +11,10 @@
 //! through a close-on-exec pipe.
 //!
 //! **Wait.** A pooled waiter thread per running external blocks in
-//! `waitid(WEXITED | WNOWAIT)`: it observes the exit without reaping, wakes the engine,
-//! and the process stays a zombie while its `ExtProc` exists, so a signal to its group
-//! never reaches a recycled id (research/execution-core.md §5, pitfalls 3 and 6). No
-//! SIGCHLD handler. macOS reports stops even for `WEXITED`; those are consumed.
+//! `waitid(WEXITED | WSTOPPED | WNOWAIT)`: it observes the exit without reaping, wakes the
+//! engine, and the process stays a zombie while its `ExtProc` exists, so a signal to its
+//! group never reaches a recycled id (research/execution-core.md §5, pitfalls 3 and 6). No
+//! SIGCHLD handler. A stop is consumed and reported through `poll_stop`.
 //!
 //! **Abandon.** Dropping the `ExtProc` of a running process sends TERM (and CONT, for a
 //! stopped group) to its group, and an escalation thread sends KILL to the group when
@@ -59,6 +59,7 @@ pub(crate) const NSIG: i32 = 32;
 pub(crate) struct Setup {
     /// Lead a session of its own.
     session: bool,
+    group: bool,
     /// Signals that start ignored (by number); every other one starts at its default.
     ignore: [bool; NSIG as usize],
     /// The child's umask, when it differs from the process's.
@@ -419,6 +420,7 @@ pub(crate) fn spawn(shared: &Arc<Shared>, mut spec: SpawnSpec) -> io::Result<Spa
     let session = spec.detach || shared.placement == Placement::Session;
     let mut setup = Setup {
         session,
+        group: spec.group && !session,
         ignore: shared.ignored_at_start,
         umask: spec
             .umask
@@ -476,7 +478,7 @@ pub(crate) fn spawn(shared: &Arc<Shared>, mut spec: SpawnSpec) -> io::Result<Spa
     // what it starts) closes its own.
     drop(sources);
     drop(held);
-    let scope = if session {
+    let scope = if session || setup.group {
         Scope::Group(pid)
     } else {
         Scope::Process(pid)
@@ -647,6 +649,9 @@ fn fork_exec(exec: &Exec, fds: &[(i32, RawFd)], setup: &Setup, floor: RawFd) -> 
                 libc::_exit(127)
             };
             if setup.session && libc::setsid() < 0 {
+                fail(errno());
+            }
+            if setup.group && libc::setpgid(0, 0) < 0 {
                 fail(errno());
             }
             if libc::chdir(exec.cwd.as_ptr()) != 0 {
@@ -836,6 +841,11 @@ mod posix {
         if setup.session {
             flags |= SETSID;
         }
+        if setup.group {
+            flags |= libc::POSIX_SPAWN_SETPGROUP;
+            // SAFETY: the attribute object is initialized.
+            check(unsafe { libc::posix_spawnattr_setpgroup(attr.ptr(), 0) })?;
+        }
         #[cfg(target_os = "macos")]
         {
             flags |= libc::POSIX_SPAWN_CLOEXEC_DEFAULT;
@@ -978,7 +988,11 @@ fn watch(pid: i32, tracker: Arc<Tracker>) -> io::Result<()> {
 
 fn waiter(mb: &Arc<Mailbox>) {
     while let Some((pid, tracker)) = next_job(mb) {
-        let status = wait_exit(pid);
+        let status = wait_exit(pid, |sig| {
+            if let Some(w) = tracker.stopped(sig) {
+                w.wake();
+            }
+        });
         let waker = tracker.exited(status, || reap(pid));
         drop(tracker);
         if let Some(w) = waker {
@@ -1024,7 +1038,7 @@ fn next_job(mb: &Arc<Mailbox>) -> Option<(i32, Arc<Tracker>)> {
 }
 
 /// Blocks until `pid` exits and returns its status, leaving it unreaped.
-fn wait_exit(pid: i32) -> ExitStatus {
+fn wait_exit(pid: i32, stopped: impl Fn(Signal)) -> ExitStatus {
     loop {
         // SAFETY: siginfo_t is plain data, valid zeroed.
         let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
@@ -1034,7 +1048,7 @@ fn wait_exit(pid: i32) -> ExitStatus {
                 libc::P_PID,
                 pid as libc::id_t,
                 &raw mut info,
-                libc::WEXITED | libc::WNOWAIT,
+                libc::WEXITED | libc::WSTOPPED | libc::WNOWAIT,
             )
         };
         if rc == 0 {
@@ -1045,9 +1059,9 @@ fn wait_exit(pid: i32) -> ExitStatus {
                 libc::CLD_KILLED | libc::CLD_DUMPED => {
                     return ExitStatus::Signaled(super::signum::from_os(status));
                 }
-                _ => {
-                    // macOS reports stops and continues even for WEXITED; with WNOWAIT
-                    // the report would repeat. Consume it without reaping.
+                code => {
+                    // With WNOWAIT the report of a stop (or, on macOS, a continue) would
+                    // repeat. Consume it without reaping.
                     // SAFETY: as above.
                     let mut seen: libc::siginfo_t = unsafe { std::mem::zeroed() };
                     // SAFETY: `seen` is writable; without WEXITED this never reaps.
@@ -1062,6 +1076,8 @@ fn wait_exit(pid: i32) -> ExitStatus {
                     // SAFETY: `seen` was zeroed and possibly filled by waitid.
                     if rc != 0 || unsafe { seen.si_pid() } == 0 {
                         std::thread::sleep(Duration::from_millis(10));
+                    } else if code == libc::CLD_STOPPED {
+                        stopped(super::signum::from_os(status));
                     }
                     continue;
                 }
@@ -1099,6 +1115,10 @@ impl ExtProc for UnixProc {
 
     fn poll_wait(&mut self, cx: &mut Context<'_>) -> Poll<ExitStatus> {
         self.tracker.poll(cx)
+    }
+
+    fn poll_stop(&mut self, cx: &mut Context<'_>) -> Poll<Signal> {
+        self.tracker.poll_stop(cx)
     }
 
     fn signal(&mut self, sig: Signal) {

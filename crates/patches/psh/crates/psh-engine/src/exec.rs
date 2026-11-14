@@ -117,12 +117,16 @@ async fn run_background(vp: &mut Vp, code: &Rc<Code>, list: ListId, item: usize)
     sub.job = Some(job.clone());
     vp.last_bg = Some(job.clone());
     let j = job.clone();
+    let parent = vp.top.then(|| vp.sigs.clone());
     let id = vp.core.sched.spawn_task(Box::pin(async move {
         if forks
             && !direct
             && let Some(status) = fork_job(&mut sub).await
         {
             j.finish(status);
+            if let Some(sigs) = &parent {
+                sigs.child_ended(&sub.core);
+            }
             return;
         }
         let ao = &code.ast.list(list).items[item];
@@ -137,6 +141,9 @@ async fn run_background(vp: &mut Vp, code: &Rc<Code>, list: ListId, item: usize)
         let status = r.unwrap_or_else(|u| u.status(sub.status));
         Box::pin(trap::exit_trap(&mut sub, status)).await;
         j.finish(status);
+        if let Some(sigs) = &parent {
+            sigs.child_ended(&sub.core);
+        }
         if sub.core.forked.get().is_some() {
             sub.core.forked.set(Some(Some(status)));
         }
@@ -188,11 +195,15 @@ async fn coproc(
     let code = code.clone();
     let body = cp.body;
     let j = job.clone();
+    let parent = vp.top.then(|| vp.sigs.clone());
     let id = vp.core.sched.spawn_task(Box::pin(async move {
         let r = run_command_unchecked(&mut sub, &code, body).await;
         let status = r.unwrap_or_else(|u| u.status(sub.status));
         Box::pin(trap::exit_trap(&mut sub, status)).await;
         j.finish(status);
+        if let Some(sigs) = &parent {
+            sigs.child_ended(&sub.core);
+        }
     }));
     job.set_task(id);
     let var = vp.vars.entry(&name);
@@ -255,7 +266,16 @@ async fn fork_job(vp: &mut Vp) -> Option<i32> {
             }
             // The copy has the job's descriptors: a pipe it closes is closed.
             vp.fds = Default::default();
-            let st = poll_fn(|cx| proc.poll_wait(cx)).await;
+            let job = vp.job.clone();
+            let st = poll_fn(|cx| {
+                while let Poll::Ready(sig) = proc.poll_stop(cx) {
+                    if let Some(j) = &job {
+                        j.stop(sig);
+                    }
+                }
+                proc.poll_wait(cx)
+            })
+            .await;
             if let Some(job) = &vp.job {
                 job.ended(match st {
                     crate::host::ExitStatus::Signaled(sig) => Some(sig),
@@ -890,12 +910,14 @@ async fn run_subshell(vp: &mut Vp, code: &Rc<Code>, list: ListId) -> R {
     let sub = enter(vp).await?;
     let join = spawn_sub(sub, code.clone(), Body::List(list));
     // A bash subshell is a process: it runs on when the shell dies of a signal (D1903).
-    Ok(
-        match crate::signals::or_signal(vp, crate::signals::Gives::Fatal, join).await {
-            Ok(s) => s,
-            Err(sig) => 128 + sig,
-        },
-    )
+    let status = match crate::signals::or_signal(vp, crate::signals::Gives::Fatal, join).await {
+        Ok(s) => s,
+        Err(sig) => return Ok(128 + sig),
+    };
+    if vp.top {
+        vp.sigs.child_ended(&vp.core);
+    }
+    Ok(status)
 }
 
 async fn run_if(vp: &mut Vp, code: &Rc<Code>, c: &psh_syntax::IfCommand) -> R {
@@ -1883,6 +1905,7 @@ pub(crate) struct ExtOpts {
     pub shell: bool,
     pub process: bool,
     pub cleared: bool,
+    pub real: bool,
 }
 
 /// Starts an external command and waits for it, pumping its pipes to engine objects.
@@ -1946,6 +1969,26 @@ pub(crate) async fn run_external_with(
                 || (vp.job.is_some() && (sig == crate::host::SIGINT || sig == crate::host::SIGQUIT))
         })
         .collect();
+    let forked = vp.core.forked.get().is_some();
+    let stop_text = (vp.top
+        && vp.job.is_none()
+        && !forked
+        && matches!(vp.sigs, crate::state::Sigs::Shell)
+        && vp.opts.get(SetOpt::Monitor))
+    .then(|| {
+        argv.iter()
+            .map(|a| {
+                let plain = !a.is_empty()
+                    && a.iter()
+                        .all(|&b| b.is_ascii_alphanumeric() || b"%+,-./:=@_".contains(&b));
+                match plain {
+                    true => String::from_utf8_lossy(a).into_owned(),
+                    false => String::from_utf8_lossy(&crate::expand::quote(a, true)).into_owned(),
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    });
     let spawned = if opts.shell {
         crate::util::start_nested(vp, argv, &assigns, sig_ignore, opts.exec, opts.process).await?
     } else {
@@ -1975,7 +2018,7 @@ pub(crate) async fn run_external_with(
     }
     // A pipe that held bytes when the external got its OS read end: they go into the
     // OS pipe while the external runs (pipe.rs).
-    let mut feeds: Vec<crate::pipe::Feed> = vp
+    let feeds: Vec<crate::pipe::Feed> = vp
         .fds
         .iter()
         .filter_map(|(_, fd)| match &**fd {
@@ -1988,36 +2031,56 @@ pub(crate) async fn run_external_with(
     if std::mem::take(&mut vp.exec_now) {
         vp.fds = Default::default();
     }
-    let mut status = None;
+    let mut wait = ExtWait {
+        feeds,
+        inputs,
+        outputs,
+        status: None,
+    };
+    let job = vp.job.clone();
+    let nested = match &vp.sigs {
+        crate::state::Sigs::Nested(n) if vp.top && vp.job.is_none() => Some(n.clone()),
+        _ => None,
+    };
     let waited = poll_fn(|cx| {
-        if status.is_none() {
-            for p in &mut inputs {
-                let _ = p.poll(cx);
+        loop {
+            if nested.as_ref().is_some_and(|n| n.take_cont())
+                && let Some(p) = proc.proc.borrow_mut().as_mut()
+            {
+                p.signal(crate::host::SIGCONT);
             }
-            inputs.retain(|p| !p.is_done());
-            feeds.retain(|f| f.poll(cx).is_pending());
-        }
-        for p in &mut outputs {
-            let _ = p.poll(cx);
-        }
-        outputs.retain(|p| !p.is_done());
-        if status.is_none()
-            && let Poll::Ready(s) = proc.poll_wait(cx)
-        {
-            status = Some(s);
-            // The process is gone: its input pipes close, and a vproc writing to
-            // them gets EPIPE instead of waiting forever.
-            inputs.clear();
-            feeds.clear();
-        }
-        match status {
-            // Output is complete only at EOF of its pipes (pitfall 7).
-            Some(s) if outputs.is_empty() => Poll::Ready(s),
-            _ => Poll::Pending,
+            if opts.real
+                && let Some(n) = &nested
+            {
+                let pending = n.take_for(cx.waker());
+                if let Some(p) = proc.proc.borrow_mut().as_mut() {
+                    for sig in (1..64).filter(|s| pending & (1u64 << s) != 0) {
+                        p.signal(sig);
+                    }
+                }
+            }
+            match wait.poll(&mut proc, cx) {
+                Poll::Ready(Waited::Stopped(sig)) => match &job {
+                    Some(j) => j.stop(sig),
+                    None if stop_text.is_some() => return Poll::Ready(Waited::Stopped(sig)),
+                    None if let Some(n) = &nested => n.stopped(sig),
+                    None if forked => {
+                        let host = vp.host();
+                        if let Ok(me) = i32::try_from(host.pid()) {
+                            let _ = host.kill(me, crate::host::SIGSTOP);
+                        }
+                        if let Some(p) = proc.proc.borrow_mut().as_mut() {
+                            p.signal(crate::host::SIGCONT);
+                        }
+                    }
+                    None => {}
+                },
+                r => return r,
+            }
         }
     });
     // A signal that ends the shell ends the wait; the external is abandoned (D1903).
-    let st = if opts.shell && (opts.exec || opts.process) {
+    let waited = if (opts.shell && (opts.exec || opts.process)) || (opts.real && nested.is_some()) {
         waited.await
     } else {
         match crate::signals::or_signal(vp, crate::signals::Gives::Fatal, waited).await {
@@ -2025,11 +2088,21 @@ pub(crate) async fn run_external_with(
             Err(sig) => return Ok(128 + sig),
         }
     };
+    let st = match (waited, stop_text) {
+        (Waited::Exited(st), _) => st,
+        (Waited::Stopped(sig), Some(text)) => {
+            return Ok(stopped_job(vp, proc, wait, text, sig).await);
+        }
+        (Waited::Stopped(sig), None) => return Ok(128 + sig),
+    };
     // For the report of a signal death (D1303).
     vp.core.fg_signal.set(match st {
         crate::host::ExitStatus::Signaled(sig) if !vp.in_subst => Some((sig, proc.pid())),
         _ => None,
     });
+    if vp.top {
+        vp.sigs.child_ended(&vp.core);
+    }
     if let Some(job) = &vp.job {
         job.ended(match st {
             crate::host::ExitStatus::Signaled(sig) => Some(sig),
@@ -2037,6 +2110,88 @@ pub(crate) async fn run_external_with(
         });
     }
     Ok(st.code())
+}
+
+struct ExtWait {
+    feeds: Vec<crate::pipe::Feed>,
+    inputs: Vec<Pump>,
+    outputs: Vec<Pump>,
+    status: Option<crate::host::ExitStatus>,
+}
+
+enum Waited {
+    Exited(crate::host::ExitStatus),
+    Stopped(crate::host::Signal),
+}
+
+impl ExtWait {
+    fn poll(&mut self, proc: &mut ProcGuard, cx: &mut std::task::Context<'_>) -> Poll<Waited> {
+        if self.status.is_none() {
+            for p in &mut self.inputs {
+                let _ = p.poll(cx);
+            }
+            self.inputs.retain(|p| !p.is_done());
+            self.feeds.retain(|f| f.poll(cx).is_pending());
+        }
+        for p in &mut self.outputs {
+            let _ = p.poll(cx);
+        }
+        self.outputs.retain(|p| !p.is_done());
+        if self.status.is_none() {
+            if let Poll::Ready(sig) = proc.poll_stop(cx) {
+                return Poll::Ready(Waited::Stopped(sig));
+            }
+            if let Poll::Ready(s) = proc.poll_wait(cx) {
+                self.status = Some(s);
+                // The process is gone: its input pipes close, and a vproc writing to
+                // them gets EPIPE instead of waiting forever.
+                self.inputs.clear();
+                self.feeds.clear();
+            }
+        }
+        match self.status {
+            // Output is complete only at EOF of its pipes (pitfall 7).
+            Some(s) if self.outputs.is_empty() => Poll::Ready(Waited::Exited(s)),
+            _ => Poll::Pending,
+        }
+    }
+}
+
+async fn stopped_job(
+    vp: &mut Vp,
+    mut proc: ProcGuard,
+    mut wait: ExtWait,
+    text: String,
+    sig: crate::host::Signal,
+) -> i32 {
+    let job = vp.jobs.borrow_mut().add(text, vp.core.next_job_id(), true);
+    job.started(&proc.proc);
+    job.stop(sig);
+    proc.job = Some(job.clone());
+    let core = vp.core.clone();
+    let sigs = vp.sigs.clone();
+    let j = job.clone();
+    let id = vp.core.sched.spawn_task(Box::pin(async move {
+        let st = poll_fn(|cx| {
+            loop {
+                match wait.poll(&mut proc, cx) {
+                    Poll::Ready(Waited::Stopped(sig)) => j.stop(sig),
+                    Poll::Ready(Waited::Exited(s)) => return Poll::Ready(s),
+                    Poll::Pending => return Poll::Pending,
+                }
+            }
+        })
+        .await;
+        j.ended(match st {
+            crate::host::ExitStatus::Signaled(sig) => Some(sig),
+            crate::host::ExitStatus::Exited(_) => None,
+        });
+        j.finish(st.code());
+        drop(proc);
+        sigs.child_ended(&core);
+    }));
+    job.set_task(id);
+    128 + sig
 }
 
 /// Spawns a program through the host, its descriptors made `ChildFd`s. `Err` is the
@@ -2100,6 +2255,7 @@ async fn spawn_program(
         ) || vp.job.as_ref().is_some_and(|j| j.disowned.get()),
         umask: vp.umask,
         rlimits: vp.rlimits.clone(),
+        group: vp.opts.get(SetOpt::Monitor),
     };
     let program = spec.program.clone();
     match vp.host().spawn(spec) {
@@ -2225,6 +2381,13 @@ impl ProcGuard {
     fn poll_wait(&mut self, cx: &mut std::task::Context<'_>) -> Poll<crate::host::ExitStatus> {
         match self.proc.borrow_mut().as_mut() {
             Some(p) => p.poll_wait(cx),
+            None => Poll::Pending,
+        }
+    }
+
+    fn poll_stop(&mut self, cx: &mut std::task::Context<'_>) -> Poll<crate::host::Signal> {
+        match self.proc.borrow_mut().as_mut() {
+            Some(p) => p.poll_stop(cx),
             None => Poll::Pending,
         }
     }
@@ -2754,6 +2917,9 @@ async fn subst(vp: &mut Vp, code: Rc<Code>, list: ListId) -> Result<(Vec<u8>, i3
             }
         }
     };
+    if vp.top {
+        vp.sigs.child_ended(&vp.core);
+    }
     vp.status = status;
     if out.contains(&0) {
         vp.error("warning: command substitution: ignored null byte in input")

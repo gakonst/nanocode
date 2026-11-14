@@ -255,12 +255,19 @@ pub(crate) fn terminates(sig: i32) -> bool {
 /// the shell itself. A trap runs its action; an ignored signal does nothing; otherwise
 /// the default action ends the shell with `128+n` after the EXIT trap.
 pub(crate) async fn take_signals(vp: &mut Vp) -> Result<(), Unwind> {
-    if !vp.top || vp.in_trap.is_some() {
+    if !vp.top || (vp.in_trap.is_some() && !vp.signal_trap) {
         return Ok(());
     }
     let pending = vp.sigs.take(&vp.core);
     if pending == 0 {
         return Ok(());
+    }
+    if vp
+        .traps
+        .action(TrapKey::Signal(crate::host::SIGCHLD))
+        .is_none_or(|a| a.is_empty())
+    {
+        vp.sigs.take_children(&vp.core);
     }
     for sig in 1..64 {
         if pending & (1u64 << sig) == 0 {
@@ -268,9 +275,28 @@ pub(crate) async fn take_signals(vp: &mut Vp) -> Result<(), Unwind> {
         }
         match vp.traps.action(TrapKey::Signal(sig)) {
             Some(action) if action.is_empty() => {}
+            Some(_) if sig == crate::host::SIGCHLD && vp.in_trap.is_some() => {
+                vp.sigs.raise(&vp.core, sig);
+            }
             Some(action) => {
-                let st = vp.status;
-                run_action(vp, &action, st).await?;
+                let runs = if sig == crate::host::SIGCHLD {
+                    vp.sigs.take_children(&vp.core).max(1)
+                } else {
+                    1
+                };
+                let saved = std::mem::replace(&mut vp.signal_trap, true);
+                for _ in 0..runs {
+                    let st = vp.status;
+                    let mut r = run_action(vp, &action, st).await;
+                    if r.is_ok() {
+                        r = Box::pin(take_signals(vp)).await;
+                    }
+                    if r.is_err() {
+                        vp.signal_trap = saved;
+                    }
+                    r?;
+                }
+                vp.signal_trap = saved;
             }
             None if terminates(sig) => {
                 vp.sigs.died_of(&vp.core, sig);

@@ -63,6 +63,10 @@ pub(crate) enum Sigs {
 #[derive(Default)]
 pub(crate) struct NestedSigs {
     pending: Cell<u64>,
+    children: Cell<u32>,
+    pub cont: Cell<bool>,
+    stop: Cell<Option<i32>>,
+    stop_waker: RefCell<Option<std::task::Waker>>,
     waiters: RefCell<Vec<std::task::Waker>>,
     /// The signal whose default action ended the shell.
     pub died_of: Cell<Option<i32>>,
@@ -75,6 +79,35 @@ pub(crate) struct NestedSigs {
 }
 
 impl NestedSigs {
+    pub(crate) fn stopped(&self, sig: i32) {
+        self.stop.set(Some(sig));
+        if let Some(w) = self.stop_waker.take() {
+            w.wake();
+        }
+    }
+
+    pub(crate) fn poll_stop(&self, cx: &mut std::task::Context<'_>) -> std::task::Poll<i32> {
+        match self.stop.take() {
+            Some(sig) => std::task::Poll::Ready(sig),
+            None => {
+                *self.stop_waker.borrow_mut() = Some(cx.waker().clone());
+                std::task::Poll::Pending
+            }
+        }
+    }
+
+    pub(crate) fn take_cont(&self) -> bool {
+        self.cont.replace(false)
+    }
+
+    pub(crate) fn take_for(&self, w: &std::task::Waker) -> u64 {
+        let mut ws = self.waiters.borrow_mut();
+        if !ws.iter().any(|x| x.will_wake(w)) {
+            ws.push(w.clone());
+        }
+        self.pending.replace(0)
+    }
+
     /// Sends `sig` (Linux numbering): its waits that give way to signals wake.
     pub(crate) fn raise(&self, sig: i32) {
         if (1..64).contains(&sig) {
@@ -98,6 +131,23 @@ impl Sigs {
         match self {
             Sigs::Shell => core.sched.take_signals(),
             Sigs::Nested(n) => n.pending.replace(0),
+        }
+    }
+
+    pub(crate) fn child_ended(&self, core: &Core) {
+        match self {
+            Sigs::Shell => core.sched.child_ended(),
+            Sigs::Nested(n) => {
+                n.children.set(n.children.get() + 1);
+                n.raise(crate::host::SIGCHLD);
+            }
+        }
+    }
+
+    pub(crate) fn take_children(&self, core: &Core) -> u32 {
+        match self {
+            Sigs::Shell => core.sched.take_children(),
+            Sigs::Nested(n) => n.children.replace(0),
         }
     }
 
@@ -343,6 +393,7 @@ pub(crate) struct Vp {
     /// A trap action is running, entered with this `$?`: DEBUG and ERR traps do not
     /// fire inside it, and a bare `exit` uses this status.
     pub in_trap: Option<i32>,
+    pub signal_trap: bool,
     /// This is the shell itself, not a subshell: it takes the shell's signals.
     pub top: bool,
     /// This vproc is a background job of one simple command that has not run it yet:

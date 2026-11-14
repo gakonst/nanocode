@@ -330,6 +330,7 @@ impl Shell {
             bad_assign: false,
             traps: Rc::new(Default::default()),
             in_trap: None,
+            signal_trap: false,
             top: true,
             fork_job: false,
             sigs: state::Sigs::Shell,

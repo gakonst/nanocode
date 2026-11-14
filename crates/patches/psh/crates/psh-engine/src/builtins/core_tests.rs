@@ -211,9 +211,9 @@ fn help_and_stubs() {
     check("help nope 2>/dev/null; echo $?", "1\n");
     check("logout 2>/dev/null; echo $?; history; echo $?", "1\n0\n");
     // A bash builtin psh does not have stops the script instead of running a program.
-    let o = run("bg; echo after");
+    let o = run("bind; echo after");
     assert_eq!((o.status, o.stdout.as_str()), (2, ""));
-    assert!(o.stderr.contains("bg: not supported yet"), "{}", o.stderr);
+    assert!(o.stderr.contains("bind: not supported yet"), "{}", o.stderr);
     check("exit 1 2; echo same\necho next $?", "next 2\n");
 }
 

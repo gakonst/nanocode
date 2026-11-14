@@ -167,10 +167,11 @@ pub(super) async fn wait(vp: &mut Vp, args: &[Vec<u8>]) -> R {
     if ids.is_empty() {
         // Every job; the status is 0.
         let all = vp.jobs.borrow().all();
-        for j in all.iter().filter(|j| !j.disowned.get()) {
-            if let Err(sig) =
-                crate::signals::or_signal(vp, crate::signals::Gives::Trapped, j.wait()).await
-            {
+        for j in all
+            .iter()
+            .filter(|j| !j.disowned.get() && j.stopped().is_none())
+        {
+            if let Err(sig) = wait_job(vp, j).await? {
                 return Ok(128 + sig);
             }
             report(vp, j).await;
@@ -181,9 +182,12 @@ pub(super) async fn wait(vp: &mut Vp, args: &[Vec<u8>]) -> R {
         return Ok(0);
     }
     for j in targets.into_iter().flatten() {
+        if j.stopped().is_some() {
+            vp.error(&format!("warning: wait_for_job: job {} is stopped", j.id))
+                .await;
+        }
         // A trapped or fatal signal ends the wait with 128+n; the trap runs next.
-        status = match crate::signals::or_signal(vp, crate::signals::Gives::Trapped, j.wait()).await
-        {
+        status = match wait_job(vp, &j).await? {
             Ok(s) => s,
             Err(sig) => return Ok(128 + sig),
         };
@@ -192,6 +196,119 @@ pub(super) async fn wait(vp: &mut Vp, args: &[Vec<u8>]) -> R {
             vp.set_var(v, j.pid().to_string().into_bytes());
         }
         reap(vp, &j);
+    }
+    Ok(status)
+}
+
+async fn wait_job(vp: &mut Vp, job: &Job) -> Result<Result<i32, Signal>, crate::state::Unwind> {
+    loop {
+        match signals::or_signal(vp, signals::Gives::Trapped, job.wait_change()).await {
+            Err(crate::host::SIGCHLD) if !vp.opts.get(crate::options::SetOpt::Posix) => {
+                super::trap::take_signals(vp).await?;
+            }
+            Ok(Err(stop)) => return Ok(Ok(128 + stop)),
+            Ok(Ok(s)) => return Ok(Ok(s)),
+            Err(sig) => return Ok(Err(sig)),
+        }
+    }
+}
+
+async fn job_control(vp: &mut Vp, name: &str, args: &[Vec<u8>]) -> Result<Vec<Rc<Job>>, i32> {
+    if !vp.opts.get(crate::options::SetOpt::Monitor) {
+        vp.error(&format!("{name}: no job control")).await;
+        return Err(1);
+    }
+    let mut words = &args[1..];
+    if words.first().is_some_and(|w| w == b"--") {
+        words = &words[1..];
+    } else if let Some(w) = words.first()
+        && w.len() > 1
+        && w[0] == b'-'
+    {
+        vp.error(&format!("{name}: -{}: invalid option", char::from(w[1])))
+            .await;
+        let usage = if name == "fg" {
+            "fg: usage: fg [job_spec]\n"
+        } else {
+            "bg: usage: bg [job_spec ...]\n"
+        };
+        vp.error_raw(usage.as_bytes()).await;
+        return Err(2);
+    }
+    if words.is_empty() {
+        let current = vp.jobs.borrow().current();
+        return match current {
+            Some(j) => Ok(vec![j]),
+            None => {
+                vp.error(&format!("{name}: current: no such job")).await;
+                Err(1)
+            }
+        };
+    }
+    let mut found = Vec::new();
+    for w in words {
+        match job_spec(vp, &s(w)) {
+            Ok(j) => found.push(j),
+            Err(msg) => {
+                vp.error(&format!("{name}: {msg}")).await;
+                return Err(1);
+            }
+        }
+    }
+    Ok(found)
+}
+
+pub(super) async fn fg(vp: &mut Vp, args: &[Vec<u8>]) -> R {
+    let job = match job_control(vp, "fg", args).await {
+        Ok(jobs) => jobs[0].clone(),
+        Err(st) => return Ok(st),
+    };
+    if job.status().is_some() && job.stopped().is_none() && !job.has_pid() {
+        vp.error("fg: job has terminated").await;
+        return Ok(1);
+    }
+    let st = out(vp, "fg", format!("{}\n", job.text).as_bytes()).await?;
+    if st != 0 {
+        return Ok(st);
+    }
+    job.resume();
+    match signals::or_signal(vp, signals::Gives::Fatal, job.wait_change()).await {
+        Ok(Ok(s)) => {
+            report(vp, &job).await;
+            reap(vp, &job);
+            Ok(s)
+        }
+        Ok(Err(stop)) => Ok(128 + stop),
+        Err(sig) => Ok(128 + sig),
+    }
+}
+
+pub(super) async fn bg(vp: &mut Vp, args: &[Vec<u8>]) -> R {
+    let jobs = match job_control(vp, "bg", args).await {
+        Ok(jobs) => jobs,
+        Err(st) => return Ok(st),
+    };
+    let mut status = 0;
+    for job in jobs {
+        if job.status().is_some() {
+            vp.error("bg: job has terminated").await;
+            status = 1;
+        } else if job.stopped().is_none() {
+            vp.error(&format!("bg: job {} already in background", job.id))
+                .await;
+        } else {
+            job.resume();
+            let mark = vp.jobs.borrow().mark(&job);
+            let st = out(
+                vp,
+                "bg",
+                format!("[{}]{} {} &\n", job.id, mark, job.text).as_bytes(),
+            )
+            .await?;
+            if st != 0 {
+                status = st;
+            }
+        }
     }
     Ok(status)
 }
@@ -396,6 +513,9 @@ async fn list(vp: &mut Vp, words: &[Vec<u8>]) -> R {
 
 /// What `jobs` says about a job's state.
 fn state_text(job: &Job) -> String {
+    if let Some(sig) = job.stopped() {
+        return signals::describe(sig);
+    }
     match job.status() {
         None => "Running".to_string(),
         Some(0) => "Done".to_string(),
@@ -457,7 +577,8 @@ pub(super) async fn jobs(vp: &mut Vp, args: &[Vec<u8>]) -> R {
     }
     let mut text = String::new();
     for j in selected.iter().filter(|j| !j.disowned.get()) {
-        if stopped || (running && j.status().is_some()) {
+        let halted = j.stopped().is_some();
+        if (stopped && !halted) || (running && (halted || j.status().is_some())) {
             continue;
         }
         if pids {
@@ -466,7 +587,11 @@ pub(super) async fn jobs(vp: &mut Vp, args: &[Vec<u8>]) -> R {
         }
         let mark = vp.jobs.borrow().mark(j);
         let state = state_text(j);
-        let amp = if j.status().is_none() { " &" } else { "" };
+        let amp = if j.status().is_none() && !halted {
+            " &"
+        } else {
+            ""
+        };
         if long {
             text.push_str(&format!(
                 "[{}]{} {} {:<27}{}{}\n",

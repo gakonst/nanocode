@@ -76,9 +76,14 @@ for (const steps of [...new Set(part("tools").map((row) => row.steps))].sort((a,
   section("Long tool turn: " + steps + " shell steps, headless", part("tools").filter((row) => row.steps === steps), [["wall_ms", "wall ms", true], ["step_gap_p50_ms", "tool result to next request p50 ms"], ["cpu_per_step_ms", "CPU per step ms"], ["tree_max_rss_mb", "peak RSS MB"], ["last_request_bytes", "last request bytes"]]);
 for (const k of [...new Set(part("fleet").map((row) => row.k))].sort((a, b) => a - b))
   section("Fleet: " + k + " concurrent headless runs, 1,000 tokens each at 1,000 tok/s", part("fleet").filter((row) => row.k === k).map((row) => ({ ...row, error: row.ok === row.k ? undefined : row.error ?? "failed" })), [["wall_ms", "wall ms", true], ["cpu_ms_per_agent", "CPU per run ms"], ["rss_mb_per_agent", "peak RSS per run MB"], ["exit_after_stream_p50_ms", "stream end to exit p50 ms"]]);
-section("Session store: 1,000 one-turn sessions", part("store"), [["store_kb", "store KB"], ["store_kb_per_session", "KB per session"], ["store_files", "files", false], ["create_cpu_ms_per_session", "CPU per saved session ms"]]);
-section("Listing 1,000 sessions", part("store-list"), [["wall_ms", "wall ms", true], ["tree_cpu_ms", "CPU ms"], ["tree_max_rss_mb", "peak RSS MB"]]);
-section("Continuing the latest of 1,000 sessions", part("store-resume"), [["wall_ms", "wall ms", true], ["spawn_to_request_ms", "spawn to request ms"], ["tree_cpu_ms", "CPU ms"], ["tree_max_rss_mb", "peak RSS MB"]]);
+const sessionCounts = [...new Set(part("store").map((row) => row.sessions ?? 1000))].sort((a, b) => a - b);
+const count = (n) => Number(n ?? 1000).toLocaleString("en-US");
+for (const n of sessionCounts) section("Session store: " + count(n) + " one-turn sessions", part("store").filter((row) => (row.sessions ?? 1000) === n), [["store_kb", "store KB"], ["store_kb_per_session", "KB per session"], ["store_files", "files", false], ["create_cpu_ms_per_session", "CPU per saved session ms"]]);
+for (const n of sessionCounts) {
+  const of = (p) => part(p).filter((row) => (row.sessions ?? 1000) === n);
+  section("Listing " + count(n) + " sessions", of("store-list"), [["wall_ms", "wall ms", true], ["tree_cpu_ms", "CPU ms"], ["tree_max_rss_mb", "peak RSS MB"], ["task_clock_ms", "task-clock ms"], ["instructions_user", "user instructions", false], ["instructions_kernel", "kernel instructions", false]]);
+  section("Continuing the latest of " + count(n) + " sessions", of("store-resume"), [["wall_ms", "wall ms", true], ["spawn_to_request_ms", "spawn to request ms"], ["tree_cpu_ms", "CPU ms"], ["tree_max_rss_mb", "peak RSS MB"], ["task_clock_ms", "task-clock ms"], ["instructions_user", "user instructions", false], ["instructions_kernel", "kernel instructions", false]]);
+}
 section("Install size", part("disk").map((row) => ({ ...row, code: undefined })), [["install_mb", "install MB"], ["binary_mb", "main binary MB"]], "Runtimes a lane needs but does not install (Node for npm packages) are not counted; VERSIONS.md lists them.");
 
 for (const mode of ["cli", "tui"]) {

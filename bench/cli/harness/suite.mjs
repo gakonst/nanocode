@@ -1,6 +1,7 @@
 // Startup, cold start, first frame, idle, keystroke echo, one-shot, long tool turns, concurrent fleets, session store and install size.
 // One JSON line per sample in results/suite[-tag].jsonl.
 // node harness/suite.mjs [--parts=startup,coldstart,firstframe,coldframe,idle,keys,oneshot,tools,fleet,store,disk] [--only=nc,fx] [--rounds=30]
+// store takes --sessions=N (1,000), --storerounds=R (20) and --storehome=DIR, which keeps each lane's N sessions in DIR/<lane> and reuses them on the next run, so a 14,600-session store is generated once; store-list and store-resume interleave the lanes round by round.
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -28,7 +29,20 @@ const kib = process.platform === "darwin" ? 1048576 : 1024;
 const say = (s) => console.log(new Date().toISOString().slice(11, 19) + " " + s);
 
 
+// BENCH_PERF=1 runs store-list and store-resume under perf stat (Linux) and adds user and kernel instructions, page faults and task-clock to their rows, which hold up on a loaded machine where wall time does not.
+const COUNTERS = "instructions:u,instructions:k,page-faults,task-clock";
+const counted = ([cmd, argv]) => process.env.BENCH_PERF ? ["perf", ["stat", "-x,", "-o", WORK + "/perf-" + process.pid + "-" + seq + ".csv", "-e", COUNTERS, "--", cmd, ...argv]] : [cmd, argv];
+function countersOf(file) {
+  if (!fs.existsSync(file)) return {};
+  const names = { "instructions:u": "instructions_user", "instructions:k": "instructions_kernel", "page-faults": "page_faults", "task-clock": "task_clock_ms" };
+  const out = {};
+  for (const line of fs.readFileSync(file, "utf8").split("\n")) { const f = line.split(","); const key = names[f[2]]; if (key && f[0] !== "" && !Number.isNaN(Number(f[0]))) out[key] = Number(f[0]); }
+  fs.rmSync(file);
+  return out;
+}
+
 async function measured(cmd, argv, env, { timeoutMs = 120000, cwd = ws } = {}) {
+  const perfFile = cmd === "perf" ? argv[argv.indexOf("-o") + 1] : null;
   const statFile = WORK + "/rs-suite-" + process.pid + "-" + (seq++) + ".json";
   const spawnNs = now();
   const child = spawn(...runstat(statFile, cmd, argv), { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
@@ -41,7 +55,7 @@ async function measured(cmd, argv, env, { timeoutMs = 120000, cwd = ws } = {}) {
   const exitNs = now();
   let rs = {};
   try { rs = JSON.parse(fs.readFileSync(statFile, "utf8")); fs.rmSync(statFile); } catch {}
-  return { code, o, e, spawnNs, firstOut, exitNs, usage: usageOf(rs) };
+  return { code, o, e, spawnNs, firstOut, exitNs, usage: usageOf(rs), counters: perfFile ? countersOf(perfFile) : {} };
 }
 
 async function terminal(spec) {
@@ -202,10 +216,17 @@ if (parts.includes("fleet")) {
 
 if (parts.includes("store")) {
   const total = Number(args.sessions ?? 1000);
+  const stores = {};
   for (const name of names) {
     const x = extra[name];
     if (!x?.saveHeadless) { emit({ part: "store", harness: name, error: "no session store lane" }); continue; }
-    const { home, env } = prepared(name, "store");
+    const kept = args.storehome && args.storehome + "/" + name;
+    if (kept && fs.existsSync(kept + "/.sessions") && Number(fs.readFileSync(kept + "/.sessions", "utf8")) === total) {
+      stores[name] = { x, home: kept + "/home", env: lanes[name].env(kept + "/home", server.base) };
+      say(name + ": reusing " + total + " sessions in " + kept);
+      continue;
+    }
+    const { home, env } = kept ? (() => { fs.rmSync(kept, { recursive: true, force: true }); fs.mkdirSync(kept + "/home", { recursive: true }); lanes[name].setup(kept + "/home", server.base, ws); return { home: kept + "/home", env: lanes[name].env(kept + "/home", server.base) }; })() : prepared(name, "store");
     let failures = 0, cpu = 0;
     const began = now();
     for (let i = 0; i < total; i++) {
@@ -220,16 +241,22 @@ if (parts.includes("store")) {
     const bytes = Number(spawnSync("du", ["-sb", x.store(home)], { encoding: "utf8" }).stdout.split("\t")[0]) || null;
     const store_files = Number(spawnSync("sh", ["-c", "find \"$1\" -type f | wc -l", "-", x.store(home)], { encoding: "utf8" }).stdout.trim());
     emit({ part: "store", harness: name, sessions: total, failures, store_kb: kb, store_kb_per_session: kb / total, store_bytes_per_session: bytes && bytes / total, store_files, create_ms, create_cpu_ms_per_session: cpu / total });
-    for (let r = 0; r < Number(args.storerounds ?? 20); r++) {
+    if (kept) fs.writeFileSync(kept + "/.sessions", String(total));
+    stores[name] = { x, home, env };
+    say(name + ": " + total + " sessions stored");
+  }
+  for (let r = 0; r < Number(args.storerounds ?? 20); r++) {
+    for (const name of rot(Object.keys(stores), r)) {
+      const { x, home, env } = stores[name];
       if (x.list) {
-        const res = await measured(...x.list(home, server.base), env);
-        emit({ part: "store-list", harness: name, round: r, sessions: total, code: res.code, wall_ms: msBetween(res.spawnNs, res.exitNs), stdout_bytes: res.o.length, ...res.usage, error: res.code === 0 ? undefined : res.e.slice(-300) });
+        const res = await measured(...counted(x.list(home, server.base)), env);
+        emit({ part: "store-list", harness: name, round: r, sessions: total, code: res.code, wall_ms: msBetween(res.spawnNs, res.exitNs), stdout_bytes: res.o.length, ...res.usage, ...res.counters, error: res.code === 0 ? undefined : res.e.slice(-300) });
       }
       if (x.resume) {
         const run = "rs-" + name + "-" + seq++;
-        const res = await measured(...x.resume(home, server.base, "Again BENCH[run=" + run + "]"), env);
+        const res = await measured(...counted(x.resume(home, server.base, "Again BENCH[run=" + run + "]")), env);
         const records = (await server.log(run)).filter((record) => record.mode !== "side");
-        emit({ part: "store-resume", harness: name, round: r, sessions: total, code: res.code, wall_ms: msBetween(res.spawnNs, res.exitNs), spawn_to_request_ms: msBetween(res.spawnNs, records[0]?.arrive_ns), request_bytes: records[0]?.request_bytes, ...res.usage, error: res.code === 0 && records.length ? undefined : "exit " + res.code + " requests " + records.length + ": " + res.e.slice(-300) });
+        emit({ part: "store-resume", harness: name, round: r, sessions: total, code: res.code, wall_ms: msBetween(res.spawnNs, res.exitNs), spawn_to_request_ms: msBetween(res.spawnNs, records[0]?.arrive_ns), request_bytes: records[0]?.request_bytes, ...res.usage, ...res.counters, error: res.code === 0 && records.length ? undefined : "exit " + res.code + " requests " + records.length + ": " + res.e.slice(-300) });
       }
     }
   }

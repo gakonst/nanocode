@@ -1,0 +1,45 @@
+[package]
+edition = "2021"
+rust-version = "1.71"
+name = "rustls"
+version = "0.23.45"
+autolib = false
+autobins = false
+autoexamples = false
+autotests = false
+autobenches = false
+description = "Rustls is a modern TLS library written in Rust."
+license = "Apache-2.0 OR ISC OR MIT"
+repository = "https://github.com/rustls/rustls"
+publish = false
+
+[features]
+custom-provider = []
+default = ["std", "tls12"]
+std = ["webpki/std", "pki-types/std", "once_cell/std"]
+tls12 = []
+
+[lib]
+name = "rustls"
+path = "src/lib.rs"
+test = false
+doctest = false
+bench = false
+
+[dependencies]
+once_cell = { version = "1.16", default-features = false, features = ["alloc", "race"] }
+subtle = { version = "2.5.0", default-features = false }
+pki-types = { package = "rustls-pki-types", version = "1.12", features = ["alloc"] }
+webpki = { package = "rustls-webpki", version = "0.103.14", default-features = false, features = ["alloc"] }
+zeroize = "1.8"
+
+[lints.rust.unexpected_cfgs]
+level = "warn"
+priority = 0
+check-cfg = [
+    "cfg(bench)",
+    "cfg(coverage_nightly)",
+    "cfg(read_buf)",
+    "cfg(rustls_docsrs)",
+    'cfg(feature, values("aws_lc_rs", "aws-lc-rs", "brotli", "fips", "hashbrown", "logging", "prefer-post-quantum", "read_buf", "ring", "zlib"))',
+]

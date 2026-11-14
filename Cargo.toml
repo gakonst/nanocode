@@ -195,6 +195,7 @@ rustpython-vm = { version = "=0.6.0", default-features = false, features = ["com
 [patch.crates-io]
 serde_derive = { path = "crates/core/serde-derive" }
 rustls-platform-verifier = { path = "crates/patches/rustls-platform-verifier" }
+rustls = { path = "crates/patches/rustls" }
 rustls-webpki = { path = "crates/patches/rustls-webpki" }
 cfg-if = { path = "crates/core/cfg-if" }
 once_cell = { path = "crates/core/once_cell" }

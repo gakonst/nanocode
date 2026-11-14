@@ -91,6 +91,8 @@ pub(super) struct ParserSpare {
     str_units: Vec<u16>,
     units: Vec<u16>,
     latin1: Vec<u8>,
+    pat_entries: Vec<(u32, super::scan::Follow)>,
+    pat_opens: Vec<Option<u32>>,
 }
 
 pub(super) struct Parser<'a, 'h> {
@@ -332,6 +334,7 @@ impl Drop for Parser<'_, '_> {
             v.clear();
             core::mem::take(v)
         }
+        let (pat_entries, pat_opens) = self.pat_scan.take_buffers();
         let spare = ParserSpare {
             stack: take(&mut self.stack),
             done: take(&mut self.done),
@@ -343,6 +346,8 @@ impl Drop for Parser<'_, '_> {
             str_units: take(&mut self.str_units),
             units: take(&mut self.units),
             latin1: take(&mut self.latin1),
+            pat_entries,
+            pat_opens,
         };
         self.heap.compile_scratch.parser = spare;
     }
@@ -381,6 +386,8 @@ impl<'a, 'h> Parser<'a, 'h> {
             str_units,
             units,
             latin1,
+            pat_entries,
+            pat_opens,
         } = core::mem::take(&mut heap.compile_scratch.parser);
         done.push(None);
         let mut p = Parser {
@@ -413,7 +420,7 @@ impl<'a, 'h> Parser<'a, 'h> {
             paren_inner: u32::MAX,
             #[cfg(feature = "lazy")]
             arg_start: u32::MAX,
-            pat_scan: Default::default(),
+            pat_scan: super::scan::PatternScan::reusing(pat_entries, pat_opens),
             pattern_vars,
             open_iters,
             str_pool,

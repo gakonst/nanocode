@@ -26,7 +26,7 @@ struct Scanner<'a> {
     prev: Token,
     /// Open brackets: `(`, `[`, `{`, or `` ` `` for a template substitution; [`BLOCK`]
     /// and [`HEAD`] for the statement forms of `{` and `(`.
-    stack: Vec<u8>,
+    stack: Brackets,
     /// `prev` closed a [`BLOCK`] or [`HEAD`]: a `/` after it starts a regex, which
     /// [`regex_allowed`] cannot tell from `prev` alone (`if (a) {} /x/`, 0217).
     after_stmt: bool,
@@ -40,12 +40,67 @@ const BLOCK: u8 = b'B';
 /// The `(` of an `if`, `for`, `while` or `with` head.
 const HEAD: u8 = b'H';
 
+const INLINE_DEPTH: usize = 32;
+
+struct Brackets {
+    inline: [u8; INLINE_DEPTH],
+    len: usize,
+    deeper: Vec<u8>,
+}
+
+impl Brackets {
+    fn new(open: u8) -> Self {
+        let mut b = Brackets {
+            inline: [0; INLINE_DEPTH],
+            len: 0,
+            deeper: Vec::new(),
+        };
+        b.push_out(open);
+        b
+    }
+
+    fn push_out(&mut self, x: u8) {
+        if self.len < INLINE_DEPTH {
+            self.inline[self.len] = x;
+        } else {
+            self.deeper.push_out(x);
+        }
+        self.len += 1;
+    }
+
+    fn pop(&mut self) -> Option<u8> {
+        self.len = self.len.checked_sub(1)?;
+        if self.len < INLINE_DEPTH {
+            Some(self.inline[self.len])
+        } else {
+            self.deeper.pop()
+        }
+    }
+
+    fn last(&self) -> Option<&u8> {
+        let top = self.len.checked_sub(1)?;
+        if top < INLINE_DEPTH {
+            self.inline.get(top)
+        } else {
+            self.deeper.last()
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.len
+    }
+
+    fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+}
+
 impl<'a> Scanner<'a> {
     fn new(lx: Lexer<'a>, prev: Token, open: u8) -> Self {
         Scanner {
             lx,
             prev,
-            stack: alloc::vec![open],
+            stack: Brackets::new(open),
             after_stmt: false,
             class_at: None,
         }
@@ -191,9 +246,26 @@ pub(super) struct PatternScan {
     end: u32,
     /// `(start offset of the bracket, what follows its closer)`, sorted.
     entries: Vec<(u32, Follow)>,
+    opens: Vec<Option<u32>>,
 }
 
 impl PatternScan {
+    pub fn reusing(mut entries: Vec<(u32, Follow)>, opens: Vec<Option<u32>>) -> Self {
+        entries.clear();
+        PatternScan {
+            entries,
+            opens,
+            ..Default::default()
+        }
+    }
+
+    pub fn take_buffers(&mut self) -> (Vec<(u32, Follow)>, Vec<Option<u32>>) {
+        (
+            core::mem::take(&mut self.entries),
+            core::mem::take(&mut self.opens),
+        )
+    }
+
     /// With `open` the current `{` or `[` token and `lx` positioned after it.
     pub fn follow(&mut self, lx: Lexer<'_>, open: Token) -> Follow {
         if self.start <= open.start
@@ -216,7 +288,9 @@ impl PatternScan {
         };
         let mut s = Scanner::new(lx, open, kind);
         // Parallel to `s.stack`: the start of each open `{`/`[`.
-        let mut opens: Vec<Option<u32>> = alloc::vec![Some(open.start)];
+        let mut opens = core::mem::take(&mut self.opens);
+        opens.clear();
+        opens.push_out(Some(open.start));
         let mut pending: Option<u32> = None;
         #[cfg(feature = "dump")]
         let mut early = EarlyStop::new(self.exact);
@@ -227,11 +301,13 @@ impl PatternScan {
             let (prev, group) = (s.prev.kind, s.stack.last().copied());
             let Some(tok) = s.next() else {
                 self.entries.clear();
+                self.opens = opens;
                 return Follow::Other;
             };
             #[cfg(feature = "dump")]
             if early.stops(prev, group, &tok, s.stack.len().cmp(&before)) {
                 self.entries.clear();
+                self.opens = opens;
                 return Follow::Other;
             }
             if let Some(p) = pending.take() {
@@ -253,6 +329,7 @@ impl PatternScan {
         crate::sort::sort_by(&mut self.entries, |a, b| a.0 < b.0);
         self.start = open.start;
         self.end = end;
+        self.opens = opens;
         follow
     }
 }

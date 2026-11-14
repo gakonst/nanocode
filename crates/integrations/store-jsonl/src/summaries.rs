@@ -48,7 +48,69 @@ pub(super) struct Summary {
 #[derive(Clone, Copy, Deserialize, Serialize)]
 pub(super) struct Anchor {
     pub(super) position: u64,
+    #[serde(with = "hex_digest")]
     pub(super) digest: [u8; 32],
+}
+
+mod hex_digest {
+    use std::fmt::{self, Write as _};
+
+    use serde::{Deserializer, Serializer, de};
+
+    pub(super) fn serialize<S: Serializer>(
+        digest: &[u8; 32],
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        let mut text = String::with_capacity(digest.len() * 2);
+        for byte in digest {
+            write!(text, "{byte:02x}").map_err(serde::ser::Error::custom)?;
+        }
+        serializer.serialize_str(&text)
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<[u8; 32], D::Error> {
+        deserializer.deserialize_any(Digest)
+    }
+
+    struct Digest;
+
+    impl<'de> de::Visitor<'de> for Digest {
+        type Value = [u8; 32];
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("a SHA-256 digest as hex or as bytes")
+        }
+
+        fn visit_str<E: de::Error>(self, text: &str) -> Result<Self::Value, E> {
+            let mut digest = [0; 32];
+            if text.len() != digest.len() * 2 {
+                return Err(E::invalid_length(text.len(), &self));
+            }
+            for (byte, pair) in digest.iter_mut().zip(text.as_bytes().chunks_exact(2)) {
+                let nibble = |at: usize| char::from(pair[at]).to_digit(16);
+                *byte = nibble(0)
+                    .zip(nibble(1))
+                    .and_then(|(high, low)| u8::try_from(high << 4 | low).ok())
+                    .ok_or_else(|| E::invalid_value(de::Unexpected::Str(text), &self))?;
+            }
+            Ok(digest)
+        }
+
+        fn visit_seq<A: de::SeqAccess<'de>>(self, mut bytes: A) -> Result<Self::Value, A::Error> {
+            let mut digest = [0; 32];
+            for (index, byte) in digest.iter_mut().enumerate() {
+                *byte = bytes
+                    .next_element()?
+                    .ok_or_else(|| de::Error::invalid_length(index, &self))?;
+            }
+            if bytes.next_element::<u8>()?.is_some() {
+                return Err(de::Error::invalid_length(digest.len() + 1, &self));
+            }
+            Ok(digest)
+        }
+    }
 }
 
 impl Anchor {

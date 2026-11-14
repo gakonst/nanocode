@@ -10,8 +10,10 @@
 //! its handler resets. Collections, fuel and heap images see an ordinary frame and
 //! ordinary stack values.
 
+use super::hot::{fill, ld, ld32, st};
 use super::*;
 use crate::builtins::dense::index;
+use crate::heap::cells::{Object, ValueArray};
 
 const EACH_DENSE: u16 = super::intrinsics::id("EachDense");
 const REGEXP_CREATE: u16 = super::intrinsics::id("RegExpCreate");
@@ -321,6 +323,13 @@ impl Exec<'_> {
     /// new one), or pops it and gives the builtin the k its loop goes on from.
     #[inline(never)]
     pub(super) fn each_return(&mut self, v: Value) -> Option<Status> {
+        if let Some(top) = self.each_again(v) {
+            self.fuel -= super::native::CALL_FUEL;
+            self.sp = top;
+            self.pc = 0;
+            self.safepoint();
+            return None;
+        }
         let base = self.bp - STATE;
         let mode = self.get(base + MODE).as_int().unwrap_or(FOR_EACH);
         let k = self.each_k(base);
@@ -380,6 +389,78 @@ impl Exec<'_> {
         // Frame entry is a safepoint.
         self.safepoint();
         None
+    }
+
+    #[inline(never)]
+    pub(super) fn each_again(&mut self, v: Value) -> Option<u32> {
+        let (bp, hp, lp) = (self.bp, self.hp, self.lp);
+        let base = bp - STATE;
+        let vals = ValueArray::VALUES.at(self.stack, 0);
+        let slot = |i: u32| vals + 8 * i;
+        let b = self.heap.arena().bytes();
+        let get = |i: u32| ld(b, slot(base + i));
+        if get(STATE) != get(F) {
+            return None;
+        }
+        let mode = get(MODE).as_int()?;
+        let k = get(K).as_int()?;
+        let store = match mode {
+            FOR_EACH => None,
+            MAP | REDUCE => Some(v),
+            _ => match (mode, v.as_bool()?) {
+                (SOME | FIND_INDEX | FIND, false) | (EVERY, true) | (FILTER, false) => None,
+                (FILTER, true) => Some(get(KVALUE)),
+                _ => return None,
+            },
+        };
+        let next = k.checked_add(1)?;
+        let len = get(LEN);
+        if !len.as_int().map_or_else(
+            || len.as_number().is_some_and(|n| f64::from(next) < n),
+            |n| next < n,
+        ) {
+            return None;
+        }
+        let o = get(O);
+        let el = ld32(b, o.as_object()?.offset() + Object::ELEMENTS.offset);
+        let next = next as u32;
+        if el == 0 || next >= ld32(b, el + ValueArray::LEN.offset) {
+            return None;
+        }
+        let x = ld(b, ValueArray::VALUES.at(el, next));
+        let argc = if mode == REDUCE { 4 } else { 3 };
+        let n = hp - bp - 2;
+        if x.is_hole() || n < argc {
+            return None;
+        }
+        if let Some(sv) = store {
+            let a = get(A).as_object()?;
+            let i = match mode {
+                MAP => k as u32,
+                FILTER => self.heap.array_length(a),
+                _ => 0,
+            };
+            if !matches!(self.heap.create_element_fast(a, i, sv), Ok(true)) {
+                return None;
+            }
+        }
+        let locals = self.locals();
+        let b = self.heap.arena_mut().hot_bytes();
+        let kv = Value::int(next as i32);
+        st(b, slot(base + K), kv);
+        st(b, slot(base + KVALUE), x);
+        let mut at = bp + 2;
+        if mode == REDUCE {
+            st(b, slot(base + THIS), v);
+            st(b, slot(at), v);
+            at += 1;
+        }
+        st(b, slot(at), x);
+        st(b, slot(at + 1), kv);
+        st(b, slot(at + 2), o);
+        fill(b, slot(at + 3), hp - at - 3, Value::UNDEFINED);
+        fill(b, slot(lp), locals, Value::UNDEFINED);
+        Some(lp + locals)
     }
 
     /// The loop's current k.

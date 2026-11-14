@@ -197,18 +197,18 @@ pub(super) fn ld(b: &[u8], off: u32) -> Value {
 }
 
 #[inline(always)]
-fn st(b: &mut [u8], off: u32, v: Value) {
+pub(super) fn st(b: &mut [u8], off: u32, v: Value) {
     arena_write(b, off as usize, v.to_bits().to_le_bytes())
 }
 
 #[inline(always)]
-fn ld32(b: &[u8], off: u32) -> u32 {
+pub(super) fn ld32(b: &[u8], off: u32) -> u32 {
     u32::from_le_bytes(arena_read(b, off as usize))
 }
 
 /// `n` Values at `off` set to `v`, with one range check.
 #[inline(always)]
-fn fill(b: &mut [u8], off: u32, n: u32, v: Value) {
+pub(super) fn fill(b: &mut [u8], off: u32, n: u32, v: Value) {
     let o = off as usize;
     let Some(s) = b.get_mut(o..o + 8 * n as usize) else {
         out_of_bounds()

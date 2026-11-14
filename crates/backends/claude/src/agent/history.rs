@@ -12,7 +12,13 @@ use std::{
 };
 
 #[derive(Clone)]
-pub(super) struct HistoryMessage(Arc<Entry>);
+pub(super) struct HistoryMessage(Arc<Entry>, u64);
+
+static WIRE_IDS: AtomicU64 = AtomicU64::new(0);
+
+fn wire_id() -> u64 {
+    WIRE_IDS.fetch_add(1, Ordering::Relaxed)
+}
 
 struct Entry {
     message: Message,
@@ -40,6 +46,7 @@ impl Clone for Entry {
 
 impl HistoryMessage {
     pub(super) fn make_mut(&mut self) -> &mut Message {
+        self.1 = wire_id();
         let entry = Arc::make_mut(&mut self.0);
         entry.wire = OnceLock::new();
         entry.json = OnceLock::new();
@@ -71,15 +78,18 @@ impl HistoryMessage {
     }
 
     pub(super) fn recorded(message: Message, json: Arc<str>, record: EncodedPayload) -> Self {
-        Self(Arc::new(Entry {
-            message,
-            wire: OnceLock::new(),
-            json: OnceLock::from(json),
-            digests: OnceLock::new(),
-            images: OnceLock::new(),
-            companions: OnceLock::new(),
-            record: OnceLock::from(record),
-        }))
+        Self(
+            Arc::new(Entry {
+                message,
+                wire: OnceLock::new(),
+                json: OnceLock::from(json),
+                digests: OnceLock::new(),
+                images: OnceLock::new(),
+                companions: OnceLock::new(),
+                record: OnceLock::from(record),
+            }),
+            wire_id(),
+        )
     }
 
     pub(super) fn cache_json(&self) -> serde_json::Result<()> {
@@ -105,15 +115,18 @@ impl HistoryMessage {
 
 impl From<Message> for HistoryMessage {
     fn from(message: Message) -> Self {
-        Self(Arc::new(Entry {
-            message,
-            wire: OnceLock::new(),
-            json: OnceLock::new(),
-            digests: OnceLock::new(),
-            images: OnceLock::new(),
-            companions: OnceLock::new(),
-            record: OnceLock::new(),
-        }))
+        Self(
+            Arc::new(Entry {
+                message,
+                wire: OnceLock::new(),
+                json: OnceLock::new(),
+                digests: OnceLock::new(),
+                images: OnceLock::new(),
+                companions: OnceLock::new(),
+                record: OnceLock::new(),
+            }),
+            wire_id(),
+        )
     }
 }
 
@@ -151,6 +164,10 @@ impl<'de> Deserialize<'de> for HistoryMessage {
 impl WireMessage for HistoryMessage {
     fn message(&self) -> &Message {
         &self.0.message
+    }
+
+    fn wire_id(&self) -> Option<u64> {
+        Some(self.1)
     }
 
     fn encoded<'a>(

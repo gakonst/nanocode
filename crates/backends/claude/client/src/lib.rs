@@ -640,42 +640,96 @@ impl CacheControl {
 
 const CACHE_BREAKPOINTS: usize = 4;
 
-#[derive(Default)]
-struct CacheLayout {
-    explicit: Vec<CacheTtl>,
+const INELIGIBLE_CACHE_TARGET: &str = "cache_control cannot target thinking or empty text blocks";
+const INVALID_CACHE_CONTROL: &str = "invalid cache_control type or TTL";
 
+#[derive(Clone, Copy, Default)]
+struct CacheLayout {
+    breakpoints: usize,
+    short_ttl: bool,
+    long_ttl: bool,
+    long_after_short: bool,
     last_eligible: Option<Option<CacheTtl>>,
+    invalid: Option<&'static str>,
 }
 
 impl CacheLayout {
-    fn marked(&mut self, ttl: Option<CacheTtl>) {
-        self.explicit.extend(ttl);
+    const fn push(&mut self, ttl: CacheTtl) {
+        self.breakpoints += 1;
+        match ttl {
+            CacheTtl::FiveMinutes => self.short_ttl = true,
+            CacheTtl::OneHour => {
+                self.long_after_short |= self.short_ttl;
+                self.long_ttl = true;
+            }
+        }
+    }
+
+    const fn marked(&mut self, ttl: Option<CacheTtl>) {
+        if let Some(ttl) = ttl {
+            self.push(ttl);
+        }
         self.last_eligible = Some(ttl);
     }
 
-    fn block(&mut self, control: Option<&Value>, eligible: bool) -> Result<(), ClaudeError> {
-        let ttl = control
-            .map(|value| {
-                if !eligible {
-                    return Err(ClaudeError::Protocol(
-                        "cache_control cannot target thinking or empty text blocks".into(),
-                    ));
+    fn block(&mut self, control: Option<&Value>, eligible: bool) {
+        if self.invalid.is_some() {
+            return;
+        }
+        let ttl = match control {
+            None => None,
+            Some(_) if !eligible => {
+                self.invalid = Some(INELIGIBLE_CACHE_TARGET);
+                return;
+            }
+            Some(value) => match CacheControl::deserialize(value) {
+                Ok(control) => Some(control.effective_ttl()),
+                Err(_) => {
+                    self.invalid = Some(INVALID_CACHE_CONTROL);
+                    return;
                 }
-                CacheControl::deserialize(value)
-                    .map(|control| control.effective_ttl())
-                    .map_err(|_| ClaudeError::Protocol("invalid cache_control type or TTL".into()))
-            })
-            .transpose()?;
+            },
+        };
         if let Some(ttl) = ttl {
-            self.explicit.push(ttl);
+            self.push(ttl);
         }
         if eligible {
             self.last_eligible = Some(ttl);
         }
-        Ok(())
+    }
+
+    fn message(message: &Message) -> Self {
+        let mut layout = Self::default();
+        for block in &message.content {
+            let (control, eligible) = block.cache_slot();
+            layout.block(control, eligible);
+        }
+        layout
+    }
+
+    const fn then(self, next: Self) -> Self {
+        if self.invalid.is_some() {
+            return self;
+        }
+        Self {
+            breakpoints: self.breakpoints + next.breakpoints,
+            short_ttl: self.short_ttl || next.short_ttl,
+            long_ttl: self.long_ttl || next.long_ttl,
+            long_after_short: self.long_after_short
+                || next.long_after_short
+                || (self.short_ttl && next.long_ttl),
+            last_eligible: match next.last_eligible {
+                Some(last) => Some(last),
+                None => self.last_eligible,
+            },
+            invalid: next.invalid,
+        }
     }
 
     fn validate(mut self, automatic: Option<&CacheControl>) -> Result<usize, ClaudeError> {
+        if let Some(invalid) = self.invalid {
+            return Err(ClaudeError::Protocol(invalid.into()));
+        }
         if let (Some(automatic), Some(last)) = (automatic, self.last_eligible) {
             let ttl = automatic.effective_ttl();
             if let Some(explicit) = last {
@@ -685,34 +739,66 @@ impl CacheLayout {
                     ));
                 }
             } else {
-                self.explicit.push(ttl);
+                self.push(ttl);
             }
         }
-        let breakpoints = self.explicit.len();
-        if breakpoints > CACHE_BREAKPOINTS {
+        if self.breakpoints > CACHE_BREAKPOINTS {
             return Err(ClaudeError::Protocol(
                 "at most four cache breakpoints are allowed".into(),
             ));
         }
-        let mut short_ttl = false;
-        for ttl in self.explicit {
-            match ttl {
-                CacheTtl::FiveMinutes => short_ttl = true,
-                CacheTtl::OneHour if short_ttl => {
-                    return Err(ClaudeError::Protocol(
-                        "1h cache breakpoints must precede 5m cache breakpoints".into(),
-                    ));
-                }
-                CacheTtl::OneHour => {}
-            }
+        if self.long_after_short {
+            return Err(ClaudeError::Protocol(
+                "1h cache breakpoints must precede 5m cache breakpoints".into(),
+            ));
         }
-        Ok(breakpoints)
+        Ok(self.breakpoints)
+    }
+}
+
+#[doc(hidden)]
+#[derive(Clone, Copy, Default)]
+pub struct MessageLayout {
+    cache: CacheLayout,
+    tool_changes: bool,
+}
+
+impl MessageLayout {
+    pub(crate) fn message(message: &Message) -> Self {
+        Self {
+            cache: CacheLayout::message(message),
+            tool_changes: message.role == Role::System
+                && message.content.iter().any(|block| {
+                    matches!(
+                        block,
+                        ContentBlock::ToolAddition { .. } | ContentBlock::ToolRemoval { .. }
+                    )
+                }),
+        }
+    }
+
+    pub(crate) const fn then(self, next: Self) -> Self {
+        Self {
+            cache: self.cache.then(next.cache),
+            tool_changes: self.tool_changes || next.tool_changes,
+        }
+    }
+
+    #[must_use]
+    pub fn of<M: WireMessage>(messages: &[M]) -> Self {
+        messages.iter().fold(Self::default(), |layout, message| {
+            layout.then(Self::message(message.message()))
+        })
     }
 }
 
 #[doc(hidden)]
 pub trait WireMessage {
     fn message(&self) -> &Message;
+
+    fn wire_id(&self) -> Option<u64> {
+        None
+    }
 
     fn encoded<'a>(
         &'a self,
@@ -738,7 +824,7 @@ pub struct MessageDigests {
 }
 
 impl MessageDigests {
-    fn marked(&self) -> bool {
+    pub(crate) fn marked(&self) -> bool {
         self.read != self.sent
     }
 
@@ -774,6 +860,10 @@ impl<T: WireMessage + ?Sized> WireMessage for &T {
         (**self).message()
     }
 
+    fn wire_id(&self) -> Option<u64> {
+        (**self).wire_id()
+    }
+
     fn encoded<'a>(
         &'a self,
         subscription: bool,
@@ -796,39 +886,33 @@ impl WireMessage for std::borrow::Cow<'_, Message> {
     }
 }
 
-fn validate_cache_layout<M: WireMessage>(
+fn validate_cache_layout(
     tools: &[ClaudeToolSpec],
     system: Option<&Value>,
-    messages: &[M],
+    messages: MessageLayout,
     automatic: Option<&CacheControl>,
 ) -> Result<usize, ClaudeError> {
     let mut layout = CacheLayout::default();
     for tool in tools {
         match tool {
             ClaudeToolSpec::Client(tool) => {
-                layout.marked(tool.cache_control.as_ref().map(CacheControl::effective_ttl))
+                layout.marked(tool.cache_control.as_ref().map(CacheControl::effective_ttl));
             }
             ClaudeToolSpec::Server(tool) => {
-                layout.block(tool.options.get("cache_control"), true)?;
+                layout.block(tool.options.get("cache_control"), true);
             }
         }
     }
     match system {
-        Some(Value::String(text)) => layout.block(None, !text.is_empty())?,
+        Some(Value::String(text)) => layout.block(None, !text.is_empty()),
         Some(Value::Array(blocks)) => {
             for block in blocks {
-                layout.block(block.get("cache_control"), cacheable_json_block(block))?;
+                layout.block(block.get("cache_control"), cacheable_json_block(block));
             }
         }
         _ => {}
     }
-    for message in messages {
-        for block in &message.message().content {
-            let (control, eligible) = block.cache_slot();
-            layout.block(control, eligible)?;
-        }
-    }
-    layout.validate(automatic)
+    layout.then(messages.cache).validate(automatic)
 }
 
 pub fn fingerprint(value: &impl Serialize) -> String {
@@ -936,14 +1020,14 @@ impl MessagesRequest {
     }
 
     pub fn validate_cache_control(&self) -> Result<(), ClaudeError> {
-        self.validate_cache_with(&self.messages)
+        self.validate_cache_with(MessageLayout::of(&self.messages))
     }
 
-    fn validate_cache_with<M: WireMessage>(&self, messages: &[M]) -> Result<(), ClaudeError> {
+    fn validate_cache_with(&self, messages: MessageLayout) -> Result<(), ClaudeError> {
         self.cache_breakpoints_with(messages).map(drop)
     }
 
-    fn cache_breakpoints_with<M: WireMessage>(&self, messages: &[M]) -> Result<usize, ClaudeError> {
+    fn cache_breakpoints_with(&self, messages: MessageLayout) -> Result<usize, ClaudeError> {
         validate_cache_layout(
             &self.tools,
             self.system.as_deref(),
@@ -953,10 +1037,9 @@ impl MessagesRequest {
     }
 
     pub fn cache_system_prefix(&mut self) -> Result<(), ClaudeError> {
-        let messages = std::mem::take(&mut self.messages);
-        let result = self.cache_system_prefix_with(&messages);
-        self.messages = messages;
-        result
+        let layout = MessageLayout::of(&self.messages);
+        self.cache_system_tail_with(layout, false)?;
+        self.cache_tools_tail_with(layout, false, CACHE_BREAKPOINTS - 1)
     }
 
     #[doc(hidden)]
@@ -964,23 +1047,24 @@ impl MessagesRequest {
         &mut self,
         messages: &[M],
     ) -> Result<(), ClaudeError> {
-        self.cache_system_tail_with(messages, false)?;
-        self.cache_tools_tail_with(messages, false, CACHE_BREAKPOINTS - 1)
+        let layout = MessageLayout::of(messages);
+        self.cache_system_tail_with(layout, false)?;
+        self.cache_tools_tail_with(layout, false, CACHE_BREAKPOINTS - 1)
     }
 
     #[doc(hidden)]
-    pub fn cache_prefix_with<M: WireMessage>(
+    pub fn cache_prefix_with(
         &mut self,
-        messages: &[M],
+        messages: MessageLayout,
         subscription: bool,
     ) -> Result<(), ClaudeError> {
         self.cache_system_tail_with(messages, subscription)?;
         self.cache_tools_tail_with(messages, subscription, CACHE_BREAKPOINTS)
     }
 
-    fn wire_cache_breakpoints_with<M: WireMessage>(
+    fn wire_cache_breakpoints_with(
         &self,
-        messages: &[M],
+        messages: MessageLayout,
         subscription: bool,
     ) -> Result<usize, ClaudeError> {
         self.cache_breakpoints_with(messages).map(|used| {
@@ -992,9 +1076,9 @@ impl MessagesRequest {
         })
     }
 
-    fn cache_tools_tail_with<M: WireMessage>(
+    fn cache_tools_tail_with(
         &mut self,
-        messages: &[M],
+        messages: MessageLayout,
         subscription: bool,
         limit: usize,
     ) -> Result<(), ClaudeError> {
@@ -1035,9 +1119,9 @@ impl MessagesRequest {
         Ok(())
     }
 
-    fn cache_system_tail_with<M: WireMessage>(
+    fn cache_system_tail_with(
         &mut self,
-        messages: &[M],
+        messages: MessageLayout,
         subscription: bool,
     ) -> Result<(), ClaudeError> {
         self.validate_cache_with(messages)?;
@@ -1083,6 +1167,7 @@ impl MessagesRequest {
     #[doc(hidden)]
     pub fn cache_floors_with<M: WireMessage>(
         &mut self,
+        layout: MessageLayout,
         messages: &mut [M],
         floors: [Option<usize>; 2],
         subscription: bool,
@@ -1104,7 +1189,7 @@ impl MessagesRequest {
             }
         }
         let room = |request: &Self| {
-            let used = request.wire_cache_breakpoints_with(messages, subscription)?;
+            let used = request.wire_cache_breakpoints_with(layout, subscription)?;
             CACHE_BREAKPOINTS.checked_sub(used).ok_or_else(|| {
                 ClaudeError::Protocol("at most four cache breakpoints are allowed".into())
             })
@@ -1837,8 +1922,12 @@ impl ClaudeClient {
         streaming: bool,
         cache: Option<&WireCache>,
     ) -> Result<PreparedWire, ClaudeError> {
+        let layout = cache.map_or_else(
+            || MessageLayout::of(messages),
+            |cache| cache.layout(messages),
+        );
         if !self.subscription_compatibility {
-            head.validate_cache_with(messages)?;
+            head.validate_cache_with(layout)?;
         }
         let wire = self.wire_body(head, messages, streaming, cache)?;
         Ok(PreparedWire {
@@ -1871,16 +1960,7 @@ impl ClaudeClient {
                         .iter()
                         .any(|block| matches!(block, ContentBlock::Compaction { .. }))
                 }),
-            tool_changes: messages.iter().any(|message| {
-                let message = message.message();
-                message.role == Role::System
-                    && message.content.iter().any(|block| {
-                        matches!(
-                            block,
-                            ContentBlock::ToolAddition { .. } | ContentBlock::ToolRemoval { .. }
-                        )
-                    })
-            }),
+            tool_changes: layout.tool_changes,
             speed: head.speed.is_some(),
             effort_updates: head.effort_updates,
         })
@@ -2675,10 +2755,6 @@ fn api_body<M: WireMessage>(
         .map(|encoded| &*encoded.raw)
         .or(owned_tools.as_deref());
     let encode = |message: &Message| serde_json::to_string(message).map_err(ClaudeError::from);
-    let digests = messages
-        .iter()
-        .map(|message| message.digests(&encode))
-        .collect::<Result<Vec<_>, _>>()?;
     let head = serde_json::to_string(&Head {
         model,
         max_tokens: *max_tokens,
@@ -2707,7 +2783,12 @@ fn api_body<M: WireMessage>(
         .filter(|kept| kept.start == start && kept.body.starts_with(opening))
         .and_then(|kept| Some((Arc::try_unwrap(kept.body).ok()?, kept.ends)));
     let previous = cache.and_then(WireCache::hashed).unwrap_or_default();
-    let shared = previous.shared(&digests);
+    let known = previous.known(messages);
+    let fresh = messages[known..]
+        .iter()
+        .map(|message| message.digests(&encode))
+        .collect::<Result<Vec<_>, _>>()?;
+    let shared = previous.shared(known, &fresh);
     let reused = kept.as_ref().map_or(0, |(_, ends)| shared.min(ends.len()));
     let encoded = messages[reused..]
         .iter()
@@ -2733,7 +2814,12 @@ fn api_body<M: WireMessage>(
             (body, Vec::with_capacity(messages.len()))
         }
     };
-    let hashed = previous.resume(shared, digests);
+    let hashed = previous.resume(
+        shared,
+        known,
+        messages[known..].iter().map(WireMessage::wire_id),
+        fresh,
+    );
     for message in &encoded {
         if !ends.is_empty() {
             body.push(',');

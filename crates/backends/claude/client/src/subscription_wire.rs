@@ -333,7 +333,7 @@ pub(crate) fn wire<M: WireMessage>(
     crate::validate_cache_layout(
         &prepared.tools,
         prepared.system.as_deref(),
-        messages,
+        crate::MessageLayout::of(messages),
         prepared.cache_control.as_ref(),
     )?;
     let mut patched = None;

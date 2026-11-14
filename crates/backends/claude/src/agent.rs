@@ -5234,6 +5234,7 @@ impl State {
         );
         request
             .cache_floors_with(
+                self.wire_cache.layout(&sent),
                 &mut sent,
                 kept,
                 client.uses_subscription(),
@@ -5241,7 +5242,7 @@ impl State {
             )
             .map_err(provider_error)?;
         request
-            .cache_prefix_with(&sent, client.uses_subscription())
+            .cache_prefix_with(self.wire_cache.layout(&sent), client.uses_subscription())
             .map_err(provider_error)?;
         telemetry::record_prompt(
             &nanocode_trace::Span::current(),
@@ -5348,6 +5349,7 @@ impl State {
             );
             request
                 .cache_floors_with(
+                    self.wire_cache.layout(&sent),
                     &mut sent,
                     kept,
                     client.uses_subscription(),

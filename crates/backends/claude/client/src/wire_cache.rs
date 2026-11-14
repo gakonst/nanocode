@@ -7,7 +7,7 @@ use nanocode_sync::{Atom, Slot};
 use serde::Serialize;
 use serde_json::{Value, value::RawValue};
 
-use crate::{ClaudeError, ClaudeToolSpec, MessageDigests};
+use crate::{ClaudeError, ClaudeToolSpec, MessageDigests, MessageLayout, WireMessage};
 
 pub(crate) struct Encoded<T> {
     value: T,
@@ -28,37 +28,66 @@ struct Chain {
 #[derive(Default)]
 pub(crate) struct Hashed {
     digests: Vec<MessageDigests>,
+    ids: Vec<Option<u64>>,
     pub(crate) read: nanocode_digest::Blake3,
     pub(crate) sent: nanocode_digest::Blake3,
     marks: Vec<Chain>,
 }
 
+fn known<M: WireMessage>(ids: &[Option<u64>], messages: &[M]) -> usize {
+    ids.iter()
+        .zip(messages)
+        .take_while(|(kept, message)| kept.is_some() && **kept == message.wire_id())
+        .count()
+}
+
 impl Hashed {
-    pub(crate) fn shared(&self, digests: &[MessageDigests]) -> usize {
-        self.digests
-            .iter()
-            .zip(digests)
-            .take_while(|(kept, message)| kept.sent == message.sent)
-            .count()
+    pub(crate) fn known<M: WireMessage>(&self, messages: &[M]) -> usize {
+        known(&self.ids, messages)
     }
 
-    pub(crate) fn resume(self, shared: usize, digests: Vec<MessageDigests>) -> Self {
-        let start = if self.digests.len() <= shared {
+    pub(crate) fn shared(&self, known: usize, fresh: &[MessageDigests]) -> usize {
+        known
+            + self.digests[known..]
+                .iter()
+                .zip(fresh)
+                .take_while(|(kept, message)| kept.sent == message.sent)
+                .count()
+    }
+
+    pub(crate) fn resume(
+        self,
+        shared: usize,
+        known: usize,
+        ids: impl Iterator<Item = Option<u64>>,
+        fresh: Vec<MessageDigests>,
+    ) -> Self {
+        let Self {
+            mut digests,
+            ids: mut kept,
+            read,
+            sent,
+            marks,
+        } = self;
+        let start = if digests.len() <= shared {
             Chain {
-                at: self.digests.len(),
-                read: self.read,
-                sent: self.sent,
+                at: digests.len(),
+                read,
+                sent,
             }
         } else {
-            self.marks
+            marks
                 .iter()
                 .rev()
                 .find(|mark| mark.at <= shared)
                 .cloned()
                 .unwrap_or_default()
         };
-        let mut marks = self
-            .marks
+        digests.truncate(known);
+        digests.extend(fresh);
+        kept.truncate(known);
+        kept.extend(ids);
+        let mut marks = marks
             .into_iter()
             .filter(|mark| {
                 mark.at < start.at && digests.get(mark.at).is_some_and(MessageDigests::marked)
@@ -82,11 +111,18 @@ impl Hashed {
         }
         Self {
             digests,
+            ids: kept,
             read,
             sent,
             marks,
         }
     }
+}
+
+#[derive(Default)]
+struct Layouts {
+    ids: Vec<Option<u64>>,
+    prefixes: Vec<MessageLayout>,
 }
 
 pub(crate) struct Assembled {
@@ -101,6 +137,7 @@ pub struct WireCache {
     system: Atom<Option<Arc<Encoded<Arc<Value>>>>>,
     body: Slot<Assembled>,
     hashed: Slot<Hashed>,
+    layouts: Slot<Layouts>,
     keepers: AtomicUsize,
 }
 
@@ -128,6 +165,21 @@ impl WireCache {
 
     pub(crate) fn assembled(&self) -> Option<Assembled> {
         self.body.take()
+    }
+
+    pub fn layout<M: WireMessage>(&self, messages: &[M]) -> MessageLayout {
+        let mut layouts = self.layouts.take().unwrap_or_default();
+        let known = known(&layouts.ids, messages);
+        layouts.ids.truncate(known);
+        layouts.prefixes.truncate(known);
+        let mut layout = layouts.prefixes.last().copied().unwrap_or_default();
+        for message in &messages[known..] {
+            layout = layout.then(MessageLayout::message(message.message()));
+            layouts.ids.push(message.wire_id());
+            layouts.prefixes.push(layout);
+        }
+        self.layouts.put(layouts);
+        layout
     }
 
     pub(crate) fn hashed(&self) -> Option<Hashed> {

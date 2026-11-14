@@ -5355,7 +5355,7 @@ impl State {
             .message_thread
             .as_ref()
             .filter(|_| context.threaded && !client.uses_subscription());
-        let max_attempts = if context.disable_tools { 3 } else { 5 };
+        let max_attempts = if context.disable_tools { 3 } else { 11 };
         let mut attempt = 0;
         let mut waited = Duration::ZERO;
         let mut dispatched: Option<u64> = None;

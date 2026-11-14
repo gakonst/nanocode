@@ -17,7 +17,7 @@ description = "What a server host composes into its own telemetry: GenAI span na
 nanocode-observability = { path = "../observability", version = "0.7.0" }
 nanocode-sync.workspace = true
 serde_json.workspace = true
-tracing.workspace = true
+nanocode-trace.workspace = true
 
 [lints]
 workspace = true

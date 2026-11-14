@@ -11,7 +11,7 @@ use std::{
 };
 
 use nanocode_sync::{Atom, Map};
-use tracing::{
+use nanocode_trace::{
     Event, Metadata,
     field::{Field, Visit},
     span::Attributes,

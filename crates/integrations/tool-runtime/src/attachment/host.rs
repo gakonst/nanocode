@@ -1084,7 +1084,7 @@ async fn accept_runners(listener: TcpListener, runners: Runners) {
                     nanocode_platform::spawn_joined(&mut connections, serve_socket(stream, Arc::clone(&runners)));
                 }
                 Err(error) => {
-                    tracing::warn!(target: "nanocode_code_mode::attachment", %error, "runner host accept failed");
+                    nanocode_trace::warn!(target: "nanocode_code_mode::attachment", %error, "runner host accept failed");
                 }
             },
             Some(_) = connections.join_next(), if !connections.is_empty() => {}
@@ -1094,7 +1094,7 @@ async fn accept_runners(listener: TcpListener, runners: Runners) {
 
 async fn serve_socket(stream: TcpStream, runners: Runners) {
     if let Err(error) = stream.set_nodelay(true) {
-        tracing::warn!(target: "nanocode_code_mode::attachment", %error, "runner socket nodelay failed");
+        nanocode_trace::warn!(target: "nanocode_code_mode::attachment", %error, "runner socket nodelay failed");
     }
     let mut runner = None;
     let authenticate = |request: &Request, response: Response| {
@@ -1123,7 +1123,7 @@ async fn serve_socket(stream: TcpStream, runners: Runners) {
     {
         Ok(socket) => socket,
         Err(error) => {
-            tracing::info!(target: "nanocode_code_mode::attachment", %error, "runner handshake rejected");
+            nanocode_trace::info!(target: "nanocode_code_mode::attachment", %error, "runner handshake rejected");
             return;
         }
     };
@@ -1147,7 +1147,7 @@ async fn serve_socket(stream: TcpStream, runners: Runners) {
     let close = match &result {
         Ok(()) => None,
         Err(error) => {
-            tracing::warn!(target: "nanocode_code_mode::attachment", namespace = runner.namespace(), %error, "runner connection ended");
+            nanocode_trace::warn!(target: "nanocode_code_mode::attachment", namespace = runner.namespace(), %error, "runner connection ended");
             let code = if matches!(
                 error,
                 AttachmentError::Catalog(_) | AttachmentError::Fenced(_)
@@ -1395,7 +1395,7 @@ impl RemoteRunner {
                         return;
                     }
                     Err(error) => {
-                        tracing::warn!(target: "nanocode_code_mode::attachment", %error, "runner connection failed")
+                        nanocode_trace::warn!(target: "nanocode_code_mode::attachment", %error, "runner connection failed")
                     }
                 }
                 tokio::time::sleep(super::driver::Failure::Transport.delay(&mut backoff, None))

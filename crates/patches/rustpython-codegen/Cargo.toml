@@ -44,9 +44,8 @@ path = "../../core/flags"
 [dependencies.indexmap]
 version = "2.14.0"
 
-[dependencies.tracing]
-version = "0.1.44"
-default-features = false
+[dependencies.nanocode-trace]
+path = "../../core/trace"
 
 [dependencies.nanocode-numeric]
 path = "../../core/numeric"

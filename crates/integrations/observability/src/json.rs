@@ -6,7 +6,7 @@ use std::{
 
 use serde::ser::{SerializeMap, SerializeSeq, Serializer as _};
 use serde_json::{Serializer, Value};
-use tracing_core::{
+use nanocode_trace::{
     Event, Level,
     field::{Field, Visit},
     span::Record,

@@ -17,7 +17,7 @@ memchr.workspace = true
 nanocode-sync.workspace = true
 nanocode-sys.workspace = true
 tokio = { workspace = true, features = ["net", "signal"] }
-tracing.workspace = true
+nanocode-trace.workspace = true
 
 [lints]
 workspace = true

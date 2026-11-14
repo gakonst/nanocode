@@ -174,7 +174,7 @@ fn build(
         match Snapshot::from_bytes(builder.clone(), &bytes) {
             Ok(snapshot) => return Ok(snapshot),
             Err(error) => {
-                tracing::warn!(%error, setup, "a stored Code Mode snapshot did not load; building it");
+                nanocode_trace::warn!(%error, setup, "a stored Code Mode snapshot did not load; building it");
             }
         }
     }

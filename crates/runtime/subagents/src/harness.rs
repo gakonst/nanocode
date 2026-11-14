@@ -22,7 +22,7 @@ use std::{
     },
 };
 use tokio::sync::{mpsc, oneshot};
-use tracing::Instrument;
+use nanocode_trace::Instrument;
 
 const COMMAND_CAPACITY: usize = 8;
 
@@ -288,7 +288,7 @@ pub(super) fn spawn(
         urgent,
         side_questions: Arc::new(AtomicUsize::new(0)),
     };
-    let span = tracing::info_span!(
+    let span = nanocode_trace::info_span!(
         "subagent.harness",
         session.root_id = root_session_id.as_str(),
         session.id = agent.session_id()

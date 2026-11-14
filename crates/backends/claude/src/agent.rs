@@ -55,7 +55,7 @@ use std::{
     time::Duration,
 };
 use tokio::sync::{Notify, oneshot};
-use tracing::Instrument as _;
+use nanocode_trace::Instrument as _;
 
 fn estimate_text_tokens(text: &str) -> u64 {
     (text.encode_utf16().count() as u64).div_ceil(4)
@@ -3704,7 +3704,7 @@ async fn start_turn(
     let turn_index = state.accepted_turns.fetch_add(1, Ordering::SeqCst) + 1;
     let (reasoning_mode, effort) = state.run_labels();
     let turn_span = telemetry::turn_span(
-        &tracing::Span::current(),
+        &nanocode_trace::Span::current(),
         &telemetry::TurnLabels {
             session_id: &state.session_id,
             lineage: &state.lineage,
@@ -3887,7 +3887,7 @@ async fn defer_turn(
         };
         let _ = sender.send(result);
     }
-    .instrument(tracing::Span::current());
+    .instrument(nanocode_trace::Span::current());
     spawn_task(Box::pin(task));
     BackendTurn {
         request_id,
@@ -5144,7 +5144,7 @@ impl State {
             let duration_ns = elapsed_ns();
             timing.total_ns = duration_ns;
             telemetry::record_model_response(
-                &tracing::Span::current(),
+                &nanocode_trace::Span::current(),
                 response,
                 &telemetry::ModelCallTiming {
                     attempt,
@@ -5233,7 +5233,7 @@ impl State {
             .cache_prefix_with(&sent, client.uses_subscription())
             .map_err(provider_error)?;
         telemetry::record_prompt(
-            &tracing::Span::current(),
+            &nanocode_trace::Span::current(),
             &request,
             &sent,
             client.uses_subscription(),
@@ -5425,7 +5425,7 @@ impl State {
                         .attach_thread(&mut wire, &request, outgoing, &turn)
                         .map_err(provider_error)?;
                     if let ThreadMode::Create(reason) = turn.mode() {
-                        tracing::debug!(
+                        nanocode_trace::debug!(
                             target: "nanocode_claude",
                             session_id = %self.session_id,
                             model_call_index = index.saturating_add(1),
@@ -5742,7 +5742,7 @@ impl State {
                 && thread.update(|thread| thread.recover(turn, &error)) == ThreadRecovery::Resend
             {
                 telemetry::fail_attempt(&attempt_span, &error, Some(0), false);
-                tracing::debug!(
+                nanocode_trace::debug!(
                     target: "nanocode_claude",
                     session_id = %self.session_id,
                     model_call_index = index.saturating_add(1),
@@ -6438,7 +6438,7 @@ impl State {
         let outcome = match outcome {
             Ok(outcome) => outcome,
             Err(failure) if refused_summary(&failure.error) => {
-                tracing::warn!(
+                nanocode_trace::warn!(
                     target: "nanocode_claude",
                     session_id = %self.session_id,
                     error = %failure.error,
@@ -7361,7 +7361,7 @@ impl State {
                                 },
                             ) =>
                     {
-                        tracing::warn!(
+                        nanocode_trace::warn!(
                             target: "nanocode_claude",
                             session_id = %self.session_id,
                             model_call_index = index.saturating_add(1),
@@ -7381,7 +7381,7 @@ impl State {
                                 .flat_map(|message| &message.content)
                                 .any(|block| matches!(block, ContentBlock::Compaction { .. })) =>
                     {
-                        tracing::warn!(
+                        nanocode_trace::warn!(
                             target: "nanocode_claude",
                             session_id = %self.session_id,
                             model_call_index = index.saturating_add(1),
@@ -7402,7 +7402,7 @@ impl State {
                                 .flat_map(|message| &message.content)
                                 .any(tool_change) =>
                     {
-                        tracing::warn!(
+                        nanocode_trace::warn!(
                             target: "nanocode_claude",
                             session_id = %self.session_id,
                             model_call_index = index.saturating_add(1),
@@ -7434,7 +7434,7 @@ impl State {
                             && failure.recovery.is_none()
                             && request_too_large(&failure.error) =>
                     {
-                        tracing::warn!(
+                        nanocode_trace::warn!(
                             target: "nanocode_claude",
                             session_id = %self.session_id,
                             model_call_index = index.saturating_add(1),
@@ -8295,7 +8295,7 @@ impl LifecycleBackend for Driver {
     }
     fn submit(&self, mut request: BackendPrompt) -> BackendFuture<Result<BackendTurn>> {
         let state = self.state.clone();
-        let parent = tracing::Span::current();
+        let parent = nanocode_trace::Span::current();
         Box::pin(async move {
             state.store_prompt_images(&mut request.prompt).await?;
             let (accepted, receipt) = oneshot::channel();

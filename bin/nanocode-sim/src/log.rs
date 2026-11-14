@@ -1,6 +1,6 @@
 use std::fmt::Write as _;
 
-use tracing::{
+use nanocode_trace::{
     Event, Level, Metadata, Subscriber,
     field::{Field, Visit},
     span::{Attributes, Id, Record},
@@ -54,5 +54,5 @@ pub fn install() {
     else {
         return;
     };
-    let _ = tracing::subscriber::set_global_default(Printer { level });
+    let _ = nanocode_trace::subscriber::set_global_default(Printer { level });
 }

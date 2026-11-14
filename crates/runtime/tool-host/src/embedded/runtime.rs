@@ -142,7 +142,7 @@ impl EmbeddedToolRuntime {
             match host.tool_definitions(session_id) {
                 Ok(definitions) => definitions,
                 Err(error) => {
-                    tracing::warn!(
+                    nanocode_trace::warn!(
                         target: "nanocode_code_mode",
                         %error,
                         "embedded Code Mode tool discovery failed"
@@ -606,7 +606,7 @@ impl EmbeddedToolRuntimeControl {
         if let (Some(host), Some(session_id)) = (&self.host, &self.session_id)
             && let Err(error) = host.preempt_turn(session_id).await
         {
-            tracing::warn!(target: "nanocode_tools", %error, "embedded Code Mode observation preemption failed");
+            nanocode_trace::warn!(target: "nanocode_tools", %error, "embedded Code Mode observation preemption failed");
         }
     }
 
@@ -626,7 +626,7 @@ impl EmbeddedToolRuntimeControl {
         if let (Some(host), Some(session_id)) = (&self.host, &self.session_id)
             && let Err(error) = host.cancel_turn(session_id).await
         {
-            tracing::warn!(target: "nanocode_code_mode", %error, "embedded Code Mode turn cancellation failed");
+            nanocode_trace::warn!(target: "nanocode_code_mode", %error, "embedded Code Mode turn cancellation failed");
         }
     }
 
@@ -643,7 +643,7 @@ impl EmbeddedToolRuntimeControl {
         if let (Some(host), Some(session_id)) = (&self.host, &self.session_id)
             && let Err(error) = host.cancel_turn_with_updates(session_id, observer).await
         {
-            tracing::warn!(target: "nanocode_code_mode", %error, "embedded Code Mode turn cancellation failed");
+            nanocode_trace::warn!(target: "nanocode_code_mode", %error, "embedded Code Mode turn cancellation failed");
         }
     }
 
@@ -651,7 +651,7 @@ impl EmbeddedToolRuntimeControl {
         if let (Some(host), Some(session_id)) = (&self.host, &self.session_id)
             && let Err(error) = host.cancel_with_updates(session_id, observer).await
         {
-            tracing::warn!(target: "nanocode_code_mode", %error, "embedded Code Mode cancellation failed");
+            nanocode_trace::warn!(target: "nanocode_code_mode", %error, "embedded Code Mode cancellation failed");
         }
     }
 
@@ -659,7 +659,7 @@ impl EmbeddedToolRuntimeControl {
         if let (Some(host), Some(session_id)) = (&self.host, &self.session_id)
             && let Err(error) = host.cancel(session_id).await
         {
-            tracing::warn!(
+            nanocode_trace::warn!(
                 target: "nanocode_code_mode",
                 %error,
                 "embedded Code Mode cancellation failed"

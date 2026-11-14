@@ -788,7 +788,7 @@ impl Session {
 
     async fn terminate(&self) {
         if let Err(error) = self.process_group.terminate().await {
-            tracing::warn!(
+            nanocode_trace::warn!(
                 shell.session.id = self.id,
                 %error,
                 "failed to terminate shell process group"
@@ -802,7 +802,7 @@ impl SessionState {
     async fn close(&mut self) {
         self.stdin.take();
         if let Err(error) = self.child.wait().await {
-            tracing::warn!(
+            nanocode_trace::warn!(
                 shell.session.id = self.id,
                 %error,
                 "failed to reap terminated shell process"

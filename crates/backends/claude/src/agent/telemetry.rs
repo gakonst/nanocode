@@ -1,7 +1,7 @@
 use super::{ClaudeError, ContentBlock, Lineage, NanocodeError, Result, StopReason, TurnResult};
 use crate::{CacheTtl, MessageResponse, MessagesRequest, Speed, WireMessage};
 use serde::Serialize;
-use tracing::{Span, field::Empty, info_span};
+use nanocode_trace::{Span, field::Empty, info_span};
 
 pub(super) struct TurnLabels<'a> {
     pub(super) session_id: &'a str,
@@ -76,7 +76,7 @@ pub(super) fn finish_turn(span: &Span, result: &Result<TurnResult>, panicked: bo
     if panicked {
         span.record("status", "failed");
         span.record("otel.status_code", "ERROR");
-        tracing::error!(target: "nanocode", parent: span, "agent turn panicked");
+        nanocode_trace::error!(target: "nanocode", parent: span, "agent turn panicked");
         return;
     }
     finish(span, result.as_ref().err(), "agent turn failed");
@@ -417,7 +417,7 @@ pub(super) fn fail_attempt(
         }
         source = cause.source();
     }
-    tracing::warn!(target: "nanocode_claude", parent: span, error = %message, "Claude Messages attempt failed");
+    nanocode_trace::warn!(target: "nanocode_claude", parent: span, error = %message, "Claude Messages attempt failed");
 }
 
 fn finish(span: &Span, error: Option<&NanocodeError>, message: &'static str) {
@@ -440,7 +440,7 @@ fn finish(span: &Span, error: Option<&NanocodeError>, message: &'static str) {
     if let Some(error) = error
         && !ended_as_asked(error)
     {
-        tracing::error!(target: "nanocode", parent: span, error = %error, "{message}");
+        nanocode_trace::error!(target: "nanocode", parent: span, error = %error, "{message}");
     }
 }
 

@@ -646,7 +646,7 @@ impl ServerCertVerifier for Verifier {
             Err(e) => {
                 // SAFETY:
                 // Errors are our own custom errors, WinAPI errors, or static strings.
-                tracing::error!("failed to verify TLS certificate: {}", e);
+                nanocode_trace::error!("failed to verify TLS certificate: {}", e);
                 Err(e)
             }
         }

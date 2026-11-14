@@ -173,13 +173,13 @@ fn render_lines(
     breaks: bool,
 ) -> Rendered {
     let text = &markdown[start..];
-    let span = tracing::info_span!(
+    let span = nanocode_trace::info_span!(
         "tui.markdown.render",
         width,
         text.bytes = text.len(),
         text.start = start,
-        code.blocks = tracing::field::Empty,
-        code.highlighted = tracing::field::Empty
+        code.blocks = nanocode_trace::field::Empty,
+        code.highlighted = nanocode_trace::field::Empty
     );
     let _entered = span.enter();
     let skipped = |resumed| Rendered {

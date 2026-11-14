@@ -83,7 +83,7 @@ impl FileFinder {
     }
 
     fn refresh(&mut self, query: &str, narrowed: bool) {
-        let _span = tracing::info_span!(
+        let _span = nanocode_trace::info_span!(
             "tui.finder.filter",
             files = self.files.len(),
             query.bytes = self.query.len()

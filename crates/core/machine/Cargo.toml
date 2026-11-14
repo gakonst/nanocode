@@ -11,7 +11,7 @@ autotests = false
 autobenches = false
 
 [dependencies]
-tracing.workspace = true
+nanocode-trace.workspace = true
 
 [lints]
 workspace = true

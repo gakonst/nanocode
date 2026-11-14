@@ -231,7 +231,7 @@ impl Journal {
         if !matches!(compacted, Ok(Some(_)))
             && let Err(error) = self.append_marker(&super::Line::Unseal { seal: &seal })
         {
-            tracing::warn!(%error, "could not release the JSONL compaction seal");
+            nanocode_trace::warn!(%error, "could not release the JSONL compaction seal");
             return Err(compacted.err().unwrap_or(error));
         }
         let Some(stats) = compacted? else {
@@ -247,11 +247,11 @@ impl Journal {
     }
 
     fn compact_sealed(&mut self, end: u64) -> Result<Option<CompactionStats>, StoreError> {
-        let span = tracing::info_span!(
+        let span = nanocode_trace::info_span!(
             "durability.jsonl.compact",
             before_bytes = end,
-            after_bytes = tracing::field::Empty,
-            records_removed = tracing::field::Empty
+            after_bytes = nanocode_trace::field::Empty,
+            records_removed = nanocode_trace::field::Empty
         );
         let _entered = span.enter();
         let metadata = self.file.metadata().map_err(backend)?;

@@ -13,7 +13,7 @@ nanocode-platform.workspace = true
 nanocode-sync.workspace = true
 rustls = { workspace = true, features = ["std"] }
 rustls-graviola.workspace = true
-tracing.workspace = true
+nanocode-trace.workspace = true
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
 rustls-platform-verifier = "0.7.0"
 [lints]

@@ -139,7 +139,7 @@ impl Queue {
     #[must_use]
     pub fn lines(&self, width: u16, theme: &Theme) -> Vec<Line<'static>> {
         let _span =
-            tracing::info_span!("tui.queue.layout", width, items = self.items.len()).entered();
+            nanocode_trace::info_span!("tui.queue.layout", width, items = self.items.len()).entered();
         self.items
             .iter()
             .enumerate()

@@ -139,14 +139,14 @@ impl TerminalSession {
 
     pub fn draw(&mut self, render: impl FnOnce(&mut Canvas<'_>)) -> io::Result<()> {
         let (columns, rows) = size()?;
-        let span = tracing::info_span!(
+        let span = nanocode_trace::info_span!(
             "tui.terminal.draw",
             width = columns,
             height = rows,
-            repaint = tracing::field::Empty,
+            repaint = nanocode_trace::field::Empty,
             frame.skipped = false,
-            frame.bytes = tracing::field::Empty,
-            frame.changed_cells = tracing::field::Empty
+            frame.bytes = nanocode_trace::field::Empty,
+            frame.changed_cells = nanocode_trace::field::Empty
         );
         let _entered = span.enter();
         let area = Rect::new(0, 0, columns, rows);
@@ -181,7 +181,7 @@ impl TerminalSession {
         if self.stale {
             self.previous.reset();
         }
-        let diff_encode = tracing::info_span!("tui.terminal.diff_encode").entered();
+        let diff_encode = nanocode_trace::info_span!("tui.terminal.diff_encode").entered();
         let mut changed_cells = 0;
         let mut updates = self
             .previous
@@ -228,7 +228,7 @@ impl TerminalSession {
             .extend_from_slice(ansi::END_SYNCHRONIZED_UPDATE.as_bytes());
         drop(diff_encode);
         span.record("frame.bytes", self.bytes.len());
-        tracing::info_span!("tui.terminal.write", bytes = self.bytes.len()).in_scope(|| {
+        nanocode_trace::info_span!("tui.terminal.write", bytes = self.bytes.len()).in_scope(|| {
             self.output.write_all(&self.bytes)?;
             self.output.flush()
         })?;
@@ -251,10 +251,10 @@ impl TerminalSession {
         if Rect::new(0, 0, columns, rows) != self.previous.area {
             return Ok(false);
         }
-        let span = tracing::info_span!(
+        let span = nanocode_trace::info_span!(
             "tui.terminal.animate",
             cells = self.spinners.len(),
-            frame.bytes = tracing::field::Empty
+            frame.bytes = nanocode_trace::field::Empty
         );
         let _entered = span.enter();
         for position in &self.spinners {

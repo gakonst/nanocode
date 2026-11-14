@@ -176,7 +176,7 @@ impl Summaries {
         let bytes = match read {
             Ok(bytes) => bytes,
             Err(error) => {
-                tracing::warn!(%error, "ignoring unreadable JSONL session summaries");
+                nanocode_trace::warn!(%error, "ignoring unreadable JSONL session summaries");
                 return;
             }
         };
@@ -188,7 +188,7 @@ impl Summaries {
                     (rest, (bytes.len() - rest.len()) as u64)
                 }
                 Err(error) => {
-                    tracing::warn!(%error, "ignoring unreadable JSONL session summaries");
+                    nanocode_trace::warn!(%error, "ignoring unreadable JSONL session summaries");
                     self.entries.clear();
                     self.loaded = Loaded::Nothing;
                     return;
@@ -203,7 +203,7 @@ impl Summaries {
             match serde_json::from_slice::<Change>(line) {
                 Ok(change) => change.apply(&mut self.entries),
                 Err(error) => {
-                    tracing::warn!(%error, "ignoring unreadable JSONL session summaries");
+                    nanocode_trace::warn!(%error, "ignoring unreadable JSONL session summaries");
                     break;
                 }
             }
@@ -245,7 +245,7 @@ impl Summaries {
         };
         match read {
             Ok(entries) => self.entries = entries,
-            Err(error) => tracing::warn!(%error, "ignoring unreadable JSONL session summaries"),
+            Err(error) => nanocode_trace::warn!(%error, "ignoring unreadable JSONL session summaries"),
         }
         self.loaded = Loaded::Legacy(current);
     }

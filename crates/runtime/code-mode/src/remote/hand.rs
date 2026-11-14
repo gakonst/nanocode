@@ -1509,7 +1509,7 @@ async fn drive(mut state: State, mut inbox: mpsc::UnboundedReceiver<Event>) {
             },
             Some(done) = state.results.recv() => {
                 if let Err(issue) = state.deliver(done) {
-                    tracing::error!(%issue, "remote reply could not be encoded");
+                    nanocode_trace::error!(%issue, "remote reply could not be encoded");
                 }
             },
             () = due(&mut state.work_due) => state.publish_work(),

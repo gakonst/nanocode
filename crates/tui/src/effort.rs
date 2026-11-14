@@ -84,7 +84,7 @@ impl EffortDial {
     }
 
     pub fn render(&self, area: Rect, buffer: &mut Buffer, theme: &Theme) {
-        let _span = tracing::info_span!(
+        let _span = nanocode_trace::info_span!(
             "tui.dial.render",
             width = area.width,
             height = area.height,

@@ -376,7 +376,7 @@ pub(super) async fn dial_staged(
     })
     .await
     .map_err(|issue| Dial::Failed(error(issue)))??;
-    tracing::debug!(
+    nanocode_trace::debug!(
         trust_ms = stages.trust.as_millis(),
         dns_ms = stages.dns.as_millis(),
         tcp_ms = stages.tcp.as_millis(),
@@ -981,7 +981,7 @@ impl HandHost for NativeHost {
         Box::pin(async move {
             for tool in tools {
                 if let Err(issue) = tool.end_turn(session_id, turn_id, hook_event_name).await {
-                    tracing::warn!(%issue, tool = tool.definition().name(), "hand tool turn cleanup failed; not retried");
+                    nanocode_trace::warn!(%issue, tool = tool.definition().name(), "hand tool turn cleanup failed; not retried");
                 }
             }
         })

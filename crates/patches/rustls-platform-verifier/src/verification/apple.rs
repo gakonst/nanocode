@@ -107,7 +107,7 @@ impl ServerCertVerifier for Verifier {
         match self.verify_certificate(end_entity, intermediates, &server, ocsp_data, now) {
             Ok(()) => Ok(rustls::client::danger::ServerCertVerified::assertion()),
             Err(e) => {
-                tracing::error!("failed to verify TLS certificate: {}", e);
+                nanocode_trace::error!("failed to verify TLS certificate: {}", e);
                 Err(e)
             }
         }

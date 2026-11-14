@@ -34,7 +34,7 @@ const REGEX_KEYWORDS: [&str; 14] = [
 const BLOCK_CONTINUATIONS: [&str; 4] = ["else", "catch", "finally", "while"];
 
 pub fn beautify(source: &str, indent: &str) -> String {
-    let _span = tracing::info_span!("tui.code.beautify", text.bytes = source.len()).entered();
+    let _span = nanocode_trace::info_span!("tui.code.beautify", text.bytes = source.len()).entered();
     let tokens = tokenize(source);
     let lines = split_lines(&tokens);
     render(&lines, indent)

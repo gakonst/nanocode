@@ -200,11 +200,11 @@ pub(super) fn migrate(sessions: &mut Sessions, legacy: &Path) -> Result<(), Stor
     if marker.source == source && marker.offset == metadata.len() {
         return Ok(());
     }
-    let span = tracing::info_span!(
+    let span = nanocode_trace::info_span!(
         "durability.jsonl.migrate",
         legacy.bytes = metadata.len(),
-        sessions = tracing::field::Empty,
-        states = tracing::field::Empty
+        sessions = nanocode_trace::field::Empty,
+        states = nanocode_trace::field::Empty
     );
     let _entered = span.enter();
     let mut journal = Journal::open(legacy, true)?;
@@ -297,7 +297,7 @@ pub(super) fn migrate(sessions: &mut Sessions, legacy: &Path) -> Result<(), Stor
     span.record("sessions", moved_sessions);
     span.record("states", moved_states);
     if moved_sessions > 0 {
-        tracing::info!(
+        nanocode_trace::info!(
             sessions = moved_sessions,
             states = moved_states,
             legacy = %legacy.display(),
@@ -443,7 +443,7 @@ fn catch_up(
             continue;
         }
         if owner.as_ref().is_some_and(|owner| !imported(owner)) {
-            tracing::warn!(
+            nanocode_trace::warn!(
                 state = id.as_str(),
                 "keeping a session that changed in its own file since it left the shared JSONL journal"
             );

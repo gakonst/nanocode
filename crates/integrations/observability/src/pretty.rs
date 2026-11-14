@@ -1,6 +1,6 @@
 use std::fmt::{self, Write as _};
 
-use tracing_core::{
+use nanocode_trace::{
     Event,
     field::{Field, Visit},
 };

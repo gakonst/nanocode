@@ -197,9 +197,9 @@ impl AgentDriver {
                             }
                             let cancelled: ExecutionFuture<'_, ()> = Box::pin(async {
                                 turn_index += 1;
-                                let prompt_content = tracing::enabled!(
+                                let prompt_content = nanocode_trace::enabled!(
                                     target: "nanocode",
-                                    tracing::Level::INFO
+                                    nanocode_trace::Level::INFO
                                 )
                                 .then(|| serde_json::to_string(&prompt).ok())
                                 .flatten();
@@ -1266,9 +1266,9 @@ impl AgentDriver {
             );
             turn_index += 1;
             logical_turn_index = logical_turn_index.saturating_add(1);
-            let prompt_content = tracing::enabled!(
+            let prompt_content = nanocode_trace::enabled!(
                 target: "nanocode",
-                tracing::Level::INFO
+                nanocode_trace::Level::INFO
             )
             .then(|| serde_json::to_string(&prompt).ok())
             .flatten();

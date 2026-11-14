@@ -133,7 +133,7 @@ impl Index {
                         .collect()
                 }
                 Some(Err(error)) => {
-                    tracing::warn!(%error, "dropping unreadable JSONL session summaries");
+                    nanocode_trace::warn!(%error, "dropping unreadable JSONL session summaries");
                     HashMap::new()
                 }
                 None => HashMap::new(),
@@ -194,7 +194,7 @@ impl Index {
         let Some(block) = self.deferred.get(id).copied() else {
             return Ok(());
         };
-        let _span = tracing::info_span!("durability.jsonl.index.records").entered();
+        let _span = nanocode_trace::info_span!("durability.jsonl.index.records").entered();
         let file = self.file.as_mut().ok_or_else(invalid)?;
         let bytes = read_block(file, block)?;
         let mut hashes = Vec::new();
@@ -268,10 +268,10 @@ impl Journal {
     }
 
     pub(super) fn restore_index(&mut self) {
-        let _span = tracing::info_span!("durability.jsonl.index.load").entered();
+        let _span = nanocode_trace::info_span!("durability.jsonl.index.load").entered();
         match self.read_index() {
             Ok(Some(index)) => {
-                tracing::info!(
+                nanocode_trace::info!(
                     indexed_bytes = index.offset,
                     states = index.states.len(),
                     "reused JSONL index"
@@ -284,7 +284,7 @@ impl Journal {
                 self.index = index;
             }
             Ok(None) => {}
-            Err(error) => tracing::warn!(%error, "rebuilding invalid JSONL index from journal"),
+            Err(error) => nanocode_trace::warn!(%error, "rebuilding invalid JSONL index from journal"),
         }
     }
 
@@ -451,7 +451,7 @@ impl Journal {
         if self.persisted_offset == Some(self.index.offset) && !self.index.migrated {
             return;
         }
-        let _span = tracing::info_span!(
+        let _span = nanocode_trace::info_span!(
             "durability.jsonl.index.save",
             indexed_bytes = self.index.offset
         )
@@ -461,7 +461,7 @@ impl Journal {
             && let Ok(Some(index)) = self.read_index()
             && index.offset >= self.index.offset
         {
-            tracing::debug!("retaining a current JSONL index saved by another store");
+            nanocode_trace::debug!("retaining a current JSONL index saved by another store");
             self.persisted_offset = Some(index.offset);
             self.index.saved = index.saved;
             return;
@@ -471,7 +471,7 @@ impl Journal {
                 self.persisted_offset = Some(self.index.offset);
                 self.index.migrated = false;
             }
-            Err(error) => tracing::warn!(%error, "could not save rebuildable JSONL index"),
+            Err(error) => nanocode_trace::warn!(%error, "could not save rebuildable JSONL index"),
         }
     }
 
@@ -868,7 +868,7 @@ fn read_block(file: &mut File, block: RecordBlock) -> io::Result<Vec<u8>> {
 
 impl Journal {
     pub(super) fn discard_index(&mut self, error: impl std::fmt::Display) {
-        tracing::warn!(%error, "rebuilding invalid JSONL index from journal");
+        nanocode_trace::warn!(%error, "rebuilding invalid JSONL index from journal");
         self.index = Index::new(self.index.source.clone());
         self.persisted_offset = None;
         self.cached = None;
@@ -898,7 +898,7 @@ impl Journal {
         if unindexed <= saved.len() {
             return;
         }
-        let _span = tracing::info_span!(
+        let _span = nanocode_trace::info_span!(
             "durability.jsonl.index.adopt",
             log.unindexed_bytes = unindexed
         )
@@ -912,7 +912,7 @@ impl Journal {
             }
             Ok(_) => {}
             Err(error) => {
-                tracing::warn!(%error, "replaying the journal past an invalid JSONL index")
+                nanocode_trace::warn!(%error, "replaying the journal past an invalid JSONL index")
             }
         }
     }

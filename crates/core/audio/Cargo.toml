@@ -11,7 +11,7 @@ description = "Shared audio duration and token accounting"
 [dependencies]
 nanocode-sync.workspace = true
 nanocode-sys.workspace = true
-tracing.workspace = true
+nanocode-trace.workspace = true
 nanocode-digest.workspace = true
 
 [lints]

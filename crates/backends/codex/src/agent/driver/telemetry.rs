@@ -3,48 +3,48 @@ use super::*;
 use serde::Serialize;
 
 pub(super) fn agent_compact_span(
-    parent: Option<&tracing::Span>,
+    parent: Option<&nanocode_trace::Span>,
     session_id: &str,
     lineage_id: &str,
     origin: &AgentOrigin,
-) -> tracing::Span {
-    let parent_id = parent.and_then(tracing::Span::id);
+) -> nanocode_trace::Span {
+    let parent_id = parent.and_then(nanocode_trace::Span::id);
     info_span!(
         target: "nanocode",
         parent: parent_id,
         "agent.compact",
         otel.kind = "internal",
-        otel.status_code = tracing::field::Empty,
-        status = tracing::field::Empty,
-        duration_ns = tracing::field::Empty,
+        otel.status_code = nanocode_trace::field::Empty,
+        status = nanocode_trace::field::Empty,
+        duration_ns = nanocode_trace::field::Empty,
         session.id = session_id,
         session.lineage_id = lineage_id,
-        parent.session.id = tracing::field::Empty,
+        parent.session.id = nanocode_trace::field::Empty,
         agent.origin = origin.kind(),
         agent.depth = origin.depth(),
     )
 }
 
 pub(super) fn agent_turn_span(
-    parent: Option<&tracing::Span>,
+    parent: Option<&nanocode_trace::Span>,
     session_id: &str,
     lineage_id: &str,
     origin: &AgentOrigin,
     reasoning: ReasoningSettings,
     turn_index: u64,
     prompt_bytes: usize,
-) -> tracing::Span {
-    let parent_id = parent.and_then(tracing::Span::id);
+) -> nanocode_trace::Span {
+    let parent_id = parent.and_then(nanocode_trace::Span::id);
     let parented = parent_id.is_some();
     let span = info_span!(
         target: "nanocode",
         parent: parent_id,
         "agent.turn",
         otel.kind = "internal",
-        otel.status_code = tracing::field::Empty,
+        otel.status_code = nanocode_trace::field::Empty,
         session.id = session_id,
         session.lineage_id = lineage_id,
-        parent.session.id = tracing::field::Empty,
+        parent.session.id = nanocode_trace::field::Empty,
         agent.origin = origin.kind(),
         agent.depth = origin.depth(),
         trace.parented = parented,
@@ -54,16 +54,16 @@ pub(super) fn agent_turn_span(
         thinking = reasoning.effort.as_str(),
         turn.index = turn_index,
         prompt.bytes = prompt_bytes,
-        usage.input_tokens = tracing::field::Empty,
-        usage.cached_input_tokens = tracing::field::Empty,
-        usage.cache_write_input_tokens = tracing::field::Empty,
-        usage.output_tokens = tracing::field::Empty,
-        usage.reasoning_output_tokens = tracing::field::Empty,
-        usage.total_tokens = tracing::field::Empty,
-        cost.usd = tracing::field::Empty,
-        cost.status = tracing::field::Empty,
-        cost.service_tier = tracing::field::Empty,
-        status = tracing::field::Empty,
+        usage.input_tokens = nanocode_trace::field::Empty,
+        usage.cached_input_tokens = nanocode_trace::field::Empty,
+        usage.cache_write_input_tokens = nanocode_trace::field::Empty,
+        usage.output_tokens = nanocode_trace::field::Empty,
+        usage.reasoning_output_tokens = nanocode_trace::field::Empty,
+        usage.total_tokens = nanocode_trace::field::Empty,
+        cost.usd = nanocode_trace::field::Empty,
+        cost.status = nanocode_trace::field::Empty,
+        cost.service_tier = nanocode_trace::field::Empty,
+        status = nanocode_trace::field::Empty,
     );
     if let Some(parent_session_id) = origin.parent_session_id() {
         span.record("parent.session.id", parent_session_id);

@@ -12,7 +12,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::time::sleep;
-use tracing::error;
+use nanocode_trace::error;
 
 #[derive(Clone, Copy)]
 pub struct Caching {

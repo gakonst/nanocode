@@ -459,7 +459,7 @@ impl Payments {
             .name("nanocode-paying-proxy".to_owned())
             .spawn(move || {
                 if let Err(error) = proxy.spawn(policy) {
-                    tracing::warn!(target: "nanocode", error = %error, "shell commands pay no Tempo services: the paying proxy did not start");
+                    nanocode_trace::warn!(target: "nanocode", error = %error, "shell commands pay no Tempo services: the paying proxy did not start");
                 }
             })?;
         Ok(paying)
@@ -1777,7 +1777,7 @@ fn shell(
             Ok((clients.tool_environment(environment), Some(certificates)))
         }
         Err(error) => {
-            tracing::warn!(target: "nanocode", error = %error, "shell commands pay no Tempo services: the paying proxy did not start");
+            nanocode_trace::warn!(target: "nanocode", error = %error, "shell commands pay no Tempo services: the paying proxy did not start");
             Ok((clients, None))
         }
     }

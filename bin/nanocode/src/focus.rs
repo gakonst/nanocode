@@ -243,7 +243,7 @@ impl App {
     }
 
     pub(crate) fn focus_command(&mut self, scope: Scope, argument: &str) {
-        let _span = tracing::info_span!(target: "nanocode", "nc.action", action.name = "focus_command", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
+        let _span = nanocode_trace::info_span!(target: "nanocode", "nc.action", action.name = "focus_command", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
         let argument = argument.trim().trim_start_matches('#');
         if argument.is_empty() || argument.eq_ignore_ascii_case("main") {
             self.unfocus(scope);
@@ -266,7 +266,7 @@ impl App {
     }
 
     pub(crate) fn cycle_focus(&mut self) {
-        let _span = tracing::info_span!(target: "nanocode", "nc.action", action.name = "cycle_focus", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
+        let _span = nanocode_trace::info_span!(target: "nanocode", "nc.action", action.name = "cycle_focus", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
         let order = self
             .tree
             .ordered()
@@ -306,7 +306,7 @@ impl App {
     }
 
     fn focus_on(&mut self, scope: Scope, id: AgentId) {
-        let _span = tracing::info_span!(target: "nanocode", "nc.action", action.name = "focus_on", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
+        let _span = nanocode_trace::info_span!(target: "nanocode", "nc.action", action.name = "focus_on", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
         let Some(root) = self.scope_root(scope) else {
             self.flash("no session yet");
             return;
@@ -413,7 +413,7 @@ impl App {
     }
 
     pub(crate) fn message_focused(&mut self, scope: Scope, id: AgentId, text: String) {
-        let _span = tracing::info_span!(target: "nanocode", "nc.action", action.name = "message_focused", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
+        let _span = nanocode_trace::info_span!(target: "nanocode", "nc.action", action.name = "message_focused", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
         let (Some(root), Some(control)) = (
             self.scope_root(scope),
             self.host.runtime.subagents().cloned(),
@@ -546,7 +546,7 @@ impl App {
     }
 
     pub(crate) fn agents_command(&mut self, argument: &str) {
-        let _span = tracing::info_span!(target: "nanocode", "nc.action", action.name = "agents_command", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
+        let _span = nanocode_trace::info_span!(target: "nanocode", "nc.action", action.name = "agents_command", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
         if argument.eq_ignore_ascii_case("all") {
             self.list_all_agents();
             return;
@@ -649,7 +649,7 @@ impl App {
         let entries = match result {
             Ok(entries) => entries,
             Err(error) => {
-                tracing::warn!(target: "nanocode", %error, "subagent directory unavailable");
+                nanocode_trace::warn!(target: "nanocode", %error, "subagent directory unavailable");
                 return;
             }
         };
@@ -702,7 +702,7 @@ impl App {
     }
 
     pub(crate) fn stop_command(&mut self, scope: Scope, argument: &str) {
-        let _span = tracing::info_span!(target: "nanocode", "nc.action", action.name = "stop_command", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
+        let _span = nanocode_trace::info_span!(target: "nanocode", "nc.action", action.name = "stop_command", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
         let argument = argument.trim().trim_start_matches('#');
         let prefix = scope.prefix();
         if scope == Scope::Main && argument.eq_ignore_ascii_case("main") {
@@ -836,7 +836,7 @@ impl App {
     }
 
     pub(crate) fn interrupt_focused(&mut self, scope: Scope, id: AgentId) {
-        let _span = tracing::info_span!(target: "nanocode", "nc.action", action.name = "interrupt_focused", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
+        let _span = nanocode_trace::info_span!(target: "nanocode", "nc.action", action.name = "interrupt_focused", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
         let (Some(root), Some(control)) = (
             self.scope_root(scope),
             self.host.runtime.subagents().cloned(),

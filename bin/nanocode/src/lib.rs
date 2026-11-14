@@ -180,14 +180,14 @@ pub fn run_with(clients: ModelClients) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let startup = tracing::info_span!(
+    let startup = nanocode_trace::info_span!(
         target: "nanocode",
         "nc.startup",
         process.pid = std::process::id(),
         cli.duration_ms = parsed.as_secs_f64() * 1_000.0,
         telemetry.duration_ms = telemetry_started.elapsed().as_secs_f64() * 1_000.0,
         main_to_span.duration_ms = entered.elapsed().as_secs_f64() * 1_000.0,
-        runtime.duration_ms = tracing::field::Empty
+        runtime.duration_ms = nanocode_trace::field::Empty
     );
     let runtime_started = std::time::Instant::now();
     let runtime = match startup.in_scope(|| {
@@ -380,14 +380,14 @@ async fn prepare(
             .transpose()
             .map_err(|error| format!("--max-output-tokens: {error}"))?,
     };
-    let host = tracing::Instrument::instrument(
+    let host = nanocode_trace::Instrument::instrument(
         Host::build(config, &model, thinking),
-        tracing::info_span!(target: "nanocode", "nc.host.build"),
+        nanocode_trace::info_span!(target: "nanocode", "nc.host.build"),
     )
     .await?;
-    tracing::Instrument::instrument(
+    nanocode_trace::Instrument::instrument(
         host.runtime.initialize_runners(),
-        tracing::info_span!(target: "nanocode", "nc.runners.initialize"),
+        nanocode_trace::info_span!(target: "nanocode", "nc.runners.initialize"),
     )
     .await?;
     for server in host.runtime.runner_servers() {

@@ -296,7 +296,7 @@ pub(super) fn qualified_tool_name(call: &CodeCall) -> String {
 }
 
 pub(super) fn trace_content_enabled() -> bool {
-    tracing::enabled!(target: "nanocode", tracing::Level::INFO)
+    nanocode_trace::enabled!(target: "nanocode", nanocode_trace::Level::INFO)
 }
 
 pub(super) fn serialize_trace_content<T: Serialize + ?Sized>(value: &T) -> Option<String> {
@@ -306,7 +306,7 @@ pub(super) fn serialize_trace_content<T: Serialize + ?Sized>(value: &T) -> Optio
 }
 
 pub(super) fn record_tool_span_terminal(
-    span: &tracing::Span,
+    span: &nanocode_trace::Span,
     status: &'static str,
     otel_status: &'static str,
     duration_ns: u64,
@@ -320,20 +320,20 @@ pub(super) fn record_tool_span_terminal(
     span.record("duration_ns", duration_ns);
 }
 
-pub(super) fn model_tool_span(session_id: &str, call: &CodeCall, call_index: u32) -> tracing::Span {
+pub(super) fn model_tool_span(session_id: &str, call: &CodeCall, call_index: u32) -> nanocode_trace::Span {
     let qualified_name = qualified_tool_name(call);
     info_span!(
         target: "nanocode",
         "tool.call",
         otel.kind = "internal",
-        otel.status_code = tracing::field::Empty,
+        otel.status_code = nanocode_trace::field::Empty,
         session.id = session_id,
         tool.name = %qualified_name,
         tool.call_id = %call.call_id,
         tool.arguments.bytes = call.input.len(),
         model.call_index = call_index,
-        status = tracing::field::Empty,
-        duration_ns = tracing::field::Empty,
+        status = nanocode_trace::field::Empty,
+        duration_ns = nanocode_trace::field::Empty,
     )
 }
 
@@ -367,7 +367,7 @@ pub(super) fn owned_code_context(
     ))
 }
 
-pub(super) fn record_span_content(span: &tracing::Span, kind: &'static str, content: &str) {
+pub(super) fn record_span_content(span: &nanocode_trace::Span, kind: &'static str, content: &str) {
     span.in_scope(|| {
         info!(
             target: "nanocode",
@@ -379,7 +379,7 @@ pub(super) fn record_span_content(span: &tracing::Span, kind: &'static str, cont
 }
 
 pub(super) fn record_indexed_span_content(
-    span: &tracing::Span,
+    span: &nanocode_trace::Span,
     kind: &'static str,
     index: usize,
     content: &str,
@@ -404,12 +404,12 @@ pub(super) fn model_call_span(
     reasoning_effort: &str,
     previous_response: bool,
     input_item_count: usize,
-) -> tracing::Span {
+) -> nanocode_trace::Span {
     info_span!(
         target: "nanocode",
         "model.call",
         otel.kind = "internal",
-        otel.status_code = tracing::field::Empty,
+        otel.status_code = nanocode_trace::field::Empty,
         session.id = session_id,
         model,
         reasoning.mode = reasoning_mode,
@@ -417,53 +417,53 @@ pub(super) fn model_call_span(
         model.call_index = call_index,
         previous_response,
         model.input.item_count = input_item_count,
-        model.input.bytes = tracing::field::Empty,
-        model.response.id = tracing::field::Empty,
-        model.response.status = tracing::field::Empty,
-        model.response.end_turn = tracing::field::Empty,
-        model.output.item_count = tracing::field::Empty,
-        model.output.bytes = tracing::field::Empty,
-        model.tool_call_count = tracing::field::Empty,
-        assistant.output.bytes = tracing::field::Empty,
-        status = tracing::field::Empty,
-        duration_ns = tracing::field::Empty,
-        input_tokens = tracing::field::Empty,
-        cached_input_tokens = tracing::field::Empty,
-        cache_write_input_tokens = tracing::field::Empty,
-        output_tokens = tracing::field::Empty,
-        reasoning_output_tokens = tracing::field::Empty,
-        total_tokens = tracing::field::Empty,
-        cost.usd = tracing::field::Empty,
-        cost.service_tier = tracing::field::Empty,
-        reasoning.summary_count = tracing::field::Empty,
-        time_to_first_event_ns = tracing::field::Empty,
-        time_to_first_output_ns = tracing::field::Empty,
-        stream.display_delta.count = tracing::field::Empty,
-        stream.display_delta.bytes = tracing::field::Empty,
-        stream.inter_delta_gap.max_ns = tracing::field::Empty,
-        stream.inter_delta_stall_100ms.count = tracing::field::Empty,
+        model.input.bytes = nanocode_trace::field::Empty,
+        model.response.id = nanocode_trace::field::Empty,
+        model.response.status = nanocode_trace::field::Empty,
+        model.response.end_turn = nanocode_trace::field::Empty,
+        model.output.item_count = nanocode_trace::field::Empty,
+        model.output.bytes = nanocode_trace::field::Empty,
+        model.tool_call_count = nanocode_trace::field::Empty,
+        assistant.output.bytes = nanocode_trace::field::Empty,
+        status = nanocode_trace::field::Empty,
+        duration_ns = nanocode_trace::field::Empty,
+        input_tokens = nanocode_trace::field::Empty,
+        cached_input_tokens = nanocode_trace::field::Empty,
+        cache_write_input_tokens = nanocode_trace::field::Empty,
+        output_tokens = nanocode_trace::field::Empty,
+        reasoning_output_tokens = nanocode_trace::field::Empty,
+        total_tokens = nanocode_trace::field::Empty,
+        cost.usd = nanocode_trace::field::Empty,
+        cost.service_tier = nanocode_trace::field::Empty,
+        reasoning.summary_count = nanocode_trace::field::Empty,
+        time_to_first_event_ns = nanocode_trace::field::Empty,
+        time_to_first_output_ns = nanocode_trace::field::Empty,
+        stream.display_delta.count = nanocode_trace::field::Empty,
+        stream.display_delta.bytes = nanocode_trace::field::Empty,
+        stream.inter_delta_gap.max_ns = nanocode_trace::field::Empty,
+        stream.inter_delta_stall_100ms.count = nanocode_trace::field::Empty,
     )
 }
 
-pub(super) fn warmup_span(config: &ModelConfig, model: Model) -> tracing::Span {
+pub(super) fn warmup_span(config: &ModelConfig, model: Model) -> nanocode_trace::Span {
     info_span!(
         target: "nanocode",
         "model.warmup",
         otel.kind = "internal",
-        otel.status_code = tracing::field::Empty,
+        otel.status_code = nanocode_trace::field::Empty,
         model = model.as_str(),
         system_prompt.bytes = config.system_prompt().len(),
-        warmup.source = tracing::field::Empty,
-        status = tracing::field::Empty,
-        duration_ns = tracing::field::Empty,
-        input_tokens = tracing::field::Empty,
-        cached_input_tokens = tracing::field::Empty,
-        cache_write_input_tokens = tracing::field::Empty,
-        output_tokens = tracing::field::Empty,
-        reasoning_output_tokens = tracing::field::Empty,
-        total_tokens = tracing::field::Empty,
-        cost.usd = tracing::field::Empty,
-        cost.service_tier = tracing::field::Empty,
+        warmup.source = nanocode_trace::field::Empty,
+        status = nanocode_trace::field::Empty,
+        duration_ns = nanocode_trace::field::Empty,
+        input_tokens = nanocode_trace::field::Empty,
+        cached_input_tokens = nanocode_trace::field::Empty,
+        cache_write_input_tokens = nanocode_trace::field::Empty,
+        output_tokens = nanocode_trace::field::Empty,
+        reasoning_output_tokens = nanocode_trace::field::Empty,
+        total_tokens = nanocode_trace::field::Empty,
+        cost.usd = nanocode_trace::field::Empty,
+        cost.service_tier = nanocode_trace::field::Empty,
     )
 }
 
@@ -471,32 +471,32 @@ pub(super) fn compaction_span(
     after_model_call_index: u32,
     input_item_count: usize,
     effort: Thinking,
-) -> tracing::Span {
+) -> nanocode_trace::Span {
     info_span!(
         target: "nanocode",
         "model.compaction",
         otel.kind = "internal",
-        otel.status_code = tracing::field::Empty,
+        otel.status_code = nanocode_trace::field::Empty,
         after_model_call_index,
         reasoning.effort = effort.as_str(),
         model.input.item_count = input_item_count,
-        model.input.bytes = tracing::field::Empty,
-        model.response.id = tracing::field::Empty,
-        status = tracing::field::Empty,
-        duration_ns = tracing::field::Empty,
-        input_tokens = tracing::field::Empty,
-        cached_input_tokens = tracing::field::Empty,
-        cache_write_input_tokens = tracing::field::Empty,
-        output_tokens = tracing::field::Empty,
-        reasoning_output_tokens = tracing::field::Empty,
-        total_tokens = tracing::field::Empty,
-        cost.usd = tracing::field::Empty,
-        cost.service_tier = tracing::field::Empty,
+        model.input.bytes = nanocode_trace::field::Empty,
+        model.response.id = nanocode_trace::field::Empty,
+        status = nanocode_trace::field::Empty,
+        duration_ns = nanocode_trace::field::Empty,
+        input_tokens = nanocode_trace::field::Empty,
+        cached_input_tokens = nanocode_trace::field::Empty,
+        cache_write_input_tokens = nanocode_trace::field::Empty,
+        output_tokens = nanocode_trace::field::Empty,
+        reasoning_output_tokens = nanocode_trace::field::Empty,
+        total_tokens = nanocode_trace::field::Empty,
+        cost.usd = nanocode_trace::field::Empty,
+        cost.service_tier = nanocode_trace::field::Empty,
     )
 }
 
 pub(super) fn record_usage(
-    span: &tracing::Span,
+    span: &nanocode_trace::Span,
     usage: &Usage,
     model: Model,
     service_tier: ServiceTier,
@@ -525,7 +525,7 @@ pub(super) fn record_usage(
     span.record("cost.service_tier", estimate.service_tier().as_str());
 }
 
-pub(super) fn record_turn_usage(span: &tracing::Span, usage: &TurnUsage) {
+pub(super) fn record_turn_usage(span: &nanocode_trace::Span, usage: &TurnUsage) {
     span.record("usage.input_tokens", usage.input_tokens());
     span.record("usage.cached_input_tokens", usage.cached_input_tokens());
     span.record(
@@ -546,7 +546,7 @@ pub(super) fn record_turn_usage(span: &tracing::Span, usage: &TurnUsage) {
     }
 }
 
-pub(super) fn record_model_response(span: &tracing::Span, response: &TurnResult) {
+pub(super) fn record_model_response(span: &nanocode_trace::Span, response: &TurnResult) {
     span.record("model.response.id", response.id.as_str());
     span.record("model.response.status", response.status.as_str());
     if let Some(end_turn) = response.end_turn {

@@ -10,7 +10,7 @@ use std::{
     time::Duration,
 };
 use tokio::sync::Notify;
-use tracing::Instrument as _;
+use nanocode_trace::Instrument as _;
 
 pub(super) struct KeptRequest {
     pub(super) request: Arc<MessagesRequest>,
@@ -97,13 +97,13 @@ impl State {
             return;
         }
         let started = nanocode_platform::now();
-        let span = tracing::info_span!(
+        let span = nanocode_trace::info_span!(
             "claude.cache.refresh",
             session.id = self.session_id.as_str(),
             model = kept.request.model.as_str(),
-            cached_input_tokens = tracing::field::Empty,
-            cache_write_input_tokens = tracing::field::Empty,
-            input_tokens = tracing::field::Empty,
+            cached_input_tokens = nanocode_trace::field::Empty,
+            cache_write_input_tokens = nanocode_trace::field::Empty,
+            input_tokens = nanocode_trace::field::Empty,
         );
         let refreshed = self.refresh(&kept).instrument(span.clone()).await;
         match refreshed {
@@ -120,7 +120,7 @@ impl State {
                 );
                 span.record("input_tokens", usage.input_tokens);
                 if usage.cache_read_input_tokens == 0 || usage.cache_creation_input_tokens > 0 {
-                    tracing::warn!(
+                    nanocode_trace::warn!(
                         session_id = %self.session_id,
                         read = usage.cache_read_input_tokens,
                         written = usage.cache_creation_input_tokens,
@@ -139,7 +139,7 @@ impl State {
                 self.refreshes.fetch_add(1, Ordering::SeqCst);
             }
             Err(error) => {
-                tracing::warn!(
+                nanocode_trace::warn!(
                     session_id = %self.session_id,
                     %error,
                     "a prompt cache refresh failed; refreshing stops until the next request"

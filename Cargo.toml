@@ -54,6 +54,7 @@ members = [
     "crates/core/websocket",
     "crates/core/machine",
     "crates/core/sync",
+    "crates/core/trace",
     "crates/core/sys",
     "crates/core/tools",
     "crates/core/tool-contracts",
@@ -125,6 +126,7 @@ futures-util = { version = "0.3.31", default-features = false, features = ["asyn
 bytes = "1.12.1"
 http = "1.3.1"
 httparse = "1.10.1"
+pin-project-lite = "0.2.17"
 nanocode-backend-claude = { version = "0.7.0", path = "crates/backends/claude" }
 nanocode-backend-claude-client = { version = "0.7.0", path = "crates/backends/claude/client" }
 nanocode-arguments = { version = "0.7.0", path = "crates/core/arguments" }
@@ -136,6 +138,7 @@ nanocode-platform = { version = "0.7.0", path = "crates/core/platform" }
 nanocode-python = { version = "0.7.0", path = "crates/core/python" }
 nanocode-machine = { version = "0.7.0", path = "crates/core/machine" }
 nanocode-sync = { version = "0.7.0", path = "crates/core/sync" }
+nanocode-trace = { version = "0.7.0", path = "crates/core/trace" }
 nanocode-sys = { version = "0.7.0", path = "crates/core/sys" }
 nanocode-flags = { version = "0.7.0", path = "crates/core/flags" }
 nanocode-tempo = { version = "0.7.0", path = "crates/core/tempo" }
@@ -169,8 +172,6 @@ serde_json = { version = "1.0.149", features = ["float_roundtrip", "raw_value"] 
 syn = { version = "2.0.119", features = ["full"] }
 tokio = "1.48.0"
 tokio-rustls = { version = "0.26.4", default-features = false }
-tracing = { version = "0.1.44", default-features = false, features = ["std"] }
-tracing-core = { version = "0.1.36", default-features = false, features = ["std"] }
 unicode-normalization = { path = "crates/core/unicode-normalization" }
 nanocode-url = { version = "0.7.0", path = "crates/core/url" }
 nanocode-zstd = { version = "0.7.0", path = "crates/core/zstd" }

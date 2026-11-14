@@ -37,7 +37,7 @@ pub(crate) async fn post(
     headers
         .entry(http::header::ACCEPT_ENCODING)
         .or_insert(http::HeaderValue::from_static("gzip, br, deflate, zstd"));
-    let span = tracing::Span::current();
+    let span = nanocode_trace::Span::current();
     span.record("request.bytes", body.len());
     let body = if gzip {
         let padded = gzip_padded(&body)?;
@@ -95,12 +95,12 @@ async fn send_client(
     let again = request.try_clone();
     let mut response = match (client.execute(request).await, again) {
         (Err(error), Some(again)) if nanocode_tls::peer_discarded_record(&error) => {
-            tracing::warn!(
+            nanocode_trace::warn!(
                 target: "nanocode_claude",
                 %error,
                 "the peer could not read a record of a Claude Messages request; sending the request again"
             );
-            tracing::Span::current().record("request.resent", true);
+            nanocode_trace::Span::current().record("request.resent", true);
             client.execute(again).await
         }
         (sent, _) => sent,

@@ -1082,7 +1082,7 @@ impl NativeToolRuntimeControl {
             self.code_mode.preempt_turn();
             for (session, host) in self.remote() {
                 if let Err(error) = host.preempt_turn(&session).await {
-                    tracing::warn!(target: "nanocode_code_mode", %error, "remote Code Mode preemption failed");
+                    nanocode_trace::warn!(target: "nanocode_code_mode", %error, "remote Code Mode preemption failed");
                 }
             }
         })
@@ -1120,7 +1120,7 @@ impl NativeToolRuntimeControl {
             self.code_mode.terminate_turn(turn_id, None).await;
             for (session, host) in self.remote() {
                 if let Err(error) = host.cancel_turn(&session).await {
-                    tracing::warn!(target: "nanocode_code_mode", %error, "remote Code Mode turn cancellation failed");
+                    nanocode_trace::warn!(target: "nanocode_code_mode", %error, "remote Code Mode turn cancellation failed");
                 }
             }
             self.settle_cells();
@@ -1142,7 +1142,7 @@ impl NativeToolRuntimeControl {
                     .cancel_turn_with_updates(&session, &mut *observer as &mut dyn CodeModeObserver)
                     .await
                 {
-                    tracing::warn!(target: "nanocode_code_mode", %error, "remote Code Mode turn cancellation failed");
+                    nanocode_trace::warn!(target: "nanocode_code_mode", %error, "remote Code Mode turn cancellation failed");
                 }
             }
             self.settle_cells();
@@ -1158,7 +1158,7 @@ impl NativeToolRuntimeControl {
             }
             for (session, host) in self.remote() {
                 if let Err(error) = host.cancel(&session).await {
-                    tracing::warn!(target: "nanocode_code_mode", %error, "remote Code Mode cancellation failed");
+                    nanocode_trace::warn!(target: "nanocode_code_mode", %error, "remote Code Mode cancellation failed");
                 }
             }
             self.settle_cells();
@@ -1179,7 +1179,7 @@ impl NativeToolRuntimeControl {
                     .cancel_with_updates(&session, &mut *observer as &mut dyn CodeModeObserver)
                     .await
                 {
-                    tracing::warn!(target: "nanocode_code_mode", %error, "remote Code Mode cancellation failed");
+                    nanocode_trace::warn!(target: "nanocode_code_mode", %error, "remote Code Mode cancellation failed");
                 }
             }
             self.settle_cells();
@@ -1187,7 +1187,7 @@ impl NativeToolRuntimeControl {
     }
 }
 
-pub(super) fn record_tool_content(span: &tracing::Span, kind: &'static str, content: &str) {
+pub(super) fn record_tool_content(span: &nanocode_trace::Span, kind: &'static str, content: &str) {
     span.in_scope(|| {
         info!(
             target: "nanocode_code_mode",
@@ -1199,7 +1199,7 @@ pub(super) fn record_tool_content(span: &tracing::Span, kind: &'static str, cont
 }
 
 pub(super) fn panicked_tool_output(
-    span: &tracing::Span,
+    span: &nanocode_trace::Span,
     payload: Box<dyn Any + Send>,
 ) -> ToolOutput {
     let message = crate::panic_message(payload);
@@ -1214,12 +1214,12 @@ pub(super) fn tool_execution_span(
     arguments_kind: &'static str,
     arguments_count: usize,
     argument_keys: &str,
-) -> tracing::Span {
+) -> nanocode_trace::Span {
     info_span!(
         target: "nanocode_code_mode",
         "tool.execute",
         otel.kind = "internal",
-        otel.status_code = tracing::field::Empty,
+        otel.status_code = nanocode_trace::field::Empty,
         tool.name = name,
         session.id = context.session_id(),
         tool.call_id = context.call_id(),
@@ -1227,28 +1227,28 @@ pub(super) fn tool_execution_span(
         tool.arguments.kind = arguments_kind,
         tool.arguments.count = arguments_count,
         tool.arguments.keys = argument_keys,
-        tool.admission = tracing::field::Empty,
-        tool.admission.wait_ns = tracing::field::Empty,
-        tool.hand = tracing::field::Empty,
-        process.exit.code = tracing::field::Empty,
-        process.running = tracing::field::Empty,
-        process.wall_time_ms = tracing::field::Empty,
-        shell.session.id = tracing::field::Empty,
-        tool.output.bytes = tracing::field::Empty,
-        tool.output.original_tokens = tracing::field::Empty,
-        status = tracing::field::Empty,
-        duration_ns = tracing::field::Empty,
+        tool.admission = nanocode_trace::field::Empty,
+        tool.admission.wait_ns = nanocode_trace::field::Empty,
+        tool.hand = nanocode_trace::field::Empty,
+        process.exit.code = nanocode_trace::field::Empty,
+        process.running = nanocode_trace::field::Empty,
+        process.wall_time_ms = nanocode_trace::field::Empty,
+        shell.session.id = nanocode_trace::field::Empty,
+        tool.output.bytes = nanocode_trace::field::Empty,
+        tool.output.original_tokens = nanocode_trace::field::Empty,
+        status = nanocode_trace::field::Empty,
+        duration_ns = nanocode_trace::field::Empty,
     )
 }
 
 pub(super) struct OpenToolSpan {
-    span: tracing::Span,
+    span: nanocode_trace::Span,
     opened_at: std::time::Instant,
     finished: bool,
 }
 
 impl OpenToolSpan {
-    pub(super) fn new(span: &tracing::Span) -> Self {
+    pub(super) fn new(span: &nanocode_trace::Span) -> Self {
         Self {
             span: span.clone(),
             opened_at: nanocode_platform::now(),
@@ -1287,7 +1287,7 @@ impl Drop for OpenToolSpan {
 }
 
 pub(super) fn finish_tool_execution_span(
-    span: &tracing::Span,
+    span: &nanocode_trace::Span,
     started_at: std::time::Instant,
     execution: &ToolOutput,
     output_content: Option<&str>,

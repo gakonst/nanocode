@@ -2161,7 +2161,7 @@ impl ClaudeClient {
                 if gzip && rejects_gzip(status, from_anthropic, &body) {
                     self.gzip_rejected
                         .store(true, std::sync::atomic::Ordering::Relaxed);
-                    tracing::warn!(
+                    nanocode_trace::warn!(
                         target: "nanocode_claude",
                         status,
                         from_anthropic,

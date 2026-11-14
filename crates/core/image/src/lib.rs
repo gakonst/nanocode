@@ -282,7 +282,7 @@ pub async fn prepare_output_images(output: &mut ToolOutputBody) {
             *output = prepared;
         }
         Err(error) => {
-            tracing::warn!(%error, "failed to join image preparation task");
+            nanocode_trace::warn!(%error, "failed to join image preparation task");
             *output = ToolOutputBody::Content(vec![ToolOutputContent::InputText {
                 text: IMAGE_PROCESSING_ERROR_PLACEHOLDER.to_owned(),
             }]);
@@ -365,7 +365,7 @@ pub async fn prepare_user_input(input: &PromptInput) -> Vec<ContentItem> {
     match nanocode_platform::spawn_blocking(move || prepare_user_content(input)).await {
         Ok(content) => content,
         Err(error) => {
-            tracing::warn!(%error, "failed to join user image preparation task");
+            nanocode_trace::warn!(%error, "failed to join user image preparation task");
             vec![input_text(IMAGE_PROCESSING_ERROR_PLACEHOLDER)]
         }
     }
@@ -490,7 +490,7 @@ fn prepare_user_image(mut image_url: String, detail: ImageDetail) -> ContentItem
             detail: Some(detail),
         },
         Err(error) => {
-            tracing::warn!(%error, "failed to prepare message image");
+            nanocode_trace::warn!(%error, "failed to prepare message image");
             input_text(error.placeholder())
         }
     }
@@ -508,7 +508,7 @@ fn prepare_content(mut content: Vec<ToolOutputContent>) -> Vec<ToolOutputContent
             continue;
         };
         if let Err(error) = prepare_image(image_url, *detail) {
-            tracing::warn!(%error, "failed to prepare tool output image");
+            nanocode_trace::warn!(%error, "failed to prepare tool output image");
             *item = ToolOutputContent::InputText {
                 text: error.placeholder().to_owned(),
             };
@@ -562,7 +562,7 @@ pub async fn prepare_base64_images(
         match nanocode_platform::spawn_blocking(move || prepare(images)).await {
             Ok(prepared) => prepared,
             Err(error) => {
-                tracing::warn!(%error, "failed to join base64 image preparation task");
+                nanocode_trace::warn!(%error, "failed to join base64 image preparation task");
                 vec![Err(IMAGE_PROCESSING_ERROR_PLACEHOLDER); count]
             }
         }
@@ -581,7 +581,7 @@ fn prepare_base64_image(
         .and_then(|bytes| load_for_prompt_bytes(Path::new("<base64-image>"), bytes, limits))
         .map(|image| (STANDARD.encode(image.bytes), image.mime))
         .map_err(|error| {
-            tracing::warn!(%error, "failed to prepare base64 image");
+            nanocode_trace::warn!(%error, "failed to prepare base64 image");
             error.placeholder()
         })
 }

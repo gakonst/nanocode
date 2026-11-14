@@ -7,7 +7,7 @@ use std::{
 };
 
 use nanocode_sync::Atom;
-use tracing_core::{
+use nanocode_trace::{
     Event, Level,
     field::{self, Field, FieldSet, Value, Visit},
     span::{Attributes, Record},
@@ -318,7 +318,7 @@ pub(crate) struct EventMeta<'a> {
     pub(crate) line: Option<u32>,
 }
 
-pub(crate) fn event_meta<'a>(event: &'a Event<'a>) -> EventMeta<'a> {
+pub(crate) const fn event_meta<'a>(event: &'a Event<'a>) -> EventMeta<'a> {
     let metadata = event.metadata();
     EventMeta {
         target: metadata.target(),

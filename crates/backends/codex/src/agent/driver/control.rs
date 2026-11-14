@@ -105,7 +105,7 @@ pub(super) const fn queued_prompt(
     cancel_on_admission: bool,
     thinking: Thinking,
     service_tier: ServiceTier,
-    parent: Option<tracing::Span>,
+    parent: Option<nanocode_trace::Span>,
     events: EventSink,
     result: oneshot::Sender<Result<TurnResult>>,
 ) -> QueuedTurn {
@@ -355,7 +355,7 @@ fn spawn_side_question(
         drop(result.send(outcome));
     });
     if let Err(error) = crate::agent::executor::spawn_driver(Box::pin(task)) {
-        tracing::warn!(target: "nanocode", %error, "side question could not start");
+        nanocode_trace::warn!(target: "nanocode", %error, "side question could not start");
     }
 }
 

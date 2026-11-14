@@ -372,7 +372,7 @@ impl PoolInner {
         }
         entry.status.send_replace(status.clone());
         let info = entry.info(name);
-        tracing::info!(target: "nanocode_code_mode::attachment", runner = name, ?status, "runner status changed");
+        nanocode_trace::info!(target: "nanocode_code_mode::attachment", runner = name, ?status, "runner status changed");
         let mut events = vec![RunnerEvent::StatusChanged { info }];
         if let RunnerStatus::Failed(error) = status {
             events.push(RunnerEvent::Failed {
@@ -756,7 +756,7 @@ impl RunnerPool {
             return Ok(handle);
         }
         let info = entry.info(&name);
-        tracing::info!(target: "nanocode_code_mode::attachment", runner = name, "Code Mode executor registered");
+        nanocode_trace::info!(target: "nanocode_code_mode::attachment", runner = name, "Code Mode executor registered");
         self.inner.emit(RunnerEvent::StatusChanged { info });
         Ok(handle)
     }
@@ -1179,7 +1179,7 @@ fn executor_monitor(
         } else {
             RunnerStatus::Failed(reason)
         };
-        tracing::info!(target: "nanocode_code_mode::attachment", runner = name, ?status, "Code Mode executor closed");
+        nanocode_trace::info!(target: "nanocode_code_mode::attachment", runner = name, ?status, "Code Mode executor closed");
         entry.status.send_replace(status);
         let info = entry.info(&name);
         pool.emit(RunnerEvent::StatusChanged { info });
@@ -1454,12 +1454,12 @@ async fn accept(
                     let pool = pool.clone(); let token = token.clone(); let endpoint = endpoint.clone(); let workspace = workspace.clone();
                     nanocode_platform::spawn_joined(&mut connections, async move {
                         if let Err(error) = incoming(socket, pool.clone(), token, endpoint, timeout, mode, workspace).await {
-                            tracing::warn!(target: "nanocode_code_mode::attachment", %error, "runner listener connection failed");
+                            nanocode_trace::warn!(target: "nanocode_code_mode::attachment", %error, "runner listener connection failed");
                             if let Some(pool) = pool.upgrade() { pool.emit(RunnerEvent::Failed { name: String::new(), error: error.to_string() }); }
                         }
                     });
                 },
-                Err(error) => { tracing::warn!(target: "nanocode_code_mode::attachment", %error, "runner listener accept failed"); return }
+                Err(error) => { nanocode_trace::warn!(target: "nanocode_code_mode::attachment", %error, "runner listener accept failed"); return }
             },
             Some(_) = connections.join_next(), if !connections.is_empty() => {}
         }

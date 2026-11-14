@@ -200,7 +200,7 @@ impl Subscribers {
                 continue;
             }
             if unread >= UNREAD_WARNING && unread.is_power_of_two() {
-                tracing::warn!(
+                nanocode_trace::warn!(
                     request_id = %event.event.request_id,
                     unread,
                     "an AgentEvents stream is not being read; drain it or drop it"

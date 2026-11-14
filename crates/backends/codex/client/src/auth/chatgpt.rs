@@ -22,7 +22,7 @@ use tokio::{
     net::TcpListener,
     time::{Duration, timeout},
 };
-use tracing::Instrument;
+use nanocode_trace::Instrument;
 
 const AUTH_ISSUER: &str = "https://auth.openai.com";
 const AUTH_API_BASE_URL: &str = "https://auth.openai.com/api/accounts";
@@ -907,7 +907,7 @@ impl OpenAiAuthSource for ManagedChatGptAuth {
                 CurrentSnapshot::Stale(revision) => revision,
             };
             if let Err(error) = self.refresh_if_current(revision).await {
-                tracing::warn!(error = %error, "proactive ChatGPT token refresh failed");
+                nanocode_trace::warn!(error = %error, "proactive ChatGPT token refresh failed");
             }
             self.inner.state().checked_snapshot()
         })

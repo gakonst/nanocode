@@ -26,7 +26,7 @@ pub(super) fn cell(explicit: Option<Computer>) -> Arc<Cua> {
 #[cfg(not(target_family = "wasm"))]
 pub(super) async fn connect(cell: Cell) -> Option<Computer> {
     #[cfg(feature = "cua")]
-    use tracing::Instrument as _;
+    use nanocode_trace::Instrument as _;
 
     let cua = cell?;
     cua.tools
@@ -41,7 +41,7 @@ pub(super) async fn connect(cell: Cell) -> Option<Computer> {
                         let _ = cua.unavailable.set(missing);
                     }
                     crate::ComputerTools::connect(config)
-                        .instrument(tracing::info_span!("agent.host.computer.connect"))
+                        .instrument(nanocode_trace::info_span!("agent.host.computer.connect"))
                         .await
                 }
                 Err(error) => Err(error),

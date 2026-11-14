@@ -90,7 +90,7 @@ fn audio_duration_seconds(audio_url: &str) -> Option<f64> {
     let bytes = match nanocode_sys::base64::STANDARD.decode(payload) {
         Ok(bytes) => bytes,
         Err(_) => {
-            tracing::trace!(
+            nanocode_trace::trace!(
                 error = BASE64_ERROR,
                 "failed to decode audio payload for token estimation"
             );
@@ -98,7 +98,7 @@ fn audio_duration_seconds(audio_url: &str) -> Option<f64> {
         }
     };
     let Some(duration_seconds) = container_duration_seconds(&bytes) else {
-        tracing::trace!("failed to read audio duration for token estimation");
+        nanocode_trace::trace!("failed to read audio duration for token estimation");
         return None;
     };
     duration_seconds.is_finite().then_some(duration_seconds)

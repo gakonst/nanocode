@@ -412,7 +412,7 @@ impl Inbound {
                 error,
             } => complete(&shared, &id, Err(Error::Rpc(error))),
             Message::Error { id: None, error } => {
-                tracing::debug!(%error, "MCP server sent an error without a request id");
+                nanocode_trace::debug!(%error, "MCP server sent an error without a request id");
             }
             Message::Request { id, method, .. } => {
                 let reply = server_request_reply(id, &method);
@@ -429,12 +429,12 @@ impl Inbound {
                     .cloned()
                     .and_then(|id| serde_json::from_value::<RequestId>(id).ok())
                 {
-                    tracing::info!(%id, reason, "MCP server cancelled request");
+                    nanocode_trace::info!(%id, reason, "MCP server cancelled request");
                     complete(&shared, &id, Err(Error::Cancelled(reason)));
                 }
             }
             Message::Notification { method, .. } => {
-                tracing::trace!(%method, "MCP server notification");
+                nanocode_trace::trace!(%method, "MCP server notification");
             }
         }
         true
@@ -480,7 +480,7 @@ fn complete(shared: &Shared, id: &RequestId, result: Result<Value, Error>) {
         Some(reply) => {
             let _ = reply.send(result);
         }
-        None => tracing::debug!(%id, "MCP response did not match a pending request"),
+        None => nanocode_trace::debug!(%id, "MCP response did not match a pending request"),
     }
 }
 

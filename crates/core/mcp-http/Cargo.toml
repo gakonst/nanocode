@@ -21,7 +21,7 @@ nanocode-mcp.workspace = true
 nanocode-http.workspace = true
 nanocode-platform.workspace = true
 serde_json.workspace = true
-tracing.workspace = true
+nanocode-trace.workspace = true
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 nanocode-tls.workspace = true

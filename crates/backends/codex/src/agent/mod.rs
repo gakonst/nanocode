@@ -23,7 +23,7 @@ use tokio::sync::{mpsc, watch};
 
 use crate::client::tower::Service;
 
-use tracing::{Instrument, info, info_span};
+use nanocode_trace::{Instrument, info, info_span};
 
 use crate::prompt_cache::{ModelPromptCache, SharedPromptCache};
 

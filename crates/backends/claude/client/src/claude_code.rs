@@ -6,7 +6,7 @@ use std::{
 
 use nanocode_http::header::HeaderValue;
 use serde_json::{Value, json};
-use tracing::Instrument as _;
+use nanocode_trace::Instrument as _;
 
 use crate::{
     ClaudeAccessToken, ClaudeAuthFuture, ClaudeAuthUnavailable, ClaudeClient, ClaudeTokenSource,
@@ -256,7 +256,7 @@ async fn write_keychain(
     if interactive {
         security.arg("-i").stdin(std::process::Stdio::piped());
     } else {
-        tracing::warn!(
+        nanocode_trace::warn!(
             target: "nanocode_claude",
             bytes = bytes.len(),
             "the Claude Code login exceeds the security -i command limit; passing it as arguments"
@@ -355,13 +355,13 @@ impl ClaudeCodeLogin {
         let mut login = Login::load().await?;
         if login.usable(rejected)? {
             drop(guard);
-            tracing::info!(target: "nanocode_claude", "reused a Claude Code login refreshed by another process");
+            nanocode_trace::info!(target: "nanocode_claude", "reused a Claude Code login refreshed by another process");
             return login.token();
         }
         self.exchange(&mut login).await?;
         login.save().await?;
         drop(guard);
-        tracing::info!(target: "nanocode_claude", "refreshed the Claude Code login");
+        nanocode_trace::info!(target: "nanocode_claude", "refreshed the Claude Code login");
         login.token()
     }
 
@@ -483,7 +483,7 @@ impl ClaudeTokenSource for ClaudeCodeLogin {
 }
 
 fn unavailable(reason: &str) -> ClaudeAuthUnavailable {
-    tracing::warn!(target: "nanocode_claude", reason, "Claude Code login unavailable");
+    nanocode_trace::warn!(target: "nanocode_claude", reason, "Claude Code login unavailable");
     ClaudeAuthUnavailable::new(reason.to_owned())
 }
 

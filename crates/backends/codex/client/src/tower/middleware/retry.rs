@@ -109,7 +109,7 @@ impl Policy<ResponsesAttempt, ResponsesServiceResponse, ResponsesServiceError>
         {
             let failed_attempt = request.attempt;
             let message = failure.source.to_string();
-            tracing::warn!(
+            nanocode_trace::warn!(
                 target: "nanocode_codex",
                 previous_transport = "responses_websocket_v2",
                 next_transport = "responses_https_sse",
@@ -233,7 +233,7 @@ impl Policy<ResponsesAttempt, ResponsesServiceResponse, ResponsesServiceError>
             .stats
             .response_retries
             .fetch_add(1, Ordering::Relaxed);
-        tracing::warn!(
+        nanocode_trace::warn!(
             target: "nanocode_codex",
             phase = request.kind.phase(),
             model.call_index = request.call_index,

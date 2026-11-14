@@ -10,8 +10,8 @@ use std::{
 };
 
 use nanocode_sync::AtomMap;
-use tracing::level_filters::STATIC_MAX_LEVEL;
-use tracing_core::{
+use nanocode_trace::level_filters::STATIC_MAX_LEVEL;
+use nanocode_trace::{
     Interest, Level, LevelFilter, Metadata,
     callsite::Identifier,
     field::{Field, Visit},
@@ -683,7 +683,7 @@ impl EnvFilter {
         }
     }
 
-    fn base_interest(&self) -> Interest {
+    const fn base_interest(&self) -> Interest {
         if self.has_dynamics {
             Interest::sometimes()
         } else {

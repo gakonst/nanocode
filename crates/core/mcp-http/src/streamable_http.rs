@@ -380,7 +380,7 @@ async fn drive(shared: Arc<Shared>, mut outgoing: Outgoing) {
                     initialized = true;
                     let state = shared.state();
                     if let Err(error) = shared.post(&message, &state).await {
-                        tracing::error!(
+                        nanocode_trace::error!(
                             error = %TransportError::from(error),
                             "failed to send MCP initialized notification"
                         );
@@ -633,7 +633,7 @@ impl Shared {
                     match &self.auth {
                         HttpAuth::Source(source) => {
                             if let Err(error) = source.rejected(&fresh).await {
-                                tracing::debug!(
+                                nanocode_trace::debug!(
                                     "bearer source refused a rejected refreshed token: {error}"
                                 );
                             }
@@ -647,7 +647,7 @@ impl Shared {
             }
             Ok(_) => {}
             Err(error) => {
-                tracing::debug!("token refresh after server rejection failed: {error}");
+                nanocode_trace::debug!("token refresh after server rejection failed: {error}");
             }
         }
         Ok(response)
@@ -725,7 +725,7 @@ impl Shared {
                     if message.is_response() {
                         return Ok((message, session_id));
                     }
-                    tracing::debug!(
+                    nanocode_trace::debug!(
                         ?message,
                         "received message before initialize response; continuing to drain stream"
                     );
@@ -749,7 +749,7 @@ impl Shared {
         if let Err(error) = self.post_with_recovery(&message).await {
             match request_id {
                 Some(id) => self.inbound.fail(&id, SessionError::Transport(error)),
-                None => tracing::warn!(%error, "failed to send MCP message"),
+                None => nanocode_trace::warn!(%error, "failed to send MCP message"),
             }
         }
     }
@@ -758,7 +758,7 @@ impl Shared {
         let state = self.state();
         match self.post(message, &state).await {
             Err(PostError::SessionExpired) if state.initialize.is_some() => {
-                tracing::info!(
+                nanocode_trace::info!(
                     "session expired (HTTP 404), attempting transparent re-initialization"
                 );
                 self.reinitialize(state.id.clone()).await.map_err(|error| {
@@ -859,7 +859,7 @@ impl Shared {
                             .deliver(with_request_id(error, message.request_id()));
                         return Ok(());
                     }
-                    parsed => tracing::debug!(
+                    parsed => nanocode_trace::debug!(
                         parse_error = ?parsed.err(),
                         "HTTP {status}: JSON body is not a JSON-RPC error; returning it as a transport error"
                     ),
@@ -893,14 +893,14 @@ impl Shared {
                     format!("Deserialize error: {error}"),
                 ))),
                 Err(error) => {
-                    tracing::warn!(
+                    nanocode_trace::warn!(
                         "could not parse JSON response as a JSON-RPC message, treating as accepted: {error}"
                     );
                     Ok(())
                 }
             };
         }
-        tracing::error!("unexpected content type: {content_type:?}");
+        nanocode_trace::error!("unexpected content type: {content_type:?}");
         Err(PostError::Failed(TransportError::new(format!(
             "Unexpected content type: {content_type:?}"
         ))))
@@ -921,20 +921,20 @@ impl Shared {
             let wait = match end {
                 StreamEnd::Response => return Ok(()),
                 StreamEnd::Fatal(error) => {
-                    tracing::warn!("fatal sse stream error: {error}");
+                    nanocode_trace::warn!("fatal sse stream error: {error}");
                     return Err(PostError::Failed(TransportError::new(format!(
                         "{CLOSED_BEFORE_RESPONSE}: {error}"
                     ))));
                 }
                 _ if cursor.last_event_id.is_none() => {
-                    tracing::debug!(
+                    nanocode_trace::debug!(
                         "sse response ended before an event ID was received; cannot resume"
                     );
                     return Err(PostError::Failed(CLOSED_BEFORE_RESPONSE.into()));
                 }
                 StreamEnd::Closed => cursor.retry.take().unwrap_or(SSE_RETRY_BASE),
                 StreamEnd::Failed(error) => {
-                    tracing::warn!("sse stream error: {error}");
+                    nanocode_trace::warn!("sse stream error: {error}");
                     Duration::ZERO
                 }
             };
@@ -988,7 +988,7 @@ impl Shared {
                 let message = match Message::from_slice(data.as_bytes()) {
                     Ok(message) => message,
                     Err(error) => {
-                        tracing::debug!(
+                        nanocode_trace::debug!(
                             last_event_id = cursor.last_event_id.as_deref().unwrap_or(""),
                             "failed to deserialize server message: {error}"
                         );
@@ -1027,8 +1027,8 @@ impl Shared {
             }
             match self.get(cursor.last_event_id.as_deref()).await {
                 Ok(Some(response)) => return Some(response),
-                Ok(None) => tracing::debug!("retry sse stream error: server does not support SSE"),
-                Err(error) => tracing::debug!("retry sse stream error: {error}"),
+                Ok(None) => nanocode_trace::debug!("retry sse stream error: server does not support SSE"),
+                Err(error) => nanocode_trace::debug!("retry sse stream error: {error}"),
             }
             attempt = attempt.saturating_add(1);
             let backoff = SSE_RETRY_BASE.saturating_mul(2_u32.saturating_pow(attempt));
@@ -1092,25 +1092,25 @@ impl Shared {
         let mut response = match self.get(None).await {
             Ok(Some(response)) => response,
             Ok(None) => {
-                tracing::debug!("server doesn't support sse, skip common stream");
+                nanocode_trace::debug!("server doesn't support sse, skip common stream");
                 return;
             }
             Err(error) => {
-                tracing::error!("fail to get common stream: {error}");
+                nanocode_trace::error!("fail to get common stream: {error}");
                 return;
             }
         };
         loop {
             let wait = match self.consume(response, &mut cursor, false).await {
                 StreamEnd::Fatal(error) => {
-                    tracing::warn!("sse client event stream terminated with error: {error}");
+                    nanocode_trace::warn!("sse client event stream terminated with error: {error}");
                     return;
                 }
                 StreamEnd::Closed | StreamEnd::Response => {
                     cursor.retry.take().unwrap_or(SSE_RETRY_BASE)
                 }
                 StreamEnd::Failed(error) => {
-                    tracing::warn!("sse stream error: {error}");
+                    nanocode_trace::warn!("sse stream error: {error}");
                     Duration::ZERO
                 }
             };
@@ -1133,21 +1133,21 @@ impl Shared {
         .await
         {
             Ok(Ok(response)) if response.status == StatusCode::METHOD_NOT_ALLOWED => {
-                tracing::debug!("this server doesn't support deleting session");
+                nanocode_trace::debug!("this server doesn't support deleting session");
             }
             Ok(Ok(response)) if response.status.is_success() => {
-                tracing::info!(session_id = session_id.as_ref(), "delete session success");
+                nanocode_trace::info!(session_id = session_id.as_ref(), "delete session success");
             }
-            Ok(Ok(response)) => tracing::error!(
+            Ok(Ok(response)) => nanocode_trace::error!(
                 session_id = session_id.as_ref(),
                 "fail to delete session: HTTP status {}",
                 response.status
             ),
-            Ok(Err(error)) => tracing::error!(
+            Ok(Err(error)) => nanocode_trace::error!(
                 session_id = session_id.as_ref(),
                 "fail to delete session: {error}"
             ),
-            Err(_) => tracing::warn!(
+            Err(_) => nanocode_trace::warn!(
                 session_id = session_id.as_ref(),
                 "session cleanup timed out after {SESSION_CLEANUP_TIMEOUT:?}"
             ),

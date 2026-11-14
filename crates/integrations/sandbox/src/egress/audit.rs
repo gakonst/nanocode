@@ -14,7 +14,7 @@ use std::{
 };
 use tokio::sync::mpsc;
 use tokio::time::{Instant, MissedTickBehavior, interval_at};
-use tracing::{error, warn};
+use nanocode_trace::{error, warn};
 
 #[derive(Clone, Copy)]
 pub struct Reporting {

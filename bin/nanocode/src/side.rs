@@ -286,7 +286,7 @@ impl App {
     }
 
     pub(crate) fn btw(&mut self, question: String) {
-        let _span = tracing::info_span!(target: "nanocode", "nc.action", action.name = "btw", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
+        let _span = nanocode_trace::info_span!(target: "nanocode", "nc.action", action.name = "btw", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
         if self.btw_agent_command(&question) {
             return;
         }
@@ -324,7 +324,7 @@ impl App {
     }
 
     fn open_side_session(&mut self, restore: Option<(String, Option<PendingTurn>)>) -> bool {
-        let _span = tracing::info_span!(target: "nanocode", "nc.action", action.name = "open_side", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
+        let _span = nanocode_trace::info_span!(target: "nanocode", "nc.action", action.name = "open_side", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
         let Some(agent) = self.agent.clone() else {
             self.flash("the agent is still starting");
             return false;
@@ -455,7 +455,7 @@ impl App {
     }
 
     fn side_ask(&mut self, question: String) {
-        let _span = tracing::info_span!(target: "nanocode", "nc.action", action.name = "side_ask", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
+        let _span = nanocode_trace::info_span!(target: "nanocode", "nc.action", action.name = "side_ask", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
         let Some(side) = self.panes.side.as_mut() else {
             return;
         };
@@ -494,7 +494,7 @@ impl App {
     }
 
     fn side_prompt(&mut self, question: String) {
-        let _span = tracing::info_span!(target: "nanocode", "nc.action", action.name = "side_prompt", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
+        let _span = nanocode_trace::info_span!(target: "nanocode", "nc.action", action.name = "side_prompt", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
         let Some(side) = self.panes.side.as_mut() else {
             return;
         };
@@ -555,7 +555,7 @@ impl App {
     }
 
     fn side_question(&mut self, question: String) {
-        let _span = tracing::info_span!(target: "nanocode", "nc.action", action.name = "side_question", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
+        let _span = nanocode_trace::info_span!(target: "nanocode", "nc.action", action.name = "side_question", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
         let root = self.agent.clone();
         let control = self.host.runtime.subagents().cloned();
         let Some(side) = self.panes.side.as_mut() else {
@@ -745,7 +745,7 @@ impl App {
     }
 
     pub(crate) fn side_submit(&mut self, text: String) {
-        let _span = tracing::info_span!(target: "nanocode", "nc.action", action.name = "side_submit", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
+        let _span = nanocode_trace::info_span!(target: "nanocode", "nc.action", action.name = "side_submit", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
         if let Some(command) = text.strip_prefix('/')
             && !command.starts_with('/')
         {
@@ -773,7 +773,7 @@ impl App {
     }
 
     pub(crate) fn side_escape(&mut self) {
-        let _span = tracing::info_span!(target: "nanocode", "nc.action", action.name = "side_escape", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
+        let _span = nanocode_trace::info_span!(target: "nanocode", "nc.action", action.name = "side_escape", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
         let Some(side) = self.panes.side.as_ref() else {
             return;
         };
@@ -822,7 +822,7 @@ impl App {
     }
 
     pub(crate) fn side_ctrl_c(&mut self) {
-        let _span = tracing::info_span!(target: "nanocode", "nc.action", action.name = "side_ctrl_c", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
+        let _span = nanocode_trace::info_span!(target: "nanocode", "nc.action", action.name = "side_ctrl_c", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
         if self
             .panes
             .armed
@@ -852,7 +852,7 @@ impl App {
     }
 
     pub(crate) fn close_side(&mut self) {
-        let _span = tracing::info_span!(target: "nanocode", "nc.action", action.name = "close_side", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
+        let _span = nanocode_trace::info_span!(target: "nanocode", "nc.action", action.name = "close_side", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
         let Some(side) = self.take_side() else {
             self.flash("no /btw side pane is open");
             return;
@@ -870,7 +870,7 @@ impl App {
     }
 
     pub(crate) fn zoom_pane(&mut self) {
-        let _span = tracing::info_span!(target: "nanocode", "nc.action", action.name = "zoom_pane", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
+        let _span = nanocode_trace::info_span!(target: "nanocode", "nc.action", action.name = "zoom_pane", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
         if self.panes.side.is_some() {
             self.panes.zoomed = !self.panes.zoomed;
         } else {
@@ -894,7 +894,7 @@ impl App {
     }
 
     pub(crate) fn collapse_side(&mut self) {
-        let _span = tracing::info_span!(target: "nanocode", "nc.action", action.name = "collapse_side", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
+        let _span = nanocode_trace::info_span!(target: "nanocode", "nc.action", action.name = "collapse_side", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
         if !self.settled_side("collapse") {
             return;
         }
@@ -920,7 +920,7 @@ impl App {
     }
 
     pub(crate) fn split_side(&mut self) {
-        let _span = tracing::info_span!(target: "nanocode", "nc.action", action.name = "split_side", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
+        let _span = nanocode_trace::info_span!(target: "nanocode", "nc.action", action.name = "split_side", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
         if !self.settled_side("split") {
             return;
         }

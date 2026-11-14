@@ -111,7 +111,7 @@ impl ServerCertVerifier for Verifier {
             // This only contains information from the system or other public
             // bits of the TLS handshake, so it can't leak anything.
             .map_err(|e| {
-                tracing::error!("failed to verify TLS certificate: {}", e);
+                nanocode_trace::error!("failed to verify TLS certificate: {}", e);
                 e
             })
     }
@@ -197,17 +197,17 @@ pub mod system {
         let mut store = rustls::RootCertStore::empty();
         let (added, ignored) = store.add_parsable_certificates(result.certificates);
         if ignored > 0 {
-            tracing::warn!("{ignored} platform CA root certificates were ignored due to errors");
+            nanocode_trace::warn!("{ignored} platform CA root certificates were ignored due to errors");
         }
         for error in result.errors {
-            tracing::warn!("Error loading CA root certificate: {error}");
+            nanocode_trace::warn!("Error loading CA root certificate: {error}");
         }
-        tracing::debug!("Loaded {added} CA root certificates from the system");
+        nanocode_trace::debug!("Loaded {added} CA root certificates from the system");
         if store.is_empty() {
             let (bundled, _) = store.add_parsable_certificates(
                 webpki_root_certs::TLS_SERVER_ROOT_CERTS.iter().cloned(),
             );
-            tracing::warn!("No CA certificates were loaded from the system; trusting {bundled} bundled Mozilla root certificates");
+            nanocode_trace::warn!("No CA certificates were loaded from the system; trusting {bundled} bundled Mozilla root certificates");
         }
         let roots = Arc::new(store);
         ROOTS.store(Some(Arc::new(Loaded {

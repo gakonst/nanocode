@@ -208,7 +208,7 @@ impl EventMapper {
     }
 
     pub fn apply(&mut self, transcript: &mut Transcript, event: &AgentEvent) -> Mapped {
-        let _span = tracing::info_span!(target: TUI_TARGET, "nc.transcript.apply", event.kind = ?event.kind, event.bytes = event.payload.get().len(), cells = transcript.len()).entered();
+        let _span = nanocode_trace::info_span!(target: TUI_TARGET, "nc.transcript.apply", event.kind = ?event.kind, event.bytes = event.payload.get().len(), cells = transcript.len()).entered();
         let mut mapped = Mapped {
             accepted: None,
             changed: false,

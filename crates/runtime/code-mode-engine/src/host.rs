@@ -529,7 +529,7 @@ impl EmbeddedHost {
     }
 
     fn fail(&mut self, error: String) {
-        tracing::error!(
+        nanocode_trace::error!(
             target: "nanocode_code_mode",
             %error,
             "an embedded Code Mode cell stopped"

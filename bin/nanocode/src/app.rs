@@ -901,8 +901,8 @@ impl App {
         let route = self.route;
         let thinking = self.thinking;
         let tier = self.tier;
-        let span = tracing::info_span!(target: "nanocode", "nc.session.connect", model = %model, resume = resume.is_some(), otel.status_code = tracing::field::Empty);
-        tracing::Instrument::instrument(
+        let span = nanocode_trace::info_span!(target: "nanocode", "nc.session.connect", model = %model, resume = resume.is_some(), otel.status_code = nanocode_trace::field::Empty);
+        nanocode_trace::Instrument::instrument(
             async move {
                 let ready = async {
                     match resume {
@@ -929,7 +929,7 @@ impl App {
                     }
                 };
                 ready.await.inspect_err(|_| {
-                    tracing::Span::current().record("otel.status_code", "ERROR");
+                    nanocode_trace::Span::current().record("otel.status_code", "ERROR");
                 })
             },
             span,
@@ -937,7 +937,7 @@ impl App {
     }
 
     fn handle_app(&mut self, event: AppEvent) -> Redraw {
-        let _span = tracing::info_span!(target: TUI_TARGET, "nc.app_event", event.kind = event.kind(), session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
+        let _span = nanocode_trace::info_span!(target: TUI_TARGET, "nc.app_event", event.kind = event.kind(), session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
         match event {
             AppEvent::Reload => {
                 self.request_reload(false);
@@ -1576,7 +1576,7 @@ impl App {
     }
 
     pub(crate) fn start_turn(&mut self, text: String) {
-        let _span = tracing::info_span!(target: "nanocode", "nc.action", action.name = "start_turn", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
+        let _span = nanocode_trace::info_span!(target: "nanocode", "nc.action", action.name = "start_turn", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
         let attachments = std::mem::take(&mut self.next_attachments);
         let Some(agent) = self.agent.clone() else {
             let id = self.enqueue_follow_up(text);
@@ -1619,7 +1619,7 @@ impl App {
         let generation = self.generation;
         let tx = self.tx.clone();
         let span = self.spans.begin(&id, Some(agent.session_id()));
-        let task = tracing::Instrument::instrument(
+        let task = nanocode_trace::Instrument::instrument(
             async move {
                 let request = PromptRequest::new(sent.clone()).request_id(id.clone());
                 match agent.prompt(request).await {
@@ -1667,7 +1667,7 @@ impl App {
     }
 
     fn enqueue_follow_up(&mut self, text: String) -> String {
-        let _span = tracing::info_span!(target: "nanocode", "nc.action", action.name = "enqueue_follow_up", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
+        let _span = nanocode_trace::info_span!(target: "nanocode", "nc.action", action.name = "enqueue_follow_up", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
         let id = self.local_id("follow");
         self.queue.push(QueuedPrompt {
             id: id.clone(),
@@ -1679,7 +1679,7 @@ impl App {
     }
 
     fn enqueue_steer(&mut self, text: String) -> String {
-        let _span = tracing::info_span!(target: "nanocode", "nc.action", action.name = "enqueue_steer", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
+        let _span = nanocode_trace::info_span!(target: "nanocode", "nc.action", action.name = "enqueue_steer", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
         let id = self.local_id("steer");
         self.queue.push(QueuedPrompt {
             id: id.clone(),
@@ -1691,7 +1691,7 @@ impl App {
     }
 
     fn flush_pending_steers(&mut self) {
-        let _span = tracing::info_span!(target: "nanocode", "nc.action", action.name = "flush_pending_steers", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
+        let _span = nanocode_trace::info_span!(target: "nanocode", "nc.action", action.name = "flush_pending_steers", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
         if self.quit {
             return;
         }
@@ -1739,7 +1739,7 @@ impl App {
     }
 
     fn route_pending_steers(&mut self) {
-        let _span = tracing::info_span!(target: "nanocode", "nc.action", action.name = "route_pending_steers", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
+        let _span = nanocode_trace::info_span!(target: "nanocode", "nc.action", action.name = "route_pending_steers", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
         let Some(agent) = self.agent.clone() else {
             return;
         };
@@ -1795,7 +1795,7 @@ impl App {
     }
 
     fn interrupt(&mut self) {
-        let _span = tracing::info_span!(target: "nanocode", "nc.action", action.name = "interrupt", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
+        let _span = nanocode_trace::info_span!(target: "nanocode", "nc.action", action.name = "interrupt", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
         if matches!(self.turn, TurnState::External(_)) {
             let Some(agent) = self.agent.clone() else {
                 return;
@@ -2186,7 +2186,7 @@ impl App {
     }
 
     fn promote_follow_up(&mut self) {
-        let _span = tracing::info_span!(target: "nanocode", "nc.action", action.name = "promote_follow_up", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
+        let _span = nanocode_trace::info_span!(target: "nanocode", "nc.action", action.name = "promote_follow_up", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
         let latest = self
             .queue
             .items()
@@ -2208,7 +2208,7 @@ impl App {
     }
 
     fn open_recent_prompts(&mut self) {
-        let _span = tracing::info_span!(target: "nanocode", "nc.action", action.name = "open_recent_prompts", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
+        let _span = nanocode_trace::info_span!(target: "nanocode", "nc.action", action.name = "open_recent_prompts", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
         let mut seen = std::collections::HashSet::new();
         let items = self
             .composer
@@ -2243,7 +2243,7 @@ impl App {
     }
 
     fn edit_externally(&mut self, terminal: &mut TerminalSession) {
-        let _span = tracing::info_span!(target: "nanocode", "nc.action", action.name = "edit_externally", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
+        let _span = nanocode_trace::info_span!(target: "nanocode", "nc.action", action.name = "edit_externally", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
         let editor = std::env::var("VISUAL")
             .or_else(|_| std::env::var("EDITOR"))
             .unwrap_or_else(|_| "vi".to_owned());
@@ -2296,7 +2296,7 @@ impl App {
     }
 
     fn recall_queued(&mut self) {
-        let _span = tracing::info_span!(target: "nanocode", "nc.action", action.name = "recall_queued", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
+        let _span = nanocode_trace::info_span!(target: "nanocode", "nc.action", action.name = "recall_queued", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
         let Some(item) = self.recallable().cloned() else {
             self.flash("nothing queued");
             return;
@@ -2336,7 +2336,7 @@ impl App {
     }
 
     fn submit(&mut self, text: String, queue: bool) {
-        let _span = tracing::info_span!(target: "nanocode", "nc.action", action.name = "submit", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
+        let _span = nanocode_trace::info_span!(target: "nanocode", "nc.action", action.name = "submit", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
         self.append_history(&text);
         self.stashed_draft = None;
         if self.panes.side_active() {
@@ -2409,7 +2409,7 @@ impl App {
     }
 
     pub(crate) fn deliver_to_main(&mut self, text: String) {
-        let _span = tracing::info_span!(target: "nanocode", "nc.action", action.name = "deliver_to_main", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
+        let _span = nanocode_trace::info_span!(target: "nanocode", "nc.action", action.name = "deliver_to_main", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
         match self.turn {
             TurnState::Idle
                 if self.agent.is_none() || self.pending_switch.is_some() || self.starting =>
@@ -2428,7 +2428,7 @@ impl App {
         let (name, argument) = command
             .split_once(' ')
             .map_or((command, ""), |(name, rest)| (name, rest.trim()));
-        let _span = tracing::info_span!(target: "nanocode", "nc.command", command.name = name, session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
+        let _span = nanocode_trace::info_span!(target: "nanocode", "nc.command", command.name = name, session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
         match name {
             "model" | "m" if self.session_started => {
                 self.flash(
@@ -2639,7 +2639,7 @@ impl App {
     }
 
     fn runner_command(&mut self, argument: &str) {
-        let _span = tracing::info_span!(target: "nanocode", "nc.action", action.name = "runner_command", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
+        let _span = nanocode_trace::info_span!(target: "nanocode", "nc.action", action.name = "runner_command", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
         let Some(words) = shlex_words(argument) else {
             self.notice(NoticeLevel::Error, "unterminated quote in /runner command");
             return;
@@ -2808,7 +2808,7 @@ impl App {
     }
 
     fn overlay_key(&mut self, key: KeyEvent) {
-        let _span = tracing::info_span!(target: "nanocode", "nc.action", action.name = "overlay_key", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
+        let _span = nanocode_trace::info_span!(target: "nanocode", "nc.action", action.name = "overlay_key", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
         let Some(overlay) = &mut self.overlay else {
             return;
         };
@@ -2880,7 +2880,7 @@ impl App {
         thinking: Thinking,
         then_tier: bool,
     ) {
-        let _span = tracing::info_span!(target: "nanocode", "nc.action", action.name = "open_dial", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
+        let _span = nanocode_trace::info_span!(target: "nanocode", "nc.action", action.name = "open_dial", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
         match models::thinking_dial(&model, route, thinking, &self.theme) {
             Some((dial, levels)) => {
                 self.overlay = Some(Overlay::Dial {
@@ -2935,7 +2935,7 @@ impl App {
     }
 
     fn picked(&mut self, purpose: PickerPurpose, picker: &Picker, index: usize) {
-        let _span = tracing::info_span!(target: "nanocode", "nc.action", action.name = "picked", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
+        let _span = nanocode_trace::info_span!(target: "nanocode", "nc.action", action.name = "picked", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
         match purpose {
             PickerPurpose::Model(choices) => {
                 let Some((route, model)) = choices.get(index).cloned().flatten() else {
@@ -3021,9 +3021,9 @@ pub async fn open_session(
         .store
         .as_ref()
         .ok_or("resume requires durability; remove --ephemeral")?;
-    let stored = tracing::Instrument::instrument(
+    let stored = nanocode_trace::Instrument::instrument(
         store.load(session_id),
-        tracing::info_span!(target: "nanocode", "nc.session.load", session.id = session_id),
+        nanocode_trace::info_span!(target: "nanocode", "nc.session.load", session.id = session_id),
     )
     .await?;
     let model = stored.summary.record.model.clone();
@@ -3068,9 +3068,9 @@ pub async fn open_session(
         .filter(|turn| turn.status != nanocode::durability::TurnStatus::Pending)
         .filter_map(|turn| turn.preview.clone())
         .collect();
-    let (agent, events) = tracing::Instrument::instrument(
+    let (agent, events) = nanocode_trace::Instrument::instrument(
         host.open(store, &stored),
-        tracing::info_span!(target: "nanocode", "nc.session.restore", session.id = session_id),
+        nanocode_trace::info_span!(target: "nanocode", "nc.session.restore", session.id = session_id),
     )
     .await?;
     if thinking != opened_thinking {

@@ -1,5 +1,5 @@
 use std::{error::Error, fmt};
-use tracing::warn;
+use nanocode_trace::warn;
 
 #[macro_export]
 macro_rules! machine {

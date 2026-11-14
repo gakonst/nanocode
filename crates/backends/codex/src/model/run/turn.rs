@@ -175,7 +175,7 @@ impl ModelRun {
         self.events
             .emit(AgentEventKind::RunError, RunError { message: &message })?;
         let usage = self.stats.turn_usage();
-        record_turn_usage(&tracing::Span::current(), &usage);
+        record_turn_usage(&nanocode_trace::Span::current(), &usage);
         self.events.emit(
             AgentEventKind::RunFailed,
             terminal_payload(
@@ -291,7 +291,7 @@ impl ModelRun {
                 self.terminate_turn_cells().await;
                 self.record_transport();
                 let usage = self.stats.turn_usage();
-                record_turn_usage(&tracing::Span::current(), &usage);
+                record_turn_usage(&nanocode_trace::Span::current(), &usage);
                 let checkpoint = self.commit_checkpoint()?;
                 Ok(ModelTurnOutcome::Completed(CompletedModelTurn {
                     final_message: message,
@@ -308,7 +308,7 @@ impl ModelRun {
                     .emit(AgentEventKind::RunError, RunError { message: &message })?;
                 self.record_transport();
                 let usage = self.stats.turn_usage();
-                record_turn_usage(&tracing::Span::current(), &usage);
+                record_turn_usage(&nanocode_trace::Span::current(), &usage);
                 Ok(ModelTurnOutcome::Cancelled(checkpoint))
             }
             Err(error) => {
@@ -355,7 +355,7 @@ impl ModelRun {
                     .emit(AgentEventKind::RunError, RunError { message: &message })?;
                 self.record_transport();
                 let usage = self.stats.turn_usage();
-                record_turn_usage(&tracing::Span::current(), &usage);
+                record_turn_usage(&nanocode_trace::Span::current(), &usage);
                 match checkpoint {
                     Some(checkpoint) => Ok(ModelTurnOutcome::Failed { error, checkpoint }),
                     None => Err(error),

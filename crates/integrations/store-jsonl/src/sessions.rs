@@ -187,7 +187,7 @@ impl Sessions {
             Ok(())
         });
         if let Err(error) = appended {
-            tracing::warn!(%error, state_id, "could not record where a JSONL session is stored");
+            nanocode_trace::warn!(%error, state_id, "could not record where a JSONL session is stored");
         }
         if let Some(opened) = self.journals.get_mut(&home) {
             opened.journal.sidecar = true;

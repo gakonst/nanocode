@@ -144,7 +144,7 @@ pub(crate) fn spawn(
         ended: Box::new(move |status| drop(exit.send(status))),
     });
     let running = started
-        .inspect_err(|error| tracing::warn!(%error, "the shell did not start in this process"))
+        .inspect_err(|error| nanocode_trace::warn!(%error, "the shell did not start in this process"))
         .ok()?;
     let child =
         process::ProcessChild::served(process::ProcessGroupGuard::embedded(running), exited);

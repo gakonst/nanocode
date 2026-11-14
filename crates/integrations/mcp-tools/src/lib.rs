@@ -42,7 +42,7 @@ use nanocode_mcp::{
 use nanocode_tools::ToolDefinition;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use tracing::{Instrument, info_span};
+use nanocode_trace::{Instrument, info_span};
 
 pub use config::{
     McpPaymentManagement, McpPaymentProvider, McpPendingPayment, McpServer, McpToolExposure,
@@ -631,10 +631,10 @@ impl McpHandle {
                 parent: None,
                 "mcp.server_reload",
                 otel.kind = "client",
-                otel.status_code = tracing::field::Empty,
+                otel.status_code = nanocode_trace::field::Empty,
                 mcp.server = server_name,
-                status = tracing::field::Empty,
-                tool.count = tracing::field::Empty,
+                status = nanocode_trace::field::Empty,
+                tool.count = nanocode_trace::field::Empty,
             );
 
             let result = self.reload_inner(server_name, &span).await;
@@ -660,7 +660,7 @@ impl McpHandle {
     async fn reload_inner(
         &self,
         server_name: &str,
-        parent: &tracing::Span,
+        parent: &nanocode_trace::Span,
     ) -> Result<usize, McpControlError> {
         let server = self
             .servers
@@ -718,10 +718,10 @@ impl McpHandle {
                 parent: None,
                 "mcp.oauth.login",
                 otel.kind = "client",
-                otel.status_code = tracing::field::Empty,
+                otel.status_code = nanocode_trace::field::Empty,
                 mcp.server = server_name,
-                status = tracing::field::Empty,
-                tool.count = tracing::field::Empty,
+                status = nanocode_trace::field::Empty,
+                tool.count = nanocode_trace::field::Empty,
             );
             self.login_inner(server_name, span).await
         })
@@ -730,7 +730,7 @@ impl McpHandle {
     async fn login_inner(
         &self,
         server_name: &str,
-        span: tracing::Span,
+        span: nanocode_trace::Span,
     ) -> Result<McpLogin, McpControlError> {
         let server = self
             .servers
@@ -848,10 +848,10 @@ impl Mcp {
                 parent: None,
                 "mcp.server_start",
                 otel.kind = "client",
-                otel.status_code = tracing::field::Empty,
+                otel.status_code = nanocode_trace::field::Empty,
                 mcp.server = %name,
-                status = tracing::field::Empty,
-                tool.count = tracing::field::Empty,
+                status = nanocode_trace::field::Empty,
+                tool.count = nanocode_trace::field::Empty,
             );
             let startup = async move {
                 #[cfg(not(target_family = "wasm"))]
@@ -1066,13 +1066,13 @@ async fn call_mcp_entry(
         target: "nanocode_code_mode",
         "mcp.tool_call",
         otel.kind = "client",
-        otel.status_code = tracing::field::Empty,
+        otel.status_code = nanocode_trace::field::Empty,
         mcp.server = %entry.server_name,
         mcp.tool = %entry.remote_name,
         mcp.arguments.bytes = argument_bytes,
         mcp.arguments.keys = argument_keys,
         mcp.arguments.count = argument_count,
-        status = tracing::field::Empty,
+        status = nanocode_trace::field::Empty,
     );
     if let Err(error) = entry.client.refresh_oauth().await {
         span.record("status", "failed");
@@ -1288,13 +1288,13 @@ impl Tool for McpSearch {
                     target: "nanocode_code_mode",
                     "mcp.catalog_search",
                     otel.kind = "internal",
-                    otel.status_code = tracing::field::Empty,
+                    otel.status_code = nanocode_trace::field::Empty,
                     query.bytes = input.query.len(),
-                    result.count = tracing::field::Empty,
-                    pending_servers = tracing::field::Empty,
-                    status = tracing::field::Empty,
+                    result.count = nanocode_trace::field::Empty,
+                    pending_servers = nanocode_trace::field::Empty,
+                    status = nanocode_trace::field::Empty,
                 );
-                tracing::info!(
+                nanocode_trace::info!(
                     target: "nanocode_code_mode",
                     parent: &span,
                     query = %input.query,

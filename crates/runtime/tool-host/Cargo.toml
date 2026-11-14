@@ -24,7 +24,7 @@ nanocode-turnlog.workspace = true
 nanocode-types.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tracing.workspace = true
+nanocode-trace.workspace = true
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 futures-util.workspace = true

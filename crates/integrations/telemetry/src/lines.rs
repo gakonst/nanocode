@@ -4,7 +4,7 @@ use nanocode_observability::{
     filter::FilterFn,
     subscriber::{Context, Filtered, Layer, SpanRef},
 };
-use tracing::{
+use nanocode_trace::{
     Event, Metadata,
     field::{Field, Visit},
     span::Attributes,
@@ -109,7 +109,7 @@ impl Exports {
                         || metadata.target().starts_with(&format!("{target}::"))
                 })
             };
-            *metadata.level() <= tracing::Level::INFO
+            *metadata.level() <= nanocode_trace::Level::INFO
                 && ((metadata.is_span()
                     || self.content
                         && (!metadata.is_event()

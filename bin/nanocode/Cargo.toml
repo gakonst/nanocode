@@ -44,7 +44,7 @@ serde_json = { workspace = true, features = ["preserve_order"] }
 nanocode-platform.workspace = true
 serde.workspace = true
 tokio = { workspace = true, features = ["macros", "process", "rt-multi-thread", "signal", "sync", "time"] }
-tracing.workspace = true
+nanocode-trace.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 nanocode-process.workspace = true

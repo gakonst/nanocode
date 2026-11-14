@@ -43,7 +43,7 @@ use nanocode_platform::{Duration, Instant, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, value::RawValue};
 use tokio::sync::watch;
-use tracing::{Instrument, info, info_span};
+use nanocode_trace::{Instrument, info, info_span};
 
 use super::{
     CompactionCompleted, CompactionFailed, CompactionStarted, ModelCallCompleted, ModelCallFailed,

@@ -12,7 +12,7 @@ use crate::client::call::Service;
 use futures_util::{Stream, future::poll_fn};
 use nanocode_platform::Instant;
 use tokio::sync::mpsc;
-use tracing::{Instrument, info_span};
+use nanocode_trace::{Instrument, info_span};
 
 use crate::client::{
     ContentItem, EventSink, MessageRole, ResponseEvent, ResponseItem, ResponsesAttempt,
@@ -597,13 +597,13 @@ where
 }
 
 struct ResponseCallCancellation {
-    span: tracing::Span,
+    span: nanocode_trace::Span,
     started_at: Instant,
     completed: bool,
 }
 
 impl ResponseCallCancellation {
-    const fn new(span: tracing::Span, started_at: Instant) -> Self {
+    const fn new(span: nanocode_trace::Span, started_at: Instant) -> Self {
         Self {
             span,
             started_at,
@@ -628,7 +628,7 @@ impl Drop for ResponseCallCancellation {
             "duration_ns",
             u64::try_from(self.started_at.elapsed().as_nanos()).unwrap_or(u64::MAX),
         );
-        tracing::warn!(
+        nanocode_trace::warn!(
             target: "nanocode_codex",
             parent: &self.span,
             "Responses call cancelled before a provider terminal event"
@@ -718,36 +718,36 @@ fn response_call_span<S>(
     logical_turn: u64,
     method: &'static str,
     input_item_count: usize,
-) -> tracing::Span {
+) -> nanocode_trace::Span {
     info_span!(
         target: "nanocode_codex",
         "responses.call",
         otel.kind = "client",
-        otel.status_code = tracing::field::Empty,
+        otel.status_code = nanocode_trace::field::Empty,
         session.id = %session.id,
         response.method = method,
         turn.index = logical_turn,
         model.call_index = session.next_call_index,
         model.input.item_count = input_item_count,
-        model.output.item_count = tracing::field::Empty,
-        response.end_turn = tracing::field::Empty,
-        usage.input_tokens = tracing::field::Empty,
-        usage.cached_input_tokens = tracing::field::Empty,
-        usage.cache_write_input_tokens = tracing::field::Empty,
-        usage.output_tokens = tracing::field::Empty,
-        usage.reasoning_output_tokens = tracing::field::Empty,
-        usage.total_tokens = tracing::field::Empty,
-        cost.usd = tracing::field::Empty,
-        cost.status = tracing::field::Empty,
-        cost.service_tier = tracing::field::Empty,
-        error.class = tracing::field::Empty,
-        status = tracing::field::Empty,
-        duration_ns = tracing::field::Empty,
+        model.output.item_count = nanocode_trace::field::Empty,
+        response.end_turn = nanocode_trace::field::Empty,
+        usage.input_tokens = nanocode_trace::field::Empty,
+        usage.cached_input_tokens = nanocode_trace::field::Empty,
+        usage.cache_write_input_tokens = nanocode_trace::field::Empty,
+        usage.output_tokens = nanocode_trace::field::Empty,
+        usage.reasoning_output_tokens = nanocode_trace::field::Empty,
+        usage.total_tokens = nanocode_trace::field::Empty,
+        cost.usd = nanocode_trace::field::Empty,
+        cost.status = nanocode_trace::field::Empty,
+        cost.service_tier = nanocode_trace::field::Empty,
+        error.class = nanocode_trace::field::Empty,
+        status = nanocode_trace::field::Empty,
+        duration_ns = nanocode_trace::field::Empty,
     )
 }
 
 fn finish_create_span(
-    span: &tracing::Span,
+    span: &nanocode_trace::Span,
     started_at: Instant,
     result: &Result<CompletedResponse, ResponseError>,
 ) {
@@ -770,7 +770,7 @@ fn finish_create_span(
 }
 
 fn finish_compaction_span(
-    span: &tracing::Span,
+    span: &nanocode_trace::Span,
     started_at: Instant,
     result: &Result<CompletedCompaction, ResponseError>,
 ) {
@@ -789,7 +789,7 @@ fn finish_compaction_span(
 }
 
 fn record_response_usage_and_cost(
-    span: &tracing::Span,
+    span: &nanocode_trace::Span,
     usage: Option<&Usage>,
     cost_status: crate::client::CostStatus,
     estimated_cost: Option<&crate::client::EstimatedUsdCost>,
@@ -822,12 +822,12 @@ fn record_response_usage_and_cost(
     }
     span.record("cost.status", cost_status.as_str());
     if let Some(estimated_cost) = estimated_cost {
-        span.record("cost.usd", tracing::field::display(estimated_cost.amount()));
+        span.record("cost.usd", nanocode_trace::field::display(estimated_cost.amount()));
         span.record("cost.service_tier", estimated_cost.service_tier().as_str());
     }
 }
 
-fn finish_response_span(span: &tracing::Span, started_at: Instant, error: Option<&ResponseError>) {
+fn finish_response_span(span: &nanocode_trace::Span, started_at: Instant, error: Option<&ResponseError>) {
     span.record(
         "duration_ns",
         u64::try_from(started_at.elapsed().as_nanos()).unwrap_or(u64::MAX),
@@ -841,7 +841,7 @@ fn finish_response_span(span: &tracing::Span, started_at: Instant, error: Option
         span.record("error.class", error_class);
         span.record("status", "failed");
         span.record("otel.status_code", "ERROR");
-        tracing::error!(
+        nanocode_trace::error!(
             target: "nanocode_codex",
             parent: span,
             error = %error,

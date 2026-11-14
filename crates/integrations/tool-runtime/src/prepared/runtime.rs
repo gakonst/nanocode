@@ -4,7 +4,7 @@ use futures_util::FutureExt;
 use nanocode_tools::ToolOutputWire;
 use serde::Serialize;
 use serde_json::{Value, value::to_raw_value};
-use tracing::Instrument;
+use nanocode_trace::Instrument;
 
 use super::PreparedTools;
 use crate::{Tool, ToolContext, ToolDefinition, ToolInput, ToolOutput};
@@ -218,7 +218,7 @@ impl PreparedToolRuntime {
             match &entry.handler {
                 PreparedToolHandler::Fixed(tool) => {
                     if let Err(error) = tool.end_turn(session_id, turn_id, hook_event_name).await {
-                        tracing::warn!(target: "nanocode_code_mode::attachment",
+                        nanocode_trace::warn!(target: "nanocode_code_mode::attachment",
                             %error, "attached tool turn cleanup failed; not retried");
                     }
                 }
@@ -248,9 +248,9 @@ impl PreparedToolRuntime {
             .iter()
             .find(|entry| entry.definition.name() == call.name)
             .ok_or_else(|| PreparedToolError::UnknownTool(call.name.clone().into()))?;
-        let input_content = tracing::enabled!(
+        let input_content = nanocode_trace::enabled!(
             target: "nanocode_code_mode",
-            tracing::Level::INFO
+            nanocode_trace::Level::INFO
         )
         .then(|| serde_json::to_string(&call.input))
         .transpose()
@@ -276,20 +276,20 @@ impl PreparedToolRuntime {
         )
         .with_turn_id(call.turn_id.as_deref());
         let started_at = std::time::Instant::now();
-        let span = tracing::info_span!(
+        let span = nanocode_trace::info_span!(
             target: "nanocode_code_mode",
             "attached_tool.execute",
             tool.name = call.name,
             session.id = call.session_id,
             tool.call_id = call.call_id,
-            status = tracing::field::Empty,
-            duration_ns = tracing::field::Empty,
+            status = nanocode_trace::field::Empty,
+            duration_ns = nanocode_trace::field::Empty,
         );
         if let Some(input_content) = &input_content {
-            tracing::event!(
+            nanocode_trace::event!(
                 target: "nanocode_code_mode",
                 parent: &span,
-                tracing::Level::INFO,
+                nanocode_trace::Level::INFO,
                 name = "tool.arguments",
                 content = %input_content,
                 "tool content"
@@ -314,10 +314,10 @@ impl PreparedToolRuntime {
             Ok(output) => output,
             Err(payload) => {
                 let message = nanocode_tool_host::panic_message(payload);
-                tracing::event!(
+                nanocode_trace::event!(
                     target: "nanocode_code_mode",
                     parent: &span,
-                    tracing::Level::INFO,
+                    nanocode_trace::Level::INFO,
                     name = "tool.panic",
                     content = %message,
                     "tool content"
@@ -333,13 +333,13 @@ impl PreparedToolRuntime {
             "duration_ns",
             u64::try_from(started_at.elapsed().as_nanos()).unwrap_or(u64::MAX),
         );
-        if tracing::enabled!(target: "nanocode_code_mode", tracing::Level::INFO) {
+        if nanocode_trace::enabled!(target: "nanocode_code_mode", nanocode_trace::Level::INFO) {
             let output_content =
                 serde_json::to_string(&wire).map_err(PreparedToolError::InvalidOutput)?;
-            tracing::event!(
+            nanocode_trace::event!(
                 target: "nanocode_code_mode",
                 parent: &span,
-                tracing::Level::INFO,
+                nanocode_trace::Level::INFO,
                 name = "tool.output",
                 content = %output_content,
                 "tool content"

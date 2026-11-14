@@ -7,7 +7,7 @@ use std::{
 };
 
 use nanocode_sync::{Sequencer, Slot};
-use tracing::{
+use nanocode_trace::{
     Event,
     field::{Field, Visit},
     span::{Attributes, Record},
@@ -340,7 +340,7 @@ impl OtelLayer {
     }
 }
 
-fn location(metadata: &tracing::Metadata<'_>, attributes: &mut Vec<KeyValue>) {
+fn location(metadata: &nanocode_trace::Metadata<'_>, attributes: &mut Vec<KeyValue>) {
     if let Some(file) = metadata.file() {
         attributes.push(KeyValue::new("code.file.path", file.to_owned()));
     }
@@ -567,7 +567,7 @@ impl Layer for OtelLayer {
                 return;
             };
             location(metadata, &mut attributes);
-            let error = *metadata.level() == tracing::Level::ERROR;
+            let error = *metadata.level() == nanocode_trace::Level::ERROR;
             match &mut data.state {
                 State::Building {
                     builder, status, ..
@@ -633,7 +633,7 @@ impl Layer for OtelLayer {
     }
 }
 
-fn with_data(span: &tracing::Span, change: impl FnOnce(&mut OtelData)) {
+fn with_data(span: &nanocode_trace::Span, change: impl FnOnce(&mut OtelData)) {
     span.with_subscriber(|(id, dispatch)| {
         let Some(registry) = dispatch.downcast_ref::<Registry>() else {
             return;
@@ -649,7 +649,7 @@ fn with_data(span: &tracing::Span, change: impl FnOnce(&mut OtelData)) {
 }
 
 #[must_use]
-pub fn span_context(span: &tracing::Span) -> SpanContext {
+pub fn span_context(span: &nanocode_trace::Span) -> SpanContext {
     let mut context = SpanContext::INVALID;
     with_data(span, |data| {
         context = data.start().context();
@@ -657,7 +657,7 @@ pub fn span_context(span: &tracing::Span) -> SpanContext {
     context
 }
 
-pub fn add_link(span: &tracing::Span, link: SpanContext) {
+pub fn add_link(span: &nanocode_trace::Span, link: SpanContext) {
     if !link.is_valid() {
         return;
     }

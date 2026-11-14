@@ -15,7 +15,7 @@ pub struct Binding {
 }
 
 pub fn render(bindings: &[Binding], area: Rect, buffer: &mut Buffer, theme: &Theme) {
-    let _span = tracing::info_span!(
+    let _span = nanocode_trace::info_span!(
         "tui.help.render",
         width = area.width,
         height = area.height,

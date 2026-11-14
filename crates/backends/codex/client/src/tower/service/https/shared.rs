@@ -35,10 +35,10 @@ pub(crate) async fn run(
     let encode_duration_ns = elapsed_ns(encode_started_at);
     let request_bytes = encoded.json().len();
     let transport = ResponsesTransport::Https.as_str();
-    let span = tracing::Span::current();
+    let span = nanocode_trace::Span::current();
     span.record("request.bytes", request_bytes);
     span.record("request.encode.duration_ns", encode_duration_ns);
-    tracing::trace!(
+    nanocode_trace::trace!(
         target: "nanocode_codex",
         direction = "outbound",
         transport,

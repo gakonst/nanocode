@@ -42,13 +42,13 @@ impl Tool for UpdatePlanTool {
         Box::pin(async move {
             let output: ToolResult = {
                 let plan = input.decode_json::<UpdatePlanArgs>()?;
-                tracing::debug!(
+                nanocode_trace::debug!(
                     explanation = ?plan.explanation,
                     step_count = plan.plan.len(),
                     "updating plan"
                 );
                 for (index, item) in plan.plan.iter().enumerate() {
-                    tracing::debug!(
+                    nanocode_trace::debug!(
                         index,
                         step = item.step,
                         status = ?item.status,

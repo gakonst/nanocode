@@ -160,7 +160,7 @@ impl AgentTree {
 
     #[must_use]
     pub fn lines(&self, theme: &Theme, selected: Option<usize>) -> Vec<Line<'static>> {
-        let _span = tracing::info_span!("tui.tree.layout", nodes = self.nodes.len()).entered();
+        let _span = nanocode_trace::info_span!("tui.tree.layout", nodes = self.nodes.len()).entered();
         self.ordered()
             .into_iter()
             .enumerate()

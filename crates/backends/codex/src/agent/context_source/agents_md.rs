@@ -1,7 +1,7 @@
 use std::{path::Path, sync::Arc};
 
 use nanocode_home::{Diagnostic, Level, ProjectHome, combine_instructions};
-use tracing::warn;
+use nanocode_trace::warn;
 
 pub(crate) fn load_global_instructions(nanocode_home: Option<&Path>) -> Option<Arc<str>> {
     let global = nanocode_home::global_instructions(nanocode_home?);

@@ -21,7 +21,7 @@ pub(super) struct WarmupOutcome {
 struct CompactionLifecycle<'a> {
     events: &'a EventSink,
     stats: &'a mut RunStats,
-    span: tracing::Span,
+    span: nanocode_trace::Span,
     after_model_call_index: u32,
     started_at: Instant,
     finished: bool,
@@ -316,7 +316,7 @@ impl ModelRun {
     pub(super) async fn execute_warmup(
         &mut self,
         factory: &ResponsesAttemptFactory,
-        span: &tracing::Span,
+        span: &nanocode_trace::Span,
         request_effort: Thinking,
     ) -> Result<Option<WarmupExecution>> {
         if let Some(steps) = &self.execution_steps

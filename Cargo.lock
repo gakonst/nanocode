@@ -223,11 +223,11 @@ dependencies = [
  "nanocode-sync",
  "nanocode-tool-contracts",
  "nanocode-tool-host",
+ "nanocode-trace",
  "nanocode-turnlog",
  "serde",
  "serde_json",
  "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -275,10 +275,10 @@ dependencies = [
  "nanocode-tool-contracts",
  "nanocode-tool-host",
  "nanocode-tool-runtime",
+ "nanocode-trace",
  "serde",
  "serde_json",
  "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -302,7 +302,7 @@ dependencies = [
  "nanocode-digest",
  "nanocode-sync",
  "nanocode-sys",
- "tracing",
+ "nanocode-trace",
 ]
 
 [[package]]
@@ -329,12 +329,12 @@ dependencies = [
  "nanocode-tool-contracts",
  "nanocode-tool-host",
  "nanocode-tools",
+ "nanocode-trace",
  "nanocode-types",
  "nanocode-url",
  "serde",
  "serde_json",
  "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -353,11 +353,11 @@ dependencies = [
  "nanocode-sync",
  "nanocode-sys",
  "nanocode-tls",
+ "nanocode-trace",
  "nanocode-url",
  "serde",
  "serde_json",
  "tokio",
- "tracing",
  "unicode-normalization",
 ]
 
@@ -402,11 +402,11 @@ dependencies = [
  "nanocode-tls",
  "nanocode-tool-host",
  "nanocode-tools",
+ "nanocode-trace",
  "nanocode-types",
  "serde",
  "serde_json",
  "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -427,6 +427,7 @@ dependencies = [
  "nanocode-sync",
  "nanocode-sys",
  "nanocode-tls",
+ "nanocode-trace",
  "nanocode-types",
  "nanocode-url",
  "nanocode-websocket",
@@ -434,7 +435,6 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -475,12 +475,12 @@ dependencies = [
  "nanocode-store-jsonl",
  "nanocode-sync",
  "nanocode-tempo",
+ "nanocode-trace",
  "nanocode-tui",
  "psh",
  "serde",
  "serde_json",
  "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -496,11 +496,11 @@ dependencies = [
  "nanocode-sync",
  "nanocode-tool-contracts",
  "nanocode-tools",
+ "nanocode-trace",
  "nanocode-types-core",
  "serde",
  "serde_json",
  "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -513,10 +513,10 @@ dependencies = [
  "nanocode-sync",
  "nanocode-sys",
  "nanocode-tool-contracts",
+ "nanocode-trace",
  "serde",
  "serde_json",
  "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -582,10 +582,10 @@ dependencies = [
  "nanocode-durability-core",
  "nanocode-platform",
  "nanocode-sync",
+ "nanocode-trace",
  "serde",
  "serde_json",
  "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -654,9 +654,9 @@ dependencies = [
  "nanocode-png",
  "nanocode-sync",
  "nanocode-sys",
+ "nanocode-trace",
  "nanocode-types-core",
  "nanocode-webp",
- "tracing",
 ]
 
 [[package]]
@@ -670,7 +670,7 @@ dependencies = [
 name = "nanocode-machine"
 version = "0.7.0"
 dependencies = [
- "tracing",
+ "nanocode-trace",
 ]
 
 [[package]]
@@ -681,11 +681,11 @@ dependencies = [
  "nanocode-digest",
  "nanocode-sync",
  "nanocode-sys",
+ "nanocode-trace",
  "nanocode-url",
  "serde",
  "serde_json",
  "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -699,11 +699,11 @@ dependencies = [
  "nanocode-platform",
  "nanocode-sync",
  "nanocode-tls",
+ "nanocode-trace",
  "nanocode-url",
  "serde",
  "serde_json",
  "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -723,12 +723,12 @@ dependencies = [
  "nanocode-tls",
  "nanocode-tool-provider",
  "nanocode-tools",
+ "nanocode-trace",
  "nanocode-turnlog",
  "nanocode-types",
  "serde",
  "serde_json",
  "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -743,11 +743,11 @@ dependencies = [
  "nanocode-platform",
  "nanocode-sync",
  "nanocode-tempo",
+ "nanocode-trace",
  "serde",
  "serde_json",
  "tokio",
  "tokio-rustls",
- "tracing",
 ]
 
 [[package]]
@@ -764,11 +764,10 @@ dependencies = [
  "nanocode-platform",
  "nanocode-sync",
  "nanocode-tls",
+ "nanocode-trace",
  "serde",
  "serde_json",
  "tokio",
- "tracing",
- "tracing-core",
 ]
 
 [[package]]
@@ -799,9 +798,9 @@ dependencies = [
  "nanocode-process-contracts",
  "nanocode-sync",
  "nanocode-sys",
+ "nanocode-trace",
  "serde_json",
  "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -856,6 +855,7 @@ dependencies = [
  "nanocode-platform",
  "nanocode-sync",
  "nanocode-sys",
+ "nanocode-trace",
  "nanocode-x509",
  "rustls",
  "rustls-graviola",
@@ -864,7 +864,6 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-rustls",
- "tracing",
 ]
 
 [[package]]
@@ -907,11 +906,11 @@ dependencies = [
  "nanocode-subagents",
  "nanocode-sync",
  "nanocode-sys",
+ "nanocode-trace",
  "nanocode-turnlog",
  "nanocode-websocket",
  "serde_json",
  "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -922,11 +921,11 @@ dependencies = [
  "nanocode-digest",
  "nanocode-durability-core",
  "nanocode-platform",
+ "nanocode-trace",
  "nanocode-zstd",
  "serde",
  "serde_json",
  "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -956,10 +955,10 @@ dependencies = [
  "nanocode-schema",
  "nanocode-sync",
  "nanocode-tool-contracts",
+ "nanocode-trace",
  "serde",
  "serde_json",
  "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -987,8 +986,8 @@ version = "0.7.0"
 dependencies = [
  "nanocode-observability",
  "nanocode-sync",
+ "nanocode-trace",
  "serde_json",
- "tracing",
 ]
 
 [[package]]
@@ -1001,10 +1000,10 @@ version = "0.7.0"
 dependencies = [
  "nanocode-platform",
  "nanocode-sync",
+ "nanocode-trace",
  "rustls",
  "rustls-graviola",
  "rustls-platform-verifier",
- "tracing",
 ]
 
 [[package]]
@@ -1031,11 +1030,11 @@ dependencies = [
  "nanocode-tool-contracts",
  "nanocode-tool-provider",
  "nanocode-tools",
+ "nanocode-trace",
  "nanocode-turnlog",
  "nanocode-types",
  "serde",
  "serde_json",
- "tracing",
 ]
 
 [[package]]
@@ -1064,13 +1063,13 @@ dependencies = [
  "nanocode-tool-host",
  "nanocode-tool-provider",
  "nanocode-tools",
+ "nanocode-trace",
  "nanocode-url",
  "nanocode-websocket",
  "serde",
  "serde_json",
  "tokio",
  "tokio-rustls",
- "tracing",
 ]
 
 [[package]]
@@ -1093,15 +1092,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "nanocode-trace"
+version = "0.7.0"
+dependencies = [
+ "pin-project-lite",
+]
+
+[[package]]
 name = "nanocode-tui"
 version = "0.7.0"
 dependencies = [
  "memchr",
  "nanocode-sync",
  "nanocode-sys",
+ "nanocode-trace",
  "serde",
  "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -1123,11 +1129,11 @@ dependencies = [
  "futures-util",
  "nanocode-platform",
  "nanocode-sync",
+ "nanocode-trace",
  "nanocode-types-core",
  "serde",
  "serde_json",
  "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -1335,9 +1341,9 @@ version = "0.7.0"
 dependencies = [
  "nanocode-platform",
  "nanocode-sys",
+ "nanocode-trace",
  "rustls",
  "rustls-webpki",
- "tracing",
  "webpki-root-certs",
  "windows-sys",
 ]
@@ -1358,6 +1364,7 @@ dependencies = [
  "memchr",
  "nanocode-flags",
  "nanocode-numeric",
+ "nanocode-trace",
  "rustpython-common",
  "rustpython-compiler-core",
  "rustpython-literal",
@@ -1365,7 +1372,6 @@ dependencies = [
  "rustpython-ruff_text_size",
  "rustpython-unicode",
  "rustpython-wtf8",
- "tracing",
 ]
 
 [[package]]
@@ -1559,6 +1565,7 @@ dependencies = [
  "nanocode-flags",
  "nanocode-numeric",
  "nanocode-platform",
+ "nanocode-trace",
  "rustpython-codegen",
  "rustpython-common",
  "rustpython-compiler",
@@ -1571,7 +1578,6 @@ dependencies = [
  "rustpython-ruff_text_size",
  "rustpython-sre_engine",
  "rustpython-unicode",
- "tracing",
 ]
 
 [[package]]
@@ -1707,25 +1713,6 @@ checksum = "1729aa945f29d91ba541258c8df89027d5792d85a8841fb65e8bf0f4ede4ef61"
 dependencies = [
  "rustls",
  "tokio",
-]
-
-[[package]]
-name = "tracing"
-version = "0.1.44"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "63e71662fa4b2a2c3a26f570f037eb95bb1f85397f3cd8076caed2f026a6d100"
-dependencies = [
- "pin-project-lite",
- "tracing-core",
-]
-
-[[package]]
-name = "tracing-core"
-version = "0.1.36"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "db97caf9d906fbde555dd62fa95ddba9eecfd14cb388e4f491a66d74cd5fb79a"
-dependencies = [
- "once_cell",
 ]
 
 [[package]]

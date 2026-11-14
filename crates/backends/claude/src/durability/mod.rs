@@ -1180,25 +1180,25 @@ impl ClaudeExecution {
             if !wire.same_conversation(recorded) {
                 return Ok(None);
             }
-            tracing::warn!(
+            nanocode_trace::warn!(
                 target: "nanocode_claude",
                 step_id,
                 "replaying a completed model step whose tools or system prompt changed since it was recorded"
             );
-            tracing::event!(
+            nanocode_trace::event!(
                 target: "nc_metrics",
-                tracing::Level::INFO,
+                nanocode_trace::Level::INFO,
                 { monotonic_counter.nc.claude.steps_replayed_across_prefix = 1_u64 }
             );
         } else {
-            tracing::warn!(
+            nanocode_trace::warn!(
                 target: "nanocode_claude",
                 step_id,
                 "sending again a model step that recorded no result although its request changed since it was recorded"
             );
-            tracing::event!(
+            nanocode_trace::event!(
                 target: "nc_metrics",
-                tracing::Level::INFO,
+                nanocode_trace::Level::INFO,
                 { monotonic_counter.nc.claude.steps_rerun_across_request = 1_u64 }
             );
         }

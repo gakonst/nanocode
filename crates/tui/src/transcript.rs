@@ -511,7 +511,7 @@ impl Transcript {
 
     fn limit(&mut self, needed: usize) -> Option<usize> {
         if self.last_total.is_none() {
-            let _span = tracing::info_span!(
+            let _span = nanocode_trace::info_span!(
                 "tui.transcript.extent",
                 cells = self.cells.len(),
                 needed,
@@ -747,13 +747,13 @@ impl Transcript {
         {
             return rows.clone();
         }
-        let span = tracing::info_span!(
+        let span = nanocode_trace::info_span!(
             "tui.transcript.layout",
             cell.index = index,
             cell.revision = cell.revision,
             width,
             mode = self.mode.label(),
-            layout.lines = tracing::field::Empty
+            layout.lines = nanocode_trace::field::Empty
         );
         let _entered = span.enter();
         let previous = self.cache[index].take();
@@ -847,15 +847,15 @@ impl Transcript {
     }
 
     pub fn render(&mut self, area: Rect, buffer: &mut Buffer, theme: &Theme, spinner: &str) {
-        let span = tracing::info_span!(
+        let span = nanocode_trace::info_span!(
             "tui.transcript.render",
             width = area.width,
             height = area.height,
             cells = self.cells.len(),
             mode = self.mode.label(),
             scroll.before = self.scroll,
-            scroll.after = tracing::field::Empty,
-            layout.visited_cells = tracing::field::Empty
+            scroll.after = nanocode_trace::field::Empty,
+            layout.visited_cells = nanocode_trace::field::Empty
         );
         let _entered = span.enter();
         self.spinner_cells.clear();
@@ -1737,7 +1737,7 @@ impl RenderContext<'_> {
         part: &Part,
         rows: usize,
     ) -> (Vec<Row>, usize) {
-        let _span = tracing::info_span!(
+        let _span = nanocode_trace::info_span!(
             "tui.tool.format",
             text.bytes = text.len(),
             ?body,
@@ -1838,7 +1838,7 @@ fn code_lines(
     width: u16,
     rows: usize,
 ) -> (Vec<(Line<'static>, usize)>, usize) {
-    let _span = tracing::info_span!(
+    let _span = nanocode_trace::info_span!(
         "tui.code.highlight",
         text.bytes = text.len(),
         width,

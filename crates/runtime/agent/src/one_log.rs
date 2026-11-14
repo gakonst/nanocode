@@ -1115,7 +1115,7 @@ impl EffectGate for OneLog {
                 call_id: call_id.to_owned(),
                 output,
             }) {
-                tracing::warn!(%error, call_id, "turn log could not record a tool result");
+                nanocode_trace::warn!(%error, call_id, "turn log could not record a tool result");
             }
         })
     }
@@ -1209,7 +1209,7 @@ impl CellJournalSink for OneLogJournals {
                 cell: cell_id,
                 session,
             }) {
-                tracing::warn!(%error, "turn log could not forget a cell journal");
+                nanocode_trace::warn!(%error, "turn log could not forget a cell journal");
             }
         })
     }

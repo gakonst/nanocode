@@ -550,7 +550,7 @@ fn scan(
         }
         match parsed {
             Err(error) => {
-                tracing::warn!(
+                nanocode_trace::warn!(
                     position = location.position,
                     %error,
                     "skipping an unparseable JSONL line"
@@ -1037,7 +1037,7 @@ impl Owners for index::Index {
 
 impl Journal {
     fn open(path: &Path, sidecar: bool) -> Result<Self, StoreError> {
-        let _span = tracing::info_span!("durability.jsonl.open").entered();
+        let _span = nanocode_trace::info_span!("durability.jsonl.open").entered();
         let (file, path, mut reads, source) = loop {
             let file = OpenOptions::new()
                 .create(true)
@@ -1184,7 +1184,7 @@ impl Journal {
         if !std::mem::take(&mut self.unsynced) {
             return Ok(());
         }
-        let _span = tracing::info_span!("durability.jsonl.sync").entered();
+        let _span = nanocode_trace::info_span!("durability.jsonl.sync").entered();
         sync_journal(&self.file).map_err(backend)
     }
 
@@ -1200,7 +1200,7 @@ impl Journal {
                 return Ok(());
             };
             if !process_alive(sealed.pid) {
-                tracing::warn!(
+                nanocode_trace::warn!(
                     seal = sealed.id,
                     pid = sealed.pid,
                     "releasing the seal of an exited JSONL compactor"
@@ -1231,7 +1231,7 @@ impl Journal {
         if end <= self.index.offset {
             return Ok(());
         }
-        let _span = tracing::info_span!(
+        let _span = nanocode_trace::info_span!(
             "durability.jsonl.recover",
             log.unindexed_bytes = end - self.index.offset
         )
@@ -1298,7 +1298,7 @@ impl Journal {
                 }
                 match parsed {
                     Err(error) => {
-                        tracing::warn!(
+                        nanocode_trace::warn!(
                             position = location.position,
                             %error,
                             "skipping an unparseable JSONL line"
@@ -1389,7 +1389,7 @@ impl Journal {
             .map(|(_, entry, ..)| claim(entry))
             .collect::<Result<Vec<_>, _>>()?;
         if matches!(judge(&self.index, &claims)?, Verdict::Stale) {
-            tracing::debug!(
+            nanocode_trace::debug!(
                 position = lines.first().map(|(location, ..)| location.position),
                 "skipping a JSONL entry superseded by a concurrent writer"
             );
@@ -2018,13 +2018,13 @@ impl Journal {
     }
 
     fn commit(&mut self, entries: Vec<Entry>) -> Result<Outcome, StoreError> {
-        let span = tracing::info_span!(
+        let span = nanocode_trace::info_span!(
             "durability.jsonl.append",
             entry.count = entries.len(),
-            log.bytes = tracing::field::Empty,
-            encode.duration_ms = tracing::field::Empty,
-            index.duration_ms = tracing::field::Empty,
-            outcome = tracing::field::Empty
+            log.bytes = nanocode_trace::field::Empty,
+            encode.duration_ms = nanocode_trace::field::Empty,
+            index.duration_ms = nanocode_trace::field::Empty,
+            outcome = nanocode_trace::field::Empty
         );
         let _entered = span.enter();
         let started = Instant::now();
@@ -2099,13 +2099,13 @@ impl Journal {
     }
 
     fn commit_each(&mut self, entries: Vec<Entry>) -> Result<Vec<Judged>, StoreError> {
-        let span = tracing::info_span!(
+        let span = nanocode_trace::info_span!(
             "durability.jsonl.append",
             entry.count = entries.len(),
-            log.bytes = tracing::field::Empty,
-            encode.duration_ms = tracing::field::Empty,
-            index.duration_ms = tracing::field::Empty,
-            outcome = tracing::field::Empty
+            log.bytes = nanocode_trace::field::Empty,
+            encode.duration_ms = nanocode_trace::field::Empty,
+            index.duration_ms = nanocode_trace::field::Empty,
+            outcome = nanocode_trace::field::Empty
         );
         let _entered = span.enter();
         let started = Instant::now();
@@ -2763,7 +2763,7 @@ impl JsonlStore {
         let (colocated, hints) = std::sync::mpsc::channel::<(String, String)>();
         let failed = Arc::new(OnceLock::new());
         let failure = Arc::clone(&failed);
-        let span = tracing::Span::current();
+        let span = nanocode_trace::Span::current();
         thread::Builder::new()
             .name("nanocode-jsonl".into())
             .spawn(move || {
@@ -2797,7 +2797,7 @@ impl JsonlStore {
                             let settled = match hardened.get() {
                                 Some(error) => Err(error.clone()),
                                 None => {
-                                    let _span = tracing::info_span!(
+                                    let _span = nanocode_trace::info_span!(
                                         "durability.jsonl.sync",
                                         reply.count = written.len()
                                     )
@@ -2895,14 +2895,14 @@ impl JsonlStore {
         answer: Reply,
         action: impl FnOnce(&mut Sessions) -> Result<T, StoreError> + Send + 'static,
     ) -> StoreFuture<'_, Result<T, StoreError>> {
-        let parent = tracing::Span::current();
+        let parent = nanocode_trace::Span::current();
         let queued = Instant::now();
         let (reply, result) = oneshot::channel();
         let job: Job = Box::new(move |sessions| {
             if matches!(answer, Reply::Wanted) && reply.is_closed() {
                 return None;
             }
-            let span = tracing::info_span!(
+            let span = nanocode_trace::info_span!(
                 parent: &parent,
                 "durability.jsonl.worker",
                 queue.duration_ms = queued.elapsed().as_secs_f64() * 1_000.0

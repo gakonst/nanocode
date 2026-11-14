@@ -404,7 +404,7 @@ fn route(binding: Binding, id: String, text: String) {
     drop(nanocode_platform::spawn_task(async move {
         if binding.ends_with_turn {
             if !(binding.steer)(text).await {
-                tracing::debug!(task_id = %id, "background Bash notification found no running turn");
+                nanocode_trace::debug!(task_id = %id, "background Bash notification found no running turn");
             }
             return;
         }
@@ -412,7 +412,7 @@ fn route(binding: Binding, id: String, text: String) {
             return;
         };
         if let Err(error) = agent.route_prompt_request(PromptRequest::new(text)).await {
-            tracing::warn!(%error, task_id = %id, "background Bash notification did not reach the agent");
+            nanocode_trace::warn!(%error, task_id = %id, "background Bash notification did not reach the agent");
         }
     }));
 }

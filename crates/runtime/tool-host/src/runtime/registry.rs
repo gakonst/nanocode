@@ -199,9 +199,9 @@ impl ToolRegistry {
         input: ToolInput,
         context: ToolContext<'_>,
     ) -> ToolOutput {
-        let trace_content = tracing::enabled!(
+        let trace_content = nanocode_trace::enabled!(
             target: "nanocode_code_mode",
-            tracing::Level::INFO
+            nanocode_trace::Level::INFO
         );
         let (arguments_kind, arguments) = match &input {
             ToolInput::Function(arguments) => ("function", arguments.get()),
@@ -271,9 +271,9 @@ impl ToolRegistry {
         input: Value,
         context: ToolContext<'_>,
     ) -> ToolOutput {
-        let trace_content = tracing::enabled!(
+        let trace_content = nanocode_trace::enabled!(
             target: "nanocode_code_mode",
-            tracing::Level::INFO
+            nanocode_trace::Level::INFO
         );
         let arguments_content = trace_content
             .then(|| serde_json::to_string(&input).ok())
@@ -615,7 +615,7 @@ impl ToolRegistry {
         for (tool, exposure) in tools {
             let definition = tool.definition();
             if self.by_name.contains_key(definition.name()) {
-                tracing::warn!(
+                nanocode_trace::warn!(
                     tool_name = definition.name(),
                     "skipping duplicate tool that is already registered"
                 );
@@ -769,7 +769,7 @@ fn first_normalized_definitions(
                 }
                 Some(first) => {
                     if first != definition.name() {
-                        tracing::warn!(
+                        nanocode_trace::warn!(
                             tool_name = definition.name(),
                             code_mode_name = normalized,
                             "skipping tool with a duplicate normalized Code Mode name"

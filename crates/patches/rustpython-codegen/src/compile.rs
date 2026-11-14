@@ -599,7 +599,7 @@ fn compile_program_with_syntax_warning_handler<'a>(
     );
     compiler.compile_program(ast, symbol_table)?;
     let code = compiler.exit_scope();
-    tracing::trace!("Compilation completed: {code:?}");
+    nanocode_trace::trace!("Compilation completed: {code:?}");
     Ok(code)
 }
 
@@ -627,7 +627,7 @@ fn compile_program_single_with_syntax_warning_handler<'a>(
     );
     compiler.compile_program_single(&ast.body, symbol_table)?;
     let code = compiler.exit_scope();
-    tracing::trace!("Compilation completed: {code:?}");
+    nanocode_trace::trace!("Compilation completed: {code:?}");
     Ok(code)
 }
 
@@ -654,7 +654,7 @@ fn compile_block_expression_with_syntax_warning_handler<'a>(
     );
     compiler.compile_block_expr(&ast.body, symbol_table)?;
     let code = compiler.exit_scope();
-    tracing::trace!("Compilation completed: {code:?}");
+    nanocode_trace::trace!("Compilation completed: {code:?}");
     Ok(code)
 }
 
@@ -3508,7 +3508,7 @@ impl<'warnings> Compiler<'warnings> {
     }
 
     fn compile_statement(&mut self, statement: &ast::Stmt) -> CompileResult<()> {
-        tracing::trace!("Compiling {statement:?}");
+        nanocode_trace::trace!("Compiling {statement:?}");
         let prev_source_range = self.current_source_range;
         self.set_source_range(statement.range());
 
@@ -8851,7 +8851,7 @@ impl<'warnings> Compiler<'warnings> {
     }
 
     fn compile_expression(&mut self, expression: &ast::Expr) -> CompileResult<()> {
-        tracing::trace!("Compiling {expression:?}");
+        nanocode_trace::trace!("Compiling {expression:?}");
         let range = expression.range();
         self.set_source_range(range);
 

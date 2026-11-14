@@ -83,14 +83,14 @@ fn webpki(
     }
     let (added, ignored) = store.add_parsable_certificates(system);
     if ignored > 0 {
-        tracing::warn!("{ignored} platform CA root certificates were ignored due to errors");
+        nanocode_trace::warn!("{ignored} platform CA root certificates were ignored due to errors");
     }
     if store.is_empty() {
         return Err(TlsError::General(
             "No CA certificates were loaded from the system".to_owned(),
         ));
     }
-    tracing::debug!("Loaded {added} CA root certificates from the system keychains");
+    nanocode_trace::debug!("Loaded {added} CA root certificates from the system keychains");
     WebPkiServerVerifier::builder_with_provider(store.into(), crypto_provider.clone())
         .build()
         .map_err(|error| TlsError::Other(OtherError(Arc::new(error))))
@@ -102,9 +102,9 @@ fn keychain_roots() -> Vec<pki_types::CertificateDer<'static>> {
         match fs::read(path) {
             Ok(bytes) => match keychain_certificates(&bytes) {
                 Some(found) => certificates.extend(found),
-                None => tracing::warn!("{path} is not a readable keychain"),
+                None => nanocode_trace::warn!("{path} is not a readable keychain"),
             },
-            Err(error) => tracing::warn!("Error reading {path}: {error}"),
+            Err(error) => nanocode_trace::warn!("Error reading {path}: {error}"),
         }
     }
     certificates
@@ -239,7 +239,7 @@ impl ServerCertVerifier for Verifier {
                     .map(|()| ServerCertVerified::assertion())
             }
         };
-        result.inspect_err(|error| tracing::error!("failed to verify TLS certificate: {error}"))
+        result.inspect_err(|error| nanocode_trace::error!("failed to verify TLS certificate: {error}"))
     }
 
     fn verify_tls12_signature(

@@ -118,7 +118,7 @@ impl ProcessChild {
                 match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::child()) {
                     Ok(signal) => Some(signal),
                     Err(error) => {
-                        tracing::warn!(%error, "shell exit notifications unavailable; using polling");
+                        nanocode_trace::warn!(%error, "shell exit notifications unavailable; using polling");
                         None
                     }
                 }

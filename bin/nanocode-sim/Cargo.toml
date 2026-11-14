@@ -34,7 +34,7 @@ nanocode-turnlog.workspace = true
 nanocode-websocket.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["sync", "macros", "io-util"] }
-tracing.workspace = true
+nanocode-trace.workspace = true
 
 [lints]
 workspace = true

@@ -348,7 +348,7 @@ impl CellJournalSink for DurableCellJournals {
                 replace(&store, &session_id, owned, cells, &records, Settle::Ordered).await
             };
             if let Err(error) = forgotten.await {
-                tracing::warn!(cell_id, %error, "a Code Mode cell journal could not be forgotten");
+                nanocode_trace::warn!(cell_id, %error, "a Code Mode cell journal could not be forgotten");
             }
         })
     }

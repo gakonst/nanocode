@@ -622,14 +622,14 @@ async fn publish_received<'a>(
     timing: &mut StreamTiming,
 ) -> Result<(StreamEvent<'a>, Published), ResponsesServiceError> {
     let failure = matches!(&event.decoded, Ok((StreamEvent::Failure, _)));
-    let traced = tracing::enabled!(target: "nanocode_codex", tracing::Level::TRACE);
+    let traced = nanocode_trace::enabled!(target: "nanocode_codex", nanocode_trace::Level::TRACE);
     let raw_event = if failure || traced || context.observer.raw_api_events {
         context.credentials.redact(event.raw)
     } else {
         Cow::Borrowed(event.raw)
     };
     if traced {
-        tracing::trace!(
+        nanocode_trace::trace!(
             target: "nanocode_codex",
             direction = "inbound",
             transport = context.transport,
@@ -1052,7 +1052,7 @@ fn emit_display_delta(
         .pipeline
         .display_delta_emit_duration_ns
         .saturating_add(emitted_ns.saturating_sub(published.ready_ns));
-    tracing::trace!(
+    nanocode_trace::trace!(
         target: "nanocode_stream_timing",
         stage = "api_delta_emitted",
         request.id = events.request_id(),

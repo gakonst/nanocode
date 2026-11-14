@@ -35,7 +35,7 @@ serde.workspace = true
 serde_json.workspace = true
 nanocode-digest.workspace = true
 tokio = { workspace = true, features = ["macros", "sync", "time"] }
-tracing.workspace = true
+nanocode-trace.workspace = true
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 nanocode-http.workspace = true

@@ -273,7 +273,7 @@ impl<B, D: RuntimeDefaults> RuntimeBuilder<B, D> {
             {
                 builder.data.durability = Some(store.await.map_err(Arc::new));
             }
-            let span = tracing::Span::current();
+            let span = nanocode_trace::Span::current();
             let (completed, result) = tokio::sync::oneshot::channel();
             std::thread::Builder::new()
                 .name("nanocode-runtime-construction".into())
@@ -1205,12 +1205,12 @@ impl AgentRuntime {
     async fn construct(&self, spec: AgentSpec) -> AgentResult {
         let recipe = self.inner.recipe(spec.model.family())?;
         let ownership = Arc::clone(&self.inner.ownership);
-        let span = tracing::info_span!(
+        let span = nanocode_trace::info_span!(
             "agent.session.create",
             model = %spec.model,
             resume = spec.checkpoint.is_some() || spec.durable_state.is_some()
         );
-        tracing::Instrument::instrument(ownership.own(move || recipe(spec)), span).await
+        nanocode_trace::Instrument::instrument(ownership.own(move || recipe(spec)), span).await
     }
 }
 
@@ -1591,7 +1591,7 @@ impl Ownership {
         if (live.is_stopped() || !live.owns_session().await.unwrap_or(true))
             && let Err(error) = live.reopen().await
         {
-            tracing::warn!(
+            nanocode_trace::warn!(
                 session.id = session_id,
                 %error,
                 "the session's agent no longer owns it and could not reopen; its next prompt retries"

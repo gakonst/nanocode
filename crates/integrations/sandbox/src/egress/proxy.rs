@@ -38,7 +38,7 @@ use tokio::{
     time::timeout,
 };
 use tokio_rustls::{TlsAcceptor, TlsConnector};
-use tracing::{debug, error, info, warn};
+use nanocode_trace::{debug, error, info, warn};
 
 const HOP: &str = "connection keep-alive proxy-authenticate proxy-authorization proxy-connection te trailer transfer-encoding";
 

@@ -170,7 +170,7 @@ impl ProviderState {
             return;
         };
         if let Some(tool_count) = prewarmed {
-            tracing::info!(
+            nanocode_trace::info!(
                 target: "nanocode_code_mode",
                 tool_count,
                 "prewarmed MCP tool search index"
@@ -276,7 +276,7 @@ impl ProviderState {
         let index = match &catalog.search_index {
             Some(index) => Arc::clone(index),
             None => {
-                tracing::info!(
+                nanocode_trace::info!(
                     target: "nanocode_code_mode",
                     tool_count = catalog.entries.len(),
                     "building MCP tool search index"
@@ -310,7 +310,7 @@ impl ProviderState {
             catalog.revision += 1;
             catalog.active.len()
         });
-        tracing::debug!(
+        nanocode_trace::debug!(
             target: "nanocode_code_mode",
             result_count = selected.len(),
             active_count,

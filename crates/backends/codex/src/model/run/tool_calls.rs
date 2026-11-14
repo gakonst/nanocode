@@ -15,7 +15,7 @@ pub(super) struct ActiveToolCall {
     pub(super) completion: Arc<Slot<CompletedToolCall>>,
     pub(super) progress: Arc<Swap<ActiveToolProgress>>,
     pub(super) execution_started_at: Arc<SwapOption<Instant>>,
-    pub(super) span: tracing::Span,
+    pub(super) span: nanocode_trace::Span,
 }
 
 #[derive(Clone, Default)]
@@ -525,7 +525,7 @@ impl CodeModeObserver for DetachedNestedToolEvents {
         };
         observer.update(update);
         if let Some(error) = observer.error {
-            tracing::debug!(%error, "detached Code Mode update was not emitted");
+            nanocode_trace::debug!(%error, "detached Code Mode update was not emitted");
         }
     }
 }
@@ -584,7 +584,7 @@ impl CodeModeObserver for TurnTeardownEvents<'_> {
         }
         observer.update(update);
         if let Some(error) = observer.error {
-            tracing::debug!(%error, "terminated Code Mode update was not emitted");
+            nanocode_trace::debug!(%error, "terminated Code Mode update was not emitted");
         }
     }
 }
@@ -614,7 +614,7 @@ async fn execute_code_call(
     owned_context: Option<OwnedToolContext>,
     context: ToolContext<'_>,
     observer: &mut dyn CodeModeObserver,
-    tool_span: &tracing::Span,
+    tool_span: &nanocode_trace::Span,
     recover: bool,
 ) -> Result<Option<CodeModeExecution>> {
     if recover {
@@ -963,7 +963,7 @@ impl ModelRun {
         started_at: Instant,
         started_after_ns: Option<u64>,
         shell_abort_format: bool,
-        span: Option<&tracing::Span>,
+        span: Option<&nanocode_trace::Span>,
         partial_output: Option<&str>,
     ) -> Result<ToolOutputBody> {
         let duration_ns = elapsed_ns(started_at);
@@ -1070,7 +1070,7 @@ impl ModelRun {
         instruction_revision: Option<u64>,
         started_at: Instant,
         progress: &Swap<ActiveToolProgress>,
-        tool_span: &tracing::Span,
+        tool_span: &nanocode_trace::Span,
         recover: bool,
     ) -> Result<CompletedToolCall> {
         let qualified_name = qualified_tool_name(&call);

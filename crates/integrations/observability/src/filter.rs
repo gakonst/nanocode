@@ -1,6 +1,6 @@
 use std::{cmp::Ordering, error::Error, fmt, str::FromStr};
 
-use tracing_core::{
+use nanocode_trace::{
     Interest, LevelFilter, Metadata,
     metadata::ParseLevelFilterError,
     span::{Attributes, Id, Record},

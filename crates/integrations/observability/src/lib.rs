@@ -304,7 +304,7 @@ impl ObservabilityBuilder {
                 OtelLayer::new(provider.clone()),
                 And(
                     filter::scope(self.otel_filter.as_str())?,
-                    FilterFn(move |metadata: &tracing::Metadata<'_>| {
+                    FilterFn(move |metadata: &nanocode_trace::Metadata<'_>| {
                         metadata.target() != METRICS_TARGET
                             && (terminal || !terminal_target(metadata.target()))
                     }),
@@ -318,7 +318,7 @@ impl ObservabilityBuilder {
                 MetricsFilter,
                 And(
                     filter::scope(self.otel_filter.as_str())?,
-                    FilterFn(move |metadata: &tracing::Metadata<'_>| {
+                    FilterFn(move |metadata: &nanocode_trace::Metadata<'_>| {
                         terminal || !terminal_target(metadata.target())
                     }),
                 ),
@@ -326,7 +326,7 @@ impl ObservabilityBuilder {
             None => None,
         };
         init(Registry::new([fmt_layer, tracing_layer, metrics_layer]))?;
-        tracing::callsite::rebuild_interest_cache();
+        nanocode_trace::callsite::rebuild_interest_cache();
         Ok(ObservabilityGuard {
             tracer_provider,
             meter_provider,
@@ -452,7 +452,7 @@ impl Resource {
 }
 
 pub fn init(registry: Registry) -> Result<(), ObservabilityError> {
-    tracing::dispatcher::set_global_default(tracing::Dispatch::new(registry))
+    nanocode_trace::dispatcher::set_global_default(nanocode_trace::Dispatch::new(registry))
         .map_err(|_| ObservabilityError::Subscriber)?;
     Ok(())
 }

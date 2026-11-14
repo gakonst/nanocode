@@ -4,7 +4,7 @@ use nanocode::agent::events::{AgentEvent, AgentEventKind};
 use nanocode_observability::{METRICS_TARGET, SpanContext, TUI_TARGET};
 use nanocode_tui::input::{Event, KeyCode, KeyModifiers, MouseEventKind};
 use serde_json::Value;
-use tracing::{Level, Span, field::Empty};
+use nanocode_trace::{Level, Span, field::Empty};
 
 pub fn input_span(event: &Event) -> Span {
     let action = match event {
@@ -54,7 +54,7 @@ pub fn input_span(event: &Event) -> Span {
         Event::FocusGained => "focus_gained",
         Event::FocusLost => "focus_lost",
     };
-    tracing::info_span!(target: TUI_TARGET, "nc.input", input.action = action, input.redraw = Empty, session.id = Empty)
+    nanocode_trace::info_span!(target: TUI_TARGET, "nc.input", input.action = action, input.redraw = Empty, session.id = Empty)
 }
 
 #[derive(Default)]
@@ -70,7 +70,7 @@ pub struct TurnSpans {
 impl TurnSpans {
     pub fn begin(&mut self, request_id: &str, session_id: Option<&str>) -> Span {
         self.finish(None);
-        let span = tracing::info_span!(
+        let span = nanocode_trace::info_span!(
             target: "nanocode",
             "nc.turn",
             turn.request_id = request_id,
@@ -90,7 +90,7 @@ impl TurnSpans {
     pub fn event(&mut self, event: &AgentEvent, session_id: Option<&str>) {
         if self.turn.is_none() {
             if event.kind != AgentEventKind::RunStarted
-                || !tracing::enabled!(target: "nanocode", tracing::Level::INFO)
+                || !nanocode_trace::enabled!(target: "nanocode", nanocode_trace::Level::INFO)
             {
                 return;
             }
@@ -105,7 +105,7 @@ impl TurnSpans {
         match event.kind {
             AgentEventKind::ModelCallStarted => {
                 let payload = payload(event);
-                let span = tracing::info_span!(
+                let span = nanocode_trace::info_span!(
                     target: "nanocode",
                     parent: &turn,
                     "nc.model_call",
@@ -155,7 +155,7 @@ impl TurnSpans {
                     .or_else(|| call_id.rsplit_once('/').map(|(parent, _)| parent))
                     .and_then(|parent| self.tools.get(parent))
                     .unwrap_or(&turn);
-                let span = tracing::info_span!(
+                let span = nanocode_trace::info_span!(
                     target: "nanocode",
                     parent: parent,
                     "nc.tool_call",
@@ -183,7 +183,7 @@ impl TurnSpans {
             }
             AgentEventKind::RunSteered => {
                 self.steers += 1;
-                tracing::info!(target: "nanocode", parent: &turn, "steer delivered");
+                nanocode_trace::info!(target: "nanocode", parent: &turn, "steer delivered");
             }
             AgentEventKind::RunCompleted | AgentEventKind::RunFailed => {
                 let payload = payload(event);
@@ -234,7 +234,7 @@ pub struct FrameMetrics {
 impl FrameMetrics {
     pub fn new() -> Self {
         Self {
-            enabled: tracing::enabled!(target: METRICS_TARGET, Level::INFO),
+            enabled: nanocode_trace::enabled!(target: METRICS_TARGET, Level::INFO),
             input: None,
             stream: None,
             resize: None,
@@ -244,7 +244,7 @@ impl FrameMetrics {
 
     pub fn wakeup(&self) {
         if self.enabled {
-            tracing::event!(target: METRICS_TARGET, Level::INFO, { monotonic_counter.nc.loop.wakeups = 1_u64 });
+            nanocode_trace::event!(target: METRICS_TARGET, Level::INFO, { monotonic_counter.nc.loop.wakeups = 1_u64 });
         }
     }
 
@@ -256,7 +256,7 @@ impl FrameMetrics {
                 .get_or_insert_with(|| nanocode_observability::span_context(span));
             if resize {
                 self.resize.get_or_insert(now);
-                tracing::event!(target: METRICS_TARGET, Level::INFO, { monotonic_counter.nc.resize.events = 1_u64 });
+                nanocode_trace::event!(target: METRICS_TARGET, Level::INFO, { monotonic_counter.nc.resize.events = 1_u64 });
             }
         }
     }
@@ -268,7 +268,7 @@ impl FrameMetrics {
     }
 
     pub fn frame(&mut self, session: Option<&str>) -> Span {
-        let span = tracing::info_span!(target: TUI_TARGET, "nc.frame", session.id = session, frame.input = self.input.is_some(), frame.stream = self.stream.is_some(), frame.resize = self.resize.is_some(), frame.input_ms = Empty, frame.stream_ms = Empty, frame.resize_ms = Empty, thread.cpu_ns = Empty, otel.status_code = Empty);
+        let span = nanocode_trace::info_span!(target: TUI_TARGET, "nc.frame", session.id = session, frame.input = self.input.is_some(), frame.stream = self.stream.is_some(), frame.resize = self.resize.is_some(), frame.input_ms = Empty, frame.stream_ms = Empty, frame.resize_ms = Empty, thread.cpu_ns = Empty, otel.status_code = Empty);
         if let Some(context) = self.input_context.take() {
             nanocode_observability::add_link(&span, context);
         }
@@ -284,24 +284,24 @@ impl FrameMetrics {
             return;
         };
         let now = Instant::now();
-        tracing::event!(target: METRICS_TARGET, Level::INFO, {
+        nanocode_trace::event!(target: METRICS_TARGET, Level::INFO, {
             histogram.nc.frame.duration_ms = millis(started, now),
             monotonic_counter.nc.frames = 1_u64,
         });
         if let Some(at) = self.input.take() {
             let latency = millis(at, now);
             span.record("frame.input_ms", latency);
-            tracing::event!(target: METRICS_TARGET, Level::INFO, { histogram.nc.input_to_frame_ms = latency });
+            nanocode_trace::event!(target: METRICS_TARGET, Level::INFO, { histogram.nc.input_to_frame_ms = latency });
         }
         if let Some(at) = self.stream.take() {
             let latency = millis(at, now);
             span.record("frame.stream_ms", latency);
-            tracing::event!(target: METRICS_TARGET, Level::INFO, { histogram.nc.stream_to_frame_ms = latency });
+            nanocode_trace::event!(target: METRICS_TARGET, Level::INFO, { histogram.nc.stream_to_frame_ms = latency });
         }
         if let Some(at) = self.resize.take() {
             let latency = millis(at, now);
             span.record("frame.resize_ms", latency);
-            tracing::event!(target: METRICS_TARGET, Level::INFO, { histogram.nc.resize_to_frame_ms = latency });
+            nanocode_trace::event!(target: METRICS_TARGET, Level::INFO, { histogram.nc.resize_to_frame_ms = latency });
         }
     }
 }

@@ -540,7 +540,7 @@ impl Identity {
         let forgotten =
             nanocode_platform::spawn_blocking(move || forget(&directory, &key, &token)).await;
         if let Ok(Err(error)) = forgotten {
-            tracing::warn!(target: "nanocode", error = %error, "a refused email pass stays on disk");
+            nanocode_trace::warn!(target: "nanocode", error = %error, "a refused email pass stays on disk");
         }
     }
 }
@@ -599,13 +599,13 @@ pub(crate) fn load(
         let (entry, owner) = match read_pass(&path) {
             Ok(read) => read,
             Err(error) => {
-                tracing::warn!(target: "nanocode", path = %path.display(), error = %error, "skipped a stored email pass");
+                nanocode_trace::warn!(target: "nanocode", path = %path.display(), error = %error, "skipped a stored email pass");
                 continue;
             }
         };
         if !entry.usable(now, true) {
             if let Err(error) = fs::remove_file(&path) {
-                tracing::warn!(target: "nanocode", path = %path.display(), error = %error, "an expired email pass stays on disk");
+                nanocode_trace::warn!(target: "nanocode", path = %path.display(), error = %error, "an expired email pass stays on disk");
             }
             continue;
         }

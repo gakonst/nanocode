@@ -13,7 +13,7 @@ use nanocode_mcp::{
 use serde_json::Value;
 #[cfg(not(target_family = "wasm"))]
 use tokio::io::AsyncReadExt;
-use tracing::{Instrument, Span, info_span};
+use nanocode_trace::{Instrument, Span, info_span};
 
 #[cfg(not(target_family = "wasm"))]
 use nanocode_mcp_http::oauth::{
@@ -353,11 +353,11 @@ pub(crate) async fn connect(
         parent: parent,
         "mcp.transport_connect",
         otel.kind = "client",
-        otel.status_code = tracing::field::Empty,
+        otel.status_code = nanocode_trace::field::Empty,
         mcp.server = server_name,
         mcp.transport = transport_name,
         mcp.auth = auth_mode,
-        status = tracing::field::Empty,
+        status = nanocode_trace::field::Empty,
     );
 
     let result = match &server.transport {
@@ -542,9 +542,9 @@ async fn connect_stored_oauth(
         parent: parent,
         "mcp.oauth.credentials_load",
         otel.kind = "internal",
-        otel.status_code = tracing::field::Empty,
-        status = tracing::field::Empty,
-        credential.found = tracing::field::Empty,
+        otel.status_code = nanocode_trace::field::Empty,
+        status = nanocode_trace::field::Empty,
+        credential.found = nanocode_trace::field::Empty,
     );
     let credentials = store
         .load(server_name, url)
@@ -576,9 +576,9 @@ async fn connect_stored_oauth(
         parent: parent,
         "mcp.oauth.restore",
         otel.kind = "internal",
-        otel.status_code = tracing::field::Empty,
-        status = tracing::field::Empty,
-        metadata.cache_hit = tracing::field::Empty,
+        otel.status_code = nanocode_trace::field::Empty,
+        status = nanocode_trace::field::Empty,
+        metadata.cache_hit = nanocode_trace::field::Empty,
     );
     let oauth = transport_from_credentials(
         server_name,
@@ -622,8 +622,8 @@ async fn connect_session(
         parent: parent,
         "mcp.initialize",
         otel.kind = "client",
-        otel.status_code = tracing::field::Empty,
-        status = tracing::field::Empty,
+        otel.status_code = nanocode_trace::field::Empty,
+        status = nanocode_trace::field::Empty,
     );
 
     let client_info = Implementation::new(MCP_CLIENT_NAME, env!("CARGO_PKG_VERSION"));
@@ -665,7 +665,7 @@ fn drain_server_stderr(server_name: String, stderr: tokio::process::ChildStderr)
                 Ok(size) => {
                     let content = &chunk[..size];
                     if let Ok(message) = std::str::from_utf8(content) {
-                        tracing::info!(
+                        nanocode_trace::info!(
                             target: "nanocode_code_mode",
                             server = %server_name,
                             chunk.index = chunk_index,
@@ -674,7 +674,7 @@ fn drain_server_stderr(server_name: String, stderr: tokio::process::ChildStderr)
                             "MCP server stderr"
                         );
                     } else {
-                        tracing::info!(
+                        nanocode_trace::info!(
                             target: "nanocode_code_mode",
                             server = %server_name,
                             chunk.index = chunk_index,
@@ -686,7 +686,7 @@ fn drain_server_stderr(server_name: String, stderr: tokio::process::ChildStderr)
                     chunk_index = chunk_index.saturating_add(1);
                 }
                 Err(error) => {
-                    tracing::warn!(
+                    nanocode_trace::warn!(
                         target: "nanocode_code_mode",
                         server = %server_name,
                         %error,
@@ -715,9 +715,9 @@ async fn finish_startup(
         parent: parent,
         "mcp.tools_list",
         otel.kind = "client",
-        otel.status_code = tracing::field::Empty,
-        status = tracing::field::Empty,
-        tool.count = tracing::field::Empty,
+        otel.status_code = nanocode_trace::field::Empty,
+        status = nanocode_trace::field::Empty,
+        tool.count = nanocode_trace::field::Empty,
     );
     client.refresh_oauth().await?;
     let tools = if !client.session.supports_tools() {

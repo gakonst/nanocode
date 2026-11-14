@@ -11,7 +11,7 @@ description = "Shared prompt image preparation"
 [dependencies]
 memchr.workspace = true
 nanocode-sys.workspace = true
-tracing = { workspace = true  }
+nanocode-trace.workspace = true
 nanocode-types-core = { workspace = true  }
 nanocode-durability-core = { workspace = true }
 nanocode-sync.workspace = true

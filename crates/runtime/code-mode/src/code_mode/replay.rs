@@ -374,7 +374,7 @@ impl CellJournals {
         }
         match sink.load(session_id).await {
             Ok(cells) => self.restore(session_id, cells, None, HashMap::new()),
-            Err(error) => tracing::warn!(
+            Err(error) => nanocode_trace::warn!(
                 target: "nanocode_code_mode",
                 %error,
                 "stored Code Mode cell journals could not be loaded"
@@ -905,7 +905,7 @@ impl CellRecord {
                 };
             }
             Err(error) => {
-                tracing::warn!(
+                nanocode_trace::warn!(
                     target: "nanocode_code_mode",
                     cell_id = self.cell_id,
                     %error,
@@ -967,7 +967,7 @@ impl CellRecord {
             finished: true,
         };
         if let Err(error) = persistence.sink.save(update).await {
-            tracing::warn!(
+            nanocode_trace::warn!(
                 target: "nanocode_code_mode",
                 cell_id = self.cell_id,
                 %error,

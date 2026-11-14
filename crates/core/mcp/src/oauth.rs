@@ -108,7 +108,7 @@ impl AuthorizationMetadata {
             ),
             Some(_) => Ok(()),
             None => {
-                tracing::warn!(
+                nanocode_trace::warn!(
                     "authorization server metadata omits code_challenge_methods_supported; proceeding with an S256 challenge anyway"
                 );
                 Ok(())
@@ -304,7 +304,7 @@ pub fn resolve_resource_metadata_url(value: &str, base_url: &Url) -> Option<Url>
     if is_http_url(&url) && is_same_origin(base_url, &url) {
         Some(url)
     } else {
-        tracing::warn!(
+        nanocode_trace::warn!(
             "rejecting resource metadata URL `{url}` because it is not same-origin with `{base_url}`"
         );
         None

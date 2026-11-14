@@ -203,7 +203,7 @@ impl ResponsesSocket {
                 .await
                 .map_err(|error| deflate_error(&error))?
                 .map_err(|error| deflate_error(&error))?;
-            tracing::Span::current().record("request.deflate_bytes", payload.len());
+            nanocode_trace::Span::current().record("request.deflate_bytes", payload.len());
             let mut frame = Frame::message(payload, OpCode::Text, true);
             frame.header_mut().rsv1 = true;
             Message::Frame(frame)

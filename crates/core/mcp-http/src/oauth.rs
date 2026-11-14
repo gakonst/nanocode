@@ -21,7 +21,7 @@ use tokio::{
 };
 
 use nanocode_sync::{Swap, SwapOption};
-use tracing::{Instrument, info_span};
+use nanocode_trace::{Instrument, info_span};
 
 use crate::SecretSource;
 
@@ -642,7 +642,7 @@ pub(crate) async fn discover(
             "Metadata error: no authorization server metadata for {base_url}"
         ));
     }
-    tracing::debug!("falling back to legacy OAuth endpoints derived from the base URL");
+    nanocode_trace::debug!("falling back to legacy OAuth endpoints derived from the base URL");
     discovery.metadata = AuthorizationMetadata::legacy(base_url);
     Ok(discovery)
 }
@@ -701,7 +701,7 @@ async fn initialize_challenge(
         .await
         .map(nanocode_http::decode_flate_response)
         .inspect_err(|error| {
-            tracing::debug!(
+            nanocode_trace::debug!(
                 "unauthenticated MCP initialize probe failed: {}",
                 crate::error_chain(error)
             );
@@ -745,7 +745,7 @@ async fn discover_resource_metadata_url(
                 }
             }
             status => {
-                tracing::debug!("resource metadata probe returned unexpected status: {status}");
+                nanocode_trace::debug!("resource metadata probe returned unexpected status: {status}");
             }
         }
     }
@@ -770,7 +770,7 @@ async fn discover_from_resource_metadata(
     discovery.resource = match resource_metadata.validate_resource(base_url) {
         Ok(()) => Some(resource_metadata.resource.clone().unwrap_or_default()),
         Err(error) => {
-            tracing::debug!("ignoring protected resource metadata resource: {error}");
+            nanocode_trace::debug!("ignoring protected resource metadata resource: {error}");
             None
         }
     };
@@ -785,18 +785,18 @@ async fn discover_from_resource_metadata(
         let url = match Url::parse(&candidate).or_else(|_| resource_metadata_url.join(&candidate)) {
             Ok(url) => url,
             Err(error) => {
-                tracing::debug!(
+                nanocode_trace::debug!(
                     "Failed to resolve authorization server URL `{candidate}`: {error}"
                 );
                 continue;
             }
         };
         if !nanocode_mcp::oauth::is_allowed_authorization_server_url(base_url, &url) {
-            tracing::warn!("rejecting authorization server metadata URL `{url}`");
+            nanocode_trace::warn!("rejecting authorization server metadata URL `{url}`");
             continue;
         }
         if let Err(error) = policy.check(&url) {
-            tracing::warn!("rejecting authorization server metadata URL `{url}`: {error}");
+            nanocode_trace::warn!("rejecting authorization server metadata URL `{url}`: {error}");
             continue;
         }
         let metadata = if url.path().contains("/.well-known/") {
@@ -841,7 +841,7 @@ async fn fetch_authorization_metadata(
             Ok(Some(metadata))
         }
         Err(error) => {
-            tracing::debug!("Failed to parse metadata for {url}: {error}");
+            nanocode_trace::debug!("Failed to parse metadata for {url}: {error}");
             Ok(None)
         }
     }
@@ -1264,8 +1264,8 @@ pub fn begin_login(
             target: "nanocode_code_mode",
             "mcp.oauth.authorization_start",
             otel.kind = "client",
-            otel.status_code = tracing::field::Empty,
-            status = tracing::field::Empty,
+            otel.status_code = nanocode_trace::field::Empty,
+            status = nanocode_trace::field::Empty,
         );
         let authorization = async {
             let base_url = Url::parse(&server_url).map_err(|error| {
@@ -1298,7 +1298,7 @@ pub fn begin_login(
         let (session, authorization_issuer) = authorization?;
         let authorization_url = session.authorization_url.clone();
 
-        let parent = tracing::Span::current();
+        let parent = nanocode_trace::Span::current();
         let completion = nanocode_platform::spawn_task(
             complete_login(
                 listener,
@@ -1331,8 +1331,8 @@ async fn complete_login(
         target: "nanocode_code_mode",
         "mcp.oauth.callback_wait",
         otel.kind = "server",
-        otel.status_code = tracing::field::Empty,
-        status = tracing::field::Empty,
+        otel.status_code = nanocode_trace::field::Empty,
+        status = nanocode_trace::field::Empty,
     );
     let callback = match tokio::time::timeout(
         LOGIN_TIMEOUT,
@@ -1361,8 +1361,8 @@ async fn complete_login(
         target: "nanocode_code_mode",
         "mcp.oauth.code_exchange",
         otel.kind = "client",
-        otel.status_code = tracing::field::Empty,
-        status = tracing::field::Empty,
+        otel.status_code = nanocode_trace::field::Empty,
+        status = nanocode_trace::field::Empty,
     );
     let result = session
         .exchange(&client, &callback)
@@ -1392,9 +1392,9 @@ async fn complete_login(
         target: "nanocode_code_mode",
         "mcp.oauth.credentials_save",
         otel.kind = "internal",
-        otel.status_code = tracing::field::Empty,
+        otel.status_code = nanocode_trace::field::Empty,
         reason = "login",
-        status = tracing::field::Empty,
+        status = nanocode_trace::field::Empty,
     );
     let saved = store
         .save(&server_name, &server_url, &credentials)

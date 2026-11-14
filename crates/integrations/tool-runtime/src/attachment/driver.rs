@@ -15,7 +15,7 @@ use nanocode_websocket::{
 };
 use serde_json::{Value, json};
 use tokio::sync::{mpsc, watch};
-use tracing::Instrument as _;
+use nanocode_trace::Instrument as _;
 
 use super::protocol::{
     self, AttachmentCall, CommandStatus, DiagnosticStage, EndpointFrame, ReceiptTiming, RunnerFrame,
@@ -86,7 +86,7 @@ pub(crate) async fn run(
     let terminal = loop {
         attempt = attempt.saturating_add(1);
         let connection_id = nanocode_platform::uuid_v4().to_string();
-        let connection_span = tracing::info_span!(target: "nanocode_code_mode::attachment", "attachment.connection",
+        let connection_span = nanocode_trace::info_span!(target: "nanocode_code_mode::attachment", "attachment.connection",
             runtime_id = runtime_id.as_str(), client_connection_id = connection_id.as_str(),
             attempt, reconnect_delay_ms = previous_delay.as_millis() as u64);
         let _ = status.send(AttachmentStatus::Connecting);
@@ -106,7 +106,7 @@ pub(crate) async fn run(
                 command = commands.recv() => match command { Some(Command::Detach) | None => break Ok(()) },
                 connected = tokio::time::timeout(Duration::from_secs(5), async {
                     let connector = tls_connector(&request).await?;
-                    tracing::info!(target: "nanocode_code_mode::attachment",
+                    nanocode_trace::info!(target: "nanocode_code_mode::attachment",
                         stage = "attachment.socket.trust",
                         elapsed_ms = connect_started.elapsed().as_secs_f64() * 1000.0,
                         "attachment TLS trust ready");
@@ -117,7 +117,7 @@ pub(crate) async fn run(
                     let port = request.uri().port_u16().unwrap_or(if matches!(connector, Connector::Rustls(_)) { 443 } else { 80 });
                     let dns_started = Instant::now();
                     let addresses: Vec<_> = tokio::net::lookup_host((host, port)).await?.collect();
-                    tracing::info!(target: "nanocode_code_mode::attachment",
+                    nanocode_trace::info!(target: "nanocode_code_mode::attachment",
                         stage = "attachment.socket.resolved",
                         duration_ms = dns_started.elapsed().as_secs_f64() * 1000.0,
                         elapsed_ms = connect_started.elapsed().as_secs_f64() * 1000.0,
@@ -125,7 +125,7 @@ pub(crate) async fn run(
                     let tcp_started = Instant::now();
                     let stream = tokio::net::TcpStream::connect(addresses.as_slice()).await?;
                     stream.set_nodelay(true)?;
-                    tracing::info!(target: "nanocode_code_mode::attachment",
+                    nanocode_trace::info!(target: "nanocode_code_mode::attachment",
                         stage = "attachment.socket.tcp",
                         duration_ms = tcp_started.elapsed().as_secs_f64() * 1000.0,
                         elapsed_ms = connect_started.elapsed().as_secs_f64() * 1000.0,
@@ -133,7 +133,7 @@ pub(crate) async fn run(
                     let upgrade_started = Instant::now();
                     let upgraded = client_async_tls_with_config(request, stream, None, connector).await;
 
-                    tracing::info!(target: "nanocode_code_mode::attachment", stage = "attachment.socket.tls_upgrade",
+                    nanocode_trace::info!(target: "nanocode_code_mode::attachment", stage = "attachment.socket.tls_upgrade",
                         duration_ms = upgrade_started.elapsed().as_secs_f64() * 1000.0,
                         reason_code = if upgraded.is_ok() { "connected" } else { "tls_upgrade_failure" }, "attachment TLS and upgrade finished");
                     upgraded
@@ -142,7 +142,7 @@ pub(crate) async fn run(
         };
         let socket = match connected {
             Ok(Ok((socket, response))) => {
-                tracing::info!(target: "nanocode_code_mode::attachment",
+                nanocode_trace::info!(target: "nanocode_code_mode::attachment",
                     stage = "attachment.websocket_connected",
                     duration_ms = connect_started.elapsed().as_secs_f64() * 1000.0,
                     runtime_id = runtime_id.as_str(), client_connection_id = connection_id.as_str(), attempt,
@@ -153,7 +153,7 @@ pub(crate) async fn run(
             Ok(Err(nanocode_websocket::Error::Http(response)))
                 if matches!(response.status().as_u16(), 401 | 403) =>
             {
-                connection_span.in_scope(|| tracing::warn!(target: "nanocode_code_mode::attachment", stage = "attachment.socket.rejected", reason_code = "authentication_rejected", pending_calls = active.len(), "attachment connection rejected"));
+                connection_span.in_scope(|| nanocode_trace::warn!(target: "nanocode_code_mode::attachment", stage = "attachment.socket.rejected", reason_code = "authentication_rejected", pending_calls = active.len(), "attachment connection rejected"));
                 break Err(AttachmentError::Authentication(
                     "endpoint rejected the bearer credential".into(),
                 ));
@@ -161,7 +161,7 @@ pub(crate) async fn run(
             Ok(Err(nanocode_websocket::Error::Http(response)))
                 if response.status().as_u16() == 410 =>
             {
-                connection_span.in_scope(|| tracing::warn!(target: "nanocode_code_mode::attachment", stage = "attachment.socket.rejected", reason_code = "attachment_revoked", pending_calls = active.len(), "attachment permanently revoked"));
+                connection_span.in_scope(|| nanocode_trace::warn!(target: "nanocode_code_mode::attachment", stage = "attachment.socket.rejected", reason_code = "attachment_revoked", pending_calls = active.len(), "attachment permanently revoked"));
                 break Err(AttachmentError::Fenced(ATTACHMENT_REVOKED_REASON.into()));
             }
             other => {
@@ -201,7 +201,7 @@ pub(crate) async fn run(
                     } => Some(after.as_millis() as u64),
                     _ => None,
                 };
-                connection_span.in_scope(|| tracing::warn!(target: "nanocode_code_mode::attachment", stage = "attachment.socket.connect_failed", reason_code, http_status, retry_after_ms, service_outage_ms = outage_ms, reconnect_delay_ms = delay.as_millis() as u64, pending_calls = active.len(), "attachment connection attempt failed"));
+                connection_span.in_scope(|| nanocode_trace::warn!(target: "nanocode_code_mode::attachment", stage = "attachment.socket.connect_failed", reason_code, http_status, retry_after_ms, service_outage_ms = outage_ms, reconnect_delay_ms = delay.as_millis() as u64, pending_calls = active.len(), "attachment connection attempt failed"));
                 let _ = status.send(AttachmentStatus::Disconnected);
                 emit(
                     &events,
@@ -252,9 +252,9 @@ pub(crate) async fn run(
         .then(|| Failure::Transport.delay(&mut backoff, None));
         connection_span.in_scope(|| {
             if let ConnectionEnd::Failed(error) | ConnectionEnd::DetachFailed(error) = &end {
-                tracing::debug!(target: "nanocode_code_mode::attachment", %error, "attachment transport ended");
+                nanocode_trace::debug!(target: "nanocode_code_mode::attachment", %error, "attachment transport ended");
             }
-            tracing::info!(target: "nanocode_code_mode::attachment",
+            nanocode_trace::info!(target: "nanocode_code_mode::attachment",
             stage = "attachment.socket.closed", reason_code = end.reason_code(),
             pending_calls = active.iter().filter(|call| !call.task.is_finished()).count(),
             reconnect_delay_ms = delay.map(|delay| delay.as_millis() as u64), "attachment connection ended")
@@ -466,7 +466,7 @@ struct CallClock {
     execution_finished: Option<Instant>,
     result_queued: Option<Instant>,
     diagnostics_sent: u8,
-    span: tracing::Span,
+    span: nanocode_trace::Span,
 }
 
 impl CallClock {
@@ -478,7 +478,7 @@ impl CallClock {
             execution_finished: None,
             result_queued: None,
             diagnostics_sent: 0,
-            span: tracing::Span::current(),
+            span: nanocode_trace::Span::current(),
         }))
     }
 
@@ -539,7 +539,7 @@ impl RetainedCall {
         self.progress = Progress::Settled(receipt.clone());
         let span = self.timing.read(|clock| clock.span.clone());
         span.in_scope(|| {
-            tracing::info!(target: "nanocode_code_mode::attachment",
+            nanocode_trace::info!(target: "nanocode_code_mode::attachment",
             stage = "attachment.result_retained",
             transport_call_id = self.identity.call_id.as_ref(),
             "attachment terminal receipt retained")
@@ -609,7 +609,7 @@ impl Drop for TaskEvents {
 
 struct CallEvents {
     call_id: Box<str>,
-    span: tracing::Span,
+    span: nanocode_trace::Span,
     started_at: Instant,
 }
 
@@ -646,22 +646,22 @@ fn begin_call_events(
     name: Box<str>,
     attachment_id: Option<&str>,
 ) -> CallEvents {
-    let span = tracing::info_span!(
+    let span = nanocode_trace::info_span!(
         target: "nanocode_code_mode::attachment",
         "attachment.call",
         otel.kind = "server",
-        otel.status_code = tracing::field::Empty,
-        attachment.id = tracing::field::Empty,
+        otel.status_code = nanocode_trace::field::Empty,
+        attachment.id = nanocode_trace::field::Empty,
         tool.name = name.as_ref(),
         tool.call_id = call_id.as_ref(),
-        status = tracing::field::Empty,
-        duration_ns = tracing::field::Empty,
+        status = nanocode_trace::field::Empty,
+        duration_ns = nanocode_trace::field::Empty,
     );
     if let Some(attachment_id) = attachment_id {
         span.record("attachment.id", attachment_id);
     }
     span.in_scope(|| {
-        tracing::info!(
+        nanocode_trace::info!(
             target: "nanocode_code_mode::attachment",
             stage = "attachment.call.started",
             "attachment call started"
@@ -686,13 +686,13 @@ fn record_attachment_call_completion(outcome: AttachmentCallOutcome) {
         outcome,
         AttachmentCallOutcome::Unavailable | AttachmentCallOutcome::Ambiguous
     ) {
-        tracing::warn!(
+        nanocode_trace::warn!(
             target: "nanocode_code_mode::attachment",
             stage = "attachment.call.completed",
             "attachment call completed"
         );
     } else {
-        tracing::info!(
+        nanocode_trace::info!(
             target: "nanocode_code_mode::attachment",
             stage = "attachment.call.completed",
             "attachment call completed"
@@ -849,7 +849,7 @@ impl<'a> ExecutionPhase<'a> {
         let clock = self.timing.get();
         let elapsed_ms =
             (clock.received.elapsed().as_secs_f64() * 1000.0).min(9_007_199_254_740_991.0);
-        clock.span.in_scope(|| tracing::info!(target: "nanocode_code_mode::attachment", stage = stage.name(), elapsed_ms, "attachment execution phase"));
+        clock.span.in_scope(|| nanocode_trace::info!(target: "nanocode_code_mode::attachment", stage = stage.name(), elapsed_ms, "attachment execution phase"));
     }
 
     fn notify(&self) {
@@ -930,7 +930,7 @@ where
         return ConnectionEnd::Failed(error);
     }
     let catalog_sent = Instant::now();
-    tracing::info!(target: "nanocode_code_mode::attachment", stage = "attachment.catalog_sent", duration_ms = catalog_sent.duration_since(catalog_started).as_secs_f64() * 1000.0, "attachment catalog sent");
+    nanocode_trace::info!(target: "nanocode_code_mode::attachment", stage = "attachment.catalog_sent", duration_ms = catalog_sent.duration_since(catalog_started).as_secs_f64() * 1000.0, "attachment catalog sent");
     match next_handshake_frame(&mut socket, commands).await {
         Ok(EndpointFrame::Ready {}) => {}
         Ok(frame) => {
@@ -943,7 +943,7 @@ where
         Err(ConnectionEnd::Rejected(reason)) => return reject(&mut socket, reason).await,
         Err(end) => return end,
     }
-    tracing::info!(target: "nanocode_code_mode::attachment",
+    nanocode_trace::info!(target: "nanocode_code_mode::attachment",
         stage = "attachment.catalog_ready",
         send_ms = catalog_sent.duration_since(catalog_started).as_secs_f64() * 1000.0,
         acknowledge_ms = catalog_sent.elapsed().as_secs_f64() * 1000.0,
@@ -995,7 +995,7 @@ where
                 if let Err(error) = send(&mut socket, &RunnerFrame::Drain {}).await {
                     break ConnectionEnd::DetachFailed(error);
                 }
-                tracing::info!(target: "nanocode_code_mode::attachment", stage = "attachment.drain_requested", pending_calls = journal.values().filter(|call| call.running()).count(), pending_receipts = journal.values().filter(|call| call.receipt().is_some()).count(), reason_code = "detach_requested", "attachment drain requested");
+                nanocode_trace::info!(target: "nanocode_code_mode::attachment", stage = "attachment.drain_requested", pending_calls = journal.values().filter(|call| call.running()).count(), pending_receipts = journal.values().filter(|call| call.receipt().is_some()).count(), reason_code = "detach_requested", "attachment drain requested");
                 drain = Drain::Requested;
                 detach_deadline.as_mut().reset(tokio::time::Instant::now() + Duration::from_secs(10));
                 shutdown_calls(active).await;
@@ -1015,7 +1015,7 @@ where
             }
             _ = &mut detach_deadline, if drain.detaching() => break ConnectionEnd::Detached,
             _ = &mut pong_timeout, if ping.is_some() => {
-                tracing::warn!(target: "nanocode_code_mode::attachment", stage = "attachment.heartbeat_timeout", pending_calls = journal.values().filter(|call| call.running()).count(), pending_receipts = journal.values().filter(|call| call.receipt().is_some()).count(), reason_code = "heartbeat_timeout", "attachment heartbeat timed out");
+                nanocode_trace::warn!(target: "nanocode_code_mode::attachment", stage = "attachment.heartbeat_timeout", pending_calls = journal.values().filter(|call| call.running()).count(), pending_receipts = journal.values().filter(|call| call.receipt().is_some()).count(), reason_code = "heartbeat_timeout", "attachment heartbeat timed out");
                 break ConnectionEnd::HeartbeatTimeout;
             },
             _ = heartbeat.tick() => {
@@ -1025,7 +1025,7 @@ where
                 if let Err(error) = socket.send(Message::Ping(nonce.clone())).await.map_err(|error| AttachmentError::Transport(error.to_string().into())) {
                     break if drain.detaching() { ConnectionEnd::DetachFailed(error) } else { ConnectionEnd::Failed(error) };
                 }
-                tracing::info!(target: "nanocode_code_mode::attachment", stage = "attachment.heartbeat_ping", pending_calls = journal.values().filter(|call| call.running()).count(), pending_receipts = journal.values().filter(|call| call.receipt().is_some()).count(), "attachment heartbeat sent");
+                nanocode_trace::info!(target: "nanocode_code_mode::attachment", stage = "attachment.heartbeat_ping", pending_calls = journal.values().filter(|call| call.running()).count(), pending_receipts = journal.values().filter(|call| call.receipt().is_some()).count(), "attachment heartbeat sent");
                 ping = Some((nonce, started));
                 pong_timeout.as_mut().reset(tokio::time::Instant::now() + PONG_TIMEOUT);
             }
@@ -1055,8 +1055,8 @@ where
                         && let Some((_, started)) = ping.take()
                     {
                         let roundtrip_ms = started.elapsed().as_secs_f64() * 1000.0;
-                        tracing::info!(target: "nanocode_code_mode::attachment", stage = "attachment.transport_rtt", connection_id, roundtrip_ms, "established socket heartbeat roundtrip observed");
-                        tracing::info!(target: "nanocode_code_mode::attachment", stage = "attachment.heartbeat_pong", pending_calls = journal.values().filter(|call| call.running()).count(), pending_receipts = journal.values().filter(|call| call.receipt().is_some()).count(), "attachment heartbeat acknowledged");
+                        nanocode_trace::info!(target: "nanocode_code_mode::attachment", stage = "attachment.transport_rtt", connection_id, roundtrip_ms, "established socket heartbeat roundtrip observed");
+                        nanocode_trace::info!(target: "nanocode_code_mode::attachment", stage = "attachment.heartbeat_pong", pending_calls = journal.values().filter(|call| call.running()).count(), pending_receipts = journal.values().filter(|call| call.receipt().is_some()).count(), "attachment heartbeat acknowledged");
                     }
                     continue;
                 }
@@ -1080,7 +1080,7 @@ where
                             if let Err(error) = sent { break ConnectionEnd::Failed(error); }
                             continue;
                         }
-                        let phase_span = tracing::info_span!(target: "nanocode_code_mode::attachment", "attachment.call.phases",
+                        let phase_span = nanocode_trace::info_span!(target: "nanocode_code_mode::attachment", "attachment.call.phases",
                             transport_call_id = call_id.as_str(), session_id = session_id.as_str(),
                             host_turn_id = turn_id.as_deref().filter(|id| id.len() <= 256 && id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b':' | b'-'))).unwrap_or(""));
                         timing.update(|clock| clock.span = phase_span.clone());
@@ -1115,12 +1115,12 @@ where
                     EndpointFrame::TurnEnded { session_id, turn_id, hook_event_name } => {
 
                         if tokio::time::timeout(Duration::from_secs(5), runtime.end_turn(&session_id, &turn_id, &hook_event_name)).await.is_err() {
-                            tracing::warn!(target: "nanocode_code_mode::attachment",
+                            nanocode_trace::warn!(target: "nanocode_code_mode::attachment",
                                 "turn cleanup timed out; not retried");
                         }
                     }
                     EndpointFrame::Cancel { call_id } => {
-                        tracing::info!(target: "nanocode_code_mode::attachment", stage = "attachment.call.cancel_received", transport_call_id = call_id.as_str(), pending_calls = journal.values().filter(|call| call.running()).count(), pending_receipts = journal.values().filter(|call| call.receipt().is_some()).count(), reason_code = "cancel_received", "attachment cancellation received");
+                        nanocode_trace::info!(target: "nanocode_code_mode::attachment", stage = "attachment.call.cancel_received", transport_call_id = call_id.as_str(), pending_calls = journal.values().filter(|call| call.running()).count(), pending_receipts = journal.values().filter(|call| call.receipt().is_some()).count(), reason_code = "cancel_received", "attachment cancellation received");
                         if let Some(call) = journal.get_mut(call_id.as_str()) {
                             let replayed = call.receipt().is_some();
 
@@ -1139,7 +1139,7 @@ where
                         }
                     }
                     EndpointFrame::Ack { call_id } => {
-                        tracing::info!(target: "nanocode_code_mode::attachment", stage = "attachment.result_ack_received", transport_call_id = call_id.as_str(), pending_calls = journal.values().filter(|call| call.running()).count(), pending_receipts = journal.values().filter(|call| call.receipt().is_some()).count(), "attachment receipt acknowledgement received");
+                        nanocode_trace::info!(target: "nanocode_code_mode::attachment", stage = "attachment.result_ack_received", transport_call_id = call_id.as_str(), pending_calls = journal.values().filter(|call| call.running()).count(), pending_receipts = journal.values().filter(|call| call.receipt().is_some()).count(), "attachment receipt acknowledgement received");
                         if journal.get(call_id.as_str()).is_some_and(|call| call.receipt().is_some()) {
                             journal.remove(call_id.as_str());
                         }
@@ -1158,7 +1158,7 @@ where
                     }
                     EndpointFrame::Draining {} => {
                         if !matches!(drain, Drain::Requested) { break ConnectionEnd::Rejected("unexpected draining acknowledgement".into()); }
-                        tracing::info!(target: "nanocode_code_mode::attachment", stage = "attachment.draining", pending_calls = journal.values().filter(|call| call.running()).count(), pending_receipts = journal.values().filter(|call| call.receipt().is_some()).count(), "attachment drain barrier acknowledged");
+                        nanocode_trace::info!(target: "nanocode_code_mode::attachment", stage = "attachment.draining", pending_calls = journal.values().filter(|call| call.running()).count(), pending_receipts = journal.values().filter(|call| call.receipt().is_some()).count(), "attachment drain barrier acknowledged");
                         drain = Drain::Acknowledged;
                     }
                     EndpointFrame::Ready {} => break ConnectionEnd::Rejected("unexpected ready".into()),
@@ -1167,7 +1167,7 @@ where
         }
     };
 
-    tracing::info!(target: "nanocode_code_mode::attachment", stage = "attachment.socket.pending_at_close", reason_code = end.reason_code(), pending_calls = journal.values().filter(|call| call.running()).count(), pending_receipts = journal.values().filter(|call| call.receipt().is_some()).count(), "attachment socket pending work at close");
+    nanocode_trace::info!(target: "nanocode_code_mode::attachment", stage = "attachment.socket.pending_at_close", reason_code = end.reason_code(), pending_calls = journal.values().filter(|call| call.running()).count(), pending_receipts = journal.values().filter(|call| call.receipt().is_some()).count(), "attachment socket pending work at close");
     if matches!(&end, ConnectionEnd::HeartbeatTimeout) {
         close_heartbeat_timeout(&mut socket).await;
     }
@@ -1205,7 +1205,7 @@ async fn close_heartbeat_timeout<S>(socket: &mut nanocode_websocket::WebSocketSt
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
-    tracing::warn!(target: "nanocode_code_mode::attachment", stage = "attachment.socket.close_sent", close_code = u16::from(CloseCode::Restart), reason_code = "heartbeat_timeout", "attachment close sent");
+    nanocode_trace::warn!(target: "nanocode_code_mode::attachment", stage = "attachment.socket.close_sent", close_code = u16::from(CloseCode::Restart), reason_code = "heartbeat_timeout", "attachment close sent");
     let _ = tokio::time::timeout(
         Duration::from_secs(1),
         socket.close(Some(CloseFrame {
@@ -1228,7 +1228,7 @@ where
         frame = tokio::time::timeout(HANDSHAKE_TIMEOUT, next_frame(socket)) => match frame {
             Ok(frame) => frame,
             Err(_) => {
-                tracing::warn!(target: "nanocode_code_mode::attachment", stage = "attachment.ready_timeout", reason_code = "ready_timeout", "attachment readiness timed out");
+                nanocode_trace::warn!(target: "nanocode_code_mode::attachment", stage = "attachment.ready_timeout", reason_code = "ready_timeout", "attachment readiness timed out");
                 Err(ConnectionEnd::Failed(AttachmentError::Transport("timed out waiting for attachment readiness".into())))
             },
         },
@@ -1243,7 +1243,7 @@ where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     if let Some(Ok(Message::Close(frame))) = &incoming {
-        tracing::info!(target: "nanocode_code_mode::attachment", stage = "attachment.socket.close_received", close_code = frame.as_ref().map(|frame| u16::from(frame.code)), reason_code = "remote_close", "attachment close received");
+        nanocode_trace::info!(target: "nanocode_code_mode::attachment", stage = "attachment.socket.close_received", close_code = frame.as_ref().map(|frame| u16::from(frame.code)), reason_code = "remote_close", "attachment close received");
     }
     match incoming {
         Some(Ok(Message::Text(text))) => EndpointFrame::parse(&text)
@@ -1305,7 +1305,7 @@ async fn policy_close<S>(socket: &mut nanocode_websocket::WebSocketStream<S>, re
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
-    tracing::warn!(target: "nanocode_code_mode::attachment", stage = "attachment.socket.close_sent", close_code = u16::from(CloseCode::Policy), reason_code = "protocol_rejected", "attachment close sent");
+    nanocode_trace::warn!(target: "nanocode_code_mode::attachment", stage = "attachment.socket.close_sent", close_code = u16::from(CloseCode::Policy), reason_code = "protocol_rejected", "attachment close sent");
     let reason = bounded(reason);
     let reason = reason
         .get(..reason.len().min(123))
@@ -1355,7 +1355,7 @@ where
             stage,
             DiagnosticStage::Received | DiagnosticStage::ResultPrepared
         ) {
-            span.in_scope(|| tracing::info!(target: "nanocode_code_mode::attachment", stage = stage.name(), elapsed_ms, "attachment execution phase"));
+            span.in_scope(|| nanocode_trace::info!(target: "nanocode_code_mode::attachment", stage = stage.name(), elapsed_ms, "attachment execution phase"));
         }
         feed(
             socket,
@@ -1388,7 +1388,7 @@ where
 {
     let started = Instant::now();
     let received = call.timing.read(|clock| clock.received);
-    tracing::info!(target: "nanocode_code_mode::attachment",
+    nanocode_trace::info!(target: "nanocode_code_mode::attachment",
         stage = "attachment.result_send_started", transport_call_id = call.identity.call_id.as_ref(),
         replayed, elapsed_ms = started.duration_since(received).as_secs_f64() * 1000.0,
         "attachment terminal transmission started");
@@ -1398,7 +1398,7 @@ where
         .await
         .map_err(|error| AttachmentError::Transport(error.to_string().into()))?;
     let flush_started = Instant::now();
-    tracing::info!(target: "nanocode_code_mode::attachment",
+    nanocode_trace::info!(target: "nanocode_code_mode::attachment",
         stage = "attachment.result_flush_started", transport_call_id = call.identity.call_id.as_ref(),
         replayed, feed_ms = flush_started.duration_since(started).as_secs_f64() * 1000.0,
         elapsed_ms = flush_started.duration_since(received).as_secs_f64() * 1000.0,
@@ -1409,7 +1409,7 @@ where
         .map_err(|error| AttachmentError::Transport(error.to_string().into()))?;
     let flushed = Instant::now();
 
-    tracing::info!(target: "nanocode_code_mode::attachment",
+    nanocode_trace::info!(target: "nanocode_code_mode::attachment",
         stage = if replayed { "attachment.result_replayed" } else { "attachment.result_sent" },
         transport_call_id = call.identity.call_id.as_ref(),
         feed_ms = flush_started.duration_since(started).as_secs_f64() * 1000.0,
@@ -1520,32 +1520,32 @@ fn emit(events: &mpsc::Sender<AttachmentEvent>, event: AttachmentEvent) {
 
 fn trace_attachment_event(event: &AttachmentEvent) {
     match event {
-        AttachmentEvent::Connecting => tracing::info!(
+        AttachmentEvent::Connecting => nanocode_trace::info!(
             target: "nanocode_code_mode::attachment",
             stage = "attachment.connecting",
             "connecting attachment"
         ),
-        AttachmentEvent::Retrying { reason, delay_ms } => tracing::info!(
+        AttachmentEvent::Retrying { reason, delay_ms } => nanocode_trace::info!(
             target: "nanocode_code_mode::attachment", reason = reason.as_ref(), delay_ms,
             "retrying attachment"
         ),
-        AttachmentEvent::Attached => tracing::info!(
+        AttachmentEvent::Attached => nanocode_trace::info!(
             target: "nanocode_code_mode::attachment",
             stage = "attachment.attached",
             "attachment accepted"
         ),
-        AttachmentEvent::CatalogPublished { tool_count } => tracing::info!(
+        AttachmentEvent::CatalogPublished { tool_count } => nanocode_trace::info!(
             target: "nanocode_code_mode::attachment",
             stage = "attachment.catalog_published",
             tool.count = tool_count,
             "attachment catalog published"
         ),
-        AttachmentEvent::Detached { .. } => tracing::info!(
+        AttachmentEvent::Detached { .. } => nanocode_trace::info!(
             target: "nanocode_code_mode::attachment",
             stage = "attachment.detached",
             "attachment detached"
         ),
-        AttachmentEvent::Fenced { .. } => tracing::warn!(
+        AttachmentEvent::Fenced { .. } => nanocode_trace::warn!(
             target: "nanocode_code_mode::attachment",
             stage = "attachment.fenced",
             "attachment fenced"

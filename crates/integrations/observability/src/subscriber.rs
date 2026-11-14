@@ -10,7 +10,7 @@ use std::{
 };
 
 use nanocode_sync::{AtomMap, SwapOption};
-use tracing_core::{
+use nanocode_trace::{
     Event, Interest, LevelFilter, Metadata,
     span::{Attributes, Current, Id, Record},
 };
@@ -239,7 +239,7 @@ impl<'a> Visible<'a> {
         self.entry.bit_enabled(inner_bit(self.slot))
     }
 
-    fn id(&self) -> Id {
+    const fn id(&self) -> Id {
         Id::from_u64(self.id)
     }
 }
@@ -733,7 +733,7 @@ impl Registry {
             .filter_map(|(slot, layer)| layer.as_ref().map(|layer| (slot, &*layer.0)))
     }
 
-    fn visible<'a>(&'a self, entry: &'a Entry, id: &Id, slot: usize) -> Visible<'a> {
+    const fn visible<'a>(&'a self, entry: &'a Entry, id: &Id, slot: usize) -> Visible<'a> {
         Visible {
             registry: self,
             slot,
@@ -949,7 +949,7 @@ fn did_enable(bit: usize, run: impl FnOnce()) {
     }
 }
 
-impl tracing_core::Subscriber for Registry {
+impl nanocode_trace::Subscriber for Registry {
     fn register_callsite(&self, metadata: &'static Metadata<'static>) -> Interest {
         self.interest(metadata)
     }
@@ -1096,7 +1096,7 @@ impl<'a, D> Context<'a, D> {
 
     #[must_use]
     pub fn current_span(&self) -> Current {
-        tracing_core::Subscriber::current_span(self.registry)
+        nanocode_trace::Subscriber::current_span(self.registry)
     }
 
     #[must_use]
@@ -1150,7 +1150,7 @@ impl<'a, D> SpanRef<'a, D> {
     }
 
     #[must_use]
-    pub fn id(&self) -> Id {
+    pub const fn id(&self) -> Id {
         Id::from_u64(self.id)
     }
 

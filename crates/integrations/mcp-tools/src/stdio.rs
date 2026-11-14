@@ -47,7 +47,7 @@ pub fn spawn(
         let mut outgoing = outgoing;
         while let Some(message) = outgoing.next().await {
             if let Err(error) = write_message(&mut stdin, &message).await {
-                tracing::error!("error writing MCP stdio message: {error}");
+                nanocode_trace::error!("error writing MCP stdio message: {error}");
                 inbound.close();
                 break;
             }
@@ -60,7 +60,7 @@ pub fn spawn(
             Err(_) => child.kill().await,
         };
         if let Err(error) = terminated.and(waited) {
-            tracing::debug!("failed to stop MCP stdio server: {error}");
+            nanocode_trace::debug!("failed to stop MCP stdio server: {error}");
         }
     }));
     Ok(stderr)
@@ -85,7 +85,7 @@ async fn read_messages(stdout: ChildStdout, inbound: Inbound) {
             Ok(false) => break,
             Ok(true) => {}
             Err(error) => {
-                tracing::error!("error reading MCP stdio message: {error}");
+                nanocode_trace::error!("error reading MCP stdio message: {error}");
                 break;
             }
         }
@@ -99,10 +99,10 @@ async fn read_messages(stdout: ChildStdout, inbound: Inbound) {
                 }
             }
             Err(error) if ignorable_notification(content) => {
-                tracing::trace!("ignoring non-standard MCP stdio notification: {error}");
+                nanocode_trace::trace!("ignoring non-standard MCP stdio notification: {error}");
             }
             Err(error) => {
-                tracing::debug!("parse error on incoming MCP stdio message: {error}");
+                nanocode_trace::debug!("parse error on incoming MCP stdio message: {error}");
                 let reply = Message::Error {
                     id: None,
                     error: RpcError::new(PARSE_ERROR, "Parse error"),

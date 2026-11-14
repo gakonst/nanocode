@@ -4255,15 +4255,15 @@ impl ExecutingFrame<'_> {
 
         #[cfg(feature = "vm-tracing-logging")]
         {
-            tracing::trace!("=======");
+            nanocode_trace::trace!("=======");
             /* TODO:
             for frame in self.frames.iter() {
                 trace!("  {:?}", frame);
             }
             */
-            tracing::trace!("  {:#?}", self);
-            tracing::trace!("  Executing opcode: {instruction:?} {arg:?}",);
-            tracing::trace!("=======");
+            nanocode_trace::trace!("  {:#?}", self);
+            nanocode_trace::trace!("  Executing opcode: {instruction:?} {arg:?}",);
+            nanocode_trace::trace!("=======");
         }
 
         #[cold]
@@ -9140,7 +9140,7 @@ impl ExecutingFrame<'_> {
             }
         };
         #[cfg(debug_assertions)]
-        tracing::debug!("Exception raised: {exception:?} with cause: {cause:?}");
+        nanocode_trace::debug!("Exception raised: {exception:?} with cause: {cause:?}");
         if let Some(cause) = cause {
             exception.set_cause(cause);
         }

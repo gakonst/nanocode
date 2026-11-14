@@ -124,7 +124,7 @@ impl LifecycleBackend for LocalLifecycle {
             } else {
                 (None, None)
             };
-            let parent = tracing::Span::current();
+            let parent = nanocode_trace::Span::current();
             let parent = (!parent.is_disabled()).then_some(parent);
             if commands
                 .send(Command::Prompt {
@@ -178,7 +178,7 @@ impl LifecycleBackend for LocalLifecycle {
             {
                 return Ok(BackendPromptRoute::Steered);
             }
-            let parent = tracing::Span::current();
+            let parent = nanocode_trace::Span::current();
             let parent = (!parent.is_disabled()).then_some(parent);
             let (turn_result, turn_receiver) = oneshot::channel();
             let (route_result, route_receiver) = oneshot::channel();
@@ -392,7 +392,7 @@ impl LifecycleBackend for LocalLifecycle {
         let commands = self.commands.clone();
         let shutdown = self.shutdown.clone();
         Box::pin(async move {
-            let parent = tracing::Span::current();
+            let parent = nanocode_trace::Span::current();
             let parent = (!parent.is_disabled()).then_some(parent);
             request_command(&commands, &shutdown, |result| Command::Compact {
                 parent,

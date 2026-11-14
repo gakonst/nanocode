@@ -760,14 +760,14 @@ impl CodeModeHost for RemoteCodeModeHost {
         if let Err(error) = self.transport.notify(RemoteOperation::BeginTurn {
             session_id: session_id.into(),
         }) {
-            tracing::error!(%error, "remote begin turn failed");
+            nanocode_trace::error!(%error, "remote begin turn failed");
         }
     }
     fn settle_preempt(&self, session_id: &str) {
         if let Err(error) = self.transport.notify(RemoteOperation::SettlePreempt {
             session_id: session_id.into(),
         }) {
-            tracing::error!(%error, "remote settle preempt failed");
+            nanocode_trace::error!(%error, "remote settle preempt failed");
         }
     }
     fn preempt_turn<'a>(
@@ -793,7 +793,7 @@ impl CodeModeHost for RemoteCodeModeHost {
         observer: &mut (dyn FnMut(&str) -> Box<dyn CodeModeObserver> + Send),
     ) {
         if let Err(error) = self.transport.detach_turn(session_id, observer) {
-            tracing::error!(%error, "remote detach turn failed");
+            nanocode_trace::error!(%error, "remote detach turn failed");
         }
     }
     fn cancel_turn<'a>(

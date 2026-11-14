@@ -17,7 +17,7 @@ path = "src/lib.rs"
 
 [dependencies]
 rustls = { version = "0.23.27", default-features = false, features = ["std"] }
-tracing = { version = "0.1.44", default-features = false, features = ["std"] }
+nanocode-trace = { path = "../../core/trace" }
 
 [target.'cfg(all(unix, not(target_vendor = "apple"), not(target_arch = "wasm32")))'.dependencies]
 nanocode-platform = { path = "../../core/platform" }

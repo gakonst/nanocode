@@ -689,7 +689,7 @@ impl ChatGptSubscription {
             .is_some_and(|expiry| expiry <= unix_millis().saturating_add(REFRESH_EARLY_MILLIS))
         {
             if let Err(error) = self.refresh_if_current(credential.generation).await {
-                tracing::warn!(error = %error, "proactive ChatGPT token refresh failed");
+                nanocode_trace::warn!(error = %error, "proactive ChatGPT token refresh failed");
             }
             let refreshed = self
                 .load()

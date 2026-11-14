@@ -16,7 +16,7 @@ use crate::client::{
 use nanocode_platform::Instant;
 use nanocode_sync::Actor;
 use std::sync::OnceLock;
-use tracing::{Instrument, info_span};
+use nanocode_trace::{Instrument, info_span};
 
 mod https;
 
@@ -131,7 +131,7 @@ struct AttemptGuard<'a> {
     request: &'a ResponsesAttempt,
     transport: ResponsesTransport,
     started_at: Instant,
-    span: tracing::Span,
+    span: nanocode_trace::Span,
     completed: bool,
 }
 
@@ -147,7 +147,7 @@ impl<'a> AttemptGuard<'a> {
             request,
             transport,
             started_at,
-            span: tracing::Span::current(),
+            span: nanocode_trace::Span::current(),
             completed: false,
         }
     }
@@ -199,14 +199,14 @@ impl Drop for AttemptGuard<'_> {
                     error: message,
                 },
             ) {
-                tracing::error!(
+                nanocode_trace::error!(
                     target: "nanocode_codex",
                     parent: &self.span,
                     error = %error,
                     "failed to emit cancelled Responses attempt event"
                 );
             }
-            tracing::warn!(
+            nanocode_trace::warn!(
                 target: "nanocode_codex",
                 parent: &self.span,
                 phase = self.request.kind.phase(),
@@ -351,7 +351,7 @@ impl ResponsesService {
             error.redact(&connection.credentials);
             error
         });
-        tracing::Span::current().record(
+        nanocode_trace::Span::current().record(
             "status",
             if result.is_ok() {
                 "completed"
@@ -359,11 +359,11 @@ impl ResponsesService {
                 "failed"
             },
         );
-        tracing::Span::current().record(
+        nanocode_trace::Span::current().record(
             "otel.status_code",
             if result.is_ok() { "OK" } else { "ERROR" },
         );
-        tracing::Span::current().record("duration_ns", elapsed_ns(started_at));
+        nanocode_trace::Span::current().record("duration_ns", elapsed_ns(started_at));
         connection.capture_turn_state();
         if let Err(failure) = &result {
             if matches!(request.kind, ResponsesAttemptKind::Warmup) {
@@ -409,7 +409,7 @@ impl ResponsesService {
             {
                 connection.invalidate(ConnectionPurpose::Reconnect);
                 request.to_mut().force_full_replay();
-                tracing::info!(
+                nanocode_trace::info!(
                     target: "nanocode_codex",
                     generation,
                     reason = "websocket_connection_limit_reached",
@@ -431,7 +431,7 @@ impl ResponsesService {
         let sent = self.send_websocket(connection, request).await?;
         let request = request.as_ref();
         let generation = connection.generation;
-        let span = tracing::Span::current();
+        let span = nanocode_trace::Span::current();
         let credentials = connection.credentials.clone();
         let socket = connection
             .socket
@@ -521,10 +521,10 @@ impl ResponsesService {
                 self.encode_request(connection, request.as_ref(), ResponsesTransport::WebSocket)?;
             let encode_duration_ns = elapsed_ns(encode_started_at);
             let request_bytes = encoded.json().len();
-            let span = tracing::Span::current();
+            let span = nanocode_trace::Span::current();
             span.record("request.bytes", request_bytes);
             span.record("request.encode.duration_ns", encode_duration_ns);
-            tracing::trace!(
+            nanocode_trace::trace!(
                 target: "nanocode_codex",
                 direction = "outbound",
                 transport = TRANSPORT,
@@ -738,11 +738,11 @@ impl ResponsesService {
             target: "nanocode_codex",
             "responses.connect",
             otel.kind = "client",
-            otel.status_code = tracing::field::Empty,
+            otel.status_code = nanocode_trace::field::Empty,
             purpose = ?purpose,
             connection.generation = generation,
-            status = tracing::field::Empty,
-            duration_ns = tracing::field::Empty,
+            status = nanocode_trace::field::Empty,
+            duration_ns = nanocode_trace::field::Empty,
         );
         let mut credentials = Credentials::new();
         let result = self
@@ -879,7 +879,7 @@ impl ResponsesService {
 }
 
 fn record_pipeline_stats(
-    span: &tracing::Span,
+    span: &nanocode_trace::Span,
     request_bytes: usize,
     encode_duration_ns: u64,
     send_duration_ns: u64,
@@ -916,7 +916,7 @@ fn record_pipeline_stats(
         "response.inter_delta_stall_250ms.count",
         stats.inter_delta_stall_250ms_count,
     );
-    tracing::info!(
+    nanocode_trace::info!(
         target: "nanocode_codex",
         stage = "responses.pipeline.completed",
         request.bytes = request_bytes,
@@ -958,42 +958,42 @@ impl Service<ResponsesAttempt> for ResponsesService {
         request.observer.raw_api_events = self.config.raw_api_events;
         request.observer.tool_input_deltas = self.config.tool_input_deltas;
         let service = self.clone();
-        let parent = tracing::Span::current();
+        let parent = nanocode_trace::Span::current();
         Box::pin(async move {
             let span = info_span!(
                 target: "nanocode_codex",
                 parent: &parent,
                 "responses.attempt",
                 otel.kind = "client",
-                otel.status_code = tracing::field::Empty,
+                otel.status_code = nanocode_trace::field::Empty,
                 phase = request.kind.phase(),
                 model.call_index = request.call_index,
                 attempt = request.attempt,
                 max_attempts = request.max_attempts,
-                transport = tracing::field::Empty,
-                replay.mode = tracing::field::Empty,
-                model.input.item_count = tracing::field::Empty,
-                request.queue.duration_ns = tracing::field::Empty,
-                request.bytes = tracing::field::Empty,
-                request.zstd_bytes = tracing::field::Empty,
-                request.deflate_bytes = tracing::field::Empty,
-                request.encode.duration_ns = tracing::field::Empty,
-                request.send.duration_ns = tracing::field::Empty,
-                response.event.count = tracing::field::Empty,
-                response.bytes = tracing::field::Empty,
-                response.receive.wait_duration_ns = tracing::field::Empty,
-                response.parse.duration_ns = tracing::field::Empty,
-                response.emit.duration_ns = tracing::field::Empty,
-                response.decode.duration_ns = tracing::field::Empty,
-                response.socket_queue.duration_ns = tracing::field::Empty,
-                response.display_delta.count = tracing::field::Empty,
-                response.display_delta.bytes = tracing::field::Empty,
-                response.inter_delta_gap.max_ns = tracing::field::Empty,
-                response.inter_delta_stall_50ms.count = tracing::field::Empty,
-                response.inter_delta_stall_100ms.count = tracing::field::Empty,
-                response.inter_delta_stall_250ms.count = tracing::field::Empty,
-                status = tracing::field::Empty,
-                duration_ns = tracing::field::Empty,
+                transport = nanocode_trace::field::Empty,
+                replay.mode = nanocode_trace::field::Empty,
+                model.input.item_count = nanocode_trace::field::Empty,
+                request.queue.duration_ns = nanocode_trace::field::Empty,
+                request.bytes = nanocode_trace::field::Empty,
+                request.zstd_bytes = nanocode_trace::field::Empty,
+                request.deflate_bytes = nanocode_trace::field::Empty,
+                request.encode.duration_ns = nanocode_trace::field::Empty,
+                request.send.duration_ns = nanocode_trace::field::Empty,
+                response.event.count = nanocode_trace::field::Empty,
+                response.bytes = nanocode_trace::field::Empty,
+                response.receive.wait_duration_ns = nanocode_trace::field::Empty,
+                response.parse.duration_ns = nanocode_trace::field::Empty,
+                response.emit.duration_ns = nanocode_trace::field::Empty,
+                response.decode.duration_ns = nanocode_trace::field::Empty,
+                response.socket_queue.duration_ns = nanocode_trace::field::Empty,
+                response.display_delta.count = nanocode_trace::field::Empty,
+                response.display_delta.bytes = nanocode_trace::field::Empty,
+                response.inter_delta_gap.max_ns = nanocode_trace::field::Empty,
+                response.inter_delta_stall_50ms.count = nanocode_trace::field::Empty,
+                response.inter_delta_stall_100ms.count = nanocode_trace::field::Empty,
+                response.inter_delta_stall_250ms.count = nanocode_trace::field::Empty,
+                status = nanocode_trace::field::Empty,
+                duration_ns = nanocode_trace::field::Empty,
             );
             let queued_at = Instant::now();
             let connection = service.connection()?.clone();
@@ -1027,10 +1027,10 @@ impl ResponsesService {
         {
             {
                 let queue_ns = elapsed_ns(queued_at);
-                tracing::Span::current().record("request.queue.duration_ns", queue_ns);
+                nanocode_trace::Span::current().record("request.queue.duration_ns", queue_ns);
                 connection.enter_logical_turn(request.logical_turn);
                 let transport = request.effective_transport(service.config.responses_transport);
-                tracing::Span::current().record("transport", transport.as_str());
+                nanocode_trace::Span::current().record("transport", transport.as_str());
                 if matches!(transport, ResponsesTransport::Https) && connection.socket.is_some() {
                     connection.capture_turn_state();
                     connection.socket = None;
@@ -1064,7 +1064,7 @@ impl ResponsesService {
                             Some(ResponsesError::HandshakeRejected { status: 426, .. })
                         ) && request.activate_https_fallback()
                         {
-                            tracing::warn!(
+                            nanocode_trace::warn!(
                                 target: "nanocode_codex",
                                 previous_transport = "responses_websocket_v2",
                                 next_transport = "responses_https_sse",
@@ -1096,8 +1096,8 @@ impl ResponsesService {
                 {
                     request.force_full_replay();
                 }
-                tracing::Span::current().record("replay.mode", request.replay_mode());
-                tracing::Span::current()
+                nanocode_trace::Span::current().record("replay.mode", request.replay_mode());
+                nanocode_trace::Span::current()
                     .record("model.input.item_count", request.input_item_count());
                 service.run(connection, &request, transport, queue_ns).await
             }
@@ -1116,7 +1116,7 @@ async fn receive_warmup(
         let parsed = decode_event::<WarmupServerEvent>(received.text.as_str())?;
         let raw_event = credentials.redact(parsed.raw);
         let raw_event = raw_event.as_ref();
-        tracing::trace!(
+        nanocode_trace::trace!(
             target: "nanocode_codex",
             direction = "inbound",
             transport = TRANSPORT,

@@ -140,7 +140,7 @@ pub(crate) fn project_instructions(workspace: &str) -> Option<String> {
         .chain(&project.diagnostics)
         .filter(|diagnostic| matches!(diagnostic.level, nanocode_home::Level::Warning))
     {
-        tracing::warn!(
+        nanocode_trace::warn!(
             path = %diagnostic.path.display(),
             message = %diagnostic.message,
             "instruction file skipped"

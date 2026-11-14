@@ -195,7 +195,7 @@ impl Replay {
 
 #[derive(Clone)]
 struct InputTrace {
-    span: tracing::Span,
+    span: nanocode_trace::Span,
     full_replay: bool,
     traced: Arc<AtomicBool>,
 }
@@ -318,7 +318,7 @@ impl ResponsesAttempt {
 
     #[doc(hidden)]
     #[must_use]
-    pub fn with_input_trace(mut self, span: Option<tracing::Span>) -> Self {
+    pub fn with_input_trace(mut self, span: Option<nanocode_trace::Span>) -> Self {
         self.input_trace = span.map(|span| InputTrace {
             span,
             full_replay: self.is_full_replay(),
@@ -351,7 +351,7 @@ impl ResponsesAttempt {
         };
         trace.span.record("model.input.bytes", input.len());
         trace.span.in_scope(|| {
-            tracing::info!(
+            nanocode_trace::info!(
                 target: "nanocode",
                 content_kind = "model.input",
                 content = &*input,

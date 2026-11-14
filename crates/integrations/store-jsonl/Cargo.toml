@@ -15,7 +15,7 @@ description = "Append-only JSONL state store, one file per session: the CLI's de
 nanocode-durability-core.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tracing.workspace = true
+nanocode-trace.workspace = true
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 nanocode-digest.workspace = true

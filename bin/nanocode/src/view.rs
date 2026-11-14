@@ -201,8 +201,8 @@ impl Animation {
 
 pub fn draw(app: &mut App, frame: &mut Canvas<'_>) {
     let area = frame.area();
-    let _span = tracing::info_span!(target: TUI_TARGET, "nc.view", width = area.width, height = area.height).entered();
-    let layout = tracing::info_span!(target: TUI_TARGET, "nc.view.layout").entered();
+    let _span = nanocode_trace::info_span!(target: TUI_TARGET, "nc.view", width = area.width, height = area.height).entered();
+    let layout = nanocode_trace::info_span!(target: TUI_TARGET, "nc.view.layout").entered();
     let now = Instant::now();
     let spinner = app.spinner.frame(now);
     let mut animation = Animation {
@@ -445,13 +445,13 @@ fn transcripts(
     theme: &Theme,
     animation: &mut Animation,
 ) {
-    let _span = tracing::info_span!(target: TUI_TARGET, "nc.panes.render", side = app.panes.side.is_some(), active_side = app.panes.active, zoomed = app.panes.zoomed).entered();
+    let _span = nanocode_trace::info_span!(target: TUI_TARGET, "nc.panes.render", side = app.panes.side.is_some(), active_side = app.panes.active, zoomed = app.panes.zoomed).entered();
     let spinner = animation.spinner;
     app.panes.main_area = Rect::default();
     app.panes.side_area = Rect::default();
     if app.panes.side.is_none() {
         let _pane =
-            tracing::info_span!(target: TUI_TARGET, "nc.pane.render", pane = "main").entered();
+            nanocode_trace::info_span!(target: TUI_TARGET, "nc.pane.render", pane = "main").entered();
         app.panes.main_area = area;
         let transcript = app.visible_transcript();
         transcript.render(area, buffer, theme, spinner);
@@ -464,7 +464,7 @@ fn transcripts(
         .line(tab_line(app, theme), tabs)
         .render(tabs, buffer);
     if app.panes.zoomed {
-        let _pane = tracing::info_span!(target: TUI_TARGET, "nc.pane.render", pane = if app.panes.active { "side" } else { "main" }).entered();
+        let _pane = nanocode_trace::info_span!(target: TUI_TARGET, "nc.pane.render", pane = if app.panes.active { "side" } else { "main" }).entered();
         if app.panes.active {
             app.panes.side_area = body;
         } else {
@@ -486,12 +486,12 @@ fn transcripts(
         ..body
     };
     let (main, side) = (app.panes.main_area, app.panes.side_area);
-    tracing::info_span!(target: TUI_TARGET, "nc.pane.render", pane = "main").in_scope(|| {
+    nanocode_trace::info_span!(target: TUI_TARGET, "nc.pane.render", pane = "main").in_scope(|| {
         let transcript = app.pane_transcript(false);
         transcript.render(main, buffer, theme, spinner);
         animation.transcript(transcript);
     });
-    tracing::info_span!(target: TUI_TARGET, "nc.pane.render", pane = "side").in_scope(|| {
+    nanocode_trace::info_span!(target: TUI_TARGET, "nc.pane.render", pane = "side").in_scope(|| {
         let transcript = app.pane_transcript(true);
         transcript.render(side, buffer, theme, spinner);
         animation.transcript(transcript);
@@ -575,7 +575,7 @@ fn finder_popup(app: &App, composer_area: Rect, transcript_area: Rect, frame: &m
     if app.overlay.is_some() {
         return;
     }
-    let _span = tracing::info_span!(target: TUI_TARGET, "nc.finder.render", files = finder.finder.len(), matches = finder.finder.matches()).entered();
+    let _span = nanocode_trace::info_span!(target: TUI_TARGET, "nc.finder.render", files = finder.finder.len(), matches = finder.finder.matches()).entered();
     let rows = FINDER_ROWS.min(usize::from(transcript_area.height.saturating_sub(1)));
     let lines = finder.finder.lines(rows, &app.theme);
     let height = u16::try_from(lines.len()).unwrap_or(u16::MAX);
@@ -617,7 +617,7 @@ fn command_popup(app: &App, composer_area: Rect, transcript_area: Rect, frame: &
         return;
     }
     let _span =
-        tracing::info_span!(target: TUI_TARGET, "nc.commands.render", matches = matches.len())
+        nanocode_trace::info_span!(target: TUI_TARGET, "nc.commands.render", matches = matches.len())
             .entered();
     let height = u16::try_from(matches.len())
         .unwrap_or(u16::MAX)
@@ -703,7 +703,7 @@ fn focus_line(app: &App, scope: Scope, id: AgentId, view: &SubagentView) -> Line
 }
 
 fn status_line(app: &App, now: Instant, animation: &mut Animation) -> Line<'static> {
-    let _span = tracing::info_span!(target: TUI_TARGET, "nc.status.render").entered();
+    let _span = nanocode_trace::info_span!(target: TUI_TARGET, "nc.status.render").entered();
     let theme = &app.theme;
     if let Some((text, at)) = &app.status
         && now.duration_since(*at) < STATUS_VISIBLE
@@ -818,7 +818,7 @@ fn status_line(app: &App, now: Instant, animation: &mut Animation) -> Line<'stat
 }
 
 fn footer(app: &App) -> Line<'static> {
-    let _span = tracing::info_span!(target: TUI_TARGET, "nc.footer.render").entered();
+    let _span = nanocode_trace::info_span!(target: TUI_TARGET, "nc.footer.render").entered();
     let theme = &app.theme;
     let mut spans = vec![
         Span::styled(

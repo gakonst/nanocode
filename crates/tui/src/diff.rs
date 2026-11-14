@@ -17,7 +17,7 @@ pub fn render_rows(
     theme: &Theme,
     rows: usize,
 ) -> (Vec<Line<'static>>, usize) {
-    let _span = tracing::info_span!("tui.diff.render", width, text.bytes = source.len()).entered();
+    let _span = nanocode_trace::info_span!("tui.diff.render", width, text.bytes = source.len()).entered();
     if width == 0 {
         return (Vec::new(), 0);
     }

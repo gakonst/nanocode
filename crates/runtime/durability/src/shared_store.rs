@@ -2,7 +2,7 @@ use std::future::Future;
 
 use nanocode_platform::Instant;
 use tokio::sync::{mpsc, oneshot};
-use tracing::Instrument;
+use nanocode_trace::Instrument;
 
 use crate::{
     Committed, EventHits, EventPage, EventQuery, EventRange, KnownSummary, ListedState,
@@ -158,7 +158,7 @@ impl LatestWrite {
 
 struct StoreRequest {
     command: Command,
-    span: tracing::Span,
+    span: nanocode_trace::Span,
     queued: Instant,
 }
 
@@ -258,12 +258,12 @@ impl SharedStore {
         state_id: &str,
         keys: &[String],
     ) -> Result<Vec<Option<String>>, StoreError> {
-        let span = tracing::info_span!(
+        let span = nanocode_trace::info_span!(
             "durability.store",
             operation = "read_records",
             state.id = state_id,
             record.count = keys.len(),
-            queue.duration_ms = tracing::field::Empty
+            queue.duration_ms = nanocode_trace::field::Empty
         );
         if let Some(readers) = &self.readers {
             return readers
@@ -629,7 +629,7 @@ pub(crate) type DeferredContent = std::pin::Pin<
 
 struct Grouped {
     work: Work,
-    span: tracing::Span,
+    span: nanocode_trace::Span,
     queued: Instant,
 }
 
@@ -995,7 +995,7 @@ async fn run_group<S: StateStore + ?Sized>(store: &mut S, group: Vec<Grouped>) {
         }
         store
             .acquire_many(owners)
-            .instrument(tracing::info_span!(
+            .instrument(nanocode_trace::info_span!(
                 "durability.store.acquire_group",
                 acquire.count = count
             ))
@@ -1072,7 +1072,7 @@ async fn run_group<S: StateStore + ?Sized>(store: &mut S, group: Vec<Grouped>) {
     }
     let results = store
         .commit_many(commits)
-        .instrument(tracing::info_span!(
+        .instrument(nanocode_trace::info_span!(
             "durability.store.group",
             commit.count = count
         ))
@@ -1275,11 +1275,11 @@ impl SharedStore {
                     write,
                     result,
                 },
-                span: tracing::info_span!(
+                span: nanocode_trace::info_span!(
                     "durability.store",
                     operation = "replace_latest",
                     state.id = state_id,
-                    queue.duration_ms = tracing::field::Empty
+                    queue.duration_ms = nanocode_trace::field::Empty
                 ),
                 queued: nanocode_platform::now(),
             })
@@ -1306,11 +1306,11 @@ impl SharedStore {
                     content,
                     result,
                 },
-                span: tracing::info_span!(
+                span: nanocode_trace::info_span!(
                     "durability.store",
                     operation = "replace_deferred",
                     state.id = state_id,
-                    queue.duration_ms = tracing::field::Empty
+                    queue.duration_ms = nanocode_trace::field::Empty
                 ),
                 queued: nanocode_platform::now(),
             })
@@ -1329,10 +1329,10 @@ pub(crate) fn latest_write(payload: String, records: Vec<crate::StoreRecord>) ->
 
 impl StateStore for SharedStore {
     fn flush(&mut self) -> StoreFuture<'_, Result<(), StoreError>> {
-        let span = tracing::info_span!(
+        let span = nanocode_trace::info_span!(
             "durability.store",
             operation = "flush",
-            queue.duration_ms = tracing::field::Empty
+            queue.duration_ms = nanocode_trace::field::Empty
         );
         Box::pin(async move {
             let (result, receiver) = oneshot::channel();
@@ -1370,14 +1370,14 @@ impl StateStore for SharedStore {
         expected_revision: u64,
         commit: StateCommit<'a>,
     ) -> StoreFuture<'a, Result<Committed, StoreError>> {
-        let span = tracing::info_span!(
+        let span = nanocode_trace::info_span!(
             "durability.store",
             operation = "commit",
             state.id = state_id,
             payload.bytes = commit.payload.len(),
             record.count = commit.records.len(),
             event.count = commit.events.len(),
-            queue.duration_ms = tracing::field::Empty
+            queue.duration_ms = nanocode_trace::field::Empty
         );
         Box::pin(async move {
             let (result, receiver) = oneshot::channel();
@@ -1409,11 +1409,11 @@ impl StateStore for SharedStore {
         owner_id: OwnerId,
         update: StoreUpdate,
     ) -> StoreFuture<'a, Result<OwnedState, StoreError>> {
-        let span = tracing::info_span!(
+        let span = nanocode_trace::info_span!(
             "durability.store",
             operation = "acquire_with",
             state.id = state_id,
-            queue.duration_ms = tracing::field::Empty
+            queue.duration_ms = nanocode_trace::field::Empty
         );
         Box::pin(async move {
             let (result, receiver) = oneshot::channel();
@@ -1445,12 +1445,12 @@ impl StateStore for SharedStore {
         companion_id: &'a str,
         companion_owner: OwnerId,
     ) -> StoreFuture<'a, Result<(OwnedState, OwnedState), StoreError>> {
-        let span = tracing::info_span!(
+        let span = nanocode_trace::info_span!(
             "durability.store",
             operation = "acquire_with_companion",
             state.id = state_id,
             companion.id = companion_id,
-            queue.duration_ms = tracing::field::Empty
+            queue.duration_ms = nanocode_trace::field::Empty
         );
         Box::pin(async move {
             let (result, receiver) = oneshot::channel();
@@ -1502,11 +1502,11 @@ impl StateStore for SharedStore {
         state_id: &'a str,
         owner_id: OwnerId,
     ) -> StoreFuture<'a, Result<OwnedState, StoreError>> {
-        let span = tracing::info_span!(
+        let span = nanocode_trace::info_span!(
             "durability.store",
             operation = "acquire",
             state.id = state_id,
-            queue.duration_ms = tracing::field::Empty
+            queue.duration_ms = nanocode_trace::field::Empty
         );
         Box::pin(async move {
             let (result, receiver) = oneshot::channel();
@@ -1536,13 +1536,13 @@ impl StateStore for SharedStore {
         payload: &'a str,
         records: &'a [crate::StoreRecord],
     ) -> StoreFuture<'a, Result<u64, StoreError>> {
-        let span = tracing::info_span!(
+        let span = nanocode_trace::info_span!(
             "durability.store",
             operation = "replace",
             state.id = state_id,
             payload.bytes = payload.len(),
             record.count = records.len(),
-            queue.duration_ms = tracing::field::Empty
+            queue.duration_ms = nanocode_trace::field::Empty
         );
         Box::pin(async move {
             let (result, receiver) = oneshot::channel();
@@ -1568,11 +1568,11 @@ impl StateStore for SharedStore {
         &'a mut self,
         state_id: &'a str,
     ) -> StoreFuture<'a, Result<crate::StoredState, StoreError>> {
-        let span = tracing::info_span!(
+        let span = nanocode_trace::info_span!(
             "durability.store",
             operation = "peek",
             state.id = state_id,
-            queue.duration_ms = tracing::field::Empty
+            queue.duration_ms = nanocode_trace::field::Empty
         );
         Box::pin(async move {
             let stored = match &self.readers {
@@ -1601,11 +1601,11 @@ impl StateStore for SharedStore {
         &'a mut self,
         state_id: &'a str,
     ) -> StoreFuture<'a, Result<Option<OwnerToken>, StoreError>> {
-        let span = tracing::info_span!(
+        let span = nanocode_trace::info_span!(
             "durability.store",
             operation = "owner",
             state.id = state_id,
-            queue.duration_ms = tracing::field::Empty
+            queue.duration_ms = nanocode_trace::field::Empty
         );
         Box::pin(async move {
             let (result, receiver) = oneshot::channel();
@@ -1627,11 +1627,11 @@ impl StateStore for SharedStore {
         &'a mut self,
         limit: usize,
     ) -> StoreFuture<'a, Result<Vec<String>, StoreError>> {
-        let span = tracing::info_span!(
+        let span = nanocode_trace::info_span!(
             "durability.store",
             operation = "list_states",
             state.limit = limit,
-            queue.duration_ms = tracing::field::Empty
+            queue.duration_ms = nanocode_trace::field::Empty
         );
         Box::pin(async move {
             let (result, receiver) = oneshot::channel();
@@ -1650,11 +1650,11 @@ impl StateStore for SharedStore {
         &'a mut self,
         state_id: &'a str,
     ) -> StoreFuture<'a, Result<Vec<String>, StoreError>> {
-        let span = tracing::info_span!(
+        let span = nanocode_trace::info_span!(
             "durability.store",
             operation = "list_records",
             state.id = state_id,
-            queue.duration_ms = tracing::field::Empty
+            queue.duration_ms = nanocode_trace::field::Empty
         );
         Box::pin(async move {
             let (result, receiver) = oneshot::channel();
@@ -1676,11 +1676,11 @@ impl StateStore for SharedStore {
         &'a mut self,
         limit: usize,
     ) -> StoreFuture<'a, Result<Option<Vec<ListedState>>, StoreError>> {
-        let span = tracing::info_span!(
+        let span = nanocode_trace::info_span!(
             "durability.store",
             operation = "list_summaries",
             state.limit = limit,
-            queue.duration_ms = tracing::field::Empty
+            queue.duration_ms = nanocode_trace::field::Empty
         );
         Box::pin(async move {
             let (result, receiver) = oneshot::channel();
@@ -1699,11 +1699,11 @@ impl StateStore for SharedStore {
         &'a mut self,
         summaries: Vec<KnownSummary>,
     ) -> StoreFuture<'a, Result<(), StoreError>> {
-        let span = tracing::info_span!(
+        let span = nanocode_trace::info_span!(
             "durability.store",
             operation = "remember_summaries",
             state.count = summaries.len(),
-            queue.duration_ms = tracing::field::Empty
+            queue.duration_ms = nanocode_trace::field::Empty
         );
         Box::pin(async move {
             let (result, receiver) = oneshot::channel();

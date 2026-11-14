@@ -9,7 +9,7 @@ use crate::app::{App, AppEvent};
 
 impl App {
     pub(crate) fn login(&mut self, argument: &str) {
-        let _span = tracing::info_span!(target: "nanocode", "nc.action", action.name = "login", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
+        let _span = nanocode_trace::info_span!(target: "nanocode", "nc.action", action.name = "login", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
         let tx = self.tx.clone();
         match argument.trim() {
             "codex" | "chatgpt" | "openai" => {
@@ -26,7 +26,7 @@ impl App {
     }
 
     pub(crate) fn fund(&mut self, argument: &str) {
-        let _span = tracing::info_span!(target: "nanocode", "nc.action", action.name = "fund", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
+        let _span = nanocode_trace::info_span!(target: "nanocode", "nc.action", action.name = "fund", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
         nanocode_platform::spawn_task(fund(
             self.tx.clone(),
             argument.trim().trim_start_matches('$').to_owned(),
@@ -44,7 +44,7 @@ impl App {
     }
 
     pub(crate) fn wallet(&mut self) {
-        let _span = tracing::info_span!(target: "nanocode", "nc.action", action.name = "wallet", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
+        let _span = nanocode_trace::info_span!(target: "nanocode", "nc.action", action.name = "wallet", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
         nanocode_platform::spawn_task(wallet(self.tx.clone()));
     }
 }

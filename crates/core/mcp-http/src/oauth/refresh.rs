@@ -162,7 +162,7 @@ impl OAuthRuntime {
                         .refresh_transaction(rejected_access_token.as_deref())
                         .await;
                     if let Err(error) = &result {
-                        tracing::warn!(
+                        nanocode_trace::warn!(
                             server = %runtime.server_name,
                             refresh_reason = reason,
                             %error,

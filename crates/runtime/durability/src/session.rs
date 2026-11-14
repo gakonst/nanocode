@@ -11,7 +11,7 @@ use nanocode_agent_core::backend::SteerReceiptStatus;
 use nanocode_sync::SwapOption;
 use serde::{Serialize, de::DeserializeOwned};
 use tokio::sync::{mpsc, oneshot};
-use tracing::Instrument;
+use nanocode_trace::Instrument;
 
 use crate::{
     Committed, DurableState, EncodedPayload, Error, OperationStatus, OwnerId, OwnerToken, Result,
@@ -557,11 +557,11 @@ pub(crate) async fn pending_turn(store: &SharedStore, state_id: &str) -> Result<
     }
 }
 
-struct CommandRequest(Box<(Command, tracing::Span)>);
+struct CommandRequest(Box<(Command, nanocode_trace::Span)>);
 
 impl From<Command> for CommandRequest {
     fn from(command: Command) -> Self {
-        Self(Box::new((command, tracing::Span::current())))
+        Self(Box::new((command, nanocode_trace::Span::current())))
     }
 }
 
@@ -1552,7 +1552,7 @@ impl Driver {
                 }
                 None => None,
             };
-            tracing::warn!(
+            nanocode_trace::warn!(
                 operation = operation_id,
                 "abandoning a maintenance operation left pending without a live attempt"
             );
@@ -1581,7 +1581,7 @@ impl Driver {
             .zip(serde_json::from_str::<serde_json::Value>(given).ok())
             .is_some_and(|(recorded, given)| recorded == given);
         if same {
-            tracing::warn!(
+            nanocode_trace::warn!(
                 stored = stored.key(),
                 given = input.key(),
                 "a durable input encodes the stored one differently; its JSON is the same"
@@ -2379,7 +2379,7 @@ impl Driver {
                 .await
             {
                 Resolution::Committed(committed) => {
-                    tracing::warn!(
+                    nanocode_trace::warn!(
                         state_id = &*self.state_id,
                         revision = expected_revision,
                         %error,
@@ -2388,7 +2388,7 @@ impl Driver {
                     break committed;
                 }
                 Resolution::Absent if !retried && !matches!(error, StoreError::Fenced) => {
-                    tracing::warn!(
+                    nanocode_trace::warn!(
                         state_id = &*self.state_id,
                         revision = expected_revision,
                         %error,

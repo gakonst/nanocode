@@ -36,7 +36,7 @@ use std::{
     time::Duration,
 };
 use tokio::sync::{mpsc, oneshot, watch};
-use tracing::Instrument;
+use nanocode_trace::Instrument;
 
 mod activity;
 mod completion;
@@ -1337,7 +1337,7 @@ async fn journal_writer(
         match save {
             JournalSave::Fenced if !fenced => {
                 fenced = true;
-                tracing::info!(
+                nanocode_trace::info!(
                     %root_session_id,
                     "another process owns the subagent journal now; this process stops saving it"
                 );
@@ -2990,7 +2990,7 @@ impl Registry {
             let mut unstarted = Vec::new();
             match registry.restore(&root).await {
                 Ok(report) if report.restored > 0 => {
-                    tracing::info!(
+                    nanocode_trace::info!(
                         restored = report.restored,
                         interrupted = report.interrupted.len(),
                         completed = report.completed.len(),
@@ -3003,7 +3003,7 @@ impl Registry {
                 }
                 Ok(_) => {}
                 Err(error) => {
-                    tracing::warn!(%error, %root, "could not restore durable subagent task tree");
+                    nanocode_trace::warn!(%error, %root, "could not restore durable subagent task tree");
                     let _ = ready.send(RestorationState::Failed(format!(
                         "could not restore subagent journal for {root}: {error}"
                     )));
@@ -3019,7 +3019,7 @@ impl Registry {
             let pending = registry.pending_messages(&root).await;
             for (id, result) in registry.resume_interrupted(&root).await {
                 if let Err(error) = result {
-                    tracing::warn!(%id, %error, "could not resume restored subagent");
+                    nanocode_trace::warn!(%id, %error, "could not resume restored subagent");
                     registry
                         .fail_unresumable(
                             &root,
@@ -3363,7 +3363,7 @@ impl Registry {
             .call(move |state| {
                 let root_session_id = root.as_str();
                 let cache = &mut owned_cache;
-                let _collect = tracing::info_span!(
+                let _collect = nanocode_trace::info_span!(
                     "subagent.journal.collect",
                     session.root_id = root_session_id
                 )
@@ -3479,7 +3479,7 @@ impl Registry {
                     let save = if is_fenced(&error) {
                         JournalSave::Fenced
                     } else {
-                        tracing::warn!(%error, %root_session_id, "could not save subagent journal");
+                        nanocode_trace::warn!(%error, %root_session_id, "could not save subagent journal");
                         JournalSave::Failed
                     };
                     for (_, done) in waiters {
@@ -3499,7 +3499,7 @@ impl Registry {
         }
         let encoded = snapshot.map(|snapshot| {
             snapshot.and_then(|snapshot| {
-                let _encode = tracing::info_span!(
+                let _encode = nanocode_trace::info_span!(
                     "subagent.journal.encode",
                     session.root_id = root_session_id
                 )
@@ -3521,7 +3521,7 @@ impl Registry {
                     let payload = encoded.payload.clone();
                     let result = store
                         .save(root_session_id, payload.clone(), records.clone())
-                        .instrument(tracing::info_span!(
+                        .instrument(nanocode_trace::info_span!(
                             "subagent.journal.save",
                             session.root_id = root_session_id,
                             payload.bytes = payload.len(),
@@ -3554,7 +3554,7 @@ impl Registry {
             && let Err(error) = &result
             && !is_fenced(error)
         {
-            tracing::warn!(%error, %root_session_id, "could not save subagent journal");
+            nanocode_trace::warn!(%error, %root_session_id, "could not save subagent journal");
         }
         for (_, done) in waiters {
             let _ = done.send(result.as_ref().copied().map_err(copy_error));
@@ -3638,7 +3638,7 @@ impl Registry {
         *cache = returned_cache;
         let encoded = snapshot.map(|snapshot| {
             snapshot.and_then(|snapshot| {
-                let _encode = tracing::info_span!(
+                let _encode = nanocode_trace::info_span!(
                     "subagent.journal.encode",
                     session.root_id = root_session_id
                 )
@@ -3648,7 +3648,7 @@ impl Registry {
         });
         let Some(Ok(encoded)) = encoded else {
             if let Some(Err(error)) = encoded {
-                tracing::warn!(%error, %root_session_id, "could not encode subagent journal");
+                nanocode_trace::warn!(%error, %root_session_id, "could not encode subagent journal");
             }
             return None;
         };
@@ -3689,7 +3689,7 @@ impl Registry {
                     self.release_recorded(root_session_id, &key);
                     recorded.insert(session_id, key);
                 }
-                Err(error) => tracing::warn!(
+                Err(error) => nanocode_trace::warn!(
                     %error, %root_session_id, %session_id,
                     "could not record subagent session"
                 ),
@@ -3797,7 +3797,7 @@ impl Registry {
                 true
             }
             Err(error) => {
-                tracing::warn!(%error, "could not encode subagent checkpoint");
+                nanocode_trace::warn!(%error, "could not encode subagent checkpoint");
                 false
             }
         }
@@ -4328,7 +4328,7 @@ impl Registry {
         };
         if cold {
             self.thaw(root_session_id, store.as_ref(), &warm.leaves)
-                .instrument(tracing::info_span!(
+                .instrument(nanocode_trace::info_span!(
                     "subagent.warm",
                     session.root_id = root_session_id,
                     leaf.count = warm.leaves.len()
@@ -4485,7 +4485,7 @@ impl Registry {
         root_session_id: &str,
     ) -> std::io::Result<RestoreReport> {
         self.restore_inner(root_session_id)
-            .instrument(tracing::info_span!(
+            .instrument(nanocode_trace::info_span!(
                 "subagent.restore",
                 session.root_id = root_session_id
             ))
@@ -4746,7 +4746,7 @@ impl Registry {
 
     async fn save_scope(&self, root_session_id: &str) -> std::io::Result<()> {
         self.request_journal(root_session_id, true)
-            .instrument(tracing::info_span!(
+            .instrument(nanocode_trace::info_span!(
                 "subagent.journal.snapshot",
                 session.root_id = root_session_id
             ))
@@ -4766,7 +4766,7 @@ impl Registry {
         } = write;
         store
             .save(root_session_id, payload, records)
-            .instrument(tracing::info_span!(
+            .instrument(nanocode_trace::info_span!(
                 "subagent.journal.save",
                 session.root_id = root_session_id
             ))
@@ -4780,7 +4780,7 @@ impl Registry {
         root_session_id: &str,
     ) -> Vec<(AgentId, std::io::Result<MessageReceipt>)> {
         self.resume_interrupted_inner(root_session_id)
-            .instrument(tracing::info_span!(
+            .instrument(nanocode_trace::info_span!(
                 "subagent.resume",
                 session.root_id = root_session_id
             ))
@@ -5094,13 +5094,13 @@ impl Registry {
         }
         if let Err(error) = self
             .rehydrate(root_session_id, id, MessagePurpose::Coordinate)
-            .instrument(tracing::info_span!(
+            .instrument(nanocode_trace::info_span!(
                 "subagent.wake",
                 session.root_id = root_session_id
             ))
             .await
         {
-            tracing::warn!(%id, %error, "could not wake a hibernated subagent");
+            nanocode_trace::warn!(%id, %error, "could not wake a hibernated subagent");
             let failure = format!("agent {id} could not wake: {error}");
             self.settle_hibernated(
                 root_session_id,
@@ -5340,7 +5340,7 @@ impl Registry {
         resumed: bool,
     ) -> std::io::Result<(SubmissionOutcome, bool)> {
         self.submit_result_durably_inner(session_id, instruction_revision, output, resumed)
-            .instrument(tracing::info_span!(
+            .instrument(nanocode_trace::info_span!(
                 "subagent.submit",
                 session.id = session_id,
                 instruction.revision = instruction_revision
@@ -5369,12 +5369,12 @@ impl Registry {
             SubmissionOutcome::Accepted { .. } => match self.persist_durably(&root).await {
                 Ok(()) => true,
                 Err(error) if is_fenced(&error) => {
-                    tracing::debug!(%error, %root, "accepted subagent result is not journaled: another process owns the journal");
+                    nanocode_trace::debug!(%error, %root, "accepted subagent result is not journaled: another process owns the journal");
                     self.changed();
                     false
                 }
                 Err(error) => {
-                    tracing::warn!(%error, %root, "accepted subagent result is not journaled yet");
+                    nanocode_trace::warn!(%error, %root, "accepted subagent result is not journaled yet");
                     self.changed();
                     false
                 }
@@ -5386,7 +5386,7 @@ impl Registry {
 
     async fn persist_durably(&self, root_session_id: &str) -> std::io::Result<()> {
         self.request_journal(root_session_id, false)
-            .instrument(tracing::info_span!(
+            .instrument(nanocode_trace::info_span!(
                 "subagent.journal.persist",
                 session.root_id = root_session_id
             ))
@@ -5479,11 +5479,11 @@ impl Registry {
 
                 match self.persist_durably(root_session_id).await {
                     Ok(()) => {}
-                    Err(error) if is_fenced(&error) => tracing::debug!(
+                    Err(error) if is_fenced(&error) => nanocode_trace::debug!(
                         %error, %root_session_id,
                         "settled subagent turn not journaled: another process owns the journal"
                     ),
-                    Err(error) => tracing::warn!(
+                    Err(error) => nanocode_trace::warn!(
                         %error, %root_session_id,
                         "settled subagent turn not journaled yet; the writer retries"
                     ),
@@ -5566,7 +5566,7 @@ impl Registry {
         }) else {
             return;
         };
-        tracing::warn!(%id, revision, ?delay, "subagent completion was not delivered; retrying");
+        nanocode_trace::warn!(%id, revision, ?delay, "subagent completion was not delivered; retrying");
 
         let registry = Arc::downgrade(self);
         drop(platform::spawn(async move {
@@ -6891,7 +6891,7 @@ impl Registry {
                         self.retry_completion(root_session_id, id, revision);
                     }
                 }
-                tracing::warn!(%error, "subagent completions did not continue their parent");
+                nanocode_trace::warn!(%error, "subagent completions did not continue their parent");
             }
         }
     }
@@ -7066,7 +7066,7 @@ impl Registry {
                 if self.store_for(root_session_id).is_some()
                     && let Err(error) = self.persist_durably(root_session_id).await
                 {
-                    tracing::warn!(%error, %id, revision, "subagent completion acknowledgement was not journaled");
+                    nanocode_trace::warn!(%error, %id, revision, "subagent completion acknowledgement was not journaled");
                     self.restore_completion(root_session_id, id, revision).await;
                     self.retry_completion(root_session_id, id, revision);
                 }
@@ -7093,7 +7093,7 @@ impl Registry {
                 if self.store_for(root_session_id).is_some()
                     && let Err(error) = self.persist_durably(root_session_id).await
                 {
-                    tracing::warn!(%error, %id, revision, "parked subagent completion was not journaled");
+                    nanocode_trace::warn!(%error, %id, revision, "parked subagent completion was not journaled");
                 }
             }
             NoticeOutcome::Stopped => {}
@@ -7361,7 +7361,7 @@ impl Registry {
             && self.store_for(root_session_id).is_some()
             && let Err(error) = self.persist_durably(root_session_id).await
         {
-            tracing::warn!(%error, root_session_id, "cancelled subagent lineage was not journaled");
+            nanocode_trace::warn!(%error, root_session_id, "cancelled subagent lineage was not journaled");
         }
     }
 
@@ -7914,7 +7914,7 @@ impl Registry {
             let Some((announce, hibernated, hibernations, interrupted, marks)) = installed else {
                 drop(start);
                 if let Err(error) = harness.close().await {
-                    tracing::debug!(%id, %error, "a restored subagent that began closing did not shut down");
+                    nanocode_trace::debug!(%id, %error, "a restored subagent that began closing did not shut down");
                 }
                 return Ok(());
             };
@@ -8183,9 +8183,9 @@ impl Registry {
             && let Err(error) = self.persist_durably(root_session_id).await
         {
             if is_fenced(&error) {
-                tracing::debug!(%error, root_session_id, "redelivered subagent messages are not journaled: another process owns the journal");
+                nanocode_trace::debug!(%error, root_session_id, "redelivered subagent messages are not journaled: another process owns the journal");
             } else {
-                tracing::warn!(%error, root_session_id, "redelivered subagent messages are not journaled yet");
+                nanocode_trace::warn!(%error, root_session_id, "redelivered subagent messages are not journaled yet");
             }
         }
     }
@@ -8328,7 +8328,7 @@ impl Registry {
         duration: Duration,
     ) -> std::io::Result<AgentWait> {
         self.wait_inner(session_id, call_id, ids, duration)
-            .instrument(tracing::info_span!(
+            .instrument(nanocode_trace::info_span!(
                 "subagent.wait",
                 session.id = session_id,
                 agent.count = ids.len()
@@ -8528,7 +8528,7 @@ impl Registry {
         if self.store_for(&root).is_some()
             && let Err(error) = self.persist_durably(&root).await
         {
-            tracing::warn!(%error, session_id, call_id, "the results this wait delivers are not journaled; a restart waits afresh");
+            nanocode_trace::warn!(%error, session_id, call_id, "the results this wait delivers are not journaled; a restart waits afresh");
         }
     }
 
@@ -8745,7 +8745,7 @@ impl Registry {
                         return Err(std::io::Error::other("subagent runtime is closed"));
                     }
                     Err(_) => {
-                        tracing::warn!(%root, "subagent checkpoint capture timed out during shutdown");
+                        nanocode_trace::warn!(%root, "subagent checkpoint capture timed out during shutdown");
                         self.scope_locks(&root)
                             .pending_checkpoints
                             .store(0, Ordering::Release);
@@ -8796,7 +8796,7 @@ impl Registry {
             nanocode_sync::join_in_order(roots.iter().map(|root| self.release_scope(root))).await;
         for (root, result) in roots.iter().zip(released) {
             if let Err(error) = result {
-                tracing::warn!(%root, %error, "could not stop subagents at shutdown");
+                nanocode_trace::warn!(%root, %error, "could not stop subagents at shutdown");
             }
         }
         self.session_handles.update(|handles| handles.clear());
@@ -8820,7 +8820,7 @@ impl Registry {
             )
             .await
         {
-            tracing::debug!(%error, %root_session_id, "subagent journal was not saved before its scope stopped");
+            nanocode_trace::debug!(%error, %root_session_id, "subagent journal was not saved before its scope stopped");
         }
         let root = root_session_id.to_owned();
         let request = self
@@ -9498,7 +9498,7 @@ async fn continue_root(
                     .continue_parent_batch(&parent, &root_session_id, batch)
                     .await
                 {
-                    tracing::warn!(%error, "subagent completions did not continue their parent");
+                    nanocode_trace::warn!(%error, "subagent completions did not continue their parent");
                 }
             }
             None => {

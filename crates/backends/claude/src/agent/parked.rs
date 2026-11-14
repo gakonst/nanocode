@@ -10,7 +10,7 @@ use futures_util::{
 use nanocode_agent_core::backend::{BackendFuture, ParkedCall};
 use nanocode_sync::{Atom, Signal, Slot};
 use tokio::sync::Notify;
-use tracing::Instrument as _;
+use nanocode_trace::Instrument as _;
 
 use crate::{ClaudeClient, ClaudeError, ClaudeStream, PreparedWire, StreamEvent};
 
@@ -42,7 +42,7 @@ impl ModelCall {
         client: ClaudeClient,
         wire: PreparedWire,
         key: Key,
-        span: tracing::Span,
+        span: nanocode_trace::Span,
     ) -> Arc<Self> {
         let (abort, registration) = AbortHandle::new_pair();
         let call = Arc::new(Self {

@@ -444,7 +444,7 @@ async fn initialize_and_run(
             return;
         }
     };
-    tracing::info!(target: "nanocode_code_mode::attachment",
+    nanocode_trace::info!(target: "nanocode_code_mode::attachment",
         stage = "attachment.catalog_prepared",
         duration_ms = prepare_started.elapsed().as_secs_f64() * 1000.0,
         "attachment catalog prepared");

@@ -275,7 +275,7 @@ impl RuntimeBackend for CodexHarness {
                         .session_id(session_id)
                         .deferred_durability(&state, record, text.clone());
                     let built =
-                        tracing::info_span!("codex.session.build").in_scope(|| deferred.build());
+                        nanocode_trace::info_span!("codex.session.build").in_scope(|| deferred.build());
                     match nanocode_agent_core::Agent::persist_created(built).await {
                         Ok((agent, events)) => {
                             host.initial_notice_committed(&agent, text);
@@ -285,13 +285,13 @@ impl RuntimeBackend for CodexHarness {
                         Err(error) => return Err(error),
                     }
                 }
-                builder = tracing::Instrument::instrument(
+                builder = nanocode_trace::Instrument::instrument(
                     builder.session_id(session_id).durability(state),
-                    tracing::info_span!("codex.session.durability"),
+                    nanocode_trace::info_span!("codex.session.durability"),
                 )
                 .await?;
             }
-            tracing::info_span!("codex.session.build").in_scope(|| builder.build())
+            nanocode_trace::info_span!("codex.session.build").in_scope(|| builder.build())
         })
     }
 }

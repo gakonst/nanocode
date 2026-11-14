@@ -595,7 +595,7 @@ impl Py<PyFunction> {
                 Ok(args) => {
                     return Ok(args.invoke().to_pyobject(vm));
                 }
-                Err(err) => tracing::info!(
+                Err(err) => nanocode_trace::info!(
                     "jit: function `{}` is falling back to being interpreted because of the \
                     error: {}",
                     self.code.obj_name, err

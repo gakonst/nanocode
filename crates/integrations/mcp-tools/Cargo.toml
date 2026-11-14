@@ -24,7 +24,7 @@ futures-util.workspace = true
 http.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tracing.workspace = true
+nanocode-trace.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]

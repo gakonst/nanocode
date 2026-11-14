@@ -55,7 +55,7 @@ use serde_json::{Value, value::RawValue};
 use nanocode_platform::Instant;
 use nanocode_sync::{Atom, InOrder, Leased, Owned, Sequencer, Signal, Slot, Turn};
 use tokio::sync::{Notify, mpsc, oneshot, watch};
-use tracing::{Instrument, info_span};
+use nanocode_trace::{Instrument, info_span};
 
 use super::{ToolContext, ToolOutput, ToolOutputBody, ToolOutputContent};
 use crate::embedded::OwnedToolContext;
@@ -184,9 +184,9 @@ async fn spawn_host() -> Result<EmbeddedHost, String> {
         target: "nanocode_code_mode",
         "code_mode.host_spawn",
         otel.kind = "internal",
-        otel.status_code = tracing::field::Empty,
-        status = tracing::field::Empty,
-        duration_ns = tracing::field::Empty,
+        otel.status_code = nanocode_trace::field::Empty,
+        status = nanocode_trace::field::Empty,
+        duration_ns = nanocode_trace::field::Empty,
     );
     let result = ExecutionWorker::spawn_available()
         .instrument(span.clone())
@@ -646,7 +646,7 @@ impl CodeModeRuntime {
         let turn = self.current_turn.load(Ordering::Acquire);
         for journal in restored.cells.iter().cloned() {
             if journal.version != CELL_JOURNAL_VERSION || journal.session_id != context.session_id {
-                tracing::warn!(
+                nanocode_trace::warn!(
                     target: "nanocode_code_mode",
                     cell_id = journal.cell_id,
                     version = journal.version,
@@ -693,7 +693,7 @@ impl CodeModeRuntime {
         let catalog = match self.cell_tools(&metadata) {
             Ok(catalog) => catalog,
             Err(error) => {
-                tracing::warn!(
+                nanocode_trace::warn!(
                     target: "nanocode_code_mode",
                     cell_id,
                     %error,
@@ -895,17 +895,17 @@ impl CodeModeRuntime {
             target: "nanocode_code_mode",
             "code_mode.cell",
             otel.kind = "internal",
-            otel.status_code = tracing::field::Empty,
+            otel.status_code = nanocode_trace::field::Empty,
             session.id = context.session_id.as_str(),
             tool.call_id = context.call_id.as_str(),
-            cell.id = tracing::field::Empty,
+            cell.id = nanocode_trace::field::Empty,
             source.bytes = source.len(),
             source.lines = source.lines().count(),
-            output.max_tokens = tracing::field::Empty,
-            nested.count = tracing::field::Empty,
-            running = tracing::field::Empty,
-            status = tracing::field::Empty,
-            duration_ns = tracing::field::Empty,
+            output.max_tokens = nanocode_trace::field::Empty,
+            nested.count = nanocode_trace::field::Empty,
+            running = nanocode_trace::field::Empty,
+            status = nanocode_trace::field::Empty,
+            duration_ns = nanocode_trace::field::Empty,
         );
         let execution = self
             .execute_inner(source, tools, context, started_at, observer)
@@ -938,7 +938,7 @@ impl CodeModeRuntime {
         let output_token_budget = source
             .max_output_tokens
             .unwrap_or(crate::contract::DEFAULT_TOOL_OUTPUT_TOKENS);
-        tracing::Span::current().record("output.max_tokens", output_token_budget);
+        nanocode_trace::Span::current().record("output.max_tokens", output_token_budget);
         let context = context.with_output_token_budget(output_token_budget);
 
         let admission = self.admission.enter().await;
@@ -967,7 +967,7 @@ impl CodeModeRuntime {
         };
         let cell = {
             let cell_id = self.cells.update(CellRegistry::allocate_cell_id);
-            tracing::Span::current().record("cell.id", cell_id);
+            nanocode_trace::Span::current().record("cell.id", cell_id);
             let record = self.journals.as_ref().map(|journals| {
                 let record = Arc::new(CellRecord {
                     cell_id,
@@ -1038,7 +1038,7 @@ impl CodeModeRuntime {
             origin_call_id: cell.origin_call_id.clone(),
             running,
         });
-        tracing::Span::current().record("running", running);
+        nanocode_trace::Span::current().record("running", running);
         if !running {
             self.remove_and_join(&cell).await;
         }
@@ -1061,15 +1061,15 @@ impl CodeModeRuntime {
             target: "nanocode_code_mode",
             "code_mode.wait",
             otel.kind = "internal",
-            otel.status_code = tracing::field::Empty,
-            session.id = tracing::field::Empty,
-            tool.call_id = tracing::field::Empty,
-            cell.id = tracing::field::Empty,
-            wait.yield_time_ms = tracing::field::Empty,
-            wait.terminate = tracing::field::Empty,
-            running = tracing::field::Empty,
-            status = tracing::field::Empty,
-            duration_ns = tracing::field::Empty,
+            otel.status_code = nanocode_trace::field::Empty,
+            session.id = nanocode_trace::field::Empty,
+            tool.call_id = nanocode_trace::field::Empty,
+            cell.id = nanocode_trace::field::Empty,
+            wait.yield_time_ms = nanocode_trace::field::Empty,
+            wait.terminate = nanocode_trace::field::Empty,
+            running = nanocode_trace::field::Empty,
+            status = nanocode_trace::field::Empty,
+            duration_ns = nanocode_trace::field::Empty,
         );
         let execution = self
             .wait_inner(input, context.call_id(), observer, started_at)
@@ -1115,7 +1115,7 @@ impl CodeModeRuntime {
                 );
             }
         };
-        let span = tracing::Span::current();
+        let span = nanocode_trace::Span::current();
         span.record("cell.id", cell_id);
         span.record("wait.terminate", arguments.terminate);
         let yield_time_ms = arguments
@@ -1222,7 +1222,7 @@ impl CodeModeRuntime {
     }
 }
 
-fn finish_cell_span(span: &tracing::Span, execution: &CodeModeExecution, started_at: Instant) {
+fn finish_cell_span(span: &nanocode_trace::Span, execution: &CodeModeExecution, started_at: Instant) {
     span.record(
         "status",
         if execution.success {
@@ -1525,17 +1525,17 @@ impl LiveCell {
             target: "nanocode_code_mode",
             "code_mode.cell_actor",
             otel.kind = "internal",
-            otel.status_code = tracing::field::Empty,
+            otel.status_code = nanocode_trace::field::Empty,
             session.id = context.session_id.as_str(),
             tool.call_id = context.call_id.as_str(),
             cell.id = id,
-            runtime.first_event_ns = tracing::field::Empty,
-            runtime.event_count = tracing::field::Empty,
-            host.reused = tracing::field::Empty,
-            host.wait_ns = tracing::field::Empty,
-            host.termination_ns = tracing::field::Empty,
-            status = tracing::field::Empty,
-            duration_ns = tracing::field::Empty,
+            runtime.first_event_ns = nanocode_trace::field::Empty,
+            runtime.event_count = nanocode_trace::field::Empty,
+            host.reused = nanocode_trace::field::Empty,
+            host.wait_ns = nanocode_trace::field::Empty,
+            host.termination_ns = nanocode_trace::field::Empty,
+            status = nanocode_trace::field::Empty,
+            duration_ns = nanocode_trace::field::Empty,
         );
         let origin_call_id = context.call_id.clone();
         let session_id = context.session_id.clone();
@@ -2735,7 +2735,7 @@ impl EmbeddedHost {
                     let event = event.map_err(HostFailure::new)?;
                     event_count = event_count.saturating_add(1);
                     if event_count == 1 {
-                        tracing::Span::current().record(
+                        nanocode_trace::Span::current().record(
                             "runtime.first_event_ns",
                             u64::try_from(actor_started_at.elapsed().as_nanos())
                                 .unwrap_or(u64::MAX),
@@ -2817,7 +2817,7 @@ impl EmbeddedHost {
                             }
                         }
                         RuntimeEvent::Diverged { reason, .. } => {
-                            tracing::warn!(
+                            nanocode_trace::warn!(
                                 target: "nanocode_code_mode",
                                 cell_id,
                                 %reason,
@@ -2833,7 +2833,7 @@ impl EmbeddedHost {
                             stored,
                             ..
                         } => {
-                            tracing::Span::current().record("runtime.event_count", event_count);
+                            nanocode_trace::Span::current().record("runtime.event_count", event_count);
                             return Ok(CellTerminal::Completed { stored });
                         }
                         RuntimeEvent::Error {
@@ -2841,7 +2841,7 @@ impl EmbeddedHost {
                             stored,
                             ..
                         } => {
-                            tracing::Span::current().record("runtime.event_count", event_count);
+                            nanocode_trace::Span::current().record("runtime.event_count", event_count);
                             return Ok(CellTerminal::ScriptFailed {
                                 message,
                                 stored,
@@ -2958,8 +2958,8 @@ async fn run_cell_actor(
             None => match spawn_host().await {
                 Ok(host) => host,
                 Err(message) => {
-                    tracing::Span::current().record("status", "failed");
-                    tracing::Span::current().record("otel.status_code", "ERROR");
+                    nanocode_trace::Span::current().record("status", "failed");
+                    nanocode_trace::Span::current().record("otel.status_code", "ERROR");
                     record_elapsed("duration_ns", started_at);
                     let update = if lifecycle.claim_completion() {
                         CellUpdate::HostFailed(message)
@@ -2975,7 +2975,7 @@ async fn run_cell_actor(
         (host, reused)
     };
     record_elapsed("host.wait_ns", host_wait_started_at);
-    tracing::Span::current().record("host.reused", reused);
+    nanocode_trace::Span::current().record("host.reused", reused);
     let (record, mut plan, hold) = match journaling {
         Some(journaling) => (
             Some(journaling.record),
@@ -3043,8 +3043,8 @@ async fn run_cell_actor(
         )
         | Err(_) => ("failed", "ERROR"),
     };
-    tracing::Span::current().record("status", status);
-    tracing::Span::current().record("otel.status_code", otel_status);
+    nanocode_trace::Span::current().record("status", status);
+    nanocode_trace::Span::current().record("otel.status_code", otel_status);
     let terminated = matches!(&terminal, Ok(CellTerminal::Terminated));
     let host_healthy = matches!(
         &terminal,
@@ -3117,7 +3117,7 @@ async fn run_cell_actor(
 }
 
 fn record_elapsed(field: &'static str, started_at: Instant) {
-    tracing::Span::current().record(
+    nanocode_trace::Span::current().record(
         field,
         u64::try_from(started_at.elapsed().as_nanos()).unwrap_or(u64::MAX),
     );

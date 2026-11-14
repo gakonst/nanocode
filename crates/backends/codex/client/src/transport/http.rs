@@ -195,7 +195,7 @@ impl ResponsesHttp {
             .await
             .map_err(|error| encode_error(&error))?
             .map_err(|error| encode_error(&error))?;
-            tracing::Span::current().record("request.zstd_bytes", encoded.len());
+            nanocode_trace::Span::current().record("request.zstd_bytes", encoded.len());
             builder
                 .header(header::CONTENT_ENCODING, "zstd")
                 .body(encoded)
@@ -236,7 +236,7 @@ impl ResponsesHttp {
             let retry_after = RetryAfter::from_headers(response.headers());
             let should_retry = retry::should_retry(response.headers());
 
-            tracing::debug!(
+            nanocode_trace::debug!(
                 target: "nanocode::responses::http",
                 status = status.as_u16(),
                 retry_after_deadline_ms = retry_after.map(RetryAfter::deadline_unix_ms),

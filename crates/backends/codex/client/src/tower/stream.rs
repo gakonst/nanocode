@@ -1138,6 +1138,7 @@ fn emit_assistant_message(
 
 pub(crate) async fn receive_compaction<S>(
     source: &mut S,
+    local: bool,
     transport: &'static str,
     observer: &ResponsesObserver,
     credentials: &Credentials,
@@ -1173,16 +1174,23 @@ where
         {
             StreamEvent::ItemDone { item, .. } => done_items.push(item),
             StreamEvent::Completed(response) => {
-                let mut compactions = done_items
-                    .into_iter()
-                    .filter(|item| matches!(item, ResponseItem::Compaction { .. }));
-                let item = compactions.next();
-                let count = usize::from(item.is_some()) + compactions.count();
-                if count != 1 {
-                    return Err(ResponsesServiceError::invalid_compaction(count));
-                }
-                let Some(item) = item else {
-                    return Err(ResponsesServiceError::invalid_compaction(0));
+                let item = if local {
+                    crate::client::session::compaction::summary_message(last_output_text(
+                        &done_items,
+                    ))
+                } else {
+                    let mut compactions = done_items
+                        .into_iter()
+                        .filter(|item| matches!(item, ResponseItem::Compaction { .. }));
+                    let item = compactions.next();
+                    let count = usize::from(item.is_some()) + compactions.count();
+                    if count != 1 {
+                        return Err(ResponsesServiceError::invalid_compaction(count));
+                    }
+                    let Some(item) = item else {
+                        return Err(ResponsesServiceError::invalid_compaction(0));
+                    };
+                    item
                 };
                 return Ok(CompactionOutput {
                     id: response.id,
@@ -1251,6 +1259,30 @@ fn code_calls(items: &[ResponseItem]) -> Vec<CodeCall> {
         }
     }
     calls
+}
+
+fn last_output_text(items: &[ResponseItem]) -> &str {
+    items
+        .iter()
+        .rev()
+        .find_map(|item| {
+            let ResponseItem::Message {
+                role: MessageRole::Assistant,
+                content,
+                ..
+            } = item
+            else {
+                return None;
+            };
+            content.iter().rev().find_map(|part| match part {
+                ContentItem::OutputText { text, .. } => Some(text.as_ref()),
+                ContentItem::InputText { .. }
+                | ContentItem::InputImage { .. }
+                | ContentItem::InputImageFile { .. }
+                | ContentItem::InputAudio { .. } => None,
+            })
+        })
+        .unwrap_or_default()
 }
 
 fn final_message(items: &[ResponseItem]) -> Option<String> {

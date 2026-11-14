@@ -472,6 +472,7 @@ impl ResponsesService {
             ResponsesAttemptKind::Compaction => ResponsesOutput::Compaction(
                 stream::receive_compaction(
                     socket,
+                    request.is_local_compaction(),
                     ResponsesTransport::WebSocket.as_str(),
                     &request.observer,
                     &credentials,
@@ -605,6 +606,7 @@ impl ResponsesService {
         transport: ResponsesTransport,
     ) -> Result<EncodedRequest, ResponsesServiceError> {
         if matches!(request.kind, ResponsesAttemptKind::Compaction)
+            && !request.is_local_compaction()
             && let Some(gateway) = self.config.responses_gateway.as_deref()
             && !gateway.supports_inline_compaction()
         {
@@ -634,7 +636,7 @@ impl ResponsesService {
                 ));
             }
             ResponsesAttemptKind::Generation | ResponsesAttemptKind::Compaction => {
-                EncodedRequest::create(&ResponseCreate::generation_with_policy(
+                let create = ResponseCreate::generation_with_policy(
                     &self.config,
                     CreatePolicy::new(
                         transport,
@@ -646,7 +648,12 @@ impl ResponsesService {
                     request.previous_response_id(),
                     &request.profile,
                     connection.turn_state.as_deref(),
-                ))
+                );
+                EncodedRequest::create(&if request.is_local_compaction() {
+                    create.without_tools()
+                } else {
+                    create
+                })
             }
         };
         encoded.map_err(|error| {

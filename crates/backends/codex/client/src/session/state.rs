@@ -440,6 +440,16 @@ impl RequestHistory {
         }
     }
 
+    pub fn remove_first_item(&mut self) -> bool {
+        if self.full.is_empty() {
+            return false;
+        }
+        let mut items = self.full.iter().cloned().collect::<Vec<_>>();
+        compaction::remove_first_item(&mut items);
+        self.replace_from(0, items, false);
+        true
+    }
+
     pub fn fit_context_window(
         &mut self,
         request_prefix: &[ResponseItem],

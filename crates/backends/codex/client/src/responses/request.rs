@@ -1058,6 +1058,12 @@ impl<'a> ResponseCreate<'a> {
         )
     }
 
+    pub(crate) fn without_tools(mut self) -> Self {
+        self.tools = RawValue::from_string("[]".to_owned()).ok();
+        self.parallel_tool_calls = false;
+        self
+    }
+
     fn new(
         config: &'a ModelConfig,
         policy: CreatePolicy,

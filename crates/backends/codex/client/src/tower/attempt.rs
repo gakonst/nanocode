@@ -408,6 +408,12 @@ impl ResponsesAttempt {
     }
 
     #[must_use]
+    pub const fn is_local_compaction(&self) -> bool {
+        matches!(self.kind, ResponsesAttemptKind::Compaction)
+            && !matches!(self.tail, Some(ResponseItem::CompactionTrigger {}))
+    }
+
+    #[must_use]
     pub const fn model_call_index(&self) -> Option<u32> {
         self.call_index
     }

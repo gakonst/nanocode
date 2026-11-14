@@ -112,7 +112,7 @@ impl ModelRun {
         self.config
             .auto_compact_token_limit
             .map(|limit| limit.min(window))
-            .or_else(|| compaction::auto_compact_token_limit(self.model.as_str(), window))
+            .or(Some(compaction::context_window_compact_token_limit(window)))
     }
 
     pub(super) fn compaction_effort(
@@ -467,11 +467,16 @@ impl ModelRun {
                 previous_response_id: history.previous_response_id(),
             },
         )?;
+        let local = !compaction::remote_compaction(model.as_str());
         let build = |history: &RequestHistory| {
             factory.compaction(
                 after_model_call_index,
                 history,
-                compaction::trigger(),
+                if local {
+                    compaction::local_trigger()
+                } else {
+                    compaction::trigger()
+                },
                 model,
                 effort.request,
                 service_tier,
@@ -513,42 +518,51 @@ impl ModelRun {
             let recorded_result = if let Some(output) = recovered {
                 output
             } else {
-                let request =
-                    build(&inline_images(&images, history).await?).with_input_trace(trace);
-                let success = match self.client.execute(request).instrument(span.clone()).await {
-                    Ok(success) => success,
-                    Err(error) => {
-                        let error = NanocodeError::from(error);
-                        let Some(source) = error.responses_error() else {
-                            return Err(error);
-                        };
-                        if source.retry_advice().is_some() {
-                            return Err(error);
+                let mut history = history;
+                let success = loop {
+                    let request = build(&inline_images(&images, history.clone()).await?)
+                        .with_input_trace(trace.clone());
+                    match self.client.execute(request).instrument(span.clone()).await {
+                        Ok(success) => break success,
+                        Err(error) => {
+                            let error = NanocodeError::from(error);
+                            let Some(source) = error.responses_error() else {
+                                return Err(error);
+                            };
+                            if local
+                                && source.is_context_window_exceeded()
+                                && history.remove_first_item()
+                            {
+                                continue;
+                            }
+                            if source.retry_advice().is_some() {
+                                return Err(error);
+                            }
+                            let requires_session_stop = source.is_misalignment_policy_violation();
+                            let recovery = if error.requires_image_repair() {
+                                crate::error::CompactionRecovery::ReplaceRejectedImages
+                            } else {
+                                crate::error::CompactionRecovery::None
+                            };
+                            let compaction_error = error.to_string();
+                            if let Some(steps) = &execution_steps {
+                                steps
+                                    .complete(
+                                        &step_id,
+                                        &RecordedCompactionOutcome::Failure {
+                                            compaction_error: compaction_error.clone(),
+                                            requires_session_stop,
+                                            recovery,
+                                        },
+                                    )
+                                    .await?;
+                            }
+                            return Err(NanocodeError::CompactionFailed {
+                                detail: compaction_error,
+                                requires_session_stop,
+                                recovery,
+                            });
                         }
-                        let requires_session_stop = source.is_misalignment_policy_violation();
-                        let recovery = if error.requires_image_repair() {
-                            crate::error::CompactionRecovery::ReplaceRejectedImages
-                        } else {
-                            crate::error::CompactionRecovery::None
-                        };
-                        let compaction_error = error.to_string();
-                        if let Some(steps) = &execution_steps {
-                            steps
-                                .complete(
-                                    &step_id,
-                                    &RecordedCompactionOutcome::Failure {
-                                        compaction_error: compaction_error.clone(),
-                                        requires_session_stop,
-                                        recovery,
-                                    },
-                                )
-                                .await?;
-                        }
-                        return Err(NanocodeError::CompactionFailed {
-                            detail: compaction_error,
-                            requires_session_stop,
-                            recovery,
-                        });
                     }
                 };
                 let attempt = success.attempt();

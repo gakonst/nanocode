@@ -93,6 +93,7 @@ pub(crate) async fn run(
         ResponsesAttemptKind::Compaction => ResponsesOutput::Compaction(
             stream::receive_compaction(
                 &mut response,
+                request.is_local_compaction(),
                 transport,
                 &request.observer,
                 &connection.credentials,

@@ -20,6 +20,7 @@ mod estimate;
 mod images;
 
 const RETAINED_MESSAGE_TOKEN_BUDGET: usize = 64_000;
+const COMPACT_USER_MESSAGE_MAX_TOKENS: usize = 20_000;
 const MAX_RETAINED_AGENT_MESSAGE_TOKENS: u64 = 10_000;
 const APPROX_BYTES_PER_TOKEN: usize = 4;
 const RESIZED_IMAGE_BYTES_ESTIMATE: usize = 7_373;
@@ -28,6 +29,8 @@ const ORIGINAL_IMAGE_MAX_PATCHES: usize = 10_000;
 const ORIGINAL_IMAGE_ESTIMATE_CACHE_SIZE: usize = 32;
 const CONTEXT_WINDOW_TRUNCATED_OUTPUT_MESSAGE: &str =
     "Output exceeded the available model context and was truncated";
+pub const SUMMARIZATION_PROMPT: &str = "You are performing a CONTEXT CHECKPOINT COMPACTION. Create a handoff summary for another LLM that will resume the task.\n\nInclude:\n- Current progress and key decisions made\n- Important context, constraints, or user preferences\n- What remains to be done (clear next steps)\n- Any critical data, examples, or references needed to continue\n\nBe concise, structured, and focused on helping the next LLM seamlessly continue the work.\n";
+pub const SUMMARY_PREFIX: &str = "Another language model started to solve this problem and produced a summary of its thinking process. You also have access to the state of the tools that were used by that language model. Use this to build on the work that has already been done and avoid duplicating work. Here is the summary produced by the other language model, use the information in this summary to assist with your own analysis:";
 
 #[derive(Clone, Default)]
 struct OriginalImageEstimateCache {
@@ -56,16 +59,71 @@ static ORIGINAL_IMAGE_ESTIMATE_CACHE: LazyLock<Swap<OriginalImageEstimateCache>>
 
 #[must_use]
 pub fn auto_compact_token_limit(model: &str, context_window_tokens: u64) -> Option<u64> {
+    remote_compaction(model).then(|| context_window_compact_token_limit(context_window_tokens))
+}
+
+#[must_use]
+pub fn remote_compaction(model: &str) -> bool {
     matches!(
         model,
         "gpt-6-astra" | "gpt-6.1-sol" | "gpt-6.1-terra" | "gpt-6-luna" | "gpt-daybreak-blue-latest"
     )
-    .then_some(context_window_tokens.saturating_mul(9) / 10)
+}
+
+#[must_use]
+pub const fn context_window_compact_token_limit(context_window_tokens: u64) -> u64 {
+    context_window_tokens.saturating_mul(9) / 10
 }
 
 #[must_use]
 pub const fn trigger() -> ResponseItem {
     ResponseItem::compaction_trigger()
+}
+
+#[must_use]
+pub fn local_trigger() -> ResponseItem {
+    user_text(SUMMARIZATION_PROMPT.into())
+}
+
+#[must_use]
+pub fn summary_message(summary: &str) -> ResponseItem {
+    user_text(format!("{SUMMARY_PREFIX}\n{summary}"))
+}
+
+#[must_use]
+pub fn is_summary_message(item: &ResponseItem) -> bool {
+    matches!(item, ResponseItem::Message { role: crate::client::MessageRole::User, content, .. }
+        if matches!(content.as_slice(), [ContentItem::InputText { text }]
+            if text.strip_prefix(SUMMARY_PREFIX).is_some_and(|rest| rest.starts_with('\n'))))
+}
+
+pub(crate) fn remove_first_item(items: &mut Vec<ResponseItem>) {
+    if items.is_empty() {
+        return;
+    }
+    let removed = items.remove(0);
+    if let Some(call_id) = paired_call_id(&removed) {
+        items.retain(|item| paired_call_id(item) != Some(call_id));
+    }
+}
+
+fn paired_call_id(item: &ResponseItem) -> Option<&str> {
+    match item {
+        ResponseItem::FunctionCall { call_id, .. }
+        | ResponseItem::FunctionCallOutput { call_id, .. }
+        | ResponseItem::CustomToolCall { call_id, .. }
+        | ResponseItem::CustomToolCallOutput { call_id, .. } => Some(call_id),
+        _ => None,
+    }
+}
+
+fn user_text(text: String) -> ResponseItem {
+    ResponseItem::message(
+        crate::client::MessageRole::User,
+        [ContentItem::InputText {
+            text: text.into_boxed_str(),
+        }],
+    )
 }
 
 pub fn trim_tool_outputs_to_fit_context_window(
@@ -202,18 +260,22 @@ pub fn install_history_with_provenance(
 ) -> Vec<ResponseItem> {
     let retained = retained_item_groups(history.iter(), client_authored)
         .filter(|(item, _)| {
-            (item.is_user_message() && !is_contextual_user_message(item))
+            (item.is_user_message()
+                && !is_contextual_user_message(item)
+                && !is_summary_message(item))
                 || is_client_developer_message(item, client_authored)
                 || is_retained_agent_message(item)
         })
         .flat_map(|(source, notice)| std::iter::once(source).chain(notice))
         .cloned()
         .collect();
-    let mut installed = truncate_retained_messages_with_provenance(
-        retained,
-        RETAINED_MESSAGE_TOKEN_BUDGET,
-        client_authored,
-    );
+    let budget = if is_summary_message(&compaction) {
+        COMPACT_USER_MESSAGE_MAX_TOKENS
+    } else {
+        RETAINED_MESSAGE_TOKEN_BUDGET
+    };
+    let mut installed =
+        truncate_retained_messages_with_provenance(retained, budget, client_authored);
 
     let insertion_index = installed
         .iter()

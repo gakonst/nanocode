@@ -81,13 +81,15 @@ fn image_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
     nanocode_image::dimensions(bytes)
 }
 
-const IMAGE_UNPROCESSABLE: &str = "image content omitted because it could not be processed";
+pub(crate) const IMAGE_UNPROCESSABLE: &str =
+    "image content omitted because it could not be processed";
 const IMAGE_TOO_LARGE: &str =
     "image content omitted because it exceeded the supported size limit; use a smaller image";
 pub(crate) const IMAGE_URL_UNSUPPORTED: &str =
     "image content omitted because remote image URLs are not supported";
-const IMAGE_FILE_UNSUPPORTED: &str =
+pub(crate) const IMAGE_FILE_UNSUPPORTED: &str =
     "image content omitted because Claude cannot use OpenAI image file references";
+pub(crate) const AUDIO_UNSUPPORTED: &str = "audio content omitted because Claude cannot use audio";
 
 pub(crate) async fn prepare_base64(
     payload: &str,

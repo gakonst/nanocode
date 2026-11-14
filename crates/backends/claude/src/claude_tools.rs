@@ -3,6 +3,7 @@ use std::{path::PathBuf, sync::Arc};
 use crate::{
     ClaudeNestedToolUpdate, ClaudeToolInvocation, ClaudeToolProgress, ClaudeToolReply, ClaudeTools,
     ToolDefinition, ToolResultContent,
+    prompt::{AUDIO_UNSUPPORTED, IMAGE_FILE_UNSUPPORTED, IMAGE_UNPROCESSABLE},
 };
 use nanocode_agent_core::{AgentHandle, NanocodeError, Result};
 use nanocode_tool_host::{
@@ -91,7 +92,7 @@ fn exec_description(description: &Arc<str>) -> Arc<str> {
     let shared = shared_description(
         "exec",
         format!(
-            "{description}\n\nPass the complete JavaScript source as the `code` string. `yield_time_ms` and `max_output_tokens` may be given as arguments beside `code` instead of in the pragma."
+            "{description}\n\nPass the complete JavaScript source as the `code` string. `yield_time_ms` and `max_output_tokens` may be given as arguments beside `code` instead of in the pragma.\n\nImages reach you at the size the model accepts, whatever their `detail`; an image `file_id` arrives as a note that it was omitted."
         ),
     );
     LATEST.set(Some(ExecDescription {
@@ -547,16 +548,22 @@ fn block(item: ToolOutputContent) -> Value {
         ToolOutputContent::InputText { text } => json!({"type": "text", "text": text}),
         ToolOutputContent::InputImage { image_url, .. } => {
             match image_url
-                .strip_prefix("data:")
-                .and_then(|rest| rest.split_once(";base64,"))
+                .get(..5)
+                .filter(|scheme| scheme.eq_ignore_ascii_case("data:"))
+                .map(|_| image_url[5..].split_once(";base64,"))
             {
-                Some((media_type, data)) => json!({
+                Some(Some((media_type, data))) => json!({
                     "type": "image",
                     "source": {"type": "base64", "media_type": media_type, "data": data},
                 }),
+                Some(None) => json!({"type": "text", "text": IMAGE_UNPROCESSABLE}),
                 None => json!({"type": "image", "source": {"type": "url", "url": image_url}}),
             }
         }
+        ToolOutputContent::InputImageFile { .. } => {
+            json!({"type": "text", "text": IMAGE_FILE_UNSUPPORTED})
+        }
+        ToolOutputContent::InputAudio { .. } => json!({"type": "text", "text": AUDIO_UNSUPPORTED}),
         ToolOutputContent::InputFile { file_data } => {
             match file_data
                 .strip_prefix("data:")

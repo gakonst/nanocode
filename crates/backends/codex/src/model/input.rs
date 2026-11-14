@@ -186,11 +186,10 @@ fn function_output(output: ToolOutputBody) -> FunctionOutputBody {
                             detail: None,
                         }
                     }
-                    ToolOutputContent::InputAudio { audio_url } => {
-                        FunctionOutputContent::InputAudio {
-                            audio_url: audio_url.into_boxed_str(),
-                        }
-                    }
+                    ToolOutputContent::InputAudio { .. } => FunctionOutputContent::InputText {
+                        text: "[audio omitted: Codex function call outputs carry text and images]"
+                            .into(),
+                    },
                     ToolOutputContent::InputFile { .. } => FunctionOutputContent::InputText {
                         text:
                             "[document omitted: Codex function call outputs carry text and images]"

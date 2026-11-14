@@ -43,7 +43,6 @@ path = "../../core/flags"
 
 [dependencies.indexmap]
 version = "2.14.0"
-features = ["std"]
 
 [dependencies.tracing]
 version = "0.1.44"

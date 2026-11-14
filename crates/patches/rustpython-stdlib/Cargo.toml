@@ -86,7 +86,6 @@ path = "../../core/platform"
 
 [dependencies.indexmap]
 version = "2.14.0"
-features = ["std"]
 
 [dependencies.libc]
 version = "0.2.186"

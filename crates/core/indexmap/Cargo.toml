@@ -1,0 +1,19 @@
+[package]
+name = "indexmap"
+version = "2.14.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Insertion-ordered hash map and set over a vector of entries and an open-addressing index table"
+autotests = false
+autobenches = false
+
+[lints]
+workspace = true
+
+[lib]
+test = false
+doctest = false
+bench = false

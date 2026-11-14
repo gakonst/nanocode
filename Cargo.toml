@@ -8,6 +8,7 @@ members = [
     "crates/core/durability",
     "crates/core/turnlog",
     "crates/core/types-core",
+    "crates/core/indexmap",
     "crates/core/unicode-normalization",
     "crates/core/itoa",
     "crates/core/shlex",
@@ -212,6 +213,7 @@ rustpython-unicode = { path = "crates/patches/rustpython-unicode" }
 rustpython-vm = { path = "crates/patches/rustpython-vm" }
 rustpython-wtf8 = { path = "crates/patches/rustpython-wtf8" }
 shlex = { path = "crates/core/shlex" }
+indexmap = { path = "crates/core/indexmap" }
 unicode-normalization = { path = "crates/core/unicode-normalization" }
 
 [workspace.lints.rust]

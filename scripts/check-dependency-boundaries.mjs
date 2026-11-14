@@ -14,7 +14,7 @@ const forbidden = {
   "crates/runtime": ["crates/backends", "crates/integrations", "crates/nanocode"],
   "crates/integrations": ["crates/backends", "crates/nanocode"],
   "crates/backends": ["crates/nanocode"],
-  "crates/tui": ["crates/core", "crates/runtime", "crates/backends", "crates/integrations", "crates/nanocode"],
+  "crates/tui": ["crates/runtime", "crates/backends", "crates/integrations", "crates/nanocode"],
 };
 const forbiddenDependencies = {
   "nanocode-image": new Set(["nanocode-types"]),
@@ -40,9 +40,11 @@ const forbiddenDependencies = {
     "nanocode-agent-core", "nanocode-backend-claude-tools",
     "nanocode-agent-config", "nanocode-tool-host", "nanocode-code-mode", "nanocode-durability",
   ]),
-};
-const allowedDependencies = {
-  "nanocode-tui": new Set(["nanocode-sync", "nanocode-sys", "nanocode-platform", "nanocode-digest"]),
+  "nanocode-tui": new Set([
+    "nanocode-types-core", "nanocode-durability-core", "nanocode-tool-contracts", "nanocode-tools-macros",
+    "nanocode-process-contracts", "nanocode-http", "nanocode-mcp", "nanocode-mcp-http", "nanocode-schema",
+    "nanocode-home", "nanocode-audio",
+  ]),
 };
 const backendImplementations = new Set([
   "nanocode-tool-runtime", "nanocode-mcp-tools", "nanocode-mcp-http",
@@ -64,7 +66,7 @@ for (const name of packages.keys()) {
   while (pending.length) {
     const path = pending.pop();
     const current = path.at(-1);
-    if (banned.includes(layer(current)) && !allowedDependencies[name]?.has(current)) {
+    if (banned.includes(layer(current))) {
       throw new Error(`${layer(name)} crate depends on ${layer(current)}: ${path.join(" → ")}`);
     }
     if (layer(name) === "crates/backends" && backendImplementations.has(current)) {

@@ -115,7 +115,21 @@ pub struct ObservabilityGuard {
     tracer_provider: Option<Tracer>,
     meter_provider: Option<Arc<Meter>>,
     shutdown_timeout: Option<Duration>,
+    threads: ExporterThreads,
     _writer: Option<writer::WriterGuard>,
+}
+
+type Start = Box<dyn FnOnce() + Send>;
+
+#[derive(Clone)]
+pub struct ExporterThreads(Arc<nanocode_sync::Slot<Vec<Start>>>);
+
+impl ExporterThreads {
+    pub fn start(&self) {
+        for start in self.0.take().into_iter().flatten() {
+            start();
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -279,6 +293,7 @@ impl ObservabilityBuilder {
             }
             None => (None, None),
         };
+        let mut threads = Vec::new();
         let (tracer_provider, meter_provider) = match (
             self.otlp_endpoint.as_deref(),
             self.otlp_directory.as_deref(),
@@ -292,7 +307,7 @@ impl ObservabilityBuilder {
                 };
                 let files = directory
                     .map(|directory| {
-                        file::Exporters::create(directory, &resource, &tracer_scope)
+                        file::Exporters::create(directory, &resource, &tracer_scope, &mut threads)
                             .map_err(|error| ObservabilityError::LocalFile(directory.into(), error))
                     })
                     .transpose()?;
@@ -301,7 +316,7 @@ impl ObservabilityBuilder {
                 });
                 (
                     Some(tracer_provider(endpoint, traces, &resource, tracer_scope)?),
-                    Some(meter_provider(endpoint, metrics, &resource)?),
+                    Some(meter_provider(endpoint, metrics, &resource, &mut threads)?),
                 )
             }
             _ => (None, None),
@@ -339,6 +354,7 @@ impl ObservabilityBuilder {
             tracer_provider,
             meter_provider,
             shutdown_timeout: self.shutdown_timeout,
+            threads: ExporterThreads(Arc::new(nanocode_sync::Slot::new(Some(threads)))),
             _writer: writer_guard,
         })
     }
@@ -490,6 +506,7 @@ fn meter_provider(
     endpoint: Option<&str>,
     file: Option<file::MetricExporter>,
     resource: &Resource,
+    threads: &mut Vec<Start>,
 ) -> Result<Arc<Meter>, ObservabilityError> {
     let scope = Scope {
         name: Cow::Borrowed(METER_SCOPE),
@@ -497,11 +514,11 @@ fn meter_provider(
     };
     let mut meter = Meter::new();
     if let Some(file) = file {
-        meter.add(Box::new(file), resource, &scope);
+        meter.add(Box::new(file), resource, &scope, threads);
     }
     if let Some(endpoint) = endpoint {
         let exporter = otlp_http::MetricExporter::build(&signal_endpoint(endpoint, "metrics"))?;
-        meter.add(Box::new(exporter), resource, &scope);
+        meter.add(Box::new(exporter), resource, &scope, threads);
     }
     Ok(Arc::new(meter))
 }
@@ -521,7 +538,12 @@ fn signal_endpoint(endpoint: &str, signal: &str) -> String {
 }
 
 impl ObservabilityGuard {
+    pub fn exporter_threads(&self) -> ExporterThreads {
+        self.threads.clone()
+    }
+
     pub fn shutdown(&mut self) -> Result<(), ObservabilityError> {
+        self.threads.start();
         let timeout = self.shutdown_timeout;
         let tracer = self.tracer_provider.take();
         let meter = self.meter_provider.take();

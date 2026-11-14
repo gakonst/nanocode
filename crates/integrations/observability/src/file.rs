@@ -28,7 +28,12 @@ pub struct Exporters {
 }
 
 impl Exporters {
-    pub fn create(directory: &Path, resource: &Resource, scope: &Scope) -> io::Result<Self> {
+    pub fn create(
+        directory: &Path,
+        resource: &Resource,
+        scope: &Scope,
+        threads: &mut Vec<crate::Start>,
+    ) -> io::Result<Self> {
         std::fs::create_dir_all(directory)?;
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -47,9 +52,10 @@ impl Exporters {
                 create_file(&directory.join("traces.jsonl"))?,
                 max_queue_size()?,
                 crate::otlp::Origin::of(resource, scope).map_err(io::Error::from)?,
-            )?,
+                threads,
+            ),
             metrics: MetricExporter {
-                output: Jsonl::create(&directory.join("metrics.jsonl"))?,
+                output: Jsonl::create(&directory.join("metrics.jsonl"), threads)?,
                 json_bytes: AtomicUsize::new(0),
             },
         })
@@ -98,12 +104,17 @@ fn write_failed(error: impl std::fmt::Display) -> ExportError {
 }
 
 impl Jsonl {
-    fn create(path: &Path) -> io::Result<Self> {
+    fn create(path: &Path, threads: &mut Vec<crate::Start>) -> io::Result<Self> {
         let file = create_file(path)?;
         let (sender, receiver) = mpsc::channel();
-        std::thread::Builder::new()
-            .name("nanocode-otlp-metrics".to_owned())
-            .spawn(move || Self::run(file, &receiver))?;
+        threads.push(Box::new(move || {
+            if let Err(error) = std::thread::Builder::new()
+                .name("nanocode-otlp-metrics".to_owned())
+                .spawn(move || Self::run(file, &receiver))
+            {
+                drop(write_failed(error));
+            }
+        }));
         Ok(Self { sender })
     }
 
@@ -173,29 +184,39 @@ pub struct TraceProcessor {
 }
 
 impl TraceProcessor {
-    fn spawn(file: File, capacity: usize, origin: crate::otlp::Origin) -> io::Result<Self> {
+    fn spawn(
+        file: File,
+        capacity: usize,
+        origin: crate::otlp::Origin,
+        threads: &mut Vec<crate::Start>,
+    ) -> Self {
         let (sender, receiver) = unbounded_channel();
         let queue = Arc::new(TraceQueue {
             capacity,
             ..TraceQueue::default()
         });
         let writer_queue = Arc::clone(&queue);
-        std::thread::Builder::new()
-            .name("nanocode-otlp-traces".to_owned())
-            .spawn(move || {
-                TraceWriter {
-                    file,
-                    origin,
-                    batch: crate::otlp::Batch::default(),
-                    waiting: 0,
-                    line: Vec::new(),
-                    error: None,
-                    queue: writer_queue,
-                    dropped: 0,
-                }
-                .run(receiver);
-            })?;
-        Ok(Self { sender, queue })
+        threads.push(Box::new(move || {
+            if let Err(error) = std::thread::Builder::new()
+                .name("nanocode-otlp-traces".to_owned())
+                .spawn(move || {
+                    TraceWriter {
+                        file,
+                        origin,
+                        batch: crate::otlp::Batch::default(),
+                        waiting: 0,
+                        line: Vec::new(),
+                        error: None,
+                        queue: writer_queue,
+                        dropped: 0,
+                    }
+                    .run(receiver);
+                })
+            {
+                drop(write_failed(error));
+            }
+        }));
+        Self { sender, queue }
     }
 
     fn closed(&self) {

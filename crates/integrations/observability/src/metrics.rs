@@ -600,6 +600,7 @@ impl Meter {
         exporter: Box<dyn MetricExporter>,
         resource: &Resource,
         scope: &Scope,
+        threads: &mut Vec<crate::Start>,
     ) {
         let collector = Arc::new(Collector {
             streams: Atom::default(),
@@ -610,9 +611,13 @@ impl Meter {
         let (shutdown, received) = mpsc::channel();
         let interval = export_interval();
         let running = Arc::clone(&collector);
-        let _ = std::thread::Builder::new()
-            .name(READER_THREAD.to_owned())
-            .spawn(move || running.run(&received, interval));
+        threads.push(Box::new(move || {
+            drop(
+                std::thread::Builder::new()
+                    .name(READER_THREAD.to_owned())
+                    .spawn(move || running.run(&received, interval)),
+            );
+        }));
         self.pipelines.push(Pipeline {
             collector,
             shutdown,

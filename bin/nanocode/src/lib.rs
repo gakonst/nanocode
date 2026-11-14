@@ -237,11 +237,20 @@ pub fn run_with(clients: ModelClients) -> ExitCode {
     .then(|| clients.warming())
     .flatten();
     let paying = closing.as_mut().and_then(tempo::Closing::take_start);
-    if warming.is_some() || paying.is_some() {
-        let drawn = matches!(cli.command, None | Some(Command::Resume { .. }));
+    let drawn = matches!(cli.command, None | Some(Command::Resume { .. }));
+    let threads = telemetry
+        .as_ref()
+        .map(nanocode_observability::ObservabilityGuard::exporter_threads);
+    if !drawn && let Some(threads) = &threads {
+        threads.start();
+    }
+    if warming.is_some() || paying.is_some() || (drawn && threads.is_some()) {
         nanocode_platform::spawn_on(runtime.handle(), async move {
             if drawn {
                 app::FIRST_FRAME.wait().await;
+            }
+            if let Some(threads) = threads {
+                threads.start();
             }
             if let Some(start) = paying {
                 start();

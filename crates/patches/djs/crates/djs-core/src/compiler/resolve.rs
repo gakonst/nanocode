@@ -481,8 +481,13 @@ pub(super) fn finish(
 ) -> PResult<Ref> {
     // 1. Classify references, children first. (Member references add a reference to
     // their namespace parameter, classified in turn.)
-    let mut resolved: Vec<Vec<Resolved>> = (0..funcs.len()).map(|_| Vec::new()).collect();
-    let mut path = Vec::new();
+    let count = funcs.len();
+    let mut kept_resolved = core::mem::take(&mut heap.compile_scratch.resolved);
+    if kept_resolved.len() < count {
+        kept_resolved.resize_with(count, Vec::new);
+    }
+    let resolved = &mut kept_resolved[..count];
+    let mut path = core::mem::take(&mut heap.compile_scratch.path);
     for id in (0..funcs.len()).rev() {
         let mut r = 0;
         while r < funcs[id].refs.len() {
@@ -506,18 +511,22 @@ pub(super) fn finish(
     } else {
         Atom::NULL
     };
-    let storages: Vec<(Vec<Storage>, Vec<Atom>)> = funcs
-        .iter()
-        .map(|f| assign_storage(f, &mut next_builtin, builtins, temp_name))
-        .collect();
-    for (s, _) in &storages {
+    let mut kept_storages = core::mem::take(&mut heap.compile_scratch.storages);
+    if kept_storages.len() < count {
+        kept_storages.resize_with(count, Default::default);
+    }
+    for (f, s) in funcs.iter().zip(kept_storages.iter_mut()) {
+        assign_storage(f, &mut next_builtin, builtins, temp_name, s);
+    }
+    let storages = &kept_storages[..count];
+    for (s, _) in storages {
         if s.len() > u16::MAX as usize {
             return Err(PErr::syntax(0, Cow::Borrowed("too many local variables")));
         }
     }
     if let Some(names) = builtin_names {
         names.clear();
-        for (f, (s, _)) in funcs.iter().zip(&storages) {
+        for (f, (s, _)) in funcs.iter().zip(storages) {
             for (v, st) in f.vars.iter().zip(s) {
                 if let Storage::Builtin { .. } = st {
                     names.push(v.name);
@@ -559,16 +568,19 @@ pub(super) fn finish(
         };
         alloc_script(heap, name, source, opts.bits(), params)?
     };
-    let line_table = LineTable::new(src);
-    let plan = Plan::new(&funcs, &resolved, unit, opts.privileged);
+    let mut line_table = core::mem::take(&mut heap.compile_scratch.line_table);
+    line_table.rebuild(src);
+    let plan = Plan::new(&funcs, resolved, unit, opts.privileged);
     #[cfg(all(feature = "dump", feature = "lazy"))]
     if let Some(out) = globals {
-        lazy_globals(&funcs, &resolved, &plan, atom_undefined, out);
+        lazy_globals(&funcs, resolved, &plan, atom_undefined, out);
     }
     #[cfg(all(feature = "dump", not(feature = "lazy")))]
     let _ = globals;
     let mut pools = plan.pools();
-    let mut templates: Vec<Ref> = vec![Ref::NULL; funcs.len()];
+    let mut templates = core::mem::take(&mut heap.compile_scratch.templates);
+    templates.clear();
+    templates.resize(count, Ref::NULL);
     let mut scratch = core::mem::take(&mut heap.compile_scratch);
     for id in (0..funcs.len()).rev() {
         let f = &mut funcs[id];
@@ -628,15 +640,22 @@ pub(super) fn finish(
         .spares
         .extend(funcs.drain(..).map(FuncState::recycle));
     scratch.funcs = funcs;
+    for r in resolved.iter_mut() {
+        r.clear();
+    }
+    scratch.resolved = kept_resolved;
+    scratch.storages = kept_storages;
+    scratch.line_table = line_table;
+    scratch.path = path;
     heap.compile_scratch = scratch;
     #[cfg(not(feature = "lazy"))]
-    {
+    let root = {
         set_pool(heap, &pools[1], &templates[1..])?;
         set_pool(heap, &pools[0], &templates[..1])?;
-        Ok(templates[0])
-    }
+        templates[0]
+    };
     #[cfg(feature = "lazy")]
-    {
+    let root = {
         for (i, pool) in pools.iter().enumerate() {
             if pool.values.is_empty() {
                 continue;
@@ -647,8 +666,10 @@ pub(super) fn finish(
                 .collect();
             set_pool(heap, pool, &members)?;
         }
-        Ok(templates[usize::from(unit.root)])
-    }
+        templates[usize::from(unit.root)]
+    };
+    heap.compile_scratch.templates = templates;
+    Ok(root)
 }
 
 /// The lazy template of `f` (D2990): its flags, name, parameters and captures as its
@@ -881,9 +902,11 @@ fn assign_storage(
     next_builtin: &mut u16,
     builtins: u16,
     temp_name: Atom,
-) -> (Vec<Storage>, Vec<Atom>) {
-    let mut storage = crate::buf::vec_with_capacity(f.vars.len());
-    let mut names = Vec::new();
+    (storage, names): &mut (Vec<Storage>, Vec<Atom>),
+) {
+    storage.clear();
+    storage.reserve(f.vars.len());
+    names.clear();
     for v in &f.vars {
         let pseudo = v.kind.is_pseudo();
         storage.push(if let Some(e) = v.env() {
@@ -914,7 +937,6 @@ fn assign_storage(
             }
         });
     }
-    (storage, names)
 }
 
 /// The suspension map of `f` (D2563) from its final code: where each recorded site
@@ -1617,6 +1639,11 @@ fn emit_function(
         spares: core::mem::take(&mut scratch.spares),
         parser: core::mem::take(&mut scratch.parser),
         funcs: core::mem::take(&mut scratch.funcs),
+        resolved: core::mem::take(&mut scratch.resolved),
+        storages: core::mem::take(&mut scratch.storages),
+        templates: core::mem::take(&mut scratch.templates),
+        line_table: core::mem::take(&mut scratch.line_table),
+        path: core::mem::take(&mut scratch.path),
     };
     t
 }
@@ -1702,6 +1729,11 @@ pub(crate) struct Scratch {
     spares: Vec<super::func::Spare>,
     pub(super) parser: super::parser::ParserSpare,
     pub(super) funcs: Vec<FuncState>,
+    resolved: Vec<Vec<Resolved>>,
+    storages: Vec<(Vec<Storage>, Vec<Atom>)>,
+    templates: Vec<Ref>,
+    line_table: LineTable,
+    path: Vec<usize>,
 }
 
 impl Scratch {

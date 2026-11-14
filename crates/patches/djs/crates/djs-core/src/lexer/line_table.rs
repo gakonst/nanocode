@@ -7,7 +7,7 @@ use alloc::vec::Vec;
 ///
 /// Lines end at LF, CR, CRLF, U+2028 and U+2029 (the ECMAScript line terminators).
 /// Lines and columns are 1-based; columns count code points, like QuickJS.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct LineTable {
     starts: Vec<u32>,
     /// No byte above 0x7F: a column is a byte count.
@@ -16,7 +16,15 @@ pub struct LineTable {
 
 impl LineTable {
     pub fn new(src: &[u8]) -> Self {
-        let mut starts = crate::buf::vec_with_capacity(src.len() / 32 + 1);
+        let mut table = LineTable::default();
+        table.rebuild(src);
+        table
+    }
+
+    pub fn rebuild(&mut self, src: &[u8]) {
+        let starts = &mut self.starts;
+        starts.clear();
+        starts.reserve(src.len() / 32 + 1);
         starts.push(0);
         let mut ascii = true;
         let mut p = 0;
@@ -45,7 +53,7 @@ impl LineTable {
             }
             p += 1;
         }
-        LineTable { starts, ascii }
+        self.ascii = ascii;
     }
 
     /// The number of lines (at least 1).

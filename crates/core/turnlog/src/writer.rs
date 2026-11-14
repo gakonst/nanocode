@@ -133,6 +133,7 @@ struct Writer {
     stats: Stats,
     stream: Option<Stream>,
     tail: usize,
+    tried: Option<(usize, usize)>,
 }
 
 pub struct TurnLog {
@@ -216,6 +217,7 @@ impl TurnLog {
                 },
                 stream: None,
                 tail,
+                tried: None,
             }),
         })
     }
@@ -402,9 +404,26 @@ impl Lease<'_> {
             if writer.snapshot + writer.tail + body.len() > self.ratio * state.len() {
                 snapshot = Some((state, encoded));
             } else {
-                writer.check = writer
-                    .snapshot
-                    .max((self.ratio * state.len()).saturating_sub(writer.snapshot));
+                let packed = state.len();
+                let tail = writer.tail + body.len();
+                let due = (self.ratio * packed).saturating_sub(writer.snapshot);
+                let projected = match writer.tried {
+                    Some((before, packed_before)) if tail > before && packed > packed_before => {
+                        let gap = (tail - before) as u128;
+                        let grown = (self.ratio * (packed - packed_before)) as u128;
+                        if grown >= gap {
+                            self.ratio * tail
+                        } else {
+                            let reach = gap * due as u128;
+                            let rise = grown * tail as u128;
+                            usize::try_from(reach.saturating_sub(rise) / (gap - grown))
+                                .unwrap_or(usize::MAX)
+                        }
+                    }
+                    _ => due,
+                };
+                writer.tried = Some((tail, packed));
+                writer.check = writer.snapshot.max(due).max(projected);
             }
         }
         let mut boundary = None;
@@ -455,6 +474,7 @@ impl Lease<'_> {
                 writer.snapshot = bytes;
                 writer.check = bytes;
                 writer.tail = 0;
+                writer.tried = None;
                 writer.stats.snapshots += 1;
                 writer.stats.snapshot_bytes += state.len() as u64;
             }

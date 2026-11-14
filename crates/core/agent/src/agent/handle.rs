@@ -611,6 +611,21 @@ impl Agent {
         self.interrupted.leave_to_host();
     }
 
+    #[doc(hidden)]
+    #[must_use]
+    pub fn interrupted_requests(&self) -> Vec<String> {
+        self.interrupted
+            .turns
+            .load_full()
+            .map(|resumption| resumption.turns.iter().map(|(id, _)| id.clone()).collect())
+            .unwrap_or_default()
+    }
+
+    #[doc(hidden)]
+    pub async fn resume_interrupted_turns(&self) -> Result<()> {
+        self.resume_interrupted(None).await.map(drop)
+    }
+
     #[must_use]
     pub fn subscribe(&self) -> AgentEvents {
         self.events.subscribe()

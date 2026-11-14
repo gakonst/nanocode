@@ -3049,6 +3049,16 @@ impl Registry {
                 registry.watch_root(&root, &parent);
             }
             let _ = ready.send(RestorationState::Ready);
+            let resolver = Option::clone(&registry.parent_resolver.get());
+            if let Some(parent) = resolver.and_then(|resolver| resolver(&root))
+                && parent
+                    .interrupted_requests()
+                    .iter()
+                    .any(|id| id.starts_with(crate::COMPLETION_REQUEST_PREFIX))
+                && let Err(error) = parent.resume_interrupted_turns().await
+            {
+                nanocode_trace::warn!(%error, %root, "interrupted subagent completion turns did not resume");
+            }
         }));
     }
 
@@ -6668,6 +6678,26 @@ impl Registry {
         });
     }
 
+    fn claim_route(&self, root_session_id: &str, id: AgentId, revision: u64) -> bool {
+        let key = (root_session_id.to_owned(), id);
+        self.completion_routes
+            .try_update(|routes| {
+                (routes.get(&key) != Some(&revision)).then(|| {
+                    routes.insert(key.clone(), revision);
+                })
+            })
+            .is_some()
+    }
+
+    fn release_route(&self, root_session_id: &str, id: AgentId, revision: u64) {
+        let key = (root_session_id.to_owned(), id);
+        self.completion_routes.update(|routes| {
+            if routes.get(&key) == Some(&revision) {
+                routes.remove(&key);
+            }
+        });
+    }
+
     async fn dispatch_parent_batch(
         self: &Arc<Self>,
         parent: &Agent,
@@ -6817,6 +6847,10 @@ impl Registry {
         root_session_id: &str,
         group: Vec<(AgentId, u64, AgentStatus, String, u32)>,
     ) {
+        let group = group
+            .into_iter()
+            .filter(|(id, revision, _, _, _)| self.claim_route(root_session_id, *id, *revision))
+            .collect::<Vec<_>>();
         let Some((_, first_revision, _, first_session, _)) = group.first() else {
             return;
         };
@@ -6876,6 +6910,9 @@ impl Registry {
                 }));
             }
             Err(error) => {
+                for (id, revision, _, _, _) in &group {
+                    self.release_route(root_session_id, *id, *revision);
+                }
                 if !matches!(
                     error,
                     NanocodeError::AgentStopped | NanocodeError::TurnStopped
@@ -6960,6 +6997,9 @@ impl Registry {
             return Ok(false);
         };
         let request_id = completion_request_id(&session_id, revision, attempt);
+        if !self.claim_route(root_session_id, id, revision) {
+            return Ok(false);
+        }
         let prompt = completion_continuation_prompt(id, &status);
         let steered = self.watch_steer(root_session_id, parent, &request_id, &prompt);
         match parent
@@ -6994,6 +7034,7 @@ impl Registry {
                 Ok(true)
             }
             Err(error) => {
+                self.release_route(root_session_id, id, revision);
                 if matches!(error, NanocodeError::InvalidRequest(_)) {
                     self.next_completion_attempt(root_session_id, id, revision)
                         .await;

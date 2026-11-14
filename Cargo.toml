@@ -257,6 +257,60 @@ lto = "fat"
 codegen-units = 1
 panic = "abort"
 
+[profile.dist.package.rustpython-codegen]
+opt-level = "s"
+
+[profile.dist.package.rustpython-common]
+opt-level = "s"
+
+[profile.dist.package.rustpython-compiler]
+opt-level = "s"
+
+[profile.dist.package.rustpython-compiler-core]
+opt-level = "s"
+
+[profile.dist.package.rustpython-literal]
+opt-level = "s"
+
+[profile.dist.package.rustpython-pylib]
+opt-level = "s"
+
+[profile.dist.package.rustpython-ruff_python_ast]
+opt-level = "s"
+
+[profile.dist.package.rustpython-ruff_python_parser]
+opt-level = "s"
+
+[profile.dist.package.rustpython-ruff_python_trivia]
+opt-level = "s"
+
+[profile.dist.package.rustpython-ruff_source_file]
+opt-level = "s"
+
+[profile.dist.package.rustpython-ruff_text_size]
+opt-level = "s"
+
+[profile.dist.package.rustpython-sre_engine]
+opt-level = "s"
+
+[profile.dist.package.rustpython-stdlib]
+opt-level = "s"
+
+[profile.dist.package.rustpython-unicode]
+opt-level = "s"
+
+[profile.dist.package.rustpython-vm]
+opt-level = "s"
+
+[profile.dist.package.rustpython-wtf8]
+opt-level = "s"
+
+[profile.dist.package.rustpython-host_env]
+opt-level = "s"
+
+[profile.dist.package.rustpython-doc]
+opt-level = "s"
+
 [profile.lite]
 inherits = "dist"
 opt-level = "z"

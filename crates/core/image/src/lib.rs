@@ -35,7 +35,6 @@ pub const IMAGE_PROCESSING_ERROR_PLACEHOLDER: &str =
     "image content omitted because it could not be processed";
 const IMAGE_TOO_LARGE_PLACEHOLDER: &str =
     "image content omitted because it exceeded the supported size limit; use a smaller image";
-const UNSUPPORTED_LOW_DETAIL_PLACEHOLDER: &str = "image content omitted because detail 'low' is not supported; use 'high', 'original', or 'auto'";
 const REMOTE_IMAGE_URL_PLACEHOLDER: &str =
     "image content omitted because remote image URLs are not supported";
 
@@ -201,7 +200,6 @@ pub fn remember(bytes: &[u8], width: u32, height: u32) {
 #[derive(Debug)]
 enum ImagePreparationError {
     RemoteUrlUnsupported,
-    UnsupportedLowDetail,
     ImageTooLarge {
         representation: &'static str,
         size: usize,
@@ -215,9 +213,6 @@ impl std::fmt::Display for ImagePreparationError {
         match self {
             Self::RemoteUrlUnsupported => {
                 formatter.write_str("remote image URLs are not supported")
-            }
-            Self::UnsupportedLowDetail => {
-                formatter.write_str("image detail `low` is not supported")
             }
             Self::ImageTooLarge {
                 representation,
@@ -238,7 +233,6 @@ impl ImagePreparationError {
     const fn placeholder(&self) -> &'static str {
         match self {
             Self::RemoteUrlUnsupported => REMOTE_IMAGE_URL_PLACEHOLDER,
-            Self::UnsupportedLowDetail => UNSUPPORTED_LOW_DETAIL_PLACEHOLDER,
             Self::ImageTooLarge { .. } => IMAGE_TOO_LARGE_PLACEHOLDER,
             Self::Processing(_) => IMAGE_PROCESSING_ERROR_PLACEHOLDER,
         }
@@ -526,9 +520,8 @@ fn prepare_image(image_url: &mut String, detail: ImageDetail) -> Result<(), Imag
         return Ok(());
     }
     let limits = match detail {
-        ImageDetail::Auto | ImageDetail::High => HIGH_DETAIL_LIMITS,
+        ImageDetail::Auto | ImageDetail::Low | ImageDetail::High => HIGH_DETAIL_LIMITS,
         ImageDetail::Original => ORIGINAL_DETAIL_LIMITS,
-        ImageDetail::Low => return Err(ImagePreparationError::UnsupportedLowDetail),
     };
     let bytes = decode_data_url(image_url, MAX_PROMPT_IMAGE_INPUT_BYTES)?;
     *image_url =
@@ -828,9 +821,8 @@ pub fn load_for_prompt_data_url(
     detail: ImageDetail,
 ) -> Result<String, String> {
     let limits = match detail {
-        ImageDetail::Auto | ImageDetail::High => HIGH_DETAIL_LIMITS,
+        ImageDetail::Auto | ImageDetail::Low | ImageDetail::High => HIGH_DETAIL_LIMITS,
         ImageDetail::Original => ORIGINAL_DETAIL_LIMITS,
-        ImageDetail::Low => return Err("image detail `low` is not supported".to_owned()),
     };
     load_for_prompt_bytes(path, file_bytes, limits)
         .map(EncodedImage::into_data_url)

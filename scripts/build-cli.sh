@@ -26,7 +26,7 @@ case $target in
     python3 "$root/scripts/train-cli.py" "$train/instrumented" >&2
     "$(dirname "$bolt")/merge-fdata" "$train"/profile.*.fdata > "$train/profile.fdata"
     "$bolt" "$built" -o "$train/optimized" -data="$train/profile.fdata" -reorder-blocks=ext-tsp -reorder-functions=cdsort \
-      -split-functions -split-all-cold -split-eh -icf=$icf -use-gnu-stack -no-huge-pages >&2
+      -split-functions -split-all-cold -split-eh -icf=$icf -use-old-text -use-gnu-stack -no-huge-pages >&2
     strip -o "$out/$bin" "$train/optimized"
     ;;
   *)

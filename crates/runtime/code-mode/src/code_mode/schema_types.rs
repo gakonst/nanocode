@@ -495,7 +495,7 @@ fn has_property_description(value: &JsonValue) -> bool {
 }
 
 fn render_json_schema_property_name(name: &str) -> String {
-    if normalize_code_mode_identifier(name) == name {
+    if !name.is_empty() && normalize_code_mode_identifier(name) == name {
         name.to_string()
     } else {
         serde_json::to_string(name).unwrap_or_else(|_| format!("\"{}\"", name.replace('"', "\\\"")))

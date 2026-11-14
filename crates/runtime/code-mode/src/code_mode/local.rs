@@ -15,6 +15,7 @@ use super::{
 };
 use crate::{
     CodeModeToolset, Tool, ToolContext, ToolDefinition, ToolInput, ToolOutput,
+    code_mode_description::normalize_identifier,
     embedded::{
         CodeModeHost, CodeModeHostError, EmbeddedToolMode, HandCalls, HostFuture, OwnedToolContext,
         declares_hand, take_hand, tool_not_available,
@@ -126,22 +127,6 @@ impl LocalTools {
     }
 }
 
-fn identifier(name: &str) -> String {
-    name.chars()
-        .enumerate()
-        .map(|(index, character)| {
-            let valid = character == '_'
-                || character == '$'
-                || if index == 0 {
-                    character.is_ascii_alphabetic()
-                } else {
-                    character.is_ascii_alphanumeric()
-                };
-            if valid { character } else { '_' }
-        })
-        .collect()
-}
-
 impl CodeModeToolset for LocalTools {
     fn nested_tool_metadata(&self) -> Vec<Value> {
         self.tools
@@ -154,7 +139,7 @@ impl CodeModeToolset for LocalTools {
                 };
                 let name = definition.name();
                 Some(json!({
-                    "name": identifier(name),
+                    "name": normalize_identifier(name),
                     "tool_name": name,
                     "description": definition.description(),
                     "kind": kind,

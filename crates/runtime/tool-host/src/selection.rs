@@ -1409,16 +1409,7 @@ pub(crate) fn normalized_public_tool_name(name: &str) -> std::borrow::Cow<'_, st
 }
 
 pub fn normalize_public_tool_name(name: &str) -> String {
-    name.chars()
-        .enumerate()
-        .map(|(index, character)| {
-            if normalized_character(index, character) {
-                character
-            } else {
-                '_'
-            }
-        })
-        .collect()
+    crate::code_mode_description::normalize_identifier(name)
 }
 
 fn host_owned_name(name: &str) -> bool {

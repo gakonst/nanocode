@@ -347,18 +347,17 @@ fn mcp_structured_content_schema(output_schema: &Value) -> Option<&Value> {
 }
 
 pub fn normalize_identifier(name: &str) -> String {
-    let mut identifier = String::new();
-    for (index, character) in name.chars().enumerate() {
-        let valid = if index == 0 {
-            character == '_' || character == '$' || character.is_ascii_alphabetic()
-        } else {
-            character == '_' || character == '$' || character.is_ascii_alphanumeric()
-        };
-        identifier.push(if valid { character } else { '_' });
-    }
-    if identifier.is_empty() {
-        "_".to_owned()
-    } else {
-        identifier
-    }
+    name.chars()
+        .enumerate()
+        .map(|(index, character)| {
+            let valid = character == '_'
+                || character == '$'
+                || if index == 0 {
+                    character.is_ascii_alphabetic()
+                } else {
+                    character.is_ascii_alphanumeric()
+                };
+            if valid { character } else { '_' }
+        })
+        .collect()
 }

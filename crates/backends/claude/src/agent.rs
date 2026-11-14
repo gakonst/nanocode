@@ -62,6 +62,7 @@ fn estimate_text_tokens(text: &str) -> u64 {
 }
 
 const TOOL_RESULT_TOKEN_LIMIT: u64 = 12_000;
+const DIRECT_TOOL_RESULT_TOKEN_LIMIT: u64 = 25_000;
 const RETRY_BASE_MS: u64 = 500;
 const RETRY_CAP_MS: u64 = 32_000;
 const RETRY_JITTER_PERCENT: u64 = 25;
@@ -102,22 +103,25 @@ fn truncate_middle(text: &str, max_tokens: u64) -> String {
     )
 }
 
-fn bound_tool_result(content: ToolResultContent) -> (ToolResultContent, Option<usize>) {
+fn bound_tool_result(
+    content: ToolResultContent,
+    limit: u64,
+) -> (ToolResultContent, Option<usize>) {
     match content {
         ToolResultContent::Text(text) => {
-            if estimate_text_tokens(&text) <= TOOL_RESULT_TOKEN_LIMIT {
+            if estimate_text_tokens(&text) <= limit {
                 return (ToolResultContent::Text(text), None);
             }
             let original = text.len();
             (
-                ToolResultContent::Text(truncate_middle(&text, TOOL_RESULT_TOKEN_LIMIT)),
+                ToolResultContent::Text(truncate_middle(&text, limit)),
                 Some(original),
             )
         }
         ToolResultContent::Blocks(blocks) => {
             let mut original = 0_usize;
             let mut truncated = false;
-            let mut remaining = TOOL_RESULT_TOKEN_LIMIT;
+            let mut remaining = limit;
             let mut omitted = 0_usize;
             let mut bounded_blocks = Vec::with_capacity(blocks.len().min(64));
             for mut block in blocks {
@@ -6933,7 +6937,11 @@ impl State {
             &self.images,
         )
         .await?;
-        let (content, original_bytes) = bound_tool_result(content);
+        let (content, original_bytes) = match name {
+            "Read" => (content, None),
+            "exec" | "wait" => bound_tool_result(content, TOOL_RESULT_TOKEN_LIMIT),
+            _ => bound_tool_result(content, DIRECT_TOOL_RESULT_TOKEN_LIMIT),
+        };
         self.emit(
             events,
             AgentEventKind::ToolResult,

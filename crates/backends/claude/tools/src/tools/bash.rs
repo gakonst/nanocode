@@ -9,6 +9,8 @@ pub const MAX_STREAM_BYTES: usize = 30_000;
 
 pub const NESTED_STREAM_BYTES: usize = 128 * 1024;
 
+const PREVIEW_UNITS: usize = 2_000;
+
 pub const DEFAULT_TIMEOUT_MS: u64 = 120_000;
 const BLOCKED_SLEEP_SECONDS: f64 = 25.0;
 
@@ -211,7 +213,7 @@ impl<E: BashExecutor> ClaudeBash<E> {
             return Err("timeout must be at least 1 millisecond".into());
         }
         let timeout_ms = requested.min(maximum);
-        let reduced = (requested > maximum).then(|| {
+        let reduced = (requested > maximum && (nested || background)).then(|| {
             format!(
                 "The call asked for a timeout of {requested} ms, more than the maximum of {maximum} ms, so the command had the maximum."
             )
@@ -271,7 +273,13 @@ impl<E: BashExecutor> ClaudeBash<E> {
             }
         };
         let kept = kept.as_ref().map(|(file, bytes)| (file.as_str(), *bytes));
-        let (stdout, stderr, truncated) = bounded_output(&result, stream_bytes, kept);
+        let (stdout, stderr, truncated) = match kept.filter(|_| !nested) {
+            Some((file, bytes)) if result.exit_code == 0 => {
+                (persisted(&result.stdout, file, bytes), result.stderr.clone(), true)
+            }
+            Some(_) => (result.stdout.clone(), result.stderr.clone(), true),
+            None => bounded_output(&result, stream_bytes, kept),
+        };
         Ok(json!({
             "stdout": stdout,
             "stderr": stderr,
@@ -328,6 +336,31 @@ fn with_cut_notice(stream: &str, text: &str, cut: bool, kept: Option<(&str, u64)
     format!(
         "{text}{line}[{stream} cut after its first {} bytes: {rest}]\n",
         text.len()
+    )
+}
+
+fn persisted(output: &str, file: &str, bytes: u64) -> String {
+    let content = output.len() - output.trim_start().len();
+    let start = output[..content].rfind('\n').map_or(0, |end| end + 1);
+    let text = output[start..].trim_end();
+    let mut units = 0;
+    let preview = match text.char_indices().find(|(_, c)| {
+        units += c.len_utf16();
+        units > PREVIEW_UNITS
+    }) {
+        None => format!("{text}\n"),
+        Some((end, _)) => {
+            let end = text[..end]
+                .rfind('\n')
+                .filter(|&line| text[..line].encode_utf16().count() > PREVIEW_UNITS / 2)
+                .unwrap_or(end);
+            format!("{}\n...\n", &text[..end])
+        }
+    };
+    format!(
+        "<persisted-output>\nOutput too large ({}). Full output saved to: {file}\n\nPreview (first {}):\n{preview}</persisted-output>",
+        super::text_files::size_text(bytes),
+        super::text_files::size_text(PREVIEW_UNITS as u64)
     )
 }
 

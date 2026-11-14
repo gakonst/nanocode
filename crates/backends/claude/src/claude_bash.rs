@@ -36,6 +36,9 @@ const OUTPUT_CAP_MARKER: &str = " [output truncated: exceeded 5GB disk cap] ";
 const ENDS_WITH_TURN: &str = "If it exits while you are still working you will be notified, but it is terminated when you give your final response and no notification can follow that \u{2014} so do not end your turn to wait for it; if you need its result, wait for it before giving your final response.";
 const REPORTED: &str = "Its end is reported with its exit status and last output: an exec or wait call that is waiting when it finishes returns then, and otherwise the next one reports it.";
 const SHELL_SIGNAL_STATUS: i32 = 128;
+const TIMED_OUT_STATUS: i32 = SHELL_SIGNAL_STATUS + 15;
+const ERROR_CHARS: usize = 10_000;
+const ERROR_CHARS_SLACK: usize = 1_024;
 const UPSTREAM_TIMEOUT: &str = "max 600000 for a foreground command.";
 const NESTED_TIMEOUT: &str = " A call from an exec cell without `timeout` waits the maximum instead, because the cell yields on its own clock; a command that reaches its `timeout` moves to the background and keeps running, and a `timeout` above the maximum counts as the maximum.";
 
@@ -342,6 +345,24 @@ async fn stall(job: &Job, binding: &Binding) {
         );
         route(binding.clone(), job.id.clone(), text);
         return;
+    }
+}
+async fn head(path: &Path, bytes: usize) -> Option<String> {
+    let file = tokio::fs::File::open(path).await.ok()?;
+    let mut read = Vec::new();
+    file.take(bytes as u64).read_to_end(&mut read).await.ok()?;
+    Some(String::from_utf8_lossy(&read).into_owned())
+}
+fn timed_out_after(timeout: Duration) -> String {
+    let milliseconds = timeout.as_millis();
+    if milliseconds < 60_000 {
+        return format!("{}s", milliseconds / 1000);
+    }
+    let (minutes, seconds) = (milliseconds / 60_000, (milliseconds % 60_000 + 500) / 1000);
+    if seconds == 60 {
+        format!("{}m 0s", minutes + 1)
+    } else {
+        format!("{minutes}m {seconds}s")
     }
 }
 async fn tail(path: &Path, size: u64) -> Option<String> {
@@ -685,6 +706,7 @@ impl BashExecutor for LocalBash {
     ) -> Result<BashExecution, String> {
         let timeout = Duration::from_millis(request.timeout_ms);
         let max_stderr = request.max_stderr_bytes;
+        let max_stdout = request.max_stdout_bytes;
         let session = request
             .session
             .as_ref()
@@ -702,10 +724,17 @@ impl BashExecutor for LocalBash {
                 .as_ref()
                 .is_some_and(|call| call.contains("/code-"));
         let marker = std::env::temp_dir().join(format!("nanocode-{id}-cwd"));
+        let killed_on_timeout = direct
+            && request
+                .command
+                .split(['&', '|', ';', '\n'])
+                .next()
+                .and_then(|first| first.split_whitespace().next())
+                == Some("sleep");
         let mut request = request;
         let directory = if direct {
             request.command = format!(
-                "eval {} < /dev/null && pwd -P >| {}",
+                "eval {} < /dev/null 2>&1 && pwd -P >| {}",
                 quoted(&request.command),
                 quoted(&marker.display().to_string())
             );
@@ -849,6 +878,27 @@ impl BashExecutor for LocalBash {
                             result.map(BashExecution::Completed)
                         }
                     };
+                }
+                Err(_) if killed_on_timeout => {
+                    self.jobs.forget(&id);
+                    job.abort.abort();
+                    job.finished.wait().await;
+                    job.written.wait().await;
+                    let output = match &job.output {
+                        Some(path) => head(path, max_stdout).await,
+                        None => None,
+                    };
+                    discard(&job);
+                    let message = format!("Command timed out after {}", timed_out_after(timeout));
+                    return Ok(BashExecution::Completed(BashResult {
+                        stdout: match output.filter(|output| !output.is_empty()) {
+                            Some(output) => format!("{message}\n{output}"),
+                            None => message,
+                        },
+                        stderr: String::new(),
+                        exit_code: TIMED_OUT_STATUS,
+                        truncated: false,
+                    }));
                 }
                 Err(_) => {
                     let _ = arm.send(Duration::from_millis(DEFAULT_BACKGROUND_TIMEOUT_MS));
@@ -1015,7 +1065,7 @@ impl Tool for BashTool {
                                 .filter(|_| value["background"] == true)
                             {
                                 Some(message) => ToolOutput::text(message),
-                                None => rendered(&value),
+                                None => rendered(&value, !context.call_id().contains("/code-")),
                             }
                             .with_structured_result(value)
                         }
@@ -1027,7 +1077,7 @@ impl Tool for BashTool {
         })
     }
 }
-fn rendered(value: &Value) -> ToolOutput {
+fn rendered(value: &Value, direct: bool) -> ToolOutput {
     let code = value["exit_code"].as_i64().unwrap_or(0);
     let parts = [
         (code != 0).then(|| format!("Exit code {code}")),
@@ -1044,8 +1094,35 @@ fn rendered(value: &Value) -> ToolOutput {
     match (code, text.is_empty()) {
         (0, true) => ToolOutput::text("(Bash completed with no output)"),
         (0, false) => ToolOutput::text(text),
+        _ if direct => ToolOutput::error(truncated_error(text)),
         _ => ToolOutput::error(text),
     }
+}
+fn truncated_error(text: String) -> String {
+    let units = text.encode_utf16().count();
+    if units <= ERROR_CHARS + ERROR_CHARS_SLACK {
+        return text;
+    }
+    let mut head = (0, 0);
+    for (at, c) in text.char_indices() {
+        if head.1 + c.len_utf16() > ERROR_CHARS / 2 {
+            break;
+        }
+        head = (at + c.len_utf8(), head.1 + c.len_utf16());
+    }
+    let mut tail = (text.len(), 0);
+    for (at, c) in text.char_indices().rev() {
+        if tail.1 + c.len_utf16() > ERROR_CHARS - ERROR_CHARS / 2 || at < head.0 {
+            break;
+        }
+        tail = (at, tail.1 + c.len_utf16());
+    }
+    format!(
+        "{}\n\n... [{} characters truncated] ...\n\n{}",
+        &text[..head.0],
+        units - head.1 - tail.1,
+        &text[tail.0..]
+    )
 }
 fn without_empty_lines(text: &str) -> String {
     let lines = text.split('\n').collect::<Vec<_>>();

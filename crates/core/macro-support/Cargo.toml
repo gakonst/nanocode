@@ -1,0 +1,19 @@
+[package]
+name = "nanocode-macro-support"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "Token building, quoting and Rust syntax parsing over the proc_macro API for Nanocode's procedural macros"
+autotests = false
+autobenches = false
+
+[lib]
+test = false
+doctest = false
+bench = false
+
+[lints]
+workspace = true

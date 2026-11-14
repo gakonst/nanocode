@@ -675,6 +675,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "nanocode-macro-support"
+version = "0.7.0"
+
+[[package]]
 name = "nanocode-mcp"
 version = "0.7.0"
 dependencies = [
@@ -1609,12 +1613,8 @@ dependencies = [
 [[package]]
 name = "serde_derive"
 version = "1.0.228"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d540f220d3187173da220f885ab66608367b6574e925011a9353e4badda91d79"
 dependencies = [
- "proc-macro2",
- "quote",
- "syn",
+ "nanocode-macro-support",
 ]
 
 [[package]]

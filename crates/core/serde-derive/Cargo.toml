@@ -1,0 +1,23 @@
+[package]
+name = "serde_derive"
+version = "1.0.228"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "Nanocode's #[derive(Serialize, Deserialize)] over the proc_macro API, generating what serde_derive 1.0.228 generates"
+autotests = false
+autobenches = false
+
+[lib]
+proc-macro = true
+test = false
+doctest = false
+bench = false
+
+[dependencies]
+nanocode-macro-support.workspace = true
+
+[lints]
+workspace = true

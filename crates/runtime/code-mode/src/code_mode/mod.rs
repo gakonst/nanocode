@@ -8,7 +8,7 @@ use std::{
     collections::{BTreeMap, HashMap, VecDeque},
     sync::{
         Arc,
-        atomic::{AtomicU8, AtomicU64, Ordering},
+        atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -2433,6 +2433,7 @@ fn observed_execution(
 
 struct CellCalls<'a, 'b> {
     pending_calls: &'b mut InOrder<CallFuture<'a>>,
+    unstarted: &'b Arc<AtomicUsize>,
     pending_receipts: &'b mut PendingCallReceipts,
     unlogged: &'b mut UnloggedCalls,
     deferred: &'b mut std::collections::VecDeque<(u64, String, Box<str>, bool)>,
@@ -2528,9 +2529,13 @@ impl CellCalls<'_, '_> {
             delivered: false,
             logged,
         });
+        if persists {
+            self.unstarted.fetch_add(1, Ordering::AcqRel);
+        }
         self.pending_calls.push(Box::pin(journaled_call(
             self.journal.clone(),
             journaled,
+            Arc::clone(self.unstarted),
             execute_nested_call(
                 self.tools,
                 id,
@@ -2663,6 +2668,7 @@ impl EmbeddedHost {
         limits: Limits,
     ) -> Result<CellTerminal, HostFailure> {
         let mut pending_calls: InOrder<CallFuture<'_>> = InOrder::new();
+        let unstarted = Arc::new(AtomicUsize::new(0));
         let mut deferred = std::collections::VecDeque::new();
         let mut unlogged = UnloggedCalls {
             parent_call_id: parent_call_id.to_owned(),
@@ -2710,6 +2716,7 @@ impl EmbeddedHost {
                             deferred.clear();
                             let mut calls = CellCalls {
                                 pending_calls: &mut pending_calls,
+                                unstarted: &unstarted,
                                 pending_receipts: &mut pending_receipts,
                                 unlogged: &mut unlogged,
                                 deferred: &mut deferred,
@@ -2754,6 +2761,7 @@ impl EmbeddedHost {
                     if !held && !deferred.is_empty() {
                         let mut calls = CellCalls {
                             pending_calls: &mut pending_calls,
+                            unstarted: &unstarted,
                             pending_receipts: &mut pending_receipts,
                             unlogged: &mut unlogged,
                             deferred: &mut deferred,
@@ -2807,6 +2815,7 @@ impl EmbeddedHost {
                     }
                     let mut calls = CellCalls {
                         pending_calls: &mut pending_calls,
+                        unstarted: &unstarted,
                         pending_receipts: &mut pending_receipts,
                         unlogged: &mut unlogged,
                         deferred: &mut deferred,
@@ -2892,6 +2901,7 @@ impl EmbeddedHost {
                             ..
                         } => {
                             nanocode_trace::Span::current().record("runtime.event_count", event_count);
+                            start_journaled_calls(calls.pending_calls, &unstarted, &mut flushing).await;
                             return Ok(CellTerminal::Completed { stored });
                         }
                         RuntimeEvent::Error {
@@ -2900,6 +2910,7 @@ impl EmbeddedHost {
                             ..
                         } => {
                             nanocode_trace::Span::current().record("runtime.event_count", event_count);
+                            start_journaled_calls(calls.pending_calls, &unstarted, &mut flushing).await;
                             return Ok(CellTerminal::ScriptFailed {
                                 message,
                                 stored,
@@ -3208,9 +3219,32 @@ fn ordered_calls(mut calls: Vec<ObservedNestedCall>) -> Vec<NestedToolCall> {
     calls.into_iter().map(|call| call.call).collect()
 }
 
+async fn start_journaled_calls(
+    pending_calls: &mut InOrder<CallFuture<'_>>,
+    unstarted: &AtomicUsize,
+    flushing: &mut Option<FlushFuture>,
+) {
+    std::future::poll_fn(|context| {
+        if flushing
+            .as_mut()
+            .is_some_and(|flush| flush.as_mut().poll(context).is_ready())
+        {
+            *flushing = None;
+        }
+        while let std::task::Poll::Ready(Some(_)) = pending_calls.poll_ready(context) {}
+        if unstarted.load(Ordering::Acquire) == 0 {
+            std::task::Poll::Ready(())
+        } else {
+            std::task::Poll::Pending
+        }
+    })
+    .await;
+}
+
 async fn journaled_call(
     journal: Option<Arc<CellRecord>>,
     call: Option<JournaledCall>,
+    unstarted: Arc<AtomicUsize>,
     execution: impl std::future::Future<Output = CompletedNestedCall>,
 ) -> CompletedNestedCall {
     let (Some(journal), Some(call)) = (journal.filter(|record| record.persistence.is_some()), call)
@@ -3218,6 +3252,7 @@ async fn journaled_call(
         return execution.await;
     };
     journal.persist(vec![call]).await;
+    unstarted.fetch_sub(1, Ordering::AcqRel);
     let mut completed = execution.await;
     if completed.encoded.is_none() {
         completed.encoded = serde_json::to_string(&completed.call.structured_result).ok();

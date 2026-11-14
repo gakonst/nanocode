@@ -654,8 +654,10 @@ pub const DEFAULT_COMPACTION_RESERVED_TOKENS: u64 = 20_000 + 13_000;
 
 const STANDARD_CONTEXT_WINDOW_TOKENS: u64 = 200_000;
 
-const fn request_images(context_window_tokens: u64) -> ImageWindow {
-    if context_window_tokens > STANDARD_CONTEXT_WINDOW_TOKENS {
+fn request_images(model: &str, context_window_tokens: u64) -> ImageWindow {
+    if model.starts_with("@cf/") {
+        ImageWindow::WORKERS_AI
+    } else if context_window_tokens > STANDARD_CONTEXT_WINDOW_TOKENS {
         ImageWindow::CLAUDE_LONG_CONTEXT
     } else {
         ImageWindow::CLAUDE
@@ -5256,7 +5258,7 @@ impl State {
         request.tool_choice = context.force_text.then(|| json!({"type":"none"}));
 
         let (mut sent, kept) = images::evict_images(
-            request_images(self.context_window_tokens),
+            request_images(&self.model, self.context_window_tokens),
             wire_messages(messages, &suffix, request.effort_updates),
         );
         request
@@ -5371,7 +5373,7 @@ impl State {
             suffix.push(Message::text(Role::User, &upgrade.notice).into());
             let kept;
             (sent, kept) = images::evict_images(
-                request_images(self.context_window_tokens),
+                request_images(&self.model, self.context_window_tokens),
                 wire_messages(messages, &suffix, request.effort_updates),
             );
             request
@@ -8017,6 +8019,9 @@ impl State {
                     ));
                 }
                 cursor.output_continuations += 1;
+                if response.usage.output_tokens <= 1 {
+                    images::omit_images(&mut pending);
+                }
                 pending.push(
                     Message::text(
                         Role::User,

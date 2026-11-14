@@ -66,6 +66,7 @@ pub(super) struct ModelCallOutcome {
     pub(super) response: TurnResult,
     pub(super) transport_continuation_valid: bool,
     pub(super) server_reasoning_included: bool,
+    pub(super) images_omitted: bool,
 }
 
 impl ModelRun {
@@ -82,7 +83,7 @@ impl ModelRun {
         let reasoning_mode = self.config.reasoning_mode;
         let service_tier = self.service_tier;
         let request_history = conversation.managed.generation_request();
-        let sent = evict_images(&request_history);
+        let sent = evict_images(&request_history, model);
         let previous_response_id = sent.previous_response_id();
         let started_at = Instant::now();
         self.stats.model_calls += 1;
@@ -148,12 +149,26 @@ impl ModelRun {
             None
         };
         let replayed = recovered.is_some();
+        let mut images_omitted = false;
         let (recorded_result, transport_continuation_valid) = if let Some(output) = recovered {
             (output, false)
         } else {
-            let request = build(&inline_images(&self.images, sent).await?).with_input_trace(trace);
+            let request = build(&inline_images(&self.images, sent.clone()).await?)
+                .with_input_trace(trace.clone());
             let preparation_ns = elapsed_ns(started_at);
-            let success = match self.client.execute(request).instrument(span.clone()).await {
+            let mut outcome = self.client.execute(request).instrument(span.clone()).await;
+            if let Err(error) = &outcome
+                && error
+                    .responses_error()
+                    .is_some_and(ResponsesError::is_empty_incomplete)
+                && let Some(omitted) = omit_images(&sent)
+            {
+                let request =
+                    build(&inline_images(&self.images, omitted).await?).with_input_trace(trace);
+                outcome = self.client.execute(request).instrument(span.clone()).await;
+                images_omitted = outcome.is_ok();
+            }
+            let success = match outcome {
                 Ok(success) => success,
                 Err(error) => {
                     span.record("status", "failed");
@@ -239,6 +254,7 @@ impl ModelRun {
             response,
             transport_continuation_valid,
             server_reasoning_included,
+            images_omitted,
         })
     }
 

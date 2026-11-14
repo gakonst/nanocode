@@ -407,6 +407,21 @@ impl ResponsesError {
     }
 
     #[must_use]
+    pub fn is_empty_incomplete(&self) -> bool {
+        let Self::Api { event, .. } = self else {
+            return false;
+        };
+        serde_json::from_str::<serde_json::Value>(event).is_ok_and(|event| {
+            let response = &event["response"];
+            event["type"] == "response.incomplete"
+                && response["incomplete_details"]["reason"] == "max_output_tokens"
+                && response["usage"]["output_tokens"]
+                    .as_u64()
+                    .is_some_and(|tokens| tokens <= 1)
+        })
+    }
+
+    #[must_use]
     pub fn invalid_tool_schema(&self) -> Option<&serde_json::Value> {
         match self {
             Self::InvalidToolSchema { definition, .. } => Some(definition),

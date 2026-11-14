@@ -174,13 +174,12 @@ fn function_output(output: ToolOutputBody) -> FunctionOutputBody {
                     ToolOutputContent::InputText { text } => FunctionOutputContent::InputText {
                         text: text.into_boxed_str(),
                     },
-                    ToolOutputContent::InputImage {
-                        image_url,
-                        detail: _,
-                    } => FunctionOutputContent::InputImage {
-                        image_url: image_url.into_boxed_str(),
-                        detail: None,
-                    },
+                    ToolOutputContent::InputImage { image_url, detail } => {
+                        FunctionOutputContent::InputImage {
+                            image_url: image_url.into_boxed_str(),
+                            detail: Some(detail),
+                        }
+                    }
                     ToolOutputContent::InputImageFile { file_id, detail: _ } => {
                         FunctionOutputContent::InputImageFile {
                             file_id: file_id.into_boxed_str(),

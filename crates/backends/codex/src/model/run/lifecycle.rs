@@ -455,7 +455,7 @@ impl ModelRun {
         if effort.update {
             history.push(ResponseItem::configuration_update(effort.effort));
         }
-        let history = evict_images(&history);
+        let history = evict_images(&history, model);
         let started_at = Instant::now();
         self.stats.compactions += 1;
         self.events.emit(

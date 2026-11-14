@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use super::*;
 use crate::client::responses::FunctionOutputContent;
-use nanocode_durability::agent_store_error;
+use nanocode_durability::{agent_store_error, base64_data_url};
 use nanocode_image::ImageWindow;
 
 fn images(item: &ResponseItem) -> Vec<&str> {
@@ -89,30 +89,96 @@ fn rewrite(item: &mut ResponseItem, mut replace: impl FnMut(&str) -> Option<Rewr
     }
 }
 
-pub(super) fn evict_images(history: &RequestHistory) -> RequestHistory {
-    let limit = ImageWindow::CODEX;
+fn request_images(model: Model) -> ImageWindow {
+    match model {
+        Model::Glm53 | Model::Kimi | Model::Mimo | Model::Custom(_)
+            if model.as_str().starts_with("@cf/") =>
+        {
+            ImageWindow::WORKERS_AI_GATEWAY
+        }
+        Model::Glm53 | Model::Kimi | Model::Mimo | Model::Custom(_) => ImageWindow::GATEWAY,
+        _ => ImageWindow::CODEX,
+    }
+}
+
+fn bound(limit: ImageWindow, image: &str) -> Option<Rewrite> {
+    let (_, data) = base64_data_url(image)?;
+    Some(match limit.bound(data)? {
+        Ok((data, media_type)) => {
+            Rewrite::Inline(format!("data:{media_type};base64,{data}").into_boxed_str())
+        }
+        Err(text) => Rewrite::Omit(text.to_owned()),
+    })
+}
+
+pub(super) fn evict_images(history: &RequestHistory, model: Model) -> RequestHistory {
+    let limit = request_images(model);
     let full = history.full();
-    let (total, start) = full.images_before(full.len());
+    let (_, start) = full.images_before(full.len());
     let (sent_before, _) = full.images_before(history.incremental_start());
-    let evicted = limit.evicted(total);
-    let Some(start) = start.filter(|_| evicted > 0) else {
+    let Some(start) = start else {
         return history.clone();
     };
+    let mut bounded: Vec<_> = full
+        .iter_from(start)
+        .flat_map(images)
+        .map(|image| (image.len(), bound(limit, image)))
+        .collect();
+    let sizes: Vec<usize> = bounded
+        .iter()
+        .map(|(size, bounded)| match bounded {
+            Some(Rewrite::Inline(url)) => url.len(),
+            Some(Rewrite::Omit(_)) => 0,
+            None => *size,
+        })
+        .collect();
+    let evicted = limit.evicted_sizes(&sizes);
     let mut ordinal = 0;
+    let mut changed = false;
     let replacement = full
         .iter_from(start)
         .cloned()
         .map(|mut item| {
             rewrite(&mut item, |image| {
                 ordinal += 1;
-                (ordinal <= evicted).then(|| Rewrite::Omit(limit.omitted(image)))
+                let rewrite = if ordinal <= evicted {
+                    Some(Rewrite::Omit(limit.omitted(image)))
+                } else {
+                    bounded[ordinal - 1].1.take()
+                };
+                changed |= rewrite.is_some();
+                rewrite
+            });
+            item
+        })
+        .collect();
+    if !changed {
+        return history.clone();
+    }
+    let continued = limit.evicted_sizes(&sizes[..sent_before.min(sizes.len())]) == evicted;
+    let mut sent = history.clone();
+    sent.replace_from(start, replacement, continued);
+    sent
+}
+
+pub(super) fn omit_images(history: &RequestHistory) -> Option<RequestHistory> {
+    let full = history.full();
+    let start = full.images_before(full.len()).1?;
+    let replacement = full
+        .iter_from(start)
+        .cloned()
+        .map(|mut item| {
+            rewrite(&mut item, |_| {
+                Some(Rewrite::Omit(
+                    "[image omitted after the provider rejected its data]".to_owned(),
+                ))
             });
             item
         })
         .collect();
     let mut sent = history.clone();
-    sent.replace_from(start, replacement, limit.evicted(sent_before) == evicted);
-    sent
+    sent.replace_from(start, replacement, false);
+    Some(sent)
 }
 
 pub(super) async fn inline_images(

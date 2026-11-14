@@ -926,6 +926,7 @@ impl ModelRun {
                 response,
                 transport_continuation_valid,
                 server_reasoning_included,
+                images_omitted,
             } = self
                 .perform_model_call(
                     call_index,
@@ -934,6 +935,14 @@ impl ModelRun {
                     admitted,
                 )
                 .await?;
+            if images_omitted {
+                session.conversation.managed.repair_rejected_request(
+                    crate::client::__private::RejectedRequestRepair {
+                        replace_images: true,
+                        tool_definition: None,
+                    },
+                );
+            }
             let TurnResult {
                 id,
                 end_turn,

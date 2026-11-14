@@ -102,6 +102,7 @@ struct ImageMetadata {
 struct ImageCacheKey {
     digest: [u8; 20],
     limits: PromptImageResizeLimits,
+    max_bytes: Option<usize>,
 }
 
 #[derive(Clone, Default)]
@@ -586,6 +587,72 @@ fn prepare_base64_image(
         })
 }
 
+pub(crate) fn bound_base64(
+    data: &str,
+    max_base64_bytes: usize,
+) -> Result<(String, &'static str), &'static str> {
+    decode_base64(data, MAX_PROMPT_IMAGE_INPUT_BYTES)
+        .and_then(|bytes| bound_bytes(bytes, max_base64_bytes / 4 * 3))
+        .map(|image| (STANDARD.encode(image.bytes), image.mime))
+        .map_err(|error| {
+            nanocode_trace::warn!(%error, "failed to bound image size");
+            error.placeholder()
+        })
+}
+
+fn bound_bytes(bytes: Vec<u8>, max_bytes: usize) -> Result<EncodedImage, ImagePreparationError> {
+    let key = ImageCacheKey {
+        digest: Sha1::digest(&bytes),
+        limits: HIGH_DETAIL_LIMITS,
+        max_bytes: Some(max_bytes),
+    };
+    if let Some(image) = cached_image(&key) {
+        return Ok(image);
+    }
+    let decode_error = |error: DecodeError| {
+        ImagePreparationError::Processing(format!("unable to decode image: {error}"))
+    };
+    let format = guess_format(&bytes).ok_or_else(|| decode_error(DecodeError::UnknownFormat))?;
+    let limits = Limits {
+        alloc_bytes_max: MAX_PROMPT_IMAGE_DECODE_BYTES,
+        dimension_max: None,
+    };
+    let source = Decoder::new(&bytes, format, limits)
+        .and_then(Decoder::decode)
+        .map_err(decode_error)?
+        .image;
+    let (mut width, mut height) = (source.width(), source.height());
+    loop {
+        let resized =
+            ((width, height) != (source.width(), source.height())).then(|| thumbnail(&source, width, height));
+        let image = encode_image(
+            resized.as_ref().unwrap_or(&source),
+            Format::Jpeg,
+            ImageMetadata {
+                icc_profile: None,
+                exif: None,
+            },
+        )?;
+        if image.bytes.len() <= max_bytes {
+            cache_image(key, image.clone());
+            return Ok(image);
+        }
+        let scale = (max_bytes as f64 / image.bytes.len() as f64).sqrt();
+        let next = (
+            floored_dimension(f64::from(width) * scale),
+            floored_dimension(f64::from(height) * scale),
+        );
+        if next == (width, height) {
+            return Err(ImagePreparationError::ImageTooLarge {
+                representation: "encoded image",
+                size: image.bytes.len(),
+                max: max_bytes,
+            });
+        }
+        (width, height) = next;
+    }
+}
+
 fn is_remote_image_url(image_url: &str) -> bool {
     image_url.split_once(':').is_some_and(|(scheme, _)| {
         scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https")
@@ -650,6 +717,7 @@ fn load_for_prompt_bytes(
     let key = ImageCacheKey {
         digest: Sha1::digest(&file_bytes),
         limits,
+        max_bytes: None,
     };
     if let Some(image) = cached_image(&key) {
         return Ok(image);

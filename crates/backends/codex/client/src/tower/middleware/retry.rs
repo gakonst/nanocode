@@ -150,10 +150,9 @@ impl ResponsesRetryPolicy {
         let checkpoint_missing =
             failure.is_checkpoint_missing() && request.previous_response_id().is_some();
         let advice = failure.retry_advice;
-        if failure
-            .responses_error()
-            .is_some_and(ResponsesError::is_terminal_provider_error)
-        {
+        if failure.responses_error().is_some_and(|error| {
+            error.is_terminal_provider_error() || error.is_empty_incomplete()
+        }) {
             return None;
         }
         let server_deadline = failure
@@ -340,7 +339,7 @@ impl ResponsesRetryPolicy {
 const STREAM_MAX_RETRIES: u32 = 5;
 
 fn reconnectable(error: &ResponsesError) -> bool {
-    if error.is_terminal_provider_error() {
+    if error.is_terminal_provider_error() || error.is_empty_incomplete() {
         return false;
     }
     match error {

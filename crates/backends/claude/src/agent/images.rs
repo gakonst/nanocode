@@ -125,6 +125,19 @@ fn rewrite(message: &mut HistoryMessage, mut replace: impl FnMut(&Value) -> Opti
     }
 }
 
+pub(super) fn omit_images(messages: &mut [HistoryMessage]) -> bool {
+    let mut omitted = false;
+    for message in messages {
+        rewrite(message, |_| {
+            omitted = true;
+            Some(Rewrite::Omit(
+                "[image omitted after the provider rejected its data]".to_owned(),
+            ))
+        });
+    }
+    omitted
+}
+
 pub(super) fn evict_images(
     window: ImageWindow,
     mut messages: Vec<HistoryMessage>,

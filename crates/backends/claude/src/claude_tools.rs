@@ -463,16 +463,19 @@ fn code_reply(mut execution: CodeModeExecution, call_id: &str) -> ClaudeToolRepl
         Some(Value::Object(metadata)),
         None,
     );
-    for notification in execution.notifications {
-        match &mut reply.content {
-            ToolResultContent::Text(text) => {
-                text.push('\n');
-                text.push_str(&notification.text);
-            }
-            ToolResultContent::Blocks(blocks) => {
-                blocks.push(json!({"type": "text", "text": notification.text}));
-            }
-        }
+    if !execution.notifications.is_empty()
+        && let ToolResultContent::Text(text) = &mut reply.content
+    {
+        reply.content =
+            ToolResultContent::Blocks(vec![json!({"type": "text", "text": std::mem::take(text)})]);
+    }
+    if let ToolResultContent::Blocks(blocks) = &mut reply.content {
+        blocks.extend(
+            execution
+                .notifications
+                .into_iter()
+                .map(|notification| json!({"type": "text", "text": notification.text})),
+        );
     }
     if !documents.is_empty() {
         if let ToolResultContent::Text(text) = &mut reply.content {

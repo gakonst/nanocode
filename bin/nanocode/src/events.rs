@@ -31,6 +31,8 @@ struct CodeLink {
 #[derive(Default)]
 pub struct EventMapper {
     assistant: HashMap<String, usize>,
+    calls: HashMap<String, Option<u64>>,
+    restarted: Vec<(Option<u64>, usize)>,
     reasoning: HashMap<u64, usize>,
     tools: HashMap<String, usize>,
     links: HashMap<String, CodeLink>,
@@ -83,6 +85,22 @@ pub struct Usage {
     pub turns: u64,
 }
 
+pub fn retry_notice(payload: &Value) -> String {
+    let attempt = payload["attempt"].as_u64().unwrap_or_default();
+    let delay = Duration::from_nanos(payload["delay_ns"].as_u64().unwrap_or_default());
+    let error = payload["error"].as_str().unwrap_or_default();
+    let tries = match payload["max_attempts"].as_u64() {
+        Some(max) => format!("attempt {attempt} of {max}"),
+        None => format!("attempt {attempt}"),
+    };
+    format!(
+        "model request failed ({tries}), retrying in {:.1}s: {error}",
+        delay.as_secs_f64()
+    )
+    .trim_end_matches([' ', ':'])
+    .to_owned()
+}
+
 fn completion_agent(text: &str) -> Option<&str> {
     text.rsplit_once("<subagent_completion agent_id=\"")
         .and_then(|(_, rest)| rest.split_once('"'))
@@ -120,6 +138,8 @@ impl EventMapper {
 
     pub fn reset(&mut self) {
         self.assistant.clear();
+        self.calls.clear();
+        self.restarted.clear();
         self.reasoning.clear();
         self.tools.clear();
         self.names.clear();
@@ -224,7 +244,7 @@ impl EventMapper {
                         .unwrap_or_else(|| Cow::Owned(format!("call-{}", delta.model_call_index)));
                     self.assistant(
                         transcript,
-                        &key,
+                        (&key, Some(u64::from(delta.model_call_index))),
                         kind == AgentEventKind::AssistantMessage,
                         &delta.text,
                     )
@@ -303,7 +323,7 @@ impl EventMapper {
                 );
                 self.assistant(
                     transcript,
-                    &key,
+                    (&key, payload["model_call_index"].as_u64()),
                     event.kind == AgentEventKind::AssistantMessage,
                     payload["text"].as_str().unwrap_or_default(),
                 )
@@ -345,14 +365,8 @@ impl EventMapper {
                 true
             }
             AgentEventKind::ModelAttemptRetrying => {
-                let attempt = payload["attempt"].as_u64().unwrap_or_default();
-                let error = payload["error"].as_str().unwrap_or_default();
-                transcript.push(CellKind::Notice(
-                    NoticeLevel::Warning,
-                    format!("retrying model request (attempt {attempt}) {error}")
-                        .trim()
-                        .to_owned(),
-                ));
+                self.restart(payload["model_call_index"].as_u64());
+                transcript.push(CellKind::Notice(NoticeLevel::Warning, retry_notice(&payload)));
                 true
             }
             AgentEventKind::ModelCompactionStarted => {
@@ -396,13 +410,42 @@ impl EventMapper {
         mapped
     }
 
+    fn restart(&mut self, call: Option<u64>) {
+        let dead: Vec<String> = self
+            .calls
+            .iter()
+            .filter(|(_, owner)| **owner == call)
+            .map(|(key, _)| key.clone())
+            .collect();
+        for key in dead {
+            self.calls.remove(&key);
+            if let Some(index) = self.assistant.remove(&key) {
+                self.restarted.push((call, index));
+            }
+        }
+    }
+
     fn assistant(
         &mut self,
         transcript: &mut Transcript,
-        key: &str,
+        (key, call): (&str, Option<u64>),
         final_message: bool,
         text: &str,
     ) -> bool {
+        if !self.assistant.contains_key(key)
+            && !text.is_empty()
+            && let Some(position) = self.restarted.iter().position(|(owner, _)| *owner == call)
+        {
+            let (_, index) = self.restarted.remove(position);
+            self.assistant.insert(key.to_owned(), index);
+            self.calls.insert(key.to_owned(), call);
+            return transcript.update(index, |cell| {
+                if let CellKind::Assistant(existing) = cell {
+                    text.clone_into(existing);
+                }
+            });
+        }
+        self.calls.insert(key.to_owned(), call);
         match self.assistant.get(key).copied() {
             Some(_) if text.is_empty() && !final_message => false,
             Some(index) if !final_message => transcript.append(index, text),

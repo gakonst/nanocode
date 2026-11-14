@@ -604,9 +604,10 @@ async fn exec(args: SessionArgs, clients: ModelClients) -> Result<()> {
             let turn = agent
                 .prompt(nanocode::PromptRequest::new(pending.prompt).request_id(&pending.id))
                 .await?;
-            stream_turn(turn, std::io::stderr()).await?;
+            stream_turn(turn, std::io::stderr(), std::io::stderr().is_terminal()).await?;
         }
-        stream_turn(agent.prompt(prompt.as_str()).await?, std::io::stdout()).await
+        let live = std::io::stdout().is_terminal();
+        stream_turn(agent.prompt(prompt.as_str()).await?, std::io::stdout(), live).await
     }
     .await;
     let mut stderr = std::io::stderr();
@@ -630,8 +631,12 @@ async fn exec(args: SessionArgs, clients: ModelClients) -> Result<()> {
     Ok(())
 }
 
-async fn stream_turn(mut turn: nanocode::agent::Turn, answers: impl Write) -> Result<()> {
-    let mut printer = stream::Printer::new(std::io::BufWriter::new(answers));
+async fn stream_turn(
+    mut turn: nanocode::agent::Turn,
+    answers: impl Write,
+    live: bool,
+) -> Result<()> {
+    let mut printer = stream::Printer::new(std::io::BufWriter::new(answers), live);
     loop {
         while let Some(event) = turn.try_next() {
             printer.event(&event)?;

@@ -243,7 +243,7 @@ pub enum Overlay {
 
 /// Signalled once the interactive interface has drawn its first frame: work that the
 /// frame does not need (the paying proxy, warming connections) waits for it.
-pub static FIRST_FRAME: tokio::sync::Notify = tokio::sync::Notify::const_new();
+pub static FIRST_FRAME: tokio::sync::SetOnce<()> = tokio::sync::SetOnce::const_new();
 
 pub struct Launch {
     pub host: Host,
@@ -766,7 +766,7 @@ impl App {
                     }
                     if first {
                         first = false;
-                        FIRST_FRAME.notify_one();
+                        drop(FIRST_FRAME.set(()));
                     }
                     dirty = false;
                     if self

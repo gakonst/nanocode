@@ -241,7 +241,7 @@ pub fn run_with(clients: ModelClients) -> ExitCode {
         let drawn = matches!(cli.command, None | Some(Command::Resume { .. }));
         nanocode_platform::spawn_on(runtime.handle(), async move {
             if drawn {
-                app::FIRST_FRAME.notified().await;
+                app::FIRST_FRAME.wait().await;
             }
             if let Some(start) = paying {
                 start();

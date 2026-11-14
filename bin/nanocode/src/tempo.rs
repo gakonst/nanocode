@@ -1438,7 +1438,7 @@ impl Tempo {
         .await;
     }
 
-    pub(crate) fn offer(&self, subagents: &nanocode::SubagentControl) {
+    pub(crate) fn offer(&self, subagents: &nanocode::SubagentControl, drawn: bool) {
         let catalog = |tempo: &Self| {
             let (groups, note) = tempo.groups();
             [
@@ -1461,6 +1461,9 @@ impl Tempo {
         subagents.update_spawn_policy(|policy| policy.providers = Some(providers.clone()));
         let (tempo, subagents) = (self.clone(), subagents.clone());
         nanocode_platform::spawn_task(async move {
+            if drawn {
+                crate::app::FIRST_FRAME.wait().await;
+            }
             tempo.load().await;
             let providers = catalog(&tempo);
             subagents.update_spawn_policy(|policy| policy.providers = Some(providers.clone()));

@@ -796,7 +796,7 @@ impl Host {
             builder.build()?
         };
         if let (Some(subagents), Some(tempo)) = (runtime.subagents(), &config.clients.tempo) {
-            tempo.offer(subagents);
+            tempo.offer(subagents, !config.headless);
         }
         Ok(Self {
             config,

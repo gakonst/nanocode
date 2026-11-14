@@ -2097,7 +2097,9 @@ pub(crate) async fn run_external_with(
     };
     // For the report of a signal death (D1303).
     vp.core.fg_signal.set(match st {
-        crate::host::ExitStatus::Signaled(sig) if !vp.in_subst => Some((sig, proc.pid())),
+        crate::host::ExitStatus::Signaled(sig) if !vp.in_subst && vp.job.is_none() => {
+            Some((sig, proc.pid()))
+        }
         _ => None,
     });
     if vp.top {

@@ -403,7 +403,8 @@ pub(super) async fn kill(vp: &mut Vp, args: &[Vec<u8>]) -> R {
             // `kill 0` and `kill -- -$$` (the shell's group) also reach the rest of
             // the group where the host may signal it.
             vp.sigs.raise(&vp.core, sig);
-            if pid <= 0 {
+            let nested = matches!(vp.sigs, crate::state::Sigs::Nested(_));
+            if pid <= 0 && !(nested && signals::stops(sig)) {
                 let _ = vp.host().kill(pid, sig);
             }
             continue;

@@ -100,6 +100,22 @@ impl NestedSigs {
         self.cont.replace(false)
     }
 
+    pub(crate) async fn stop_until_cont(&self, sig: i32) {
+        self.cont.set(false);
+        self.stopped(sig);
+        std::future::poll_fn(|cx| {
+            if self.cont.replace(false) {
+                return std::task::Poll::Ready(());
+            }
+            let mut ws = self.waiters.borrow_mut();
+            if !ws.iter().any(|x| x.will_wake(cx.waker())) {
+                ws.push(cx.waker().clone());
+            }
+            std::task::Poll::Pending
+        })
+        .await;
+    }
+
     pub(crate) fn take_for(&self, w: &std::task::Waker) -> u64 {
         let mut ws = self.waiters.borrow_mut();
         if !ws.iter().any(|x| x.will_wake(w)) {

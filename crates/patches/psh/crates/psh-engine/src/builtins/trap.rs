@@ -315,6 +315,11 @@ pub(crate) async fn take_signals(vp: &mut Vp) -> Result<(), Unwind> {
                 }
                 vp.signal_trap = saved;
             }
+            None if crate::signals::stops(sig)
+                && let crate::state::Sigs::Nested(n) = &vp.sigs =>
+            {
+                n.clone().stop_until_cont(sig).await;
+            }
             None if terminates(sig) && sig != crate::host::SIGQUIT => {
                 vp.sigs.died_of(&vp.core, sig);
                 return Err(Unwind::Exit(128 + sig));

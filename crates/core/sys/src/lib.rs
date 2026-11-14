@@ -7,6 +7,7 @@ pub mod blake3;
 #[cfg(all(target_vendor = "apple", not(target_os = "macos")))]
 pub mod security;
 mod atomic;
+pub mod queue;
 pub mod base64;
 pub mod crc32;
 mod decimal;

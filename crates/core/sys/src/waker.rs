@@ -70,6 +70,16 @@ impl AtomicWaker {
         }
     }
 
+    pub fn wake_by_ref(&self) {
+        if self.state.fetch_or(WAKING, AcqRel) == WAITING {
+            if let Some(waker) = unsafe { (*self.waker.get()).as_ref() } {
+                waker.wake_by_ref();
+            }
+            let previous = self.state.swap(WAITING, Release);
+            assert_eq!(previous, WAKING);
+        }
+    }
+
     pub fn wake(&self) {
         if let Some(waker) = self.take() {
             waker.wake();

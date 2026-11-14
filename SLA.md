@@ -80,9 +80,34 @@ The deployed Worker, nanocode-cloudflare-durable on tempo-dev.workers.dev (durab
 
 The deployed Worker on nanocode-ts build-4ed9bef (nanocode 6638af866, durable-cloudflare version a7616016, 2026-11-13), from gak-9, Claude warm turns: response headers 171 to 343 ms, first delta 783 to 1,435 ms. A new session's first turn depends on whether the client warmed it. Unwarmed (the probe above, an API client), the model request waits for the session's two MCP servers' handshakes and starts 427 to 1,814 ms after admission (21 to 245 ms on later turns). Warmed with `POST /warm` 2 s before, as the web client does when someone starts typing, it starts 45 to 103 ms after admission, and its provider time (817 to 1,216 ms Claude, 616 to 1,211 Codex) matches later turns'. nanocode-ts DECISIONS.md has the per-request trace (`model_requests` in a turn's result timing). With the demo's MCP listings in Workers KV (durable-cloudflare f80216e), an unwarmed session reads them in 3 to 65 ms and its model request starts 146 to 534 ms after admission.
 
+2026-11-14, live Codex from dev-georgios (ChatGPT login, nanocode master 2367c144e, Codex CLI 0.166.0, 8 sessions of 3 turns, every prompt unique, Enter to the first token drawn, p50 / p99 for turns 1, 2 and 3). Codex CLI 0.145 is refused gpt-6 models on a ChatGPT login, and nanocode does not know the gpt-5.6 models that 0.145 allows, so 0.166 is the comparison.
+
+| model | nanocode | Codex CLI 0.166.0 |
+|---|---|---|
+| gpt-6-luna | 1,022 / 1,655, 1,004 / 5,348, 1,085 / 4,005 | 1,500 / 4,234, 2,046 / 4,375, 1,301 / 1,750 |
+| gpt-6.1-sol | 1,588 / 2,348, 1,583 / 4,765, 1,772 / 2,777 | 1,754 / 3,469, 1,516 / 1,652, 1,452 / 2,399 |
+
+nanocode is ahead on every gpt-6-luna turn and on the first gpt-6.1-sol turn, and 70 to 320 ms behind Codex CLI on later gpt-6.1-sol turns at p50, which is the model's time (its p99 single outliers are 4 to 5 s on both clients). Ready: nanocode 33 / 72 ms, Codex CLI 108 / 253 ms to its composer prompt.
+
+Throughput on the mock, same day and host, 6 samples: 20,000 tokens unpaced, nanocode draws 298,766 / 524,190 tok/s on Responses (provider 356,939 / 587,056) and 347,406 / 582,336 on Claude (provider 362,452 / 659,854), tail 11.7 / 39.3 and 5.3 / 8.0 ms; Codex CLI draws 920 / 1,347 tok/s with a 20.1 s tail and Claude Code draws the whole reply at the end (tail 365 / 604 ms). Paced at 1,000 tok/s (5,000 tokens): nanocode draws 1,000 tok/s on both providers, render 0.56 / 5.72 ms, tail 2.8 / 4.1 ms; Claude Code tail 57.5 / 182 ms, Codex CLI 24.2 / 65.8 ms.
+
+The deployed Worker, 2026-11-14, from gak-9, a new session per round, 12 rounds of 3 turns per provider, all 72 turns completed, p50 / p99 ms. durable-cloudflare fbc9a2b with nanocode-ts build-3a5564a, whose responses carry `server-timing` from the Worker (`worker`), the app's dispatch to the session (`session_response`) and the session object (`session`):
+
+| | Claude cold | Claude warm | Responses cold | Responses warm |
+|---|---|---|---|---|
+| POST to response headers | 1,081 / 2,141 | 193 / 313 | 1,038 / 2,559 | 219 / 393 |
+| Worker | 986 / 1,923 | 92 / 201 | 948 / 2,035 | 93 / 158 |
+| Object start (`session_response` − `session`) | 905 / 1,887 | 47 / 138 | 836 / 1,855 | 42 / 104 |
+| Session to headers (admission) | 59 / 166 | 46 / 63 | 65 / 180 | 51 / 79 |
+| Admission to model request | 442 / 1,129 | 46 / 63 | 175 / 1,171 | 51 / 79 |
+| Admission to provider headers | 1,182 / 3,828 | 672 / 1,593 | 1,480 / 3,180 | 717 / 1,233 |
+| POST to first delta | 2,787 / 6,038 | 803 / 1,781 | 3,033 / 7,435 | 1,146 / 1,913 |
+
+A new session's extra second before response headers is the Durable Object starting (836 to 905 ms p50 against 42 to 47 warm), not session work: the object answers 59 to 65 ms after its `fetch` starts. The rest of the cold first delta is the first provider request from the new object, 0.5 to 0.8 s above a warm one at p50. Workers KV reads of the MCP listings now use `cacheTtl` (durable-cloudflare ae0aa1b). On version a9e3d78f the client drew a reply over 0.99 of the provider's own window on Claude (1.06 to 1.09 at p99, 571 to 637 characters/s) and 0.79 to 0.82 on Responses (the provider's window there includes events after the last text), so the Worker draws at the provider's rate.
+
 ## Not measured yet
 
-- An unwarmed Worker session's first provider call (1.3 to 2.6 s to headers against 0.6 to 0.8 s later: the new isolate's first AI binding request, which the model prime at admission only partly hides), and tool calls and Code Mode cells on Workers.
+- A new Worker session's Durable Object start (836 to 905 ms p50 before its `fetch` runs): how much is placement for a new name and how much is the isolate and module start, and whether a client warm before the first turn hides it. Tool calls and Code Mode cells on Workers.
 - The Responses HTTP stream (gateways) may drop its connection the way the Claude one did; it was not traced live.
 - DeepSeek and GLM live (reachable through `NANOCODE_ANTHROPIC_BASE_URL` with their Anthropic-compatible endpoints), and live Claude from a host without an egress proxy.
 - Request compression on a blocking thread.

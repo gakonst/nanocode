@@ -887,6 +887,28 @@ impl State {
             ContentBlock::tool_result_content(id, ToolResultContent::Text("Tool execution interrupted by a host crash; outcome unknown. Do not assume it did not run or automatically repeat it.".into()), true)
         } else if cancel.is_cancelled() {
             unknown()
+        } else if handler.is_some()
+            && let Some(unparsed) = input
+                .as_object()
+                .filter(|input| input.len() == 1)
+                .and_then(|input| input.get("__unparsedToolInput"))
+            && let (Some(raw), Some(len)) = (
+                unparsed.get("raw").and_then(Value::as_str),
+                unparsed.get("len").and_then(Value::as_u64),
+            )
+        {
+            let mut units = 0;
+            let shown: String = raw
+                .chars()
+                .take_while(|c| {
+                    units += c.len_utf16();
+                    units <= 200
+                })
+                .collect();
+            ContentBlock::tool_result_content(id, ToolResultContent::Text(format!(
+                "<tool_use_error>InputValidationError: {name} was called with input that could not be parsed as JSON.\nYou sent (first {} of {len} bytes): {shown}\nCommon causes: unescaped backslashes in file paths (use / or \\\\), unescaped control characters, or truncated output. Retry with valid JSON.</tool_use_error>",
+                shown.encode_utf16().count()
+            )), true)
         } else if self.code_only && cursor.recovered_code_index == Some(index) && name == "exec" {
             ContentBlock::tool_result_content(id, ToolResultContent::Text(
                 "Code Mode admission was lost during recovery; prior effects may have outcome unknown. No code was executed in this attempt. Reconcile those effects before using a fresh cell from a new model request.".into()

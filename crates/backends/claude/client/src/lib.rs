@@ -3226,7 +3226,17 @@ impl BlockAccumulator {
                             "Incomplete tool input for {name} ({id}) was not executed because the output token limit was reached. Issue a fresh complete call if needed."
                         )));
                     }
-                    Err(error) => return Err(error.into()),
+                    Err(_) => {
+                        let mut units = 0;
+                        let raw: String = fragments
+                            .chars()
+                            .take_while(|c| {
+                                units += c.len_utf16();
+                                units <= 2048
+                            })
+                            .collect();
+                        serde_json::json!({"__unparsedToolInput": {"raw": raw, "len": fragments.encode_utf16().count()}})
+                    }
                     _ => {
                         return Err(ClaudeError::Protocol(
                             "tool input must be a JSON object".into(),

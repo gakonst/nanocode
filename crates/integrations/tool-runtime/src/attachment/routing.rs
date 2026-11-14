@@ -518,6 +518,7 @@ impl Tool for RoutedTool {
             let mut schema = parameters.as_value().clone();
             if let Some(object) = schema.as_object_mut()
                 && !keeps_own_paths(self.routing)
+                && (cua(definition_name(&self.local).as_str()) || !self.snapshot().is_empty())
                 && let Some(properties) = object
                     .entry("properties")
                     .or_insert_with(|| serde_json::json!({}))
@@ -847,7 +848,27 @@ impl RoutedTool {
                         );
                     }
                     output = output.with_structured_result(result.clone());
-                    output.output = crate::contract::ToolOutputBody::Text(result.to_string());
+                    output.output = match &output.output {
+                        crate::contract::ToolOutputBody::Text(text)
+                            if text.contains(&format!(
+                                "Process running with session ID {original}
+"
+                            )) =>
+                        {
+                            crate::contract::ToolOutputBody::Text(text.replacen(
+                                &format!(
+                                    "Process running with session ID {original}
+"
+                                ),
+                                &format!(
+                                    "Process running with session ID {id}
+"
+                                ),
+                                1,
+                            ))
+                        }
+                        _ => crate::contract::ToolOutputBody::Text(result.to_string()),
+                    };
                 }
             }
         }

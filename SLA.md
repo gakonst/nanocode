@@ -138,6 +138,15 @@ The two n = 19 cells each lost one sample to the model answering a different wor
 
 nanocode wins every Claude p50, by 0.7 to 1.4 s on turn 1 and 30 to 500 ms on later turns. It loses these p99 cells: haiku turn 1 +643 and +96 ms, haiku turn 2 +343 ms (9a9e5d038; e4779d26f wins it by 2 ms), sonnet turn 2 +573 ms, sonnet turn 3 +42 ms, opus turn 3 +113 and +60 ms. Each lost p99 is one slow sample out of 20 while Claude Code's slowest is lower in that cell; the nanocode outliers are 1.6 to 2.7 s against medians of 0.7 to 1.4 s. nanocode's sonnet median moved from 0.7 s to 1.35 s between the two runs (about 04:10 and 05:05 UTC) while Claude Code's did not; an interleaved A/B of the two builds in the later window (12 sessions each) gives e4779d26f 1,376 / 1,343 / 1,334 ms and 9a9e5d038 1,287 / 1,300 / 1,317 ms (p50, turns 1 to 3), so the move is the provider's time for nanocode's sonnet requests in that window, not the build. Request bodies of both builds are byte-identical in length (37,509 bytes) with the same adaptive thinking, high effort and betas.
 
+Rerun on nanocode master 00c215b02 against Codex CLI 0.166.0, dev-georgios, 2026-11-14 06:10 to 06:24 UTC, 20 sessions x 3 turns, interleaved, Enter to first token drawn, p50 / p99 ms for turns 1, 2 and 3 (one to two nanocode samples per model missed the reply word and are left out):
+
+| model | nanocode 00c215b02 | Codex CLI 0.166.0 |
+|---|---|---|
+| gpt-6-luna | 990 / 2,088, 1,015 / 4,537, 993 / 5,481 | 1,814 / 4,461, 1,521 / 2,933, 1,377 / 2,438 |
+| gpt-6.1-sol | 1,616 / 2,539, 1,703 / 4,864, 1,593 / 3,538 | 2,259 / 3,682, 1,839 / 4,724, 1,921 / 3,052 |
+
+nanocode wins every p50 (by 236 to 824 ms) and turn 1 p99, and loses p99 on turns 2 and 3: by 1.6 and 3.0 s on gpt-6-luna and 0.1 and 0.5 s on gpt-6.1-sol. Traces of the same lanes show nanocode spends 0.9 to 1.6 ms from Enter to the WebSocket send on later turns and sends the same incremental previous_response_id request as Codex. The tails come from sessions the backend keeps slow on every turn, which a raw-WebSocket replay of nanocode's requests reproduces with any request shape.
+
 ## Not measured yet
 
 - A new Worker session's Durable Object start (836 to 905 ms p50 before its `fetch` runs): how much is placement for a new name and how much is the isolate and module start, and whether a client warm before the first turn hides it. Tool calls and Code Mode cells on Workers.

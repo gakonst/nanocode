@@ -1009,6 +1009,20 @@ impl CodeModeHost for CodeModeExecutors {
         Box::pin(self.wait_routed(input, context, observer))
     }
 
+    fn call<'a>(
+        &'a self,
+        name: &'a str,
+        input: Value,
+        context: ToolContext<'a>,
+    ) -> HostFuture<'a, Result<ToolOutput, CodeModeHostError>> {
+        Box::pin(async move {
+            match self.ready_placement(context.session_id()).await {
+                Placement::Local => Err(self.unselected()),
+                Placement::Hand(hand) => Ok(self.call_on(&hand.name, name, input, context).await),
+            }
+        })
+    }
+
     fn recover<'a>(
         &'a self,
         context: ToolContext<'a>,

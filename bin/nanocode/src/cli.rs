@@ -87,6 +87,21 @@ impl From<CyberAccessProgramArg> for nanocode::codex::CyberAccessProgram {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CodexOrchestrationArg {
+    CodeMode,
+    Direct,
+}
+
+impl CodexOrchestrationArg {
+    const ALL: [Self; 2] = [Self::CodeMode, Self::Direct];
+    const CHOICES: [Choice; 2] = [
+        Choice::new("code-mode")
+            .help("Codex models call their tools from JavaScript cells (exec and wait)"),
+        Choice::new("direct").help("Codex models call their tools directly, as Codex CLI does"),
+    ];
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GatewayArg {
     Openrouter,
     Vercel,
@@ -199,6 +214,10 @@ const SESSION: Group = Group::new(&[
     Argument::flag("no_mouse")
         .long("no-mouse")
         .help("Leave mouse capture off so the terminal keeps native text selection"),
+    Argument::value("codex_orchestration", "MODE", Parser::Choice(&CodexOrchestrationArg::CHOICES))
+        .long("codex-orchestration")
+        .env("NANOCODE_CODEX_ORCHESTRATION")
+        .help("How Codex models call tools: code-mode (the default) or direct"),
     Argument::flag("no_subagents")
         .long("no-subagents")
         .help("Disable subagent tools"),
@@ -541,6 +560,7 @@ pub struct SessionArgs {
     pub ephemeral: bool,
     pub home: Option<PathBuf>,
     pub no_mouse: bool,
+    pub codex_orchestration: Option<CodexOrchestrationArg>,
     pub no_subagents: bool,
     pub subagents: bool,
     pub gateway: GatewayArgs,
@@ -588,6 +608,9 @@ impl SessionArgs {
             ephemeral: matches.flag("ephemeral"),
             home: matches.path("home"),
             no_mouse: matches.flag("no_mouse"),
+            codex_orchestration: matches
+                .choice("codex_orchestration")
+                .map(|index| CodexOrchestrationArg::ALL[index]),
             no_subagents: matches.flag("no_subagents"),
             subagents: matches.flag("subagents"),
             gateway: GatewayArgs::from_matches(matches),
@@ -612,6 +635,7 @@ impl SessionArgs {
             ephemeral: self.ephemeral || root.ephemeral,
             home: self.home.or(root.home),
             no_mouse: self.no_mouse || root.no_mouse,
+            codex_orchestration: self.codex_orchestration.or(root.codex_orchestration),
             no_subagents: self.no_subagents || root.no_subagents,
             subagents: self.subagents || root.subagents,
             gateway: GatewayArgs {

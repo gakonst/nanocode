@@ -973,6 +973,14 @@ impl NativeToolRuntime {
             if self.registry.workspace_tool(name)
                 && let Placement::Hand(hand) = self.placement(context.session_id())
             {
+                if let Some(executors) = &self.executors
+                    && self.exposure.unwrap_or_default() == ToolExposure::DirectOnly
+                {
+                    return Ok(match crate::embedded::runtime::hand_input(name, input) {
+                        Ok(input) => executors.call_on(&hand.name, name, input, context).await,
+                        Err(output) => output,
+                    });
+                }
                 return Ok(ToolOutput::error(format!(
                     "Code Mode for this session runs on hand {}; call `tools.{name}` inside exec to run it there. No direct handler was invoked.",
                     hand.name

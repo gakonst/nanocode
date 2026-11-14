@@ -180,10 +180,10 @@ fn function_output(output: ToolOutputBody) -> FunctionOutputBody {
                             detail: Some(detail),
                         }
                     }
-                    ToolOutputContent::InputImageFile { file_id, detail: _ } => {
+                    ToolOutputContent::InputImageFile { file_id, detail } => {
                         FunctionOutputContent::InputImageFile {
                             file_id: file_id.into_boxed_str(),
-                            detail: None,
+                            detail: Some(detail),
                         }
                     }
                     ToolOutputContent::InputAudio { .. } => FunctionOutputContent::InputText {

@@ -291,26 +291,30 @@ impl<'a> Block<'a> {
         let right = area.right().saturating_sub(1);
         let bottom = area.bottom().saturating_sub(1);
         let sides = [
-            (Borders::LEFT, left..=left, top..=bottom, set.vertical),
-            (Borders::TOP, left..=right, top..=top, set.horizontal),
-            (Borders::RIGHT, right..=right, top..=bottom, set.vertical),
+            (
+                Borders::LEFT,
+                Rect::new(left, top, 1, area.height),
+                set.vertical,
+            ),
+            (
+                Borders::TOP,
+                Rect::new(left, top, area.width, 1),
+                set.horizontal,
+            ),
+            (
+                Borders::RIGHT,
+                Rect::new(right, top, 1, area.height),
+                set.vertical,
+            ),
             (
                 Borders::BOTTOM,
-                left..=right,
-                bottom..=bottom,
+                Rect::new(left, bottom, area.width, 1),
                 set.horizontal,
             ),
         ];
-        for (border, columns, rows, symbol) in sides {
-            if !self.borders.contains(border) {
-                continue;
-            }
-            for x in columns {
-                for y in rows.clone() {
-                    buffer[(x, y)]
-                        .set_symbol(symbol)
-                        .set_style(self.border_style);
-                }
+        for (border, side, symbol) in sides {
+            if self.borders.contains(border) {
+                buffer.set_symbols(side, symbol, self.border_style);
             }
         }
         let corners = [

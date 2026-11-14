@@ -298,10 +298,26 @@ impl Buffer {
 
     pub fn set_style(&mut self, area: Rect, style: impl Into<Style>) {
         let style = style.into();
+        if style == Style::default() {
+            return;
+        }
         let area = self.area.intersection(area);
         for y in area.top()..area.bottom() {
             for x in area.left()..area.right() {
                 self[(x, y)].set_style(style);
+            }
+        }
+    }
+
+    pub fn set_symbols(&mut self, area: Rect, symbol: &str, style: impl Into<Style>) {
+        let style = style.into();
+        let symbol = Symbol::new(symbol);
+        let area = self.area.intersection(area);
+        for y in area.top()..area.bottom() {
+            for x in area.left()..area.right() {
+                let cell = &mut self[(x, y)];
+                cell.symbol = symbol.clone();
+                cell.set_style(style);
             }
         }
     }

@@ -39,7 +39,7 @@ pub async fn native_client_config() -> io::Result<Arc<ClientConfig>> {
         let loading = environment.clone();
         LOADING
             .run(|| async move {
-                let config = tokio::task::spawn_blocking(load)
+                let config = nanocode_platform::spawn_blocking(load)
                     .await
                     .map_err(io::Error::other)
                     .and_then(|loaded| loaded)

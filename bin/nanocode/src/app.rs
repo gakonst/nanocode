@@ -1591,7 +1591,7 @@ impl App {
     fn prepare_turn(&self) {
         nanocode_tui::highlight::prewarm();
         if let Some(agent) = self.agent.clone() {
-            tokio::spawn(async move { drop(agent.preconnect().await) });
+            nanocode_platform::spawn_task(async move { drop(agent.preconnect().await) });
         }
     }
 
@@ -1619,7 +1619,7 @@ impl App {
         let generation = self.generation;
         let tx = self.tx.clone();
         let span = self.spans.begin(&id, Some(agent.session_id()));
-        self.submissions.spawn(tracing::Instrument::instrument(
+        let task = tracing::Instrument::instrument(
             async move {
                 let request = PromptRequest::new(sent.clone()).request_id(id.clone());
                 match agent.prompt(request).await {
@@ -1662,7 +1662,8 @@ impl App {
                 }
             },
             span,
-        ));
+        );
+        nanocode_platform::spawn_joined(&mut self.submissions, task);
     }
 
     fn enqueue_follow_up(&mut self, text: String) -> String {
@@ -1724,7 +1725,7 @@ impl App {
             let control = control.clone();
             let tx = self.tx.clone();
             let generation = self.generation;
-            self.submissions.spawn(async move {
+            nanocode_platform::spawn_joined(&mut self.submissions, async move {
                 let result = control
                     .steer_with_id(id.clone(), prompt)
                     .await
@@ -1764,7 +1765,7 @@ impl App {
                 });
             let agent = agent.clone();
             let tx = self.tx.clone();
-            self.submissions.spawn(async move {
+            nanocode_platform::spawn_joined(&mut self.submissions, async move {
                 match agent.route_prompt(prompt).await {
                     Ok(PromptRoute::Steered) => {
                         drop(tx.send(AppEvent::SteerSent { id, result: Ok(()) }))

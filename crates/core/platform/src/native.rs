@@ -112,6 +112,15 @@ pub fn spawn_on<T: Send + 'static>(
 }
 
 #[track_caller]
+pub fn spawn_joined<T: Send + 'static>(
+    set: &mut tokio::task::JoinSet<T>,
+    future: impl Future<Output = T> + Send + 'static,
+) -> tokio::task::AbortHandle {
+    let future: Pin<Box<dyn Future<Output = T> + Send + 'static>> = Box::pin(future);
+    set.spawn(future)
+}
+
+#[track_caller]
 pub fn spawn_blocking<T: Send + 'static>(
     work: impl FnOnce() -> T + Send + 'static,
 ) -> tokio::task::JoinHandle<T> {

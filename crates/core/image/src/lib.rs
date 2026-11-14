@@ -274,7 +274,7 @@ pub async fn prepare_output_images(output: &mut ToolOutputBody) {
         output.replace_invalid_image_envelopes();
     }
     #[cfg(not(target_family = "wasm"))]
-    match tokio::task::spawn_blocking(move || prepare_content(content)).await {
+    match nanocode_platform::spawn_blocking(move || prepare_content(content)).await {
         Ok(prepared) => {
             let ToolOutputBody::Content(output) = output else {
                 return;
@@ -362,7 +362,7 @@ pub async fn prepare_user_input(input: &PromptInput) -> Vec<ContentItem> {
         return prepare_user_content(input);
     }
     #[cfg(not(target_family = "wasm"))]
-    match tokio::task::spawn_blocking(move || prepare_user_content(input)).await {
+    match nanocode_platform::spawn_blocking(move || prepare_user_content(input)).await {
         Ok(content) => content,
         Err(error) => {
             tracing::warn!(%error, "failed to join user image preparation task");
@@ -559,7 +559,7 @@ pub async fn prepare_base64_images(
     #[cfg(not(target_family = "wasm"))]
     {
         let count = images.len();
-        match tokio::task::spawn_blocking(move || prepare(images)).await {
+        match nanocode_platform::spawn_blocking(move || prepare(images)).await {
             Ok(prepared) => prepared,
             Err(error) => {
                 tracing::warn!(%error, "failed to join base64 image preparation task");

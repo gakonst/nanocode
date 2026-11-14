@@ -26,6 +26,7 @@ serde_json.workspace = true
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 nanocode-computer-repl = { workspace = true, optional = true }
 nanocode-home.workspace = true
+nanocode-platform.workspace = true
 nanocode-store-jsonl.workspace = true
 nanocode-tool-runtime.workspace = true
 nanocode-process.workspace = true

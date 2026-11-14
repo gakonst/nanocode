@@ -122,12 +122,6 @@ const ALLOWED: &[Allowed] = &[
     },
     Allowed {
         path: "crates/core/sync/src/lease.rs",
-        call: "tokio::spawn",
-        uses: 1,
-        why: "a lease's renewals run as a Tokio task beside its watchdog thread; no simulated crate takes a lease",
-    },
-    Allowed {
-        path: "crates/core/sync/src/lease.rs",
         call: "tokio::time",
         uses: 1,
         why: "a lease's renewals sleep on Tokio's clock beside its watchdog thread; no simulated crate takes a lease",

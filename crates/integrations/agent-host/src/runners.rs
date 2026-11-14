@@ -87,7 +87,7 @@ impl RunnerAgents {
             return;
         };
         let weak = Arc::downgrade(self);
-        runtime.spawn(async move {
+        nanocode_platform::spawn_on(&runtime, async move {
             while let Some(event) = events.recv().await {
                 let Some(agents) = weak.upgrade() else { break };
                 agents.notify(event);
@@ -102,7 +102,7 @@ impl RunnerAgents {
         for server in servers {
             let pool = self.pool.clone();
             let (receipt, result) = tokio::sync::watch::channel(None);
-            runtime.spawn(async move {
+            nanocode_platform::spawn_on(&runtime, async move {
                 let outcome = match pool.listen(server).await {
                     Ok(_) => Ok(()),
                     Err(error) => {
@@ -262,7 +262,7 @@ impl RunnerAgents {
         if !installed.same_channel(&notices) {
             return Some(installed);
         }
-        tokio::spawn(async move {
+        nanocode_platform::spawn_task(async move {
             while let Some(mut notice) = receiver.recv().await {
                 while notice.completed.is_none()
                     && let Ok(next) = receiver.try_recv()

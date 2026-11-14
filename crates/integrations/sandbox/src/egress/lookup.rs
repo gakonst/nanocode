@@ -2,6 +2,7 @@ use crate::egress::{
     authority::{Authority, chain},
     wire::{Credential, Grant, Secret},
 };
+use nanocode_platform::spawn_task as spawn;
 use nanocode_sync::{Atom, Signal};
 use std::{
     sync::{
@@ -10,7 +11,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use tokio::{spawn, time::sleep};
+use tokio::time::sleep;
 use tracing::error;
 
 #[derive(Clone, Copy)]

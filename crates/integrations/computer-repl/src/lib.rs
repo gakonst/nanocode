@@ -462,7 +462,7 @@ impl ComputerTools {
                 .expect("connect pins or discovers the provider catalog before registration"),
         );
         let (dispatch, requests) = mpsc::unbounded_channel();
-        tokio::spawn(route_sessions(config, requests));
+        nanocode_platform::spawn_task(route_sessions(config, requests));
         Self {
             executor: Arc::new(LocalComputer { dispatch }),
             catalog,
@@ -702,7 +702,11 @@ async fn route_sessions(
             .entry(session.clone())
             .or_insert_with(|| {
                 let (sender, receiver) = mpsc::unbounded_channel();
-                tokio::spawn(run_session(config.clone(), session.clone(), receiver));
+                nanocode_platform::spawn_task(run_session(
+                    config.clone(),
+                    session.clone(),
+                    receiver,
+                ));
                 sender
             })
             .clone();
@@ -713,7 +717,7 @@ async fn route_sessions(
                 continue;
             }
             let (sender, receiver) = mpsc::unbounded_channel();
-            tokio::spawn(run_session(config.clone(), session.clone(), receiver));
+            nanocode_platform::spawn_task(run_session(config.clone(), session.clone(), receiver));
             let _ = sender.send(error.0);
             sessions.insert(session, sender);
         }

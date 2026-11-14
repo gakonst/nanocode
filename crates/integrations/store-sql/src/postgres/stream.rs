@@ -109,7 +109,7 @@ async fn config(options: &PgOptions) -> Result<Arc<ClientConfig>, PgError> {
         (TlsMode::VerifyFull, None) => Ok(nanocode_tls::native_client_config().await?),
         (TlsMode::VerifyFull, Some(path)) => {
             let read = path.clone();
-            let pem = tokio::task::spawn_blocking(move || std::fs::read(read))
+            let pem = nanocode_platform::spawn_blocking(move || std::fs::read(read))
                 .await
                 .map_err(io::Error::other)??;
             let mut roots = RootCertStore::empty();

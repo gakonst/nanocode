@@ -102,7 +102,7 @@ impl Server {
     pub async fn call_tool(&self, name: &str, arguments: Value) -> Result<Value, RpcError> {
         let mut shim = self.shim.clone().acquire_owned().await;
         let name = name.to_owned();
-        match tokio::task::spawn_blocking(move || shim.call(&name, &arguments)).await {
+        match nanocode_platform::spawn_blocking(move || shim.call(&name, &arguments)).await {
             Ok(Ok(result)) => Ok(result),
             Ok(Err(message)) => Ok(json!({
                 "content": [{"type": "text", "text": message}],

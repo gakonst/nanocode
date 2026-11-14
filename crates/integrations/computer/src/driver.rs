@@ -80,7 +80,7 @@ impl McpClient {
         let stderr = nanocode_mcp_tools::stdio::spawn(command, outgoing, inbound)
             .map_err(|error| error.to_string())?;
         if let Some(mut stderr) = stderr {
-            drop(tokio::spawn(async move {
+            drop(nanocode_platform::spawn_task(async move {
                 let _ = tokio::io::copy(&mut stderr, &mut tokio::io::sink()).await;
             }));
         }

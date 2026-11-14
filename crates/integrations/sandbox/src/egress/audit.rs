@@ -12,7 +12,6 @@ use std::{
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
-use tokio::spawn;
 use tokio::sync::mpsc;
 use tokio::time::{Instant, MissedTickBehavior, interval_at};
 use tracing::{error, warn};
@@ -47,7 +46,7 @@ impl Audit {
     pub fn start<A: Authority>(authority: Arc<A>, reporting: Reporting) -> Self {
         let (counts, received) = mpsc::channel(reporting.queue);
         let lost = Arc::new(AtomicU64::new(0));
-        spawn(own(authority, reporting, received, Arc::clone(&lost)));
+        nanocode_platform::spawn_task(own(authority, reporting, received, Arc::clone(&lost)));
         Self { counts, lost }
     }
 

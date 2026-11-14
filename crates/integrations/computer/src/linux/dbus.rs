@@ -415,7 +415,7 @@ impl Bus {
         let mut stream = UnixStream::from_std(stream)?;
         authenticate(&mut stream).await?;
         let (commands, receiver) = mpsc::channel(queue);
-        tokio::spawn(own(stream, receiver));
+        nanocode_platform::spawn_task(own(stream, receiver));
         let bus = Self { commands };
         bus.call(BUS, BUS_PATH, BUS, "Hello", &[])
             .await

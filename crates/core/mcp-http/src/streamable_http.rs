@@ -194,7 +194,7 @@ fn spawn_background(future: impl Future<Output = ()> + 'static) -> Background {
 
 #[cfg(not(target_family = "wasm"))]
 fn run_task(tasks: &mut Tasks, task: impl Future<Output = Option<RequestId>> + Send + 'static) {
-    tasks.spawn(task);
+    nanocode_platform::spawn_joined(tasks, task);
 }
 
 #[cfg(target_family = "wasm")]

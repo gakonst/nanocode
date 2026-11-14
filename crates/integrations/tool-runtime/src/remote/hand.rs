@@ -483,7 +483,7 @@ impl Hand {
                                     let options = options.clone();
                                     let activity = self.activity.clone();
                                     let meter = meter.clone();
-                                    connections.spawn(async move {
+                                    nanocode_platform::spawn_joined(&mut connections, async move {
                                         serve_tracked_stream(stream, &token, &directory, tools, policy, options, activity, meter).await
                                     });
                                 }

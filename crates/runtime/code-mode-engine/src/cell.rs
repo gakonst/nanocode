@@ -207,7 +207,8 @@ pub(crate) struct Prepared {
     spares: Box<[Slot<Instance>]>,
 }
 
-static CELL_MEMORY: AtomicUsize = AtomicUsize::new(usize::MAX);
+static CELL_MEMORY: LazyLock<AtomicUsize> =
+    LazyLock::new(|| AtomicUsize::new(crate::memory::machine_cell_memory()));
 
 pub trait SnapshotStore: Send + Sync {
     fn load(&self, setup: u64) -> Option<Vec<u8>>;
@@ -223,6 +224,10 @@ pub fn set_snapshot_store(store: Option<Arc<dyn SnapshotStore>>) {
 
 pub fn set_cell_memory(bytes: usize) {
     CELL_MEMORY.store(bytes, Ordering::Relaxed);
+}
+
+pub fn cell_memory() -> usize {
+    CELL_MEMORY.load(Ordering::Relaxed)
 }
 
 impl Prepared {

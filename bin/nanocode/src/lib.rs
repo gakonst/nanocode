@@ -4,6 +4,7 @@ mod actions;
 mod app;
 #[cfg(target_os = "linux")]
 mod arguments;
+mod cells;
 mod cli;
 mod commands;
 #[cfg(unix)]
@@ -165,6 +166,10 @@ pub fn run_with(clients: ModelClients) -> ExitCode {
     #[cfg(not(unix))]
     {
         eprintln!("nanocode: psh, the shell of its commands, is built for Unix hosts only");
+        return ExitCode::FAILURE;
+    }
+    if let Err(error) = cells::apply() {
+        eprintln!("nanocode: {error}");
         return ExitCode::FAILURE;
     }
     let clients = match custom_endpoint::apply(clients) {

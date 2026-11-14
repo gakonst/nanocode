@@ -3,8 +3,11 @@ pub mod bytes;
 mod cell;
 mod host;
 mod journal;
+mod memory;
 
-pub use cell::{CellTools, RuntimeEvent, SnapshotStore, set_cell_memory, set_snapshot_store};
+pub use cell::{
+    CellTools, RuntimeEvent, SnapshotStore, cell_memory, set_cell_memory, set_snapshot_store,
+};
 pub use djs_embed::Interrupt;
 pub use host::EmbeddedHost;
 #[cfg(target_family = "wasm")]

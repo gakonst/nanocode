@@ -72,7 +72,9 @@ use nanocode_code_mode_engine::{
 };
 #[cfg(target_family = "wasm")]
 pub use nanocode_code_mode_engine::{DEFAULT_INTERRUPT_CHECKS, set_interrupt_checks};
-pub use nanocode_code_mode_engine::{SnapshotStore, set_cell_memory, set_snapshot_store};
+pub use nanocode_code_mode_engine::{
+    SnapshotStore, cell_memory, set_cell_memory, set_snapshot_store,
+};
 use nanocode_tool_contracts::{ToolProcessTraceWire, ToolReceipt};
 pub use replay::{
     CELL_JOURNAL_VERSION, CellHold, CellJournal, CellJournalHeader, CellJournalSink,

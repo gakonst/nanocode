@@ -367,6 +367,16 @@ impl ShellSessions {
                     ),
                 );
             };
+            if !command.tty {
+                let directory = workdir.join(".");
+                let entered =
+                    nanocode_platform::spawn_blocking(move || std::fs::metadata(directory))
+                        .await
+                        .unwrap_or_else(|error| Err(std::io::Error::other(error)));
+                if let Err(error) = entered {
+                    return create_process_failed(started_at, &error);
+                }
+            }
             let host_secrets = self
                 .secrets
                 .as_ref()
@@ -433,16 +443,7 @@ impl ShellSessions {
             };
             let spawned = match spawned {
                 Ok(spawned) => spawned,
-                Err(error) => {
-                    return ExecCommandResult::failed(
-                        started_at.elapsed(),
-                        format!(
-                            "exec_command failed for `{}`: CreateProcess {{ message: {:?} }}",
-                            command.script,
-                            error.to_string()
-                        ),
-                    );
-                }
+                Err(error) => return create_process_failed(started_at, &error),
             };
             let launch = Launch {
                 command: command.script.clone(),
@@ -1019,6 +1020,17 @@ impl CapturedChunk {
         output.extend(self.tail.iter().copied());
         output
     }
+}
+
+fn create_process_failed(started_at: Instant, error: &std::io::Error) -> ExecCommandResult {
+    let rejected = format!("Failed to create unified exec process: {error}");
+    ExecCommandResult::failed(
+        started_at.elapsed(),
+        format!(
+            "exec_command failed: CreateProcess {{ message: {:?} }}",
+            format!("Rejected({rejected:?})")
+        ),
+    )
 }
 
 fn resolve_workdir(workspace: &Path, requested: Option<&str>) -> PathBuf {

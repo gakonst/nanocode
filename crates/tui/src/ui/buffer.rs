@@ -6,7 +6,7 @@ use super::{
     text::Line,
 };
 
-const SYMBOL_INLINE_BYTES: usize = 22;
+const SYMBOL_INLINE_BYTES: usize = size_of::<Box<str>>() - 2;
 const BLANK: &str = " ";
 const HALFWIDTH_KATAKANA_VOICED_SOUND_MARK: char = '\u{FF9E}';
 const HALFWIDTH_KATAKANA_SEMI_VOICED_SOUND_MARK: char = '\u{FF9F}';
@@ -24,7 +24,7 @@ enum Symbol {
         bytes: [u8; SYMBOL_INLINE_BYTES],
         length: u8,
     },
-    Heap(Box<str>),
+    Heap(Box<Box<str>>),
 }
 
 impl Symbol {
@@ -38,7 +38,7 @@ impl Symbol {
                 length: u8::try_from(length).expect("inline symbols fit in a byte length"),
             }
         } else {
-            Self::Heap(text.into())
+            Self::Heap(Box::new(text.into()))
         }
     }
 

@@ -378,6 +378,10 @@ enum StreamEvent<'a> {
         item_id: Option<Cow<'a, str>>,
         delta: Cow<'a, str>,
     },
+    TextDone {
+        output_index: Option<u32>,
+        text: &'a RawValue,
+    },
     ItemDone {
         output_index: Option<u32>,
         item: ResponseItem,
@@ -402,6 +406,7 @@ impl StreamEvent<'_> {
                 | Self::ReasoningDelta { .. }
                 | Self::ToolInputDelta { .. }
                 | Self::ItemAdded { .. }
+                | Self::TextDone { .. }
                 | Self::ItemDone { .. }
         )
     }
@@ -533,6 +538,13 @@ fn decode_wire_event(raw: &str, responses: bool) -> Result<DecodedEvent<'_>, ser
                 response,
             )
         }
+        "response.output_text.done" => (
+            StreamEvent::TextDone {
+                output_index: optional(event.output_index)?,
+                text: required(event.text, "text")?,
+            },
+            None,
+        ),
         "response.reasoning_summary_text.done" => {
             let item_id = required::<String>(event.item_id, "item_id")?;
             let text = required::<Text<'_>>(event.text, "text")?.0;
@@ -717,6 +729,7 @@ where
     let mut done_items = Vec::with_capacity(2);
     let mut assistant_items = HashMap::new();
     let mut tool_items = HashMap::new();
+    let mut assistant_texts = HashMap::<u32, (Option<MessagePhase>, String)>::new();
     let item_namespace = nanocode_platform::uuid_v4();
     let mut timing = StreamTiming::new(started_at, model_started_at);
     let context = EventContext {
@@ -890,17 +903,45 @@ where
                     )?;
                 }
             }
+            StreamEvent::TextDone { output_index, text } => {
+                let index = output_index.unwrap_or(0);
+                let text = serde_json::from_str::<Text<'_>>(text.get())
+                    .map_err(|source| ResponsesError::InvalidPayload {
+                        source,
+                        event: text.get().to_owned(),
+                    })?
+                    .0;
+                let item = &*assistant_items
+                    .entry(index)
+                    .or_insert_with(|| AssistantStreamItem {
+                        item_id: Some(ResponseItemId::with_suffix(
+                            "msg",
+                            nanocode_platform::Uuid::new_v5(&item_namespace, &index.to_be_bytes()),
+                        )),
+                        phase: None,
+                    });
+                let emitted = assistant_texts.entry(index).or_default();
+                emitted.0 = item.phase;
+                emitted.1.push_str(&text);
+                events.emit(
+                    AgentEventKind::AssistantMessage,
+                    AssistantMessage {
+                        model_call_index: call_index,
+                        item_id: item.item_id.as_deref(),
+                        phase: item.phase,
+                        text: Cow::Borrowed(&emitted.1),
+                    },
+                )?;
+            }
             StreamEvent::ItemDone {
                 output_index,
                 mut item,
             } => {
-                normalize_stream_item(
-                    &mut item,
-                    output_index.unwrap_or(done_items.len() as u32),
-                    &item_namespace,
-                    &mut assistant_items,
-                );
-                emit_assistant_message(events, call_index, &item)?;
+                let index = output_index.unwrap_or(done_items.len() as u32);
+                normalize_stream_item(&mut item, index, &item_namespace, &mut assistant_items);
+                if !emitted_message(&item, assistant_texts.remove(&index)) {
+                    emit_assistant_message(events, call_index, &item)?;
+                }
                 done_items.push(item);
             }
             StreamEvent::Completed(response) => {
@@ -916,7 +957,9 @@ where
                         &item_namespace,
                         &mut assistant_items,
                     );
-                    if item.id().is_some_and(|id| !emitted_ids.contains(id)) {
+                    if item.id().is_some_and(|id| !emitted_ids.contains(id))
+                        && !emitted_message(item, assistant_texts.remove(&(index as u32)))
+                    {
                         emit_assistant_message(events, call_index, item)?;
                     }
                 }
@@ -1124,6 +1167,21 @@ fn normalize_stream_item(
             *phase = stream.phase;
         }
     }
+}
+
+fn emitted_message(item: &ResponseItem, emitted: Option<(Option<MessagePhase>, String)>) -> bool {
+    matches!(
+        (item, emitted),
+        (
+            ResponseItem::Message {
+                role: MessageRole::Assistant,
+                content,
+                phase,
+                ..
+            },
+            Some((emitted_phase, text)),
+        ) if *phase == emitted_phase && output_text(content) == text
+    )
 }
 
 fn emit_assistant_message(

@@ -41,5 +41,5 @@ default-features = false
 version = "1.0.220"
 default-features = false
 
-[dependencies.zmij]
-version = "1.0"
+[dependencies.nanocode-sys]
+path = "../../core/sys"

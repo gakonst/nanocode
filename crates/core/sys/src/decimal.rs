@@ -1,3 +1,4 @@
+use std::ops::Range;
 use std::str;
 
 const RADIX: u32 = 10;
@@ -56,9 +57,36 @@ impl<const BYTES: usize> DecimalText<BYTES> {
     }
 
     #[inline]
+    pub const fn put_point(&mut self, at: usize) {
+        self.bytes[at] = b'.';
+    }
+
+    #[inline]
+    pub const fn put_exponent(&mut self, at: usize, negative: bool) {
+        self.bytes[at] = b'e';
+        self.bytes[at + 1] = if negative { b'-' } else { b'+' };
+    }
+
+    #[inline]
+    pub fn put_zeros(&mut self, range: Range<usize>) {
+        self.bytes[range].fill(b'0');
+    }
+
+    #[inline]
+    pub fn copy_within(&mut self, source: Range<usize>, dest: usize) {
+        self.bytes.copy_within(source, dest);
+    }
+
+    #[inline]
     #[must_use]
     pub fn text(&self, start: usize) -> &str {
-        let ascii = &self.bytes[start..];
+        self.span(start, BYTES)
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn span(&self, start: usize, end: usize) -> &str {
+        let ascii = &self.bytes[start..end];
         unsafe { str::from_utf8_unchecked(ascii) }
     }
 }

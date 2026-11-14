@@ -435,6 +435,7 @@ mod iter;
 #[cfg(feature = "float_roundtrip")]
 mod lexical;
 mod number;
+mod float;
 mod read;
 
 #[cfg(feature = "raw_value")]

@@ -1413,6 +1413,13 @@ impl Heap {
         if a == b {
             return true;
         }
+        if let (Some(x), Some(y)) = (self.flat_fast(a), self.flat_fast(b)) {
+            return match (x, y) {
+                (StrView::Latin1(p), StrView::Latin1(q))
+                | (StrView::Utf16(p), StrView::Utf16(q)) => p == q,
+                _ => false,
+            };
+        }
         let a = self.resolve_str(a);
         let b = self.resolve_str(b);
         if a == b {

@@ -117,6 +117,11 @@ pub fn declares_hand(definition: &ToolDefinition) -> bool {
 }
 
 #[must_use]
+pub fn host_owned_name(name: &str) -> bool {
+    matches!(name, "exec" | "wait")
+}
+
+#[must_use]
 pub fn tool_not_available(name: &str) -> ToolOutput {
     let message = format!(
         "TOOL_NOT_AVAILABLE: Tool \"{name}\" is not available in this Code Mode execution. Check ALL_TOOLS for callable names. A tool exposed directly by the host may need to be called through its direct tool entry instead."

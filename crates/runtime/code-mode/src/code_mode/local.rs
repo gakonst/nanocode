@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{
         Arc, LazyLock, Weak,
         atomic::{AtomicU64, Ordering},
@@ -18,7 +18,7 @@ use crate::{
     code_mode_description::normalize_identifier,
     embedded::{
         CodeModeHost, CodeModeHostError, EmbeddedToolMode, HandCalls, HostFuture, OwnedToolContext,
-        declares_hand, take_hand, tool_not_available,
+        declares_hand, host_owned_name, take_hand, tool_not_available,
     },
 };
 
@@ -120,7 +120,11 @@ impl LocalTools {
             (tool, definition)
         };
         Self {
-            tools: tools.into_iter().map(defined).collect(),
+            tools: tools
+                .into_iter()
+                .map(defined)
+                .filter(|(_, definition)| !host_owned_name(definition.name()))
+                .collect(),
             host: host_tools.iter().cloned().map(defined).collect(),
             hands,
         }
@@ -129,13 +133,17 @@ impl LocalTools {
 
 impl CodeModeToolset for LocalTools {
     fn nested_tool_metadata(&self) -> Vec<Value> {
+        let mut seen = HashSet::new();
         self.tools
             .iter()
+            .filter(|(_, definition)| seen.insert(normalize_identifier(definition.name())))
             .filter_map(|(_, definition)| {
                 let kind = match definition {
-                    ToolDefinition::Function { .. } => "function",
+                    ToolDefinition::Function { .. } | ToolDefinition::ToolSearch { .. } => {
+                        "function"
+                    }
                     ToolDefinition::Custom { .. } => "freeform",
-                    _ => return None,
+                    ToolDefinition::Namespace { .. } => return None,
                 };
                 let name = definition.name();
                 Some(json!({
@@ -182,6 +190,7 @@ impl CodeModeToolset for LocalTools {
         };
         let declared = found.is_some_and(|(_, definition)| declares_hand(definition));
         match take_hand(declared, input) {
+            Err(_) if found.is_none() => Box::pin(async move { tool_not_available(name) }),
             Err(output) => Box::pin(async move { output }),
             Ok((input, Some(hand))) if hand != here.as_ref() && !hands.here(&hand) => {
                 Box::pin(async move { hands.call(&hand, name, input, context).await })
@@ -227,7 +236,6 @@ fn find<'a>(
 ) -> Option<&'a (Arc<dyn Tool>, ToolDefinition)> {
     tools
         .iter()
-        .rev()
         .find(|(_, definition)| definition.name() == name)
 }
 
@@ -247,10 +255,14 @@ fn tool_input(
     input: Value,
 ) -> Result<ToolInput, ToolOutput> {
     match definition {
-        ToolDefinition::Function { .. } if !input.is_object() => Err(ToolOutput::error(format!(
-            "nested function tool {name} requires an object argument"
-        ))),
-        ToolDefinition::Function { .. } => to_raw_value(&input)
+        ToolDefinition::Function { .. } | ToolDefinition::ToolSearch { .. }
+            if !input.is_object() =>
+        {
+            Err(ToolOutput::error(format!(
+                "nested function tool {name} requires an object argument"
+            )))
+        }
+        ToolDefinition::Function { .. } | ToolDefinition::ToolSearch { .. } => to_raw_value(&input)
             .map(ToolInput::Function)
             .map_err(|error| ToolOutput::error(format!("failed to encode {name} input: {error}"))),
         ToolDefinition::Custom { .. } => match &input {

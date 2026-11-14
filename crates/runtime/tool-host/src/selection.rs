@@ -9,6 +9,7 @@ use crate::attachment::{
     AttachmentError, ProcessRouteStore, RemoteMode, RemoteRoute, RemoteRunnerCatalog, RunnerRouting,
 };
 use crate::{Tool, ToolDefinition};
+use nanocode_code_mode::embedded::host_owned_name;
 #[cfg(not(target_family = "wasm"))]
 use std::{any::Any, ffi::OsString, path::PathBuf};
 
@@ -1410,10 +1411,6 @@ pub(crate) fn normalized_public_tool_name(name: &str) -> std::borrow::Cow<'_, st
 
 pub fn normalize_public_tool_name(name: &str) -> String {
     crate::code_mode_description::normalize_identifier(name)
-}
-
-fn host_owned_name(name: &str) -> bool {
-    matches!(name, "exec" | "wait")
 }
 
 impl nanocode_tools::ToolCollection for Tools {

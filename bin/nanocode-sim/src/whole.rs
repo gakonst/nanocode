@@ -1,7 +1,8 @@
 use std::{cell::RefCell, collections::VecDeque, path::PathBuf, sync::Arc, time::Duration};
 
 use nanocode::{
-    ClaudeClient, Nanocode, PromptRequest, Thinking, Tools,
+    ClaudeClient, Nanocode, OpenAi, PromptRequest, Thinking, Tools,
+    codex::{CustomModel, Model, ResponsesTransport},
     durability::{MemoryStore, SessionStore, TurnStatus},
 };
 use nanocode_durability_core::KeyValueStore;
@@ -13,7 +14,7 @@ use crate::{
     httpd::{Connector, HttpFaults, HttpServer, WireMutation},
     network::{Network, NetworkFaults, Transport},
     rng::Rng,
-    server::{EFFECT_TOOL, final_text, root_prompt},
+    server::{Dialect, EFFECT_TOOL, final_text, root_prompt},
     store::{Mutation, SimKv},
     world::{World, WorldCounts},
 };
@@ -34,6 +35,10 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 const ENDPOINT: &str = "http://model.sim/v1";
 const MESSAGES_URL: &str = "http://model.sim/v1/messages";
+const API_KEY: &str = "sk-sim";
+const CODEX_MODEL: &str = "sim-model";
+const ABSENT_WORKSPACE: &str = "/nonexistent/nanocode-sim";
+const CODEX_WORKSPACE: &str = "nanocode-sim-codex";
 const EPOCHS_MAX: u64 = CRASHES_MAX + 1;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -64,6 +69,7 @@ pub enum WireKind {
     #[default]
     Transport,
     Http,
+    Codex,
 }
 
 impl WireKind {
@@ -71,6 +77,7 @@ impl WireKind {
         match name {
             "transport" => Some(Self::Transport),
             "http" => Some(Self::Http),
+            "codex" => Some(Self::Codex),
             _ => None,
         }
     }
@@ -79,6 +86,7 @@ impl WireKind {
         match self {
             Self::Transport => "transport",
             Self::Http => "http",
+            Self::Codex => "codex",
         }
     }
 }
@@ -107,6 +115,7 @@ impl Default for WholeOptions {
 enum Wire {
     Transport(Arc<Network>),
     Http(Arc<HttpServer>),
+    Codex(Arc<HttpServer>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -188,7 +197,7 @@ impl Shape {
             self.crashes.iter().map(|at| at / 1_000_000).collect::<Vec<_>>(),
             match self.wire {
                 WireKind::Transport => self.faults.calm(),
-                WireKind::Http => self.http_faults.calm(),
+                WireKind::Http | WireKind::Codex => self.http_faults.calm(),
             }
         )
     }
@@ -285,42 +294,66 @@ impl Durable {
     }
 }
 
-fn claude(wire: &Wire) -> Result<ClaudeClient, String> {
+fn http_client(server: &Arc<HttpServer>) -> Result<nanocode_http::Client, String> {
+    let builder = nanocode_http::Client::builder()
+        .no_proxy()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .default_headers(nanocode_http::accept_encoding(nanocode_http::header::HeaderMap::new()))
+        .connector(Connector(Arc::clone(server)));
+    let builder = match server.mutation() {
+        WireMutation::NoReadTimeout => builder,
+        _ => builder.read_timeout(IDLE_TIMEOUT),
+    };
+    builder.build().map_err(|error| format!("http client: {error}"))
+}
+
+fn workspace(wire: &Wire) -> Result<PathBuf, String> {
     match wire {
-        Wire::Transport(network) => Ok(ClaudeClient::messages_api(ENDPOINT, "sk-sim", CONNECT_TIMEOUT, IDLE_TIMEOUT)
-            .map_err(|error| format!("claude client: {error}"))?
-            .with_transport(Transport(Arc::clone(network)))),
-        Wire::Http(server) => {
-            let builder = nanocode_http::Client::builder()
-                .no_proxy()
-                .connect_timeout(CONNECT_TIMEOUT)
-                .default_headers(nanocode_http::accept_encoding(nanocode_http::header::HeaderMap::new()))
-                .connector(Connector(Arc::clone(server)));
-            let builder = match server.mutation() {
-                WireMutation::NoReadTimeout => builder,
-                _ => builder.read_timeout(IDLE_TIMEOUT),
-            };
-            let http = builder.build().map_err(|error| format!("http client: {error}"))?;
-            Ok(ClaudeClient::new(http, MESSAGES_URL, "sk-sim"))
+        Wire::Transport(_) | Wire::Http(_) => Ok(PathBuf::from(ABSENT_WORKSPACE)),
+        Wire::Codex(_) => {
+            let path = std::env::temp_dir().join(CODEX_WORKSPACE);
+            std::fs::create_dir_all(&path)
+                .map_err(|error| format!("create {}: {error}", path.display()))?;
+            Ok(path)
         }
     }
 }
 
 fn runtime(store: SessionStore, wire: &Wire, world: &Arc<World>) -> Result<Nanocode, String> {
-    let claude = claude(wire)?;
-    Nanocode::builder()
-        .claude(claude)
+    let builder = match wire {
+        Wire::Transport(network) => Nanocode::builder().claude(
+            ClaudeClient::messages_api(ENDPOINT, API_KEY, CONNECT_TIMEOUT, IDLE_TIMEOUT)
+                .map_err(|error| format!("claude client: {error}"))?
+                .with_transport(Transport(Arc::clone(network))),
+        ),
+        Wire::Http(server) => Nanocode::builder().claude(ClaudeClient::new(http_client(server)?, MESSAGES_URL, API_KEY)),
+        Wire::Codex(server) => Nanocode::builder()
+            .claude(ClaudeClient::new(http_client(server)?, MESSAGES_URL, API_KEY))
+            .openai(
+            OpenAi::builder(API_KEY)
+                .model(Model::Custom(CustomModel::new(CODEX_MODEL)))
+                .transport(ResponsesTransport::Https)
+                .api_base_url(ENDPOINT)
+                .http_client(http_client(server)?)
+                .build()
+                .map_err(|error| format!("openai client: {error}"))?,
+        ),
+    };
+    builder
         .tools(tools(world))
         .runner_management(false)
         .thinking(Thinking::Low)
-        .workspace(PathBuf::from("/nonexistent/nanocode-sim"))
+        .workspace(workspace(wire)?)
         .durability(store)
         .build()
         .map_err(|error| format!("runtime build: {error}"))
 }
 
-fn session_of(root: u64) -> String {
-    format!("sim-root-{root}")
+fn session_of(root: u64, wire: WireKind) -> String {
+    match wire {
+        WireKind::Transport | WireKind::Http => format!("sim-root-{root}"),
+        WireKind::Codex => format!("00000000-0000-7000-8000-{root:012x}"),
+    }
 }
 
 fn label_of(root: u64) -> String {
@@ -337,8 +370,9 @@ async fn open_root(
     root: u64,
     epoch: u64,
     world: &World,
+    wire: WireKind,
 ) -> Result<nanocode::Agent, String> {
-    let session = session_of(root);
+    let session = session_of(root, wire);
     if epoch > 0 {
         match runtime.open_session(&session).await {
             Ok((agent, _events)) => {
@@ -351,14 +385,27 @@ async fn open_root(
             Err(error) => world.trace(&format!("open {session} failed: {error}")),
         }
     }
-    let (agent, _events) = runtime
-        .spawn()
-        .backend::<nanocode::Claude>()
-        .model(nanocode::ClaudeModel::Haiku55)
-        .session_id(session.clone())
-        .build()
-        .await
-        .map_err(|error| format!("spawn {session}: {error}"))?;
+    let spawned = match wire {
+        WireKind::Transport | WireKind::Http => {
+            runtime
+                .spawn()
+                .backend::<nanocode::Claude>()
+                .model(nanocode::ClaudeModel::Haiku55)
+                .session_id(session.clone())
+                .build()
+                .await
+        }
+        WireKind::Codex => {
+            runtime
+                .spawn()
+                .backend::<nanocode::Codex>()
+                .model(Model::Custom(CustomModel::new(CODEX_MODEL)))
+                .session_id(session.clone())
+                .build()
+                .await
+        }
+    };
+    let (agent, _events) = spawned.map_err(|error| format!("spawn {session}: {error}"))?;
     world.trace(&format!("spawned {session}"));
     Ok(agent)
 }
@@ -424,7 +471,7 @@ async fn run_root(
     world: &World,
     client: &Client,
 ) -> Result<nanocode::Agent, String> {
-    let agent = open_root(runtime, root, epoch, world).await?;
+    let agent = open_root(runtime, root, epoch, world, shape.wire).await?;
     let label = label_of(root);
     for turn in 0..shape.turns {
         if world.acked(&label).contains_key(&turn)
@@ -462,7 +509,7 @@ async fn settle(
 ) -> Result<(), String> {
     let started = nanocode_platform::now();
     for root in 0..shape.roots {
-        let session = session_of(root);
+        let session = session_of(root, shape.wire);
         loop {
             match runtime.settle(&session).await {
                 Ok(true) => break,
@@ -511,7 +558,7 @@ async fn stop(
         return Ok(());
     };
     for root in 0..shape.roots {
-        let session = session_of(root);
+        let session = session_of(root, shape.wire);
         world.trace(&format!("{:?} {session}", shape.stop));
         match shape.stop {
             Stop::Cancel => control.cancel_all(&session).await,
@@ -531,7 +578,7 @@ async fn settled(runtime: &Nanocode, shape: &Shape, world: &World) -> Result<(),
         return Ok(());
     };
     for root in 0..shape.roots {
-        let session = session_of(root);
+        let session = session_of(root, shape.wire);
         let listed = control
             .agents(&session)
             .await
@@ -611,7 +658,8 @@ pub fn simulate(seed: u64, options: WholeOptions) -> WholeOutcome {
     let world = World::new(Arc::clone(&clock), options.verbose);
     let wire = match shape.wire {
         WireKind::Transport => Wire::Transport(Arc::new(Network::new(seed, Arc::clone(&world), shape.faults, options.mutation))),
-        WireKind::Http => Wire::Http(Arc::new(HttpServer::new(seed, Arc::clone(&world), shape.http_faults, options.mutation, IDLE_TIMEOUT))),
+        WireKind::Http => Wire::Http(Arc::new(HttpServer::new(seed, Arc::clone(&world), shape.http_faults, options.mutation, IDLE_TIMEOUT, Dialect::Messages))),
+        WireKind::Codex => Wire::Codex(Arc::new(HttpServer::new(seed, Arc::clone(&world), shape.http_faults, options.mutation, IDLE_TIMEOUT, Dialect::Responses))),
     };
     let durable = Durable {
         kind: shape.store,

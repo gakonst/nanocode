@@ -17,7 +17,7 @@ use nanocode_sync::Slot;
 
 use crate::{
     rng::{PPM, Rng},
-    server::{ModelServer, Reply},
+    server::{Dialect, ModelServer, Reply},
     socket::{self, ServerSide},
     world::World,
 };
@@ -70,6 +70,10 @@ const HOSTS: [&str; 2] = ["model.sim", "mirror.sim"];
 const OVERSIZED_HEADER_BYTES: usize = 8_000;
 const REQUEST_BYTES_MAX: usize = 64 << 20;
 const READ_BYTES: usize = 16 * 1024;
+const MESSAGES_PATH: &str = "/v1/messages";
+const RESPONSES_PATH: &str = "/v1/responses";
+const API_KEY: &str = "sk-sim";
+const BEARER: &str = "Bearer sk-sim";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WireMutation {
@@ -249,6 +253,7 @@ pub struct HttpServer {
     connections: AtomicU64,
     dirty: Slot<&'static str>,
     read_timeout: Duration,
+    dialect: Dialect,
 }
 
 impl HttpServer {
@@ -258,6 +263,7 @@ impl HttpServer {
         faults: HttpFaults,
         mutation: WireMutation,
         read_timeout: Duration,
+        dialect: Dialect,
     ) -> Self {
         Self {
             seed,
@@ -273,6 +279,7 @@ impl HttpServer {
             connections: AtomicU64::new(0),
             dirty: Slot::new(None),
             read_timeout,
+            dialect,
         }
     }
 
@@ -524,7 +531,7 @@ impl HttpServer {
         if head.method != nanocode_http::Method::POST {
             return Some(format!("connection {number} got a {} request", head.method));
         }
-        if !head.target.starts_with("/v1/messages") {
+        if !head.target.starts_with(self.path()) {
             return Some(format!(
                 "connection {number} got a request for {}",
                 head.target
@@ -537,14 +544,26 @@ impl HttpServer {
                 header("host")
             ));
         }
-        if header("x-api-key") != Some("sk-sim") {
-            return Some(format!(
-                "connection {number} got x-api-key {:?}",
-                header("x-api-key")
-            ));
-        }
-        if header("anthropic-version").is_none() {
-            return Some(format!("connection {number} got no anthropic-version"));
+        match self.dialect {
+            Dialect::Messages => {
+                if header("x-api-key") != Some(API_KEY) {
+                    return Some(format!(
+                        "connection {number} got x-api-key {:?}",
+                        header("x-api-key")
+                    ));
+                }
+                if header("anthropic-version").is_none() {
+                    return Some(format!("connection {number} got no anthropic-version"));
+                }
+            }
+            Dialect::Responses => {
+                if header("authorization") != Some(BEARER) {
+                    return Some(format!(
+                        "connection {number} got authorization {:?}",
+                        header("authorization")
+                    ));
+                }
+            }
         }
         if header("content-encoding").is_some() {
             return Some(format!(
@@ -555,15 +574,22 @@ impl HttpServer {
         None
     }
 
+    const fn path(&self) -> &'static str {
+        match self.dialect {
+            Dialect::Messages => MESSAGES_PATH,
+            Dialect::Responses => RESPONSES_PATH,
+        }
+    }
+
     fn respond(&self, body: &[u8], duplicate: bool) -> Result<Reply, String> {
         let body = std::str::from_utf8(body)
             .map_err(|error| format!("a request body that is not UTF-8: {error}"))?;
         if duplicate {
             self.world.count(|counts| counts.faults += 1);
             self.world.trace("http duplicate processing");
-            drop(self.model.respond(body));
+            drop(self.model.respond(body, self.dialect));
         }
-        self.model.respond(body)
+        self.model.respond(body, self.dialect)
     }
 }
 
@@ -665,7 +691,7 @@ impl HttpServer {
                 return None;
             }
             Fate::Status(status) => status_reply(self, status),
-            Fate::Redirect(status, to) => redirect_reply(status, to, hop),
+            Fate::Redirect(status, to) => redirect_reply(status, to, self.path(), hop),
             Fate::Answer { duplicate, .. } => {
                 let reply = self.respond(&incoming.body, duplicate);
                 answer(self, side, fate, reply).await
@@ -726,11 +752,11 @@ fn status_reply(server: &HttpServer, status: u16) -> Next {
     Next::Write(bytes, Previous::Complete, length)
 }
 
-fn redirect_reply(status: u16, to: &str, hop: u64) -> Next {
+fn redirect_reply(status: u16, to: &str, path: &str, hop: u64) -> Next {
     let mut headers = HeaderMap::new();
     headers.insert(
         "location",
-        HeaderValue::from_str(&format!("http://{to}/v1/messages?hop={}", hop + 1))
+        HeaderValue::from_str(&format!("http://{to}{path}?hop={}", hop + 1))
             .expect("a simulated location is a valid header"),
     );
     headers.insert("content-length", HeaderValue::from(0));

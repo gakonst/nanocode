@@ -3,9 +3,16 @@ use std::{collections::BTreeSet, sync::Arc};
 use serde_json::{Value, json};
 
 use crate::{
+    responses,
     rng::{FNV_OFFSET, Rng, fnv},
     world::World,
 };
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Dialect {
+    Messages,
+    Responses,
+}
 
 pub const ROOT_MARK: &str = "SIMROOT";
 pub const CHILD_MARK: &str = "SIMCHILD";
@@ -406,19 +413,23 @@ impl ModelServer {
         }
     }
 
-    pub fn respond(&self, body: &str) -> Result<Reply, String> {
+    pub fn respond(&self, body: &str, dialect: Dialect) -> Result<Reply, String> {
         let request: Value =
             serde_json::from_str(body).map_err(|error| format!("unparsable request: {error}"))?;
         let model = request
             .get("model")
             .and_then(Value::as_str)
-            .unwrap_or("claude")
+            .ok_or("a request without a model")?
             .to_owned();
-        let mut messages = request
-            .get("messages")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
+        let tools = responses::Tools::of(&request);
+        let mut messages = match dialect {
+            Dialect::Messages => request
+                .get("messages")
+                .and_then(Value::as_array)
+                .cloned()
+                .ok_or("a Messages request without messages")?,
+            Dialect::Responses => responses::messages(&request, &tools)?,
+        };
         if self.tool_result_twice {
             duplicate_first_tool_result(&mut messages);
         }
@@ -440,10 +451,11 @@ impl ModelServer {
             conversation.steps,
             canonical(&message)
         ));
-        Ok(Reply {
-            body: events(&model, &id, &block, delta, stop),
-            label,
-        })
+        let body = match dialect {
+            Dialect::Messages => events(&model, &id, &block, delta, stop),
+            Dialect::Responses => responses::events(&model, &id, &message, &tools)?,
+        };
+        Ok(Reply { body, label })
     }
 
     fn decide(&self, conversation: &Conversation, id: &str) -> (Value, Option<Value>, &'static str, Value) {

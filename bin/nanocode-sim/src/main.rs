@@ -19,6 +19,7 @@ mod whole;
 mod workload;
 mod world;
 mod network;
+mod responses;
 mod server;
 mod websocket;
 
@@ -62,7 +63,7 @@ type Caught = BTreeMap<Invariant, (u64, u64, (u64, u64))>;
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: nanocode-sim --tidy | (--seed S | --seeds A..B) [--scenario store|agents|turns|runtime|websocket] [--ops N] [--twice] [--mutation {}] [--records content|slots] [--verbose]\n       turns: [--mutation {}] [--without {}]... [--live-seqs temporary|floor|gap|reuse] [--calm] [--policy reference|turnlog] [--row-limit BYTES] [--long TURNS] [--snapshot-ratio K] [--retain TURNS]\n       runtime: [--store memory|kv] [--calm] [--wire transport|http] [--mutation {}]\n       websocket: [--mutation {}]",
+        "usage: nanocode-sim --tidy | (--seed S | --seeds A..B) [--scenario store|agents|turns|runtime|websocket] [--ops N] [--twice] [--mutation {}] [--records content|slots] [--verbose]\n       turns: [--mutation {}] [--without {}]... [--live-seqs temporary|floor|gap|reuse] [--calm] [--policy reference|turnlog] [--row-limit BYTES] [--long TURNS] [--snapshot-ratio K] [--retain TURNS]\n       runtime: [--store memory|kv] [--calm] [--wire transport|http|codex] [--mutation {}]\n       websocket: [--mutation {}]",
         Mutation::names(),
         TurnMutation::names(),
         onelog::PROTECTIONS.join("|"),

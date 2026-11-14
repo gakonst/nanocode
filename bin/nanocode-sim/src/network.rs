@@ -8,7 +8,7 @@ use nanocode_sync::Slot;
 use crate::{
     rng::{PPM, Rng},
     httpd::WireMutation,
-    server::ModelServer,
+    server::{Dialect, ModelServer},
     world::World,
 };
 
@@ -172,7 +172,7 @@ impl Network {
             }
             Fate::Lost => {
                 self.world.count(|counts| counts.faults += 1);
-                let reply = self.server.respond(&request.body);
+                let reply = self.server.respond(&request.body, Dialect::Messages);
                 self.world.trace(&format!(
                     "net lost response to {}",
                     reply.as_ref().map_or("?", |reply| reply.label.as_str())
@@ -214,11 +214,11 @@ impl Network {
         if duplicate {
             self.world.count(|counts| counts.faults += 1);
             self.world.trace("net duplicate delivery");
-            drop(self.server.respond(&request.body));
+            drop(self.server.respond(&request.body, Dialect::Messages));
         }
         let reply = self
             .server
-            .respond(&request.body)
+            .respond(&request.body, Dialect::Messages)
             .map_err(|error| HttpError::Transport {
                 detail: format!("sim: the model refused the request: {error}"),
                 retryable: false,

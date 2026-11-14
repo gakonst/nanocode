@@ -15,7 +15,7 @@ use nanocode_websocket::{
 };
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, oneshot};
-use tokio::time::timeout;
+use nanocode_platform::timeout;
 
 use crate::client::{
     EncodedRequest, OpenAiAuthSnapshot, ResponsesError,

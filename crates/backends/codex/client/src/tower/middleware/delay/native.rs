@@ -21,6 +21,6 @@ impl RetryDelay {
     }
 
     pub(crate) fn wait(&self, _session_id: String, duration: Duration) -> RetryFuture {
-        Box::pin(tokio::time::sleep(duration))
+        Box::pin(nanocode_platform::sleep(duration))
     }
 }

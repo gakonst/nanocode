@@ -62,10 +62,6 @@ pub const DIFF_PREVIEW_LINES: usize = 40;
 
 pub enum AppEvent {
     Reload,
-    Agent {
-        generation: u64,
-        event: AgentEvent,
-    },
     TurnStarted {
         generation: u64,
         control: TurnControl,
@@ -147,7 +143,6 @@ impl AppEvent {
     const fn kind(&self) -> &'static str {
         match self {
             Self::Reload => "reload",
-            Self::Agent { .. } => "agent",
             Self::TurnStarted { .. } => "turn_started",
             Self::RoutedTurn { .. } => "routed_turn",
             Self::Files(_) => "files",
@@ -262,6 +257,7 @@ pub struct Launch {
 pub struct App {
     pub host: Host,
     pub agent: Option<Agent>,
+    pub events: Option<(u64, AgentEvents)>,
     pub generation: u64,
     pub model: ModelSelection,
     pub route: Route,
@@ -336,6 +332,7 @@ pub async fn run(launch: Launch, mut terminal: TerminalSession) -> Result<()> {
     let mut app = App {
         host: launch.host.clone(),
         agent: None,
+        events: None,
         generation: 0,
         model: launch.model.clone(),
         route: launch.route,
@@ -476,11 +473,11 @@ pub async fn run(launch: Launch, mut terminal: TerminalSession) -> Result<()> {
         }
     }
     if app.reload && outcome.is_ok() {
+        while let Some((generation, event)) = app.next_buffered_event() {
+            app.generated_event(generation, &event);
+        }
         while let Ok(event) = rx.try_recv() {
             match event {
-                AppEvent::Agent { generation, event } if generation == app.generation => {
-                    app.agent_event(&event);
-                }
                 AppEvent::SteerSent { .. } => {
                     app.handle_app(event);
                 }
@@ -693,6 +690,13 @@ fn forward_subagents(mut updates: nanocode::SubagentUpdates, tx: UnboundedSender
     });
 }
 
+async fn next_agent_event(events: &mut Option<(u64, AgentEvents)>) -> Option<(u64, AgentEvent)> {
+    match events {
+        Some((generation, events)) => events.recv().await.map(|event| (*generation, event)),
+        None => std::future::pending().await,
+    }
+}
+
 impl App {
     pub fn session_id(&self) -> Option<String> {
         self.agent
@@ -820,6 +824,33 @@ impl App {
                         }
                         Some(Err(error)) => return Err(error.into()),
                         None => break,
+                    }
+                }
+                event = next_agent_event(&mut self.events) => {
+                    let Some((generation, event)) = event else {
+                        self.events = None;
+                        continue;
+                    };
+                    let until = scheduler.next_frame_at(Instant::now());
+                    let mut redraw = self.generated_event(generation, &event);
+                    while !self.quit
+                        && Instant::now() < until
+                        && let Some((generation, event)) = self.next_buffered_event()
+                    {
+                        redraw = redraw.max(self.generated_event(generation, &event));
+                    }
+                    match redraw {
+                        Redraw::Immediate => {
+                            metrics.stream();
+                            dirty = true;
+                            scheduler.request_immediate(Instant::now());
+                        }
+                        Redraw::Streaming => {
+                            metrics.stream();
+                            dirty = true;
+                            scheduler.request_streaming(Instant::now());
+                        }
+                        Redraw::None => {}
                     }
                 }
                 event = rx.recv() => {
@@ -950,13 +981,6 @@ impl App {
             AppEvent::Reload => {
                 self.request_reload(false);
                 Redraw::Immediate
-            }
-            AppEvent::Agent { generation, event } => {
-                if generation == self.generation {
-                    self.agent_event(&event)
-                } else {
-                    Redraw::None
-                }
             }
             AppEvent::TurnStarted {
                 generation,
@@ -1286,16 +1310,7 @@ impl App {
         self.tier = ready.tier;
         self.turn = TurnState::Idle;
         self.awaiting_terminal = false;
-        let generation = self.generation;
-        let tx = self.tx.clone();
-        let mut events = ready.events;
-        nanocode_platform::spawn_task(async move {
-            while let Some(event) = events.recv().await {
-                if tx.send(AppEvent::Agent { generation, event }).is_err() {
-                    break;
-                }
-            }
-        });
+        self.events = Some((self.generation, ready.events));
         self.agent = Some(ready.agent);
         if let Some(side) = self.reload_side.take() {
             self.restore_side(side);
@@ -1430,6 +1445,19 @@ impl App {
         self.composer.set_text(restored.join("\n\n"));
     }
 
+    fn next_buffered_event(&mut self) -> Option<(u64, AgentEvent)> {
+        let (generation, events) = self.events.as_mut()?;
+        events.try_recv().map(|event| (*generation, event))
+    }
+
+    fn generated_event(&mut self, generation: u64, event: &AgentEvent) -> Redraw {
+        if generation == self.generation {
+            self.agent_event(event)
+        } else {
+            Redraw::None
+        }
+    }
+
     fn agent_event(&mut self, event: &AgentEvent) -> Redraw {
         let session_id = self.agent.as_ref().map(Agent::session_id);
         self.spans.event(event, session_id);
@@ -1441,6 +1469,7 @@ impl App {
         let shown = self.focus.and_then(|id| self.views.get(&id)).is_none();
         let redraw = if mapped.accepted.is_some()
             || event.kind == AgentEventKind::RunStarted
+            || event.kind == AgentEventKind::AssistantMessage
             || event.kind.is_terminal()
         {
             Redraw::Immediate

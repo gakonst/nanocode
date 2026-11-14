@@ -388,6 +388,13 @@ enum StreamEvent<'a> {
 }
 
 impl StreamEvent<'_> {
+    const fn is_delta(&self) -> bool {
+        matches!(
+            self,
+            Self::TextDelta { .. } | Self::ReasoningDelta { .. } | Self::ToolInputDelta { .. }
+        )
+    }
+
     const fn is_output(&self) -> bool {
         matches!(
             self,
@@ -723,6 +730,13 @@ where
     let events = &observer.events;
 
     loop {
+        #[cfg(not(target_family = "wasm"))]
+        {
+            if !tokio::task::coop::has_budget_remaining() {
+                flush_display_deltas(events, &mut timing)?;
+            }
+            tokio::task::coop::consume_budget().await;
+        }
         let (received, started_ns) = match source.try_next_text() {
             Ok(Some(received)) => (received, monotonic_now_ns()),
             Ok(None) => {
@@ -748,6 +762,9 @@ where
                 return Err(error.into());
             }
         };
+        if !matches!(&event.decoded, Ok((decoded, _)) if decoded.is_delta()) {
+            flush_display_deltas(events, &mut timing)?;
+        }
         let (event, published) =
             match publish_received(&context, &received, event, &mut timing).await {
                 Ok(published) => published,

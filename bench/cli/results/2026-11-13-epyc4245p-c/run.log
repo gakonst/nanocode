@@ -1,0 +1,80 @@
+2026-11-13T23:26:02Z start tui50k (load 1.01)
+netguard: unprivileged user namespaces unavailable, using sudo unshare --net
+{"h":"fx","rate":50000,"s":0,"secs":"0.0","err":"Error: FX_BIN is not set; run tools/install.sh or see README.md for the binary each lane needs\n    at required (file:///home/ubuntu/bench/bench/cli/harness/common.mjs:20:21)\n    at Object.fx (file:///"}
+{"h":"pi","rate":50000,"s":0,"secs":"0.0","err":"Error: PI_CLI is not set; run tools/install.sh or see README.md for the binary each lane needs\n    at required (file:///home/ubuntu/bench/bench/cli/harness/common.mjs:20:21)\n    at Object.pi (file:///"}
+{"h":"nc","rate":50000,"s":0,"secs":"10.3","p50":"3.18","p99":"8.48","cpu":"2997","rss":"58","missing":0}
+{"h":"nclite","rate":50000,"s":0,"secs":"0.0","err":"tui parse: ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/lib/python3.12/subprocess.py\", line 1026, in __init__\n    self"}
+{"h":"claude","rate":50000,"s":0,"secs":"0.0","err":"Error: CLAUDE_BIN is not set; run tools/install.sh or see README.md for the binary each lane needs\n    at required (file:///home/ubuntu/bench/bench/cli/harness/common.mjs:20:21)\n    at Object.claude ("}
+{"h":"codex","rate":50000,"s":0,"secs":"0.0","err":"Error: CODEX_BIN is not set; run tools/install.sh or see README.md for the binary each lane needs\n    at required (file:///home/ubuntu/bench/bench/cli/harness/common.mjs:20:21)\n    at Object.codex (fi"}
+{"h":"opencode","rate":50000,"s":0,"secs":"0.0","err":"Error: OPENCODE_BIN is not set; run tools/install.sh or see README.md for the binary each lane needs\n    at required (file:///home/ubuntu/bench/bench/cli/harness/common.mjs:20:21)\n    at Object.openco"}
+{"h":"pi","rate":50000,"s":1,"secs":"0.0","err":"Error: PI_CLI is not set; run tools/install.sh or see README.md for the binary each lane needs\n    at required (file:///home/ubuntu/bench/bench/cli/harness/common.mjs:20:21)\n    at Object.pi (file:///"}
+{"h":"nc","rate":50000,"s":1,"secs":"9.8","p50":"2.95","p99":"8.48","cpu":"2965","rss":"48","missing":0}
+{"h":"nclite","rate":50000,"s":1,"secs":"0.0","err":"tui parse: ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/lib/python3.12/subprocess.py\", line 1026, in __init__\n    self"}
+{"h":"claude","rate":50000,"s":1,"secs":"0.0","err":"Error: CLAUDE_BIN is not set; run tools/install.sh or see README.md for the binary each lane needs\n    at required (file:///home/ubuntu/bench/bench/cli/harness/common.mjs:20:21)\n    at Object.claude ("}
+{"h":"codex","rate":50000,"s":1,"secs":"0.0","err":"Error: CODEX_BIN is not set; run tools/install.sh or see README.md for the binary each lane needs\n    at required (file:///home/ubuntu/bench/bench/cli/harness/common.mjs:20:21)\n    at Object.codex (fi"}
+{"h":"opencode","rate":50000,"s":1,"secs":"0.0","err":"Error: OPENCODE_BIN is not set; run tools/install.sh or see README.md for the binary each lane needs\n    at required (file:///home/ubuntu/bench/bench/cli/harness/common.mjs:20:21)\n    at Object.openco"}
+{"h":"fx","rate":50000,"s":1,"secs":"0.0","err":"Error: FX_BIN is not set; run tools/install.sh or see README.md for the binary each lane needs\n    at required (file:///home/ubuntu/bench/bench/cli/harness/common.mjs:20:21)\n    at Object.fx (file:///"}
+{"h":"nc","rate":50000,"s":2,"secs":"9.8","p50":"2.41","p99":"8.46","cpu":"2973","rss":"48","missing":0}
+{"h":"nclite","rate":50000,"s":2,"secs":"0.0","err":"tui parse: ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/lib/python3.12/subprocess.py\", line 1026, in __init__\n    self"}
+{"h":"claude","rate":50000,"s":2,"secs":"0.0","err":"Error: CLAUDE_BIN is not set; run tools/install.sh or see README.md for the binary each lane needs\n    at required (file:///home/ubuntu/bench/bench/cli/harness/common.mjs:20:21)\n    at Object.claude ("}
+{"h":"codex","rate":50000,"s":2,"secs":"0.0","err":"Error: CODEX_BIN is not set; run tools/install.sh or see README.md for the binary each lane needs\n    at required (file:///home/ubuntu/bench/bench/cli/harness/common.mjs:20:21)\n    at Object.codex (fi"}
+{"h":"opencode","rate":50000,"s":2,"secs":"0.0","err":"Error: OPENCODE_BIN is not set; run tools/install.sh or see README.md for the binary each lane needs\n    at required (file:///home/ubuntu/bench/bench/cli/harness/common.mjs:20:21)\n    at Object.openco"}
+{"h":"fx","rate":50000,"s":2,"secs":"0.0","err":"Error: FX_BIN is not set; run tools/install.sh or see README.md for the binary each lane needs\n    at required (file:///home/ubuntu/bench/bench/cli/harness/common.mjs:20:21)\n    at Object.fx (file:///"}
+{"h":"pi","rate":50000,"s":2,"secs":"0.0","err":"Error: PI_CLI is not set; run tools/install.sh or see README.md for the binary each lane needs\n    at required (file:///home/ubuntu/bench/bench/cli/harness/common.mjs:20:21)\n    at Object.pi (file:///"}
+{"h":"nclite","rate":50000,"s":3,"secs":"0.0","err":"tui parse: ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/lib/python3.12/subprocess.py\", line 1026, in __init__\n    self"}
+{"h":"claude","rate":50000,"s":3,"secs":"0.0","err":"Error: CLAUDE_BIN is not set; run tools/install.sh or see README.md for the binary each lane needs\n    at required (file:///home/ubuntu/bench/bench/cli/harness/common.mjs:20:21)\n    at Object.claude ("}
+{"h":"codex","rate":50000,"s":3,"secs":"0.0","err":"Error: CODEX_BIN is not set; run tools/install.sh or see README.md for the binary each lane needs\n    at required (file:///home/ubuntu/bench/bench/cli/harness/common.mjs:20:21)\n    at Object.codex (fi"}
+{"h":"opencode","rate":50000,"s":3,"secs":"0.0","err":"Error: OPENCODE_BIN is not set; run tools/install.sh or see README.md for the binary each lane needs\n    at required (file:///home/ubuntu/bench/bench/cli/harness/common.mjs:20:21)\n    at Object.openco"}
+{"h":"fx","rate":50000,"s":3,"secs":"0.0","err":"Error: FX_BIN is not set; run tools/install.sh or see README.md for the binary each lane needs\n    at required (file:///home/ubuntu/bench/bench/cli/harness/common.mjs:20:21)\n    at Object.fx (file:///"}
+{"h":"pi","rate":50000,"s":3,"secs":"0.0","err":"Error: PI_CLI is not set; run tools/install.sh or see README.md for the binary each lane needs\n    at required (file:///home/ubuntu/bench/bench/cli/harness/common.mjs:20:21)\n    at Object.pi (file:///"}
+{"h":"nc","rate":50000,"s":3,"secs":"9.8","p50":"4.15","p99":"8.53","cpu":"2999","rss":"49","missing":0}
+{"h":"claude","rate":50000,"s":4,"secs":"0.0","err":"Error: CLAUDE_BIN is not set; run tools/install.sh or see README.md for the binary each lane needs\n    at required (file:///home/ubuntu/bench/bench/cli/harness/common.mjs:20:21)\n    at Object.claude ("}
+{"h":"codex","rate":50000,"s":4,"secs":"0.0","err":"Error: CODEX_BIN is not set; run tools/install.sh or see README.md for the binary each lane needs\n    at required (file:///home/ubuntu/bench/bench/cli/harness/common.mjs:20:21)\n    at Object.codex (fi"}
+{"h":"opencode","rate":50000,"s":4,"secs":"0.0","err":"Error: OPENCODE_BIN is not set; run tools/install.sh or see README.md for the binary each lane needs\n    at required (file:///home/ubuntu/bench/bench/cli/harness/common.mjs:20:21)\n    at Object.openco"}
+{"h":"fx","rate":50000,"s":4,"secs":"0.0","err":"Error: FX_BIN is not set; run tools/install.sh or see README.md for the binary each lane needs\n    at required (file:///home/ubuntu/bench/bench/cli/harness/common.mjs:20:21)\n    at Object.fx (file:///"}
+{"h":"pi","rate":50000,"s":4,"secs":"0.0","err":"Error: PI_CLI is not set; run tools/install.sh or see README.md for the binary each lane needs\n    at required (file:///home/ubuntu/bench/bench/cli/harness/common.mjs:20:21)\n    at Object.pi (file:///"}
+{"h":"nc","rate":50000,"s":4,"secs":"9.9","p50":"2.14","p99":"8.48","cpu":"2970","rss":"51","missing":0}
+{"h":"nclite","rate":50000,"s":4,"secs":"0.0","err":"tui parse: ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/lib/python3.12/subprocess.py\", line 1026, in __init__\n    self"}
+2026-11-13T23:26:52Z end rc=0
+2026-11-13T23:26:52Z report written
+2026-11-13T23:26:52Z done
+2026-11-13T23:59:52Z start tui50k (load 1.16)
+netguard: unprivileged user namespaces unavailable, using sudo unshare --net
+{"h":"fx","rate":50000,"s":0,"secs":"9.2","p50":"72.61","p99":"348.24","cpu":"6364","rss":"109","missing":0}
+{"h":"pi","rate":50000,"s":0,"secs":"11.1","p50":"2024.63","p99":"7712.49","cpu":"9909","rss":"350","missing":172809}
+{"h":"nc","rate":50000,"s":0,"secs":"9.8","p50":"4.12","p99":"8.51","cpu":"2983","rss":"49","missing":0}
+{"h":"nclite","rate":50000,"s":0,"secs":"269.0","p50":"0.02","p99":"0.04","cpu":"3682","rss":"25","missing":0}
+{"h":"claude","rate":50000,"s":0,"secs":"7.8","p50":"107.36","p99":"2437.46","cpu":"7675","rss":"560","missing":0}
+{"h":"codex","rate":50000,"s":0,"secs":"37.6","p50":"10816.59","p99":"21490.79","cpu":"42134","rss":"466","missing":77426}
+{"h":"opencode","rate":50000,"s":0,"secs":"15.3","p50":"1832.21","p99":"3696.84","cpu":"25436","rss":"1725","missing":0}
+{"h":"pi","rate":50000,"s":1,"secs":"11.3","p50":"2140.93","p99":"7931.52","cpu":"10163","rss":"354","missing":171555}
+{"h":"nc","rate":50000,"s":1,"secs":"9.8","p50":"1.80","p99":"8.45","cpu":"2983","rss":"49","missing":0}
+{"h":"nclite","rate":50000,"s":1,"secs":"268.4","p50":"0.02","p99":"0.04","cpu":"3747","rss":"25","missing":0}
+{"h":"claude","rate":50000,"s":1,"secs":"7.8","p50":"107.41","p99":"2426.44","cpu":"8051","rss":"519","missing":0}
+{"h":"codex","rate":50000,"s":1,"secs":"37.6","p50":"10736.83","p99":"21479.81","cpu":"42154","rss":"462","missing":77129}
+{"h":"opencode","rate":50000,"s":1,"secs":"15.1","p50":"1983.40","p99":"3383.88","cpu":"25030","rss":"1692","missing":0}
+{"h":"fx","rate":50000,"s":1,"secs":"9.1","p50":"72.73","p99":"348.36","cpu":"6382","rss":"110","missing":0}
+{"h":"nc","rate":50000,"s":2,"secs":"9.9","p50":"3.32","p99":"8.48","cpu":"2966","rss":"47","missing":0}
+{"h":"nclite","rate":50000,"s":2,"secs":"287.6","p50":"0.02","p99":"0.04","cpu":"3739","rss":"25","missing":0}
+{"h":"claude","rate":50000,"s":2,"secs":"7.8","p50":"107.03","p99":"2428.27","cpu":"8114","rss":"534","missing":0}
+{"h":"codex","rate":50000,"s":2,"secs":"37.7","p50":"1073.88","p99":"21549.92","cpu":"41966","rss":"469","missing":80095}
+{"h":"opencode","rate":50000,"s":2,"secs":"15.3","p50":"1864.21","p99":"3750.65","cpu":"25251","rss":"1686","missing":0}
+{"h":"fx","rate":50000,"s":2,"secs":"9.1","p50":"73.62","p99":"349.29","cpu":"6345","rss":"108","missing":0}
+{"h":"pi","rate":50000,"s":2,"secs":"11.4","p50":"2131.16","p99":"7954.13","cpu":"10171","rss":"328","missing":171959}
+{"h":"nclite","rate":50000,"s":3,"secs":"266.4","p50":"0.02","p99":"0.04","cpu":"3682","rss":"25","missing":0}
+{"h":"claude","rate":50000,"s":3,"secs":"7.8","p50":"106.49","p99":"2431.74","cpu":"8021","rss":"524","missing":0}
+{"h":"codex","rate":50000,"s":3,"secs":"37.5","p50":"10923.18","p99":"21516.64","cpu":"41892","rss":"469","missing":78558}
+{"h":"opencode","rate":50000,"s":3,"secs":"15.1","p50":"1758.98","p99":"3248.72","cpu":"24941","rss":"1653","missing":0}
+{"h":"fx","rate":50000,"s":3,"secs":"9.1","p50":"72.70","p99":"352.86","cpu":"6354","rss":"110","missing":0}
+{"h":"pi","rate":50000,"s":3,"secs":"11.3","p50":"2156.36","p99":"7923.42","cpu":"10149","rss":"340","missing":171899}
+{"h":"nc","rate":50000,"s":3,"secs":"9.8","p50":"4.16","p99":"8.51","cpu":"2990","rss":"48","missing":0}
+{"h":"claude","rate":50000,"s":4,"secs":"7.8","p50":"106.74","p99":"2432.47","cpu":"8368","rss":"526","missing":0}
+{"h":"codex","rate":50000,"s":4,"secs":"38.0","p50":"10798.36","p99":"21530.40","cpu":"42117","rss":"477","missing":79568}
+{"h":"opencode","rate":50000,"s":4,"secs":"15.6","p50":"1876.85","p99":"3819.76","cpu":"25613","rss":"1693","missing":0}
+{"h":"fx","rate":50000,"s":4,"secs":"9.2","p50":"72.84","p99":"349.50","cpu":"6391","rss":"112","missing":0}
+{"h":"pi","rate":50000,"s":4,"secs":"14.0","p50":"3308.67","p99":"9465.18","cpu":"12769","rss":"373","missing":161238}
+{"h":"nc","rate":50000,"s":4,"secs":"9.9","p50":"3.56","p99":"8.51","cpu":"2983","rss":"49","missing":0}
+{"h":"nclite","rate":50000,"s":4,"secs":"270.8","p50":"0.02","p99":"0.04","cpu":"3659","rss":"25","missing":0}
+2026-11-14T00:30:12Z end rc=0
+2026-11-14T00:30:12Z report written
+2026-11-14T00:30:12Z done

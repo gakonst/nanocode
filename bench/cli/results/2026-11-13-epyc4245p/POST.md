@@ -6,7 +6,7 @@ We ran seven terminal coding agents through the same scripted work on one AMD EP
 
 The CLIs: nc (nanocode master 4be51211a, built as releases are, with scripts/build-cli.sh: dist profile, no position-independent code, laid out by BOLT 19 from a training run), nc-lite (the same SDK cut down to what fx ships, at 7837aae16, lite profile, BOLT), Vercel fx 0.0.16, Pi 1.5.2, OpenCode 1.19.5, Claude Code 2.1.323 and Codex CLI 0.169.0. No lane talks to a real model: each points at a local fixture that streams a fixed reply, runs with its own empty HOME, inside a network namespace where only loopback works. Every number is a median with the sample count in parentheses. CPU and memory cover the CLI's whole process tree. The generated [REPORT.md](REPORT.md), the raw JSONL and [COMMANDS.md](COMMANDS.md) are next to this file.
 
-This run took 20 rounds (10 for idle, tool turns and fleets) where the 2026-11-12 run took 30, and 5 streaming samples per rate where we usually require 10, so the streaming rows are indicative. Cold-cache rows, the 240x70 sweep, the session store and nc's install size come from a second pass, below. The 50,000 tok/s sweep is still missing.
+This run took 20 rounds (10 for idle, tool turns and fleets) where the 2026-11-12 run took 30, and 5 streaming samples per rate where we usually require 10, so the streaming rows are indicative. Cold-cache rows, the 240x70 sweep, the session store and nc's install size come from a second pass, below. The 50,000 tok/s sweep comes from a third pass.
 
 ## Headline
 
@@ -47,7 +47,7 @@ The bundled python3 costs almost nothing until it runs: one 4 KB page of its 12,
 
 ## Second pass, 15:00 to 17:49 UTC: the rows left out above
 
-A second box of the same model (AMD EPYC 4245P) ran the suite again with nc at 223cb39ba, two commits after 4be51211a on this track: the trust store tells repeated root certificates apart by inode instead of resolving every path (18e5355b3, 800 `readlink` calls to 6 per start), and the paying proxy's certificate bundle is the system bundle file copied as-is rather than every root decoded and re-encoded (223cb39ba). The ring P-256 keys (f223811c7) came after this build. Raw data and REPORT.md are in [../2026-11-13-epyc4245p-b](../2026-11-13-epyc4245p-b/REPORT.md). The box's two-hour lifetime ran out during the 240x70 sweep (3 nc samples, 2 for the others) and before the 50,000 tok/s sweep, which is still missing. Cold-cache rows take 5 rounds.
+A second box of the same model (AMD EPYC 4245P) ran the suite again with nc at 223cb39ba, two commits after 4be51211a on this track: the trust store tells repeated root certificates apart by inode instead of resolving every path (18e5355b3, 800 `readlink` calls to 6 per start), and the paying proxy's certificate bundle is the system bundle file copied as-is rather than every root decoded and re-encoded (223cb39ba). The ring P-256 keys (f223811c7) came after this build. Raw data and REPORT.md are in [../2026-11-13-epyc4245p-b](../2026-11-13-epyc4245p-b/REPORT.md). The box's two-hour lifetime ran out during the 240x70 sweep (3 nc samples, 2 for the others) and before the 50,000 tok/s sweep, which a third box ran (below). Cold-cache rows take 5 rounds.
 
 | | nc | fx | Pi | OpenCode | Claude Code | Codex | nc-lite |
 |---|---:|---:|---:|---:|---:|---:|---:|
@@ -73,6 +73,17 @@ nc against the first pass (4be51211a, same CPU model, 20 rounds each):
 | 50 shell steps in one turn, ms | 33.1 (10) | 33.0 (10) |
 
 The two commits take a quarter of nc's CPU off both the first frame and the one-word reply, but neither wall time moves: the work they remove runs on the paying proxy's own thread, beside the main thread rather than in front of it. The one-word reply is still about 0.3 ms slower than the 2026-11-12 build (4.83 ms at 7837aae16), so the trust store was not the cause. CPU to the first frame (4.17 ms) is now within 4% of fx (4.02). nc's cold --version is 2 ms behind fx's because it pages in more binary (69.8 MB against 12.2 MB). Its cold first frame ties fx.
+
+A third box of the same model ran the 50,000 tok/s sweep (120x40 terminal) with nc at de77f76e8, current master including the exec exit change (2569897d6) and the ring proxy keys (f223811c7). nc's 10 samples combine two runs on that box; the other lanes have 5. Raw data: [../2026-11-13-epyc4245p-c](../2026-11-13-epyc4245p-c/REPORT.md).
+
+| Streaming TUI at 50,000 tok/s | nc | fx | Pi | OpenCode | Claude Code | Codex | nc-lite |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| On-screen lag p50, ms | 3.25 (10) | 72.7 (5) | 2,141 (5) | 1,864 (5) | 107 (5) | 10,798 (5) | 0.023 (5) |
+| On-screen lag p99, ms | 8.48 (10) | 349 (5) | 7,932 (5) | 3,697 (5) | 2,432 (5) | 21,517 (5) | 0.044 (5) |
+| CPU for the session, ms | 2,983 (10) | 6,364 (5) | 10,163 (5) | 25,251 (5) | 8,051 (5) | 42,117 (5) | 3,682 (5) |
+| Peak RSS, MB | 48.6 (10) | 110 (5) | 350 (5) | 1,692 (5) | 526 (5) | 469 (5) | 24.9 (5) |
+
+At 50,000 tok/s nc keeps every token on screen within 8.5 ms at p99 and uses less than half of fx's CPU; Pi drops tokens it never draws, and Codex falls more than 10 s behind the stream.
 
 ## Method notes
 

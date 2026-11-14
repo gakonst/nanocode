@@ -4,6 +4,7 @@ use std::{
     fs::{self, Metadata},
     io::{Read, Write},
     path::{Path, PathBuf},
+    thread,
     time::UNIX_EPOCH,
 };
 
@@ -126,6 +127,27 @@ fn clear_temporaries(directory: &Path) -> std::io::Result<()> {
         }
     }
     Ok(())
+}
+
+fn files(directory: &Path) -> Result<Vec<(String, Metadata, PathBuf)>, StoreError> {
+    let mut files = Vec::new();
+    let mut seen = HashSet::new();
+    for entry in fs::read_dir(directory).map_err(backend)? {
+        let entry = entry.map_err(backend)?;
+        let Some(key) = entry.file_name().to_str().and_then(key_of) else {
+            continue;
+        };
+        let metadata = match entry.metadata() {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(backend(error)),
+        };
+        if metadata.is_file() && seen.insert(key.clone()) {
+            files.push((key, metadata, entry.path()));
+        }
+    }
+    files.sort_by_cached_key(|(_, metadata, _)| Reverse(created(metadata)));
+    Ok(files)
 }
 
 fn created(metadata: &Metadata) -> std::time::SystemTime {
@@ -422,27 +444,6 @@ impl Sessions {
             .ok_or_else(|| backend("JSONL session file was not created"))
     }
 
-    fn files(&self) -> Result<Vec<(String, Metadata, PathBuf)>, StoreError> {
-        let mut files = Vec::new();
-        let mut seen = HashSet::new();
-        for entry in fs::read_dir(&self.directory).map_err(backend)? {
-            let entry = entry.map_err(backend)?;
-            let Some(key) = entry.file_name().to_str().and_then(key_of) else {
-                continue;
-            };
-            let metadata = match entry.metadata() {
-                Ok(metadata) => metadata,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(error) => return Err(backend(error)),
-            };
-            if metadata.is_file() && seen.insert(key.clone()) {
-                files.push((key, metadata, entry.path()));
-            }
-        }
-        files.sort_by_cached_key(|(_, metadata, _)| Reverse(created(metadata)));
-        Ok(files)
-    }
-
     pub(super) fn acquire_with(
         &mut self,
         id: &str,
@@ -720,7 +721,10 @@ impl Sessions {
         }
     }
 
-    fn listed(&mut self) -> Result<Vec<Listed>, StoreError> {
+    fn listed(
+        &mut self,
+        files: Vec<(String, Metadata, PathBuf)>,
+    ) -> Result<Vec<Listed>, StoreError> {
         let mut members = HashMap::<String, Vec<String>>::new();
         for (member, home) in &self.homes {
             members
@@ -729,7 +733,7 @@ impl Sessions {
                 .push(member.clone());
         }
         let mut listed = Vec::new();
-        for (key, file, path) in self.files()? {
+        for (key, file, path) in files {
             let mut colocated = members.remove(&key).unwrap_or_default();
             colocated.sort_unstable_by(|a, b| b.cmp(a));
             let mut revision = None;
@@ -769,8 +773,9 @@ impl Sessions {
     }
 
     pub(super) fn list_states(&mut self, limit: usize) -> Result<Vec<String>, StoreError> {
+        let files = files(&self.directory)?;
         Ok(self
-            .listed()?
+            .listed(files)?
             .into_iter()
             .take(limit)
             .map(|listed| listed.state_id)
@@ -778,8 +783,12 @@ impl Sessions {
     }
 
     pub(super) fn list_summaries(&mut self, limit: usize) -> Result<Vec<ListedState>, StoreError> {
-        self.summaries.refresh();
-        let listed = self.listed()?;
+        let summaries = &mut self.summaries;
+        let files = thread::scope(|scope| {
+            scope.spawn(|| summaries.refresh());
+            files(&self.directory)
+        })?;
+        let listed = self.listed(files)?;
         self.unknown.clear();
         self.release();
         let listed = listed
@@ -954,7 +963,7 @@ impl Sessions {
             after_bytes: 0,
             records_removed: 0,
         };
-        for (key, _, _) in self.files()? {
+        for (key, _, _) in files(&self.directory)? {
             let Some(journal) = self.existing(&key)? else {
                 continue;
             };

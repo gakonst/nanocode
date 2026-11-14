@@ -167,16 +167,16 @@ impl ModelConfig {
             Model::Luna => LUNA_SYSTEM_PROMPT,
             _ => ASTRA_SYSTEM_PROMPT,
         });
-        let base = if self.system_prompt.is_none() && matches!(self.model, Model::Kimi | Model::Mimo)
-        {
-            Cow::Owned(base.replacen(
-                "powered by Z.ai GLM-5.3",
-                &format!("powered by {}", self.model.as_str()),
-                1,
-            ))
-        } else {
-            Cow::Borrowed(base)
-        };
+        let base =
+            if self.system_prompt.is_none() && matches!(self.model, Model::Kimi | Model::Mimo) {
+                Cow::Owned(base.replacen(
+                    "powered by Z.ai GLM-5.3",
+                    &format!("powered by {}", self.model.as_str()),
+                    1,
+                ))
+            } else {
+                Cow::Borrowed(base)
+            };
         if self.system_prompt.is_none()
             && matches!(self.model, Model::Glm53 | Model::Kimi | Model::Mimo)
             && !self
@@ -206,7 +206,13 @@ impl ModelConfig {
             && !additional.is_empty()
         {
             instructions.push_str(additional);
+            if matches!(self.model, Model::Custom(_)) {
+                return instructions;
+            }
             instructions.push_str("\n\n");
+        }
+        if matches!(self.model, Model::Custom(_)) {
+            return instructions;
         }
         instructions.push_str(&format!(
             "<runtime_model_identity>\nmodel_id: {}\n\

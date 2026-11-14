@@ -91,6 +91,7 @@ pub(in crate::model) fn developer_context(config: &ModelConfig, tools: &Tools) -
                 code_mode_instructions(tools),
                 config.host_instructions()
             )
+            .trim_end()
             .into(),
         }],
     )

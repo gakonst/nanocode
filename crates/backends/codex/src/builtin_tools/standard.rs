@@ -95,13 +95,13 @@ fn exec_command_definition(name: &'static str) -> ToolDefinition {
                 },
                 "prefix_rule": {
                     "type": "array",
-                    "items": { "type": "string" },
-                    "description": "Reusable approval prefix for `cmd`, only with `sandbox_permissions: \"require_escalated\"`; for example [\"git\", \"pull\"]."
+                    "description": "Reusable approval prefix for `cmd`, only with `sandbox_permissions: \"require_escalated\"`; for example [\"git\", \"pull\"].",
+                    "items": { "type": "string" }
                 },
                 "sandbox_permissions": {
                     "type": "string",
-                    "enum": ["use_default", "require_escalated"],
-                    "description": "Per-command sandbox override. Defaults to `use_default`; use `require_escalated` for unsandboxed execution."
+                    "description": "Per-command sandbox override. Defaults to `use_default`; use `require_escalated` for unsandboxed execution.",
+                    "enum": ["use_default", "require_escalated"]
                 }
             },
             "required": ["cmd"],

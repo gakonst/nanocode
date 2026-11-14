@@ -606,13 +606,48 @@ pub(super) fn request_profile(
     tool_specs: Vec<ToolDefinition>,
     code_mode_tool_names: Vec<(String, String)>,
     system_prompt: &str,
+    model: Model,
 ) -> Result<RequestProfile> {
+    let tool_specs = match model {
+        Model::Custom(_) => unknown_model_tools(tool_specs),
+        _ => tool_specs,
+    };
     let prefix = shared_request_prefix(prompt_cache_key, tool_specs, system_prompt)
         .map_err(NanocodeError::SerializePromptPrefix)?;
     Ok(with_code_mode_tool_names(
         RequestProfile::new(session_id, prompt_cache_key, prefix),
         code_mode_tool_names,
     ))
+}
+
+fn unknown_model_tools(specs: Vec<ToolDefinition>) -> Vec<ToolDefinition> {
+    specs
+        .into_iter()
+        .filter(|spec| {
+            !matches!(
+                spec,
+                ToolDefinition::Function { name, .. } | ToolDefinition::Custom { name, .. }
+                    if matches!(&**name, "apply_patch" | "update_plan")
+            )
+        })
+        .map(|mut spec| {
+            if let ToolDefinition::Function {
+                name, parameters, ..
+            } = &mut spec
+                && &**name == "view_image"
+            {
+                let mut schema = parameters.as_value().clone();
+                if let Some(properties) = schema
+                    .get_mut("properties")
+                    .and_then(serde_json::Value::as_object_mut)
+                {
+                    properties.remove("detail");
+                }
+                *parameters = schema.into();
+            }
+            spec
+        })
+        .collect()
 }
 
 pub(super) fn attempt_factory(
@@ -633,6 +668,7 @@ pub(super) fn attempt_factory(
             tool_specs,
             code_mode_tool_names,
             system_prompt,
+            model,
         )?
         .with_thread_id(events.request_id()),
         events.clone(),

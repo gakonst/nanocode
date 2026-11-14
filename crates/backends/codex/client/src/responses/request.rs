@@ -6,7 +6,7 @@ use serde_json::value::{RawValue, to_raw_value};
 use super::{ContentItem, FunctionOutputBody, FunctionOutputContent, ResponseItem};
 use crate::client::{ModelConfig, Thinking, pricing::ServiceTier, responses::StrictJsonSchema};
 
-type EncodedItems = [std::sync::OnceLock<Option<Box<[Box<RawValue>]>>>; 8];
+type EncodedItems = [std::sync::OnceLock<Option<Box<[Box<RawValue>]>>>; 16];
 
 type EncodedPrefix = Arc<EncodedItems>;
 
@@ -695,18 +695,21 @@ struct RequestInput<'a> {
     strip_image_detail: bool,
     reasoning_effort_updates: bool,
     custom_tools_as_functions: bool,
+    top_level_tools: bool,
     prefix: Option<&'a [Box<RawValue>]>,
 }
 
 impl RequestInput<'_> {
     const fn supports(&self, item: &ResponseItem) -> bool {
-        self.reasoning_effort_updates || !matches!(item, ResponseItem::ConfigurationUpdate { .. })
+        (self.reasoning_effort_updates || !matches!(item, ResponseItem::ConfigurationUpdate { .. }))
+            && !(self.top_level_tools && matches!(item, ResponseItem::AdditionalTools { .. }))
     }
 
     fn flags(&self) -> usize {
         usize::from(self.strip_image_detail)
             | (usize::from(self.custom_tools_as_functions) << 1)
             | (usize::from(self.reasoning_effort_updates) << 2)
+            | (usize::from(self.top_level_tools) << 3)
     }
 
     fn encode(&self, items: &[ResponseItem]) -> Option<Box<[Box<RawValue>]>> {
@@ -902,6 +905,58 @@ fn has_image_detail(item: &ResponseItem) -> bool {
     }
 }
 
+fn top_level_tools(input: &RequestInput<'_>) -> Option<Box<RawValue>> {
+    let item = input
+        .input
+        .first
+        .iter()
+        .chain(input.input.second)
+        .find(|item| matches!(item, ResponseItem::AdditionalTools { .. }))?;
+    let converted = input
+        .custom_tools_as_functions
+        .then(|| crate::client::transport::freeform::function_item(item))
+        .flatten();
+    let ResponseItem::AdditionalTools { tools, .. } = converted.as_ref().unwrap_or(item) else {
+        return None;
+    };
+    let mut tools = serde_json::to_value(tools).ok()?;
+    for tool in tools.as_array_mut()? {
+        if let Some(parameters) = tool.get_mut("parameters") {
+            *parameters = sorted(parameters.take());
+        }
+    }
+    to_raw_value(&tools).ok()
+}
+
+fn sorted(value: serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(map) => serde_json::Value::Object(
+            map.into_iter()
+                .map(|(key, value)| {
+                    let value = match value {
+                        serde_json::Value::Object(properties) if key == "properties" => {
+                            let mut entries = properties.into_iter().collect::<Vec<_>>();
+                            entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+                            serde_json::Value::Object(
+                                entries
+                                    .into_iter()
+                                    .map(|(name, schema)| (name, sorted(schema)))
+                                    .collect(),
+                            )
+                        }
+                        other => sorted(other),
+                    };
+                    (key, value)
+                })
+                .collect(),
+        ),
+        serde_json::Value::Array(items) => {
+            serde_json::Value::Array(items.into_iter().map(sorted).collect())
+        }
+        other => other,
+    }
+}
+
 #[derive(Serialize)]
 pub(crate) struct ResponseCreate<'a> {
     #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
@@ -910,6 +965,8 @@ pub(crate) struct ResponseCreate<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     previous_response_id: Option<&'a str>,
     input: RequestInput<'a>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<Box<RawValue>>,
     tool_choice: &'static str,
     parallel_tool_calls: bool,
     reasoning: ReasoningControls,
@@ -1046,14 +1103,20 @@ impl<'a> ResponseCreate<'a> {
                     | crate::client::Model::Astra
                     | crate::client::Model::DaybreakBlue
             ),
+            top_level_tools: !policy.model.uses_responses_lite(),
             prefix: None,
         };
         request_input.prefix = profile.encoded_prefix(&request_input);
+        let tools = request_input
+            .top_level_tools
+            .then(|| top_level_tools(&request_input))
+            .flatten();
         Self {
             kind: websocket.then_some("response.create"),
             model,
             previous_response_id,
             input: request_input,
+            tools,
             tool_choice: "auto",
 
             parallel_tool_calls: !policy.model.uses_responses_lite(),

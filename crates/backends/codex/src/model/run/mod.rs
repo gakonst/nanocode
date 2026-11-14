@@ -763,6 +763,7 @@ pub(crate) fn prepare_resumed_checkpoint(
         tool_specs,
         code_mode_tool_names,
         &config.base_system_prompt(),
+        config.model,
     )?
     .shared_prefix();
     let selected_agents_md = context_source
@@ -805,6 +806,7 @@ pub(crate) fn prepare_history_checkpoint(
         tool_specs,
         code_mode_tool_names,
         &config.base_system_prompt(),
+        config.model,
     )?
     .shared_prefix();
     let mut checkpoint = ModelCheckpoint::resume(

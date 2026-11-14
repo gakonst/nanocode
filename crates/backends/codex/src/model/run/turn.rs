@@ -482,6 +482,7 @@ impl ModelRun {
                 if session
                     .context
                     .observe_host_instructions(&host_instructions)
+                    && !host_instructions.is_empty()
                 {
                     session
                         .conversation

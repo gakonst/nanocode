@@ -17,7 +17,7 @@ pub type Error = Box<dyn std::error::Error + Send + Sync>;
 pub type Result<T> = std::result::Result<T, Error>;
 
 type WarmUp = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>;
-pub(crate) type Answer = std::sync::Arc<dyn Fn(&str) + Send + Sync>;
+pub(crate) type Answer = std::sync::Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
 pub(crate) type Notices = std::pin::Pin<Box<dyn nanocode_sync::Stream<Item = String> + Send>>;
 
 #[derive(Clone, Default)]
@@ -227,7 +227,10 @@ impl ModelClients {
     }
 
     #[must_use]
-    pub fn answer(mut self, answer: impl Fn(&str) + Send + Sync + 'static) -> Self {
+    pub fn answer(
+        mut self,
+        answer: impl Fn(&str) -> Option<String> + Send + Sync + 'static,
+    ) -> Self {
         self.answer = Some(std::sync::Arc::new(answer));
         self
     }

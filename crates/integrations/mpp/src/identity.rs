@@ -205,14 +205,32 @@ impl Identity {
         })
     }
 
-    pub fn answer(&self, text: &str) {
+    pub fn answer(&self, text: &str) -> Option<String> {
         let answer = Answer::parse(text);
         if let Answer::Email(email) = &answer {
             drop(self.email.set(Some(email.clone())));
             self.held
                 .update(|held| held.retain(|_, entry| entry.owner.as_deref() == Some(email)));
         }
-        drop(self.answers.send(answer));
+        let waiting = self.inbox.is_empty();
+        let reply = match (&answer, waiting) {
+            (Answer::Decline, true) => Some("declined the email pass".to_owned()),
+            (Answer::Email(_) | Answer::Code(_), true) => None,
+            (Answer::Decline, false) => Some(
+                "no email pass is waiting; /pass <email> sets the address the next one goes to"
+                    .to_owned(),
+            ),
+            (Answer::Email(email), false) => Some(format!(
+                "no email pass is waiting; the next one goes to {email}"
+            )),
+            (Answer::Code(_), false) => {
+                Some("no email pass is waiting for a code; nothing was sent".to_owned())
+            }
+        };
+        if waiting {
+            drop(self.answers.send(answer));
+        }
+        reply
     }
 
     fn notice(&self, text: String) {

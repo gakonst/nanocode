@@ -35,7 +35,11 @@ impl App {
 
     pub(crate) fn pass(&mut self, argument: &str) {
         match self.host.config.clients.answering() {
-            Some(answer) => answer(argument),
+            Some(answer) => {
+                if let Some(reply) = answer(argument) {
+                    self.notice(NoticeLevel::Info, format!("pass: {reply}"));
+                }
+            }
             None => self.notice(
                 NoticeLevel::Info,
                 "pass: no MPP service can ask for an email pass in this session",

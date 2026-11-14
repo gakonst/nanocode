@@ -2303,7 +2303,7 @@ impl App {
             );
             return;
         }
-        let Some(words) = shlex_words(&editor) else {
+        let Some(words) = shlex_words(&editor).filter(|words| !words.is_empty()) else {
             self.notice(
                 NoticeLevel::Error,
                 format!("could not parse editor command {editor:?}"),
@@ -3275,5 +3275,5 @@ fn shlex_words(command: &str) -> Option<Vec<String>> {
     if started {
         words.push(current);
     }
-    (!words.is_empty()).then_some(words)
+    Some(words)
 }

@@ -2284,7 +2284,7 @@ pub(super) fn in_flight_evidence(calls: &[InFlightCall], omitted: u32) -> Option
             } else if call.result_recorded() {
                 "a result was observed before the restart"
             } else {
-                "started; no result was observed"
+                "started; no result was observed before the restart"
             };
             format!(
                 "- {} (call_id {}; {state}): {}",
@@ -2299,8 +2299,10 @@ pub(super) fn in_flight_evidence(calls: &[InFlightCall], omitted: u32) -> Option
     }
     Some(format!(
         "Tool calls observed during the interrupted turn whose results are not known to be in \
-         your restored history (calls already committed to it are not listed); any that are \
-         absent from it may or may not have taken effect. This summary is \
+         your restored history (calls already committed to it are not listed). A listed call \
+         whose result your history shows now continued across the restart, and that result is \
+         its real one; any whose result is absent from it may or may not have taken effect. \
+         This summary is \
          not a receipt: consult your retained history and reconcile tool receipts or external \
          effects before repeating any of them:\n{}",
         lines.join("\n")
@@ -2623,11 +2625,14 @@ pub struct RestoreReport {
 }
 
 pub(super) const RESUME_MESSAGE: &str = "The sub-agent runtime restarted while your previous \
-turn was running. Your conversation was restored from its latest committed checkpoint: every \
-step in your history completed, but a tool call that was still running at the restart is not \
-shown and may or may not have taken effect. Inspect the current workspace state where that \
-matters, do not repeat side effects that already happened, and continue your delegated task \
-from where your history ends. Submit a result only once the whole delegated task is complete.";
+turn was running. Your conversation was restored from its latest committed checkpoint, and \
+every step in your history completed. A tool call that was still running at the restart \
+continues where it can: a result your history shows for it is its real result, and an exec \
+cell that is still running says so with its cell ID, so wait on that cell rather than starting \
+its work again. A call whose result your history doesn't show may or may not have taken \
+effect: inspect the current workspace state where that matters, do not repeat side effects \
+that already happened, and continue your delegated task from where your history ends. Submit \
+a result only once the whole delegated task is complete.";
 
 pub(super) fn checkpoint_ref(
     session: &ChildSession,

@@ -760,12 +760,6 @@ impl CodeModeRuntime {
         observer: &mut dyn CodeModeObserver,
     ) -> Option<CodeModeExecution> {
         let started_at = Instant::now();
-        let preempt = Preemption {
-            signal: self.preempt.subscribe(),
-            turn: self.current_turn.load(Ordering::Acquire),
-            seen: self.preempt_consumed.load(Ordering::Acquire),
-            consumed: Arc::clone(&self.preempt_consumed),
-        };
         self.adopt(Arc::clone(&tools), &context).await;
         let call_id = context.call_id.as_str();
         let live = self.cells.read(|registry| {
@@ -828,7 +822,7 @@ impl CodeModeRuntime {
             &cell,
             observation,
             started_at,
-            ObservationMode::YieldAfter(yield_after, preempt),
+            ObservationMode::YieldAfter(yield_after, None),
             record.max_output_tokens,
             Some(call_id),
             observer,
@@ -1022,7 +1016,7 @@ impl CodeModeRuntime {
             &cell,
             observation,
             started_at,
-            ObservationMode::YieldAfter(yield_after, preempt),
+            ObservationMode::YieldAfter(yield_after, Some(preempt)),
             Some(output_token_budget),
             Some(&cell.origin_call_id),
             observer,
@@ -1183,7 +1177,7 @@ impl CodeModeRuntime {
             &cell,
             observation,
             started_at,
-            ObservationMode::YieldAfter(yield_time, preempt),
+            ObservationMode::YieldAfter(yield_time, Some(preempt)),
             output_token_budget,
             Some(call_id),
             observer,
@@ -1756,7 +1750,7 @@ impl Preemption {
 }
 
 enum ObservationMode {
-    YieldAfter(Duration, Preemption),
+    YieldAfter(Duration, Option<Preemption>),
     Terminate,
 }
 
@@ -1872,9 +1866,7 @@ async fn observe_updates(
 ) -> (CodeModeExecution, bool) {
     let tools = cell.tools.as_ref();
     let (yield_after, terminating, mut preempt) = match mode {
-        ObservationMode::YieldAfter(yield_after, preempt) => {
-            (Some(yield_after), false, Some(preempt))
-        }
+        ObservationMode::YieldAfter(yield_after, preempt) => (Some(yield_after), false, preempt),
         ObservationMode::Terminate => (None, true, None),
     };
     let yield_deadline =

@@ -77,6 +77,7 @@ pub enum WireMutation {
     ReuseDirty,
     NoReadTimeout,
     ToolResultTwice,
+    DropCancelledPrompt,
 }
 
 impl WireMutation {
@@ -85,6 +86,7 @@ impl WireMutation {
             "http-reuse-dirty" => Some(Self::ReuseDirty),
             "http-no-read-timeout" => Some(Self::NoReadTimeout),
             "tool-result-twice" => Some(Self::ToolResultTwice),
+            "drop-cancelled-prompt" => Some(Self::DropCancelledPrompt),
             _ => None,
         }
     }
@@ -95,10 +97,12 @@ impl WireMutation {
             Self::ReuseDirty => "http-reuse-dirty",
             Self::NoReadTimeout => "http-no-read-timeout",
             Self::ToolResultTwice => "tool-result-twice",
+            Self::DropCancelledPrompt => "drop-cancelled-prompt",
         }
     }
 
-    pub const NAMES: &'static str = "http-reuse-dirty|http-no-read-timeout|tool-result-twice";
+    pub const NAMES: &'static str =
+        "http-reuse-dirty|http-no-read-timeout|tool-result-twice|drop-cancelled-prompt";
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -261,11 +265,7 @@ impl HttpServer {
     ) -> Self {
         Self {
             seed,
-            model: ModelServer::new(
-                seed,
-                Arc::clone(&world),
-                mutation == WireMutation::ToolResultTwice,
-            ),
+            model: ModelServer::new(seed, Arc::clone(&world), mutation),
             world,
             faults,
             mutation,

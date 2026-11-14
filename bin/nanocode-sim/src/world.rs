@@ -28,6 +28,8 @@ struct State {
     effects: BTreeMap<String, u64>,
     sent: BTreeMap<String, BTreeSet<u64>>,
     acked: BTreeMap<String, BTreeMap<u64, String>>,
+    seen: BTreeMap<String, BTreeSet<u64>>,
+    cancelled: BTreeMap<String, BTreeSet<u64>>,
     violations: Vec<String>,
     counts: WorldCounts,
     digest: u64,
@@ -129,6 +131,27 @@ impl World {
 
     pub fn acked(&self, label: &str) -> BTreeMap<u64, String> {
         self.with(|state| state.acked.get(label).cloned().unwrap_or_default())
+    }
+
+    pub fn see(&self, label: &str, turn: u64) {
+        self.with(|state| {
+            state.seen.entry(label.to_owned()).or_default().insert(turn);
+        });
+    }
+
+    pub fn saw(&self, label: &str, turn: u64) -> bool {
+        self.with(|state| state.seen.get(label).is_some_and(|seen| seen.contains(&turn)))
+    }
+
+    pub fn cancelled(&self, label: &str, turn: u64) {
+        self.trace(&format!("cancelled {label} turn {turn}"));
+        self.with(|state| {
+            state.cancelled.entry(label.to_owned()).or_default().insert(turn);
+        });
+    }
+
+    pub fn cancelled_turns(&self, label: &str) -> BTreeSet<u64> {
+        self.with(|state| state.cancelled.get(label).cloned().unwrap_or_default())
     }
 
     pub fn first_violation(&self) -> Option<String> {

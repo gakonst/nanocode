@@ -3,6 +3,7 @@ use std::{collections::BTreeSet, sync::Arc};
 use serde_json::{Value, json};
 
 use crate::{
+    httpd::WireMutation,
     rng::{FNV_OFFSET, Rng, fnv},
     world::World,
 };
@@ -284,7 +285,7 @@ pub struct Reply {
 pub struct ModelServer {
     seed: u64,
     world: Arc<World>,
-    tool_result_twice: bool,
+    mutation: WireMutation,
 }
 
 fn blocks(message: &Value) -> &[Value] {
@@ -322,11 +323,11 @@ fn duplicate_first_tool_result(messages: &mut [Value]) {
 }
 
 impl ModelServer {
-    pub const fn new(seed: u64, world: Arc<World>, tool_result_twice: bool) -> Self {
+    pub const fn new(seed: u64, world: Arc<World>, mutation: WireMutation) -> Self {
         Self {
             seed,
             world,
-            tool_result_twice,
+            mutation,
         }
     }
 
@@ -404,6 +405,34 @@ impl ModelServer {
                 ));
             }
         }
+        for cancelled in self.world.cancelled_turns(label) {
+            if cancelled >= turn {
+                continue;
+            }
+            let prompt = root_prompt(label, cancelled);
+            if !texts.iter().any(|text| text.contains(&prompt)) {
+                self.world.wrong(format!(
+                    "{label} turn {turn}'s request lost cancelled turn {cancelled}'s prompt"
+                ));
+            }
+        }
+    }
+
+    fn drop_cancelled_prompts(&self, label: &str, messages: &mut [Value]) {
+        for cancelled in self.world.cancelled_turns(label) {
+            let prompt = root_prompt(label, cancelled);
+            let dropped = format!("{ROOT_MARK} {label} turn-{cancelled}");
+            for block in messages
+                .iter_mut()
+                .filter(|message| role(message) == Some("user"))
+                .filter_map(|message| message.get_mut("content").and_then(Value::as_array_mut))
+                .flatten()
+            {
+                if let Some(Value::String(text)) = block.get_mut("text") {
+                    *text = text.replace(&prompt, &dropped);
+                }
+            }
+        }
     }
 
     pub fn respond(&self, body: &str) -> Result<Reply, String> {
@@ -419,17 +448,21 @@ impl ModelServer {
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
-        if self.tool_result_twice {
+        if self.mutation == WireMutation::ToolResultTwice {
             duplicate_first_tool_result(&mut messages);
         }
         let Some(conversation) = read(&messages) else {
             return Err("a request with no simulated agent in it".to_owned());
         };
         let label = conversation.agent.label().to_owned();
+        if self.mutation == WireMutation::DropCancelledPrompt {
+            self.drop_cancelled_prompts(&label, &mut messages);
+        }
         self.world.count(|counts| counts.requests += 1);
         self.check(&label, &messages);
         self.check_tool_results(&label, &messages);
         if let Agent::Root { turn, .. } = conversation.agent {
+            self.world.see(&label, turn);
             self.check_root(&label, turn, &messages);
         }
         let id = format!("{:016x}", fnv(conversation.prefix, label.as_bytes()));

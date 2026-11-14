@@ -30,6 +30,8 @@ pub const SETTLE_DEADLINE: Duration = Duration::from_secs(1_800);
 pub const SETTLE_POLL: Duration = Duration::from_secs(1);
 pub const RESUBMITS_MAX: u64 = 8;
 pub const RESUBMIT_DELAY: Duration = Duration::from_secs(5);
+pub const CANCEL_TURN_PPM: u64 = 300_000;
+pub const CANCEL_POLL: Duration = Duration::from_millis(100);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 const ENDPOINT: &str = "http://model.sim/v1";
@@ -127,6 +129,7 @@ struct Shape {
     faults: NetworkFaults,
     http_faults: HttpFaults,
     wire: WireKind,
+    cancel_turn: Option<(u64, u64)>,
 }
 
 impl Shape {
@@ -161,6 +164,10 @@ impl Shape {
         let hibernation = rng.chance(HIBERNATION_PPM).then(|| {
             usize::try_from(rng.range(0, RESIDENT_MAX)).expect("a resident bound fits in usize")
         });
+        let mut cancels = Rng::derive(seed, "whole-cancel");
+        let cancel_turn = cancels
+            .chance(CANCEL_TURN_PPM)
+            .then(|| (cancels.range(0, roots - 1), cancels.range(0, turns - 1)));
         Self {
             stop,
             stop_after,
@@ -172,12 +179,13 @@ impl Shape {
             faults: NetworkFaults::of(seed, options.calm),
             http_faults: HttpFaults::of(seed, options.calm),
             wire: options.wire,
+            cancel_turn,
         }
     }
 
     fn describe(&self) -> String {
         format!(
-            "scenario=runtime wire={} stop={:?} stop_after_ms={} resident<={:?} roots={} turns={} store={} crashes_ms={:?} calm_network={}",
+            "scenario=runtime wire={} stop={:?} stop_after_ms={} resident<={:?} roots={} turns={} store={} crashes_ms={:?} calm_network={} cancel_turn={:?}",
             self.wire.name(),
             self.stop,
             self.stop_after.as_millis(),
@@ -189,7 +197,8 @@ impl Shape {
             match self.wire {
                 WireKind::Transport => self.faults.calm(),
                 WireKind::Http => self.http_faults.calm(),
-            }
+            },
+            self.cancel_turn
         )
     }
 }
@@ -363,17 +372,50 @@ async fn open_root(
     Ok(agent)
 }
 
-async fn submit(agent: &nanocode::Agent, label: &str, turn: u64) -> Result<String, String> {
+async fn submit(
+    agent: &nanocode::Agent,
+    label: &str,
+    turn: u64,
+    cancel: bool,
+    world: &World,
+) -> Result<String, String> {
     let request_id = format!("turn-{turn}");
     let submitted = agent
         .prompt(PromptRequest::new(root_prompt(label, turn)).request_id(&request_id))
         .await;
-    match submitted {
-        Ok(running) => running
+    let running = submitted.map_err(|error| error.to_string())?;
+    if !cancel {
+        return running
             .result()
             .await
             .map(|result| result.final_message().to_owned())
-            .map_err(|error| error.to_string()),
+            .map_err(|error| error.to_string());
+    }
+    let control = running.control();
+    let done = std::cell::Cell::new(false);
+    let cancelled = std::cell::Cell::new(false);
+    let result = async {
+        let result = running.result().await;
+        done.set(true);
+        result
+    };
+    let canceller = async {
+        while !done.get() {
+            if world.saw(label, turn) {
+                world.trace(&format!("cancel {label} turn {turn}"));
+                cancelled.set(control.cancel().await.is_ok());
+                return;
+            }
+            nanocode_platform::sleep(CANCEL_POLL).await;
+        }
+    };
+    let (result, ()) = nanocode_sync::future::join(result, canceller).await;
+    match result {
+        Ok(result) => Ok(result.final_message().to_owned()),
+        Err(nanocode::NanocodeError::TurnCancelled) if cancelled.get() => {
+            world.cancelled(label, turn);
+            Err(nanocode::NanocodeError::TurnCancelled.to_string())
+        }
         Err(error) => Err(error.to_string()),
     }
 }
@@ -392,6 +434,7 @@ async fn run_turn(
     store: &SessionStore,
     label: &str,
     turn: u64,
+    cancel: bool,
     world: &World,
 ) -> Result<String, String> {
     let session = agent.session_id().to_owned();
@@ -399,7 +442,7 @@ async fn run_turn(
     let mut attempt = 0;
     loop {
         world.trace(&format!("submit {label} {request_id} attempt {attempt}"));
-        let error = match submit(agent, label, turn).await {
+        let error = match submit(agent, label, turn, cancel && attempt == 0, world).await {
             Ok(text) => return Ok(text),
             Err(error) => error,
         };
@@ -432,7 +475,8 @@ async fn run_root(
         {
             continue;
         }
-        match run_turn(&agent, store, &label, turn, world).await {
+        let cancel = shape.cancel_turn == Some((root, turn)) && !client.stopped.get();
+        match run_turn(&agent, store, &label, turn, cancel, world).await {
             Ok(text) => {
                 agent
                     .flush()

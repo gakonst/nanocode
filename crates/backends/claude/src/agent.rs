@@ -2580,6 +2580,7 @@ const COMPACT_TOOLS_OPEN: &str = "<tools-used-before-summary>";
 const COMPACT_TOOLS_CLOSE: &str = "</tools-used-before-summary>";
 const COMPACT_RESUME: &str = "Continue the conversation from where it left off without asking the user any further questions. Resume directly \u{2014} do not acknowledge the summary, do not recap what was happening, do not preface with \"I'll continue\" or similar. Pick up the last task as if the break never happened.";
 const COMPACT_KEPT: &str = "The messages after this summary are the most recent messages from before compaction, kept verbatim. The summary was written without seeing them, so something it says has not happened yet may already have happened in them.";
+const INTERRUPTED_BY_USER: &str = "[Request interrupted by user]";
 
 fn compact_summary(raw: &str) -> String {
     let mut text = raw.to_owned();
@@ -7582,6 +7583,14 @@ impl State {
                         conversation.summary.clear();
                         conversation.advance_boundary();
                         conversation.active_context_tokens = estimate_text_tokens(&json!({"system":cursor.template.system, "tools":cursor.template.tools, "messages":conversation.packed_messages()}).to_string());
+                    } else if matches!(failure.error, NanocodeError::TurnCancelled)
+                        && !cancel.stopped()
+                        && !self.life.closing()
+                    {
+                        pending.push(Message::text(Role::User, INTERRUPTED_BY_USER).into());
+                        conversation.messages = pending;
+                        conversation.summary.clear();
+                        conversation.pending_continuation = false;
                     }
                     return Err(failure.error);
                 }

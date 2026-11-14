@@ -105,7 +105,7 @@ fn transport(detail: &str, unsent: bool) -> HttpError {
 impl Network {
     pub fn new(seed: u64, world: Arc<World>, faults: NetworkFaults, mutation: WireMutation) -> Self {
         Self {
-            server: ModelServer::new(seed, Arc::clone(&world), mutation == WireMutation::ToolResultTwice),
+            server: ModelServer::new(seed, Arc::clone(&world), mutation),
             world,
             faults,
             rng: Slot::new(Some(Rng::derive(seed, "network"))),

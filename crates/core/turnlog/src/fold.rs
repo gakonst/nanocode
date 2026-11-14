@@ -85,6 +85,7 @@ pub struct Fold {
     checkpoints: BTreeMap<String, Checkpoint>,
     ends: u64,
     events: Vec<Event>,
+    hot_bytes: usize,
     hosts: BTreeMap<String, Box<RawValue>>,
     index: BTreeMap<String, usize>,
     last_event: u64,
@@ -189,11 +190,8 @@ impl Fold {
     }
 
     #[must_use]
-    pub fn hot_bytes(&self) -> usize {
-        self.events
-            .iter()
-            .map(|event| event.event.get().len())
-            .sum()
+    pub const fn hot_bytes(&self) -> usize {
+        self.hot_bytes
     }
 
     #[must_use]
@@ -305,6 +303,11 @@ impl Fold {
         if let Some(segment) = self.sealed(keep) {
             self.segments.push(segment);
             self.events.retain(|event| event.seq >= keep);
+            self.hot_bytes = self
+                .events
+                .iter()
+                .map(|event| event.event.get().len())
+                .sum();
         }
         self.segment_row = row;
     }
@@ -461,6 +464,7 @@ impl Fold {
                 }
                 self.last_event = self.last_event.max(*seq);
                 self.ends = self.ends.max(*seq);
+                self.hot_bytes += event.get().len();
                 self.events.push(Event {
                     at: *at,
                     event: event.clone(),

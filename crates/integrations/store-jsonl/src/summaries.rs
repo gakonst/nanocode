@@ -259,12 +259,13 @@ impl Summaries {
             },
         };
         let mut applied = 0;
+        let mut files = None;
         for line in changes.split_inclusive(|byte| *byte == b'\n') {
             if !line.ends_with(b"\n") {
                 break;
             }
             match serde_json::from_slice::<Change>(line) {
-                Ok(change) => change.apply(&mut self.entries),
+                Ok(change) => change.replay(&mut self.entries, &mut files),
                 Err(error) => {
                     nanocode_trace::warn!(%error, "ignoring unreadable JSONL session summaries");
                     break;
@@ -522,6 +523,62 @@ impl Change {
                     entry.length = *length;
                     entry.anchor = *anchor;
                 }
+            }
+        }
+    }
+}
+
+impl Change {
+    fn replay(
+        self,
+        entries: &mut HashMap<String, Summary>,
+        files: &mut Option<HashMap<String, Vec<String>>>,
+    ) {
+        match self {
+            Self::Remember(remembered) => {
+                for (state_id, summary) in remembered {
+                    if let Some(files) = files {
+                        if let Some(ids) = entries
+                            .get(&state_id)
+                            .and_then(|known| files.get_mut(&known.file))
+                        {
+                            ids.retain(|id| *id != state_id);
+                        }
+                        files
+                            .entry(summary.file.clone())
+                            .or_default()
+                            .push(state_id.clone());
+                    }
+                    entries.insert(state_id, summary);
+                }
+            }
+            Self::Moved {
+                from,
+                to,
+                length,
+                anchor,
+            } => {
+                let files = files.get_or_insert_with(|| {
+                    let mut files = HashMap::<String, Vec<String>>::new();
+                    for (state_id, entry) in entries.iter() {
+                        files
+                            .entry(entry.file.clone())
+                            .or_default()
+                            .push(state_id.clone());
+                    }
+                    files
+                });
+                let Some(moved) = files.remove(&from) else {
+                    return;
+                };
+                for state_id in &moved {
+                    if let Some(entry) = entries.get_mut(state_id) {
+                        entry.file.clone_from(&to);
+                        entry.length = length;
+                        entry.anchor = anchor;
+                    }
+                }
+                files.entry(to).or_default().extend(moved);
             }
         }
     }

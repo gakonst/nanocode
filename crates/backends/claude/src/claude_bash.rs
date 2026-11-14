@@ -1031,6 +1031,7 @@ pub(super) fn install(
     session: Option<SessionEnvironment>,
     jobs: Arc<Jobs>,
     process: Arc<dyn nanocode_process_contracts::ForegroundExecutor>,
+    code_mode: bool,
 ) -> ToolsBuilder {
     let executor = LocalBash {
         cwd,
@@ -1042,6 +1043,7 @@ pub(super) fn install(
         bash: ClaudeBash::new(executor.clone()),
         jobs: executor.jobs.clone(),
         session,
+        code_mode,
     });
     tools.tool(TaskStopTool {
         jobs: executor.jobs,
@@ -1051,6 +1053,7 @@ struct BashTool {
     bash: ClaudeBash<LocalBash>,
     jobs: Arc<Jobs>,
     session: Option<SessionEnvironment>,
+    code_mode: bool,
 }
 impl Tool for BashTool {
     fn definition(&self) -> ToolDefinition {
@@ -1059,9 +1062,10 @@ impl Tool for BashTool {
             .as_str()
             .and_then(|description| description.split_once(UPSTREAM_TIMEOUT))
             .expect("upstream Bash timeout sentence");
+        let nested = if self.code_mode { NESTED_TIMEOUT } else { "" };
         ToolDefinition::function(
             "Bash",
-            format!("{before}{UPSTREAM_TIMEOUT}{NESTED_TIMEOUT}{after}"),
+            format!("{before}{UPSTREAM_TIMEOUT}{nested}{after}"),
             schema["input_schema"].clone(),
         )
         .with_output_schema(super::claude_output::schema("Bash"))

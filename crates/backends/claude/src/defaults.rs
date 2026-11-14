@@ -50,6 +50,7 @@ pub fn runner_tools_with_executor(
         None,
         Arc::new(crate::claude_bash::Jobs::default()),
         executor,
+        true,
     )
     .map_err(|error| NanocodeError::InvalidRequest(error.to_string()))
 }
@@ -83,6 +84,7 @@ pub fn hand_tools_with(directory: PathBuf, files: HandFiles) -> Result<Tools> {
         None,
         Arc::new(crate::claude_bash::Jobs::default()),
         Arc::new(nanocode_process::NativeForeground),
+        true,
     )
     .map_err(|error| NanocodeError::InvalidRequest(error.to_string()))
 }
@@ -162,6 +164,7 @@ pub(crate) fn install_default_tools_with_providers(
                 Some(handle.session_environment()),
                 jobs.clone(),
                 executor,
+                !direct,
             )
             .map_err(|error| NanocodeError::InvalidRequest(error.to_string()))?
         }

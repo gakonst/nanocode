@@ -15,6 +15,7 @@ pub(super) fn selection(
     session: Option<SessionEnvironment>,
     jobs: Arc<super::claude_bash::Jobs>,
     executor: Arc<dyn nanocode_process_contracts::ForegroundExecutor>,
+    code_mode: bool,
 ) -> Result<Tools, ToolsBuildError> {
     let mut tools = Tools::builder().without_defaults();
     for schema in ClaudeWorkspaceFiles::definitions() {
@@ -36,7 +37,7 @@ pub(super) fn selection(
         });
     }
     let notices = Arc::new(super::claude_bash::JobNotices(Arc::clone(&jobs)));
-    super::claude_bash::install(tools, workspace, cwd, session, jobs, executor)
+    super::claude_bash::install(tools, workspace, cwd, session, jobs, executor, code_mode)
         .build()
         .map(|tools| {
             tools

@@ -50,7 +50,12 @@ pub(crate) fn run_bash_with_environment<'call>(
                     .unwrap_or_default(),
             )
             .collect();
-        let (environment, secrets) = process::sanitized_environment(&overrides, &[]);
+        let (mut environment, secrets) = process::sanitized_environment(&overrides, &[]);
+        let bash = OsString::from(selection::default_shell_path());
+        if !environment.iter().any(|(name, _)| name == "SHELL") {
+            environment.push((OsString::from("SHELL"), bash.clone()));
+        }
+        environment.push((OsString::from("PSH_NAME"), bash));
         let shell = selection::chosen().ok_or("this host has not made psh its shell")?;
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         let warm = match super::embedded::spawn(

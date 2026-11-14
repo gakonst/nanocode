@@ -405,6 +405,9 @@ impl ToolRegistry {
         input: Value,
         context: ToolContext<'_>,
     ) -> ToolOutput {
+        if host_owned_name(name) {
+            return tool_not_available(name);
+        }
         if self
             .by_name
             .get(name)
@@ -447,6 +450,9 @@ impl ToolRegistry {
             },
             None => input,
         };
+        if host_owned_name(name) {
+            return None;
+        }
         if let Some((handler, definition)) = self.get(name) {
             return handler.recover(nested_input(definition, name, &input).ok()?, context);
         }

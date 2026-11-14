@@ -634,6 +634,7 @@ fn discard(job: &Job) {
 #[derive(Clone)]
 struct LocalBash {
     workspace: PathBuf,
+    cwd: Arc<Atom<PathBuf>>,
     jobs: Arc<Jobs>,
     executor: Arc<dyn ForegroundExecutor>,
 }
@@ -696,6 +697,29 @@ impl BashExecutor for LocalBash {
         );
         let capped = Arc::new(Signal::new());
         let activity = Arc::new(LastActivity::new());
+        let direct = !background
+            && !request
+                .call_id
+                .as_ref()
+                .is_some_and(|call| call.contains("/code-"));
+        let marker = std::env::temp_dir().join(format!("nanocode-{id}-cwd"));
+        let mut request = request;
+        let directory = if direct {
+            request.command = format!(
+                "eval {} < /dev/null && pwd -P >| {}",
+                quoted(&request.command),
+                quoted(&marker.display().to_string())
+            );
+            let directory = self.cwd.get();
+            if directory.is_dir() {
+                directory.as_ref().clone()
+            } else {
+                self.cwd.set(self.workspace.clone());
+                self.workspace.clone()
+            }
+        } else {
+            self.workspace.clone()
+        };
         let (output, file, written) = match output_file(&session, &id, Arc::clone(&capped)).await {
             Some((path, file, written)) => (Some(path), Some(file), written),
             None => {
@@ -713,7 +737,7 @@ impl BashExecutor for LocalBash {
         let (arm, armed) = oneshot::channel::<Duration>();
         let expired = Arc::new(AtomicBool::new(false));
         let job = {
-            let workspace = self.workspace.clone();
+            let workspace = directory;
             let executor = self.executor.clone();
             let finished = Arc::new(Signal::new());
             let admitted = Arc::new(Signal::new());
@@ -802,6 +826,9 @@ impl BashExecutor for LocalBash {
             match tokio::time::timeout(timeout, completion(&job)).await {
                 Ok(mut result) => {
                     self.jobs.forget(&id);
+                    if direct && let Ok(result) = &mut result {
+                        self.moved(&marker, result).await;
+                    }
                     if let (Ok(result), Some(kills)) = (&mut result, job.memory_kills().await) {
                         let line = format!("[{kills}]\n");
                         let room = max_stderr.saturating_sub(line.len() + 1);
@@ -840,6 +867,33 @@ impl BashExecutor for LocalBash {
             task_id: id,
         })
     }
+}
+impl LocalBash {
+    async fn moved(&self, marker: &Path, result: &mut BashResult) {
+        let Ok(text) = tokio::fs::read_to_string(marker).await else {
+            return;
+        };
+        let _ = tokio::fs::remove_file(marker).await;
+        let now = PathBuf::from(text.trim_end_matches('\n'));
+        let root = tokio::fs::canonicalize(&self.workspace)
+            .await
+            .unwrap_or_else(|_| self.workspace.clone());
+        if now.starts_with(&root) {
+            self.cwd.set(now);
+            return;
+        }
+        self.cwd.set(self.workspace.clone());
+        if !result.stderr.is_empty() && !result.stderr.ends_with('\n') {
+            result.stderr.push('\n');
+        }
+        result.stderr.push_str(&format!(
+            "Shell cwd was reset to {}",
+            self.workspace.display()
+        ));
+    }
+}
+fn quoted(text: &str) -> String {
+    format!("'{}'", text.replace('\'', "'\\''"))
 }
 async fn kept(job: &Job, result: BashResult) -> BashExecution {
     job.written.wait().await;
@@ -881,6 +935,7 @@ pub(super) fn install(
     process: Arc<dyn nanocode_process_contracts::ForegroundExecutor>,
 ) -> ToolsBuilder {
     let executor = LocalBash {
+        cwd: Arc::new(Atom::new(workspace.clone())),
         workspace,
         jobs,
         executor: process,
@@ -956,11 +1011,14 @@ impl Tool for BashTool {
                         Ok(output) => {
                             let value =
                                 serde_json::from_str::<Value>(&output).unwrap_or(Value::Null);
-                            let text = value["message"]
+                            match value["message"]
                                 .as_str()
                                 .filter(|_| value["background"] == true)
-                                .map_or(output, str::to_owned);
-                            ToolOutput::text(text).with_structured_result(value)
+                            {
+                                Some(message) => ToolOutput::text(message),
+                                None => rendered(&value),
+                            }
+                            .with_structured_result(value)
                         }
                         Err(error) => ToolOutput::error(error),
                     },
@@ -969,6 +1027,34 @@ impl Tool for BashTool {
             output
         })
     }
+}
+fn rendered(value: &Value) -> ToolOutput {
+    let code = value["exit_code"].as_i64().unwrap_or(0);
+    let parts = [
+        (code != 0).then(|| format!("Exit code {code}")),
+        Some(without_empty_lines(value["stdout"].as_str().unwrap_or(""))),
+        Some(without_empty_lines(value["stderr"].as_str().unwrap_or(""))),
+        value["message"].as_str().map(str::to_owned),
+    ];
+    let text = parts
+        .into_iter()
+        .flatten()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    match (code, text.is_empty()) {
+        (0, true) => ToolOutput::text("(Bash completed with no output)"),
+        (0, false) => ToolOutput::text(text),
+        _ => ToolOutput::error(text),
+    }
+}
+fn without_empty_lines(text: &str) -> String {
+    let lines = text.split('\n').collect::<Vec<_>>();
+    let start = lines
+        .iter()
+        .position(|line| !line.trim().is_empty())
+        .unwrap_or(lines.len());
+    lines[start..].join("\n").trim_end().to_owned()
 }
 struct Owned<'a> {
     jobs: &'a Jobs,

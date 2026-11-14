@@ -343,7 +343,7 @@ impl CellJournals {
         })
     }
 
-    pub(super) fn finished(&self, record: &Arc<CellRecord>) {
+    pub(super) async fn finished(&self, record: &Arc<CellRecord>) {
         record.update(|status| status.life = CellLife::Retired);
         if record.persistence.is_none() {
             return;
@@ -351,8 +351,7 @@ impl CellJournals {
         self.0
             .finished
             .update(|finished| finished.push(Arc::clone(record)));
-        let record = Arc::clone(record);
-        super::spawn(async move { record.mark_finished().await });
+        record.mark_finished().await;
     }
 
     pub(super) async fn release_finished(&self, session_id: &str) {

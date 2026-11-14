@@ -1221,7 +1221,7 @@ impl CodeModeRuntime {
 
     async fn remove_and_join(&self, cell: &Arc<LiveCell>) {
         match (&self.journals, &cell.record) {
-            (Some(journals), Some(record)) => journals.finished(record),
+            (Some(journals), Some(record)) => journals.finished(record).await,
             _ => cell.retire(),
         }
         self.cells.update(|registry| {

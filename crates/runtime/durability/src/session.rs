@@ -935,9 +935,14 @@ impl Driver {
                 operation_id,
                 result,
             } => {
-                let outcome = self
+                let outcome = match self
                     .authorize(&caller)
-                    .and_then(|()| self.release_claim(&caller, &operation_id));
+                    .and_then(|()| self.require_claimed(&caller, &operation_id))
+                {
+                    Ok(()) if self.deferred_writes => self.persist_deferred().await,
+                    outcome => outcome,
+                };
+                let outcome = outcome.and_then(|()| self.release_claim(&caller, &operation_id));
                 drop(result.send(outcome));
             }
             Command::BeginAttempt {

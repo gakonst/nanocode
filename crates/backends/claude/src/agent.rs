@@ -3367,6 +3367,12 @@ struct StartedToolCall<'a> {
 }
 impl StartedToolCall<'_> {
     const REASON: &'static str = "Tool execution interrupted; outcome unknown. Do not assume it did not run or automatically repeat it.";
+    fn session_stopped(after: Duration) -> String {
+        format!(
+            "Tool execution stopped after {:.1}s because nanocode stopped this session (the user quit nanocode or the agent was closed); the call and the commands it started were stopped then. It may have partly run: check its effects before relying on it, and do not automatically repeat it.",
+            after.as_secs_f64()
+        )
+    }
     const STOPPED: &'static str = "Tool execution stopped by the user. The cell was terminated and no nested tool call was left running.";
     const STOPPED_UNKNOWN: &'static str = "Tool execution stopped by the user. The cell was terminated while a nested tool call was still running; that call's outcome is unknown. Do not assume it did not run or automatically repeat it.";
 }
@@ -6955,7 +6961,7 @@ impl State {
                         if cancel.stopped() {
                             return Ok(ContentBlock::tool_result_content(
                                 id,
-                                ToolResultContent::Text(StartedToolCall::REASON.into()),
+                                ToolResultContent::Text(StartedToolCall::session_stopped(began.elapsed())),
                                 true,
                             ));
                         }

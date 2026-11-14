@@ -12,6 +12,7 @@ int strncmp(const char *, const char *, size_t);
 char *strchr(const char *, int);
 char *strrchr(const char *, int);
 char *strstr(const char *, const char *);
+char *strdup(const char *);
 #define memcpy __builtin_memcpy
 #define memmove __builtin_memmove
 #define memset __builtin_memset

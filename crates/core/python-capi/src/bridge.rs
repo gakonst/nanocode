@@ -319,6 +319,42 @@ fn ready(vm: &VirtualMachine) {
             .type_type
             .set_attr(vm.ctx.intern_str("__dictoffset__"), property);
     }
+    let type_type = vm.ctx.types.type_type;
+    if let Some(original) = type_type.get_direct_attr(vm.ctx.intern_str("__basicsize__")) {
+        let basic_size = crate::types::function(vm, "__basicsize__", move |vm, args| {
+            let class = args
+                .args
+                .first()
+                .cloned()
+                .ok_or_else(|| vm.new_type_error("__basicsize__ needs a type".to_owned()))?;
+            if let Some(ty) = class.downcast_ref::<PyType>() {
+                let key = ty.as_object() as *const PyObject as usize;
+                if let Some(pointer) = C_TYPES.with_borrow(|types| types.get(&key).copied())
+                    && !PROXY_TYPES.with_borrow(|types| types.contains(&pointer))
+                    && ty.fast_issubclass(CObject::class(&vm.ctx))
+                    && !ty.is(CObject::class(&vm.ctx))
+                {
+                    let size = unsafe { (*(pointer as *mut Type)).basicsize };
+                    return Ok(vm.ctx.new_int(size).into());
+                }
+            }
+            vm.call_get_descriptor_specific(
+                &original,
+                Some(&class),
+                Some(type_type.as_object()),
+            )
+            .unwrap_or_else(|| Ok(original.clone()))
+        });
+        if let Ok(property) = vm
+            .ctx
+            .types
+            .property_type
+            .as_object()
+            .call((basic_size,), vm)
+        {
+            type_type.set_attr(vm.ctx.intern_str("__basicsize__"), property);
+        }
+    }
     let object = PyBaseObject_Type.get();
     for pointer in STATIC_TYPES.with_borrow(|types| types.keys().copied().collect::<Vec<_>>()) {
         let ty = pointer as *mut Type;

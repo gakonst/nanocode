@@ -1,6 +1,6 @@
 use std::{
     cell::OnceCell,
-    ffi::{c_char, c_int},
+    ffi::{CStr, c_char, c_int, c_void},
     ptr::null_mut,
 };
 
@@ -150,4 +150,59 @@ pub unsafe extern "C" fn strstr(haystack: *const c_char, needle: *const c_char) 
         .windows(needle.len())
         .position(|window| window == needle)
         .map_or(null_mut(), |at| unsafe { haystack.add(at) }.cast_mut())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn malloc(size: usize) -> *mut c_void {
+    crate::heap::PyMem_RawMalloc(size)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn calloc(count: usize, size: usize) -> *mut c_void {
+    crate::heap::PyMem_RawCalloc(count, size)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn realloc(pointer: *mut c_void, size: usize) -> *mut c_void {
+    unsafe { crate::heap::PyMem_RawRealloc(pointer, size) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn free(pointer: *mut c_void) {
+    unsafe { crate::heap::PyMem_RawFree(pointer) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn strdup(text: *const c_char) -> *mut c_char {
+    let length = unsafe { CStr::from_ptr(text) }.to_bytes_with_nul().len();
+    let copy = malloc(length).cast::<c_char>();
+    if !copy.is_null() {
+        unsafe { copy.copy_from_nonoverlapping(text, length) };
+    }
+    copy
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fread(
+    _data: *mut c_void,
+    _size: usize,
+    _count: usize,
+    _file: *mut c_void,
+) -> usize {
+    0
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fwrite(
+    _data: *const c_void,
+    _size: usize,
+    _count: usize,
+    _file: *mut c_void,
+) -> usize {
+    0
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn ferror(_file: *mut c_void) -> c_int {
+    1
 }

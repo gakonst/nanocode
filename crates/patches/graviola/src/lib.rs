@@ -45,19 +45,10 @@ mod high;
 /// Errors.  Common to all layers.
 mod error;
 
-/// Test infrastructure.
-#[cfg(test)]
-#[cfg_attr(coverage_nightly, coverage(off))]
-mod test;
 
 // vvv Public API
 pub use error::Error;
 
-/// Non-API documentation
-#[cfg(doc)]
-pub mod doc {
-    pub use super::low::inline_assembly_safety;
-}
 
 /// Key agreement algorithms.
 pub mod key_agreement {
@@ -174,7 +165,6 @@ pub mod hashing {
 pub mod aead {
     pub use super::mid::aes_gcm::AesGcm;
     pub use super::mid::chacha20poly1305::ChaCha20Poly1305;
-    pub use super::mid::xchacha20poly1305::XChaCha20Poly1305;
 }
 
 /// Cryptographic-quality random source

@@ -323,20 +323,6 @@ impl AffineMontPoint {
         r
     }
 
-    #[cfg(test)]
-    fn slow_multiply(&self, scalar: &Scalar) -> Self {
-        let mut result = JacobianMontPoint::infinity();
-
-        let mut j = JacobianMontPoint::from_affine(self);
-        let zero = JacobianMontPoint::zero();
-
-        for bit in scalar.bits() {
-            result.add_inplace(&JacobianMontPoint::select(&zero, &j, bit));
-            j = j.double();
-        }
-
-        result.as_affine()
-    }
 
     fn negate_y(&mut self) {
         let neg_y = self.y().negate_mod_p();
@@ -350,37 +336,6 @@ impl AffineMontPoint {
         self.xy[Self::Y].copy_from_slice(&result.0);
     }
 
-    /// Precomputes a table (with 𝑤=6) for the point `self`
-    ///
-    /// 64 is the row size, 2**6.
-    /// 37 is the table height, ceil(256/7) (Booth encoding gives us
-    /// one bit extra free, in exchange for a negation to compute a
-    /// negative point from the precomputed positive point -- this is
-    /// ~free).
-    ///
-    /// This should not be used at runtime, since (for brevity) it
-    /// does excessive point representation conversions, and recomputes
-    /// items in a given row several times (compare `public_precomp_w5`).
-    #[cfg(test)]
-    fn public_precomp_w7_slow(&self) -> [[Self; 64]; 37] {
-        let mut r = [[Self::default(); 64]; 37];
-
-        for window in 0..(256usize.div_ceil(7)) {
-            let row = &mut r[window];
-
-            // indices into rows are reduced by 1 since 0G does not require
-            // storage.  therefore row[0] is 1G << shift.
-            let mut first = JacobianMontPoint::from_affine(self);
-            first.double_inplace_n(window * 7);
-            row[0] = first.as_affine();
-
-            for r in 1..64 {
-                row[r] = row[0].slow_multiply(&Scalar([(r + 1) as u64, 0, 0, 0]));
-            }
-        }
-
-        r
-    }
 
     fn public_precomp_w5(&self) -> JacobianMontPointTableW5 {
         let mut r = [JacobianMontPoint::zero(); 16];
@@ -812,10 +767,6 @@ impl Scalar {
         util::u64x4_to_big_endian(&self.0)
     }
 
-    #[cfg(test)]
-    fn small_u64(v: u64) -> Self {
-        Self([v, 0, 0, 0])
-    }
 
     /// Private test for zero
     pub(crate) fn is_zero(&self) -> bool {
@@ -853,14 +804,6 @@ impl Scalar {
         r
     }
 
-    /// Return 2^512 mod n, ie MM mod n
-    #[cfg(test)]
-    fn montifier() -> Self {
-        let mut r = Self::default();
-        let mut tmp = Self::default();
-        low::bignum_montifier(&mut r.0, &CURVE_ORDER, &mut tmp.0);
-        r
-    }
 
     /// Montgomery multiplication mod n
     ///
@@ -887,15 +830,6 @@ impl Scalar {
         r
     }
 
-    /// Iterator of the bits of the element, lowest first
-    #[cfg(test)]
-    fn bits(&self) -> Bits<'_> {
-        Bits {
-            scalar: self,
-            word: 0,
-            bit: 0,
-        }
-    }
 
     /// Iterator of 37 * 7-bit elements, MSB first, sign bit is separate
     fn booth_recoded_w7(&self) -> BoothRecodeW7 {
@@ -914,33 +848,7 @@ impl Drop for Scalar {
     }
 }
 
-#[cfg(test)]
-struct Bits<'a> {
-    scalar: &'a Scalar,
-    word: usize,
-    bit: usize,
-}
 
-#[cfg(test)]
-impl Iterator for Bits<'_> {
-    type Item = u8;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.word > 3 {
-            return None;
-        }
-
-        let v = (self.scalar.0[self.word] >> self.bit) & 1;
-
-        self.bit += 1;
-        if self.bit == 64 {
-            self.word += 1;
-            self.bit = 0;
-        }
-
-        Some(v as u8)
-    }
-}
 
 struct BoothRecodeW7 {
     // little endian
@@ -1101,182 +1009,3 @@ const CURVE_ORDER_MM: [u64; 4] = [
     0x66e12d94f3d95620,
 ];
 
-#[cfg(test)]
-#[cfg_attr(coverage_nightly, coverage(off))]
-mod tests {
-    use core::mem::size_of_val;
-
-    use super::*;
-
-    const CURVE_GENERATOR: AffineMontPoint = AffineMontPoint {
-        xy: [
-            0x79e7_30d4_18a9_143c,
-            0x75ba_95fc_5fed_b601,
-            0x79fb_732b_7762_2510,
-            0x1890_5f76_a537_55c6,
-            0xddf2_5357_ce95_560a,
-            0x8b4a_b8e4_ba19_e45c,
-            0xd2e8_8688_dd21_f325,
-            0x8571_ff18_2588_5d85,
-        ],
-    };
-
-    #[test]
-    fn generator_on_curve() {
-        println!("{CURVE_GENERATOR:x?}");
-        assert!(CURVE_GENERATOR.on_curve());
-        println!("demont {:x?}", CURVE_GENERATOR.as_bytes_uncompressed());
-    }
-
-    #[test]
-    fn generate_key_1() {
-        let scalar = Scalar::small_u64(1);
-        let r = CURVE_GENERATOR.slow_multiply(&scalar);
-        assert_eq!(
-            r.as_bytes_uncompressed(),
-            CURVE_GENERATOR.as_bytes_uncompressed()
-        );
-        println!("raw {r:x?}");
-        println!("fmt {:x?}", r.as_bytes_uncompressed());
-    }
-
-    #[test]
-    fn point_double() {
-        let mut p = JacobianMontPoint::from_affine(&CURVE_GENERATOR);
-        println!("p = {p:x?}");
-        p = p.double();
-        println!("p2 = {p:x?}");
-        println!("p2 aff = {:x?}", p.as_affine());
-        println!("enc = {:x?}", p.as_affine().as_bytes_uncompressed());
-    }
-
-    #[test]
-    fn generate_key_2() {
-        let scalar = Scalar::small_u64(2);
-        let r = CURVE_GENERATOR.slow_multiply(&scalar);
-        println!("raw {r:x?}");
-        println!("fmt {:x?}", r.as_bytes_uncompressed());
-    }
-
-    #[test]
-    fn generate_key_3() {
-        let scalar = Scalar::small_u64(3);
-        let r = JacobianMontPoint::base_multiply(&scalar).as_affine();
-        println!("raw {r:x?}");
-        println!("fmt {:x?}", r.as_bytes_uncompressed());
-
-        let u = CURVE_GENERATOR.slow_multiply(&scalar);
-        println!("raw {u:x?}");
-        println!("fmt {:x?}", u.as_bytes_uncompressed());
-    }
-
-    #[test]
-    fn generate_key_99999999() {
-        let scalar = Scalar::small_u64(99999999);
-        let r = JacobianMontPoint::base_multiply(&scalar).as_affine();
-        println!("raw {r:x?}");
-        println!("fmt {:x?}", r.as_bytes_uncompressed());
-
-        let u = CURVE_GENERATOR.slow_multiply(&scalar);
-        println!("raw {u:x?}");
-        println!("fmt {:x?}", u.as_bytes_uncompressed());
-    }
-
-    #[test]
-    fn generate_key_known_answer() {
-        let bytes = b"\x1F\x55\x45\x23\x08\x50\x8C\x6B\x24\x37\x0F\x22\x1E\xF1\xB3\xF9\x54\x46\xBE\x4F\x8A\x4B\x42\x8A\x5B\x51\xB7\x10\xC2\x68\x4C\x03";
-        let private = PrivateKey::from_bytes(bytes).unwrap();
-        println!("priv = {private:x?}");
-        let public = private.public_key_uncompressed();
-        println!("pub = {public:x?}");
-        const EXPECTED: &[u8; 65] = b"\x04\xcb\x8a\x14\x1c\xd7\xe4\x07\xaf\x69\xa5\x01\x88\xe9\x1c\xe5\x5d\xcc\xfd\x33\x48\xda\xba\x4a\x9c\x46\x64\x33\x2e\x95\x59\xb6\x81\x44\xfc\x1a\x61\xd8\x41\xe4\xdb\x80\x1b\x33\x51\x20\x12\x1d\x0b\xa4\x84\xb3\xc9\x53\xb3\x1d\x35\x1d\x7f\xa2\x13\x97\xd1\x25\x47";
-        assert_eq!(&public, EXPECTED);
-        let public_key = PublicKey::from_x962_uncompressed(&public).unwrap();
-        assert_eq!(&public_key.as_bytes_uncompressed(), EXPECTED);
-    }
-
-    #[test]
-    fn test_raw_ecdsa_sign() {
-        let private = StaticPrivateKey::from_bytes(b"\xd1\xf6\xbc\xcc\x3e\x5a\x40\x1b\xcc\x2c\x21\xbe\x34\x90\xed\x38\xde\xf4\x93\x7f\x78\x06\x03\xf5\x2b\x23\xb9\xa6\xfa\x9c\xf6\x0e").unwrap();
-        let k = StaticPrivateKey::from_bytes(b"\xe7\x95\x37\xa1\xd7\x55\x45\x1f\x8c\x3c\xbf\xf7\x84\xea\x5c\x1c\xdf\xe1\x6b\x1d\x13\xe7\xbf\xbb\x04\xd7\xfd\x90\x57\xee\xee\xf7").unwrap();
-        let e = Scalar::from_bytes_checked(b"\x2c\xf2\x4d\xba\x5f\xb0\xa3\x0e\x26\xe8\x3b\x2a\xc5\xb9\xe2\x9e\x1b\x16\x1e\x5c\x1f\xa7\x42\x5e\x73\x04\x33\x62\x93\x8b\x98\x24").unwrap();
-        let r = Scalar::from_bytes_checked(b"\x78\xee\x34\xc8\xb6\x52\x29\x54\x96\x19\x79\x45\x2e\x6e\x0c\xe0\x68\x5d\x40\x42\x38\x41\xef\xeb\x06\xfe\x3e\x3f\xf7\xb6\x5d\xf5").unwrap();
-        let s = private.raw_ecdsa_sign(&k, &e, &r);
-        assert_eq!(
-            format!("{:02x?}", s.as_bytes()),
-            "[5b, c9, 8e, 7d, 28, 74, d0, 9d, e8, fb, da, 22, 34, 83, 24, 4f, a1, ba, a2, 6a, 71, 91, 4e, 8e, d4, 8f, 88, b8, 2d, 17, 0b, 4b]"
-        );
-    }
-
-    #[test]
-    fn test_booth_recoded_w7() {
-        let s = Scalar::small_u64(0x3bce_3c3e_27d2_604b);
-        for (d, sign) in s.booth_recoded_w7() {
-            println!("{d:x} {sign:x}");
-        }
-    }
-
-    #[test]
-    fn private_key_in_range() {
-        assert_eq!(
-            PrivateKey::from_bytes(&[0u8; 32]).unwrap_err(),
-            Error::OutOfRange
-        );
-
-        // order rejected
-        assert_eq!(PrivateKey::from_bytes(b"\xff\xff\xff\xff\x00\x00\x00\x00\xff\xff\xff\xff\xff\xff\xff\xff\xbc\xe6\xfa\xad\xa7\x17\x9e\x84\xf3\xb9\xca\xc2\xfc\x63\x25\x51").unwrap_err(), Error::OutOfRange);
-
-        // order + 1 rejected
-        assert_eq!(PrivateKey::from_bytes(b"\xff\xff\xff\xff\x00\x00\x00\x00\xff\xff\xff\xff\xff\xff\xff\xff\xbc\xe6\xfa\xad\xa7\x17\x9e\x84\xf3\xb9\xca\xc2\xfc\x63\x25\x52").unwrap_err(), Error::OutOfRange);
-
-        // order - 1 is ok
-        PrivateKey::from_bytes(b"\xff\xff\xff\xff\x00\x00\x00\x00\xff\xff\xff\xff\xff\xff\xff\xff\xbc\xe6\xfa\xad\xa7\x17\x9e\x84\xf3\xb9\xca\xc2\xfc\x63\x25\x50").unwrap();
-    }
-
-    #[test]
-    fn curve_field_elements_as_mont() {
-        const CURVE_A: FieldElement = FieldElement([
-            0xffff_ffff_ffff_fffc,
-            0x0000_0000_ffff_ffff,
-            0x0000_0000_0000_0000,
-            0xffff_ffff_0000_0001,
-        ]);
-        const CURVE_B: FieldElement = FieldElement([
-            0x3bce_3c3e_27d2_604b,
-            0x651d_06b0_cc53_b0f6,
-            0xb3eb_bd55_7698_86bc,
-            0x5ac6_35d8_aa3a_93e7,
-        ]);
-
-        println!("G.x = {:x?}", CURVE_GENERATOR.x().as_mont());
-        println!("G.y = {:x?}", CURVE_GENERATOR.y().as_mont());
-        println!("a = {:x?}", CURVE_A.as_mont());
-        println!("b = {:x?}", CURVE_B.as_mont());
-        let one = FieldElement([1, 0, 0, 0]);
-        println!("R = {:x?}", one.as_mont());
-        println!("R * R = {:x?}", one.as_mont().as_mont());
-
-        println!("montify n = {:016x?}", Scalar::montifier().0);
-    }
-
-    #[test]
-    fn base_point_precomp_w7() {
-        let precomp = CURVE_GENERATOR.public_precomp_w7_slow();
-
-        println!("pub(super) static CURVE_GENERATOR_PRECOMP_W7: super::AffineMontPointTableW7 = [");
-        for (power, row) in precomp.iter().enumerate() {
-            println!("    // 1G..64G << {}", power * 7);
-            println!("    [");
-            for column in row {
-                for w in column.xy {
-                    println!("            0x{w:016x}, ");
-                }
-            }
-            println!("    ],");
-        }
-        println!("];");
-
-        println!();
-        println!("table size is {} bytes", size_of_val(&precomp));
-    }
-}

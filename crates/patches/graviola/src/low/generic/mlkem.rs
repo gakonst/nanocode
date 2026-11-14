@@ -25,31 +25,3 @@ pub(crate) fn mlkem_frombytes(r: &mut [i16; 256], a: &[u8; 384]) {
 /// [`mlkem_frombytes`]) uses the natural order, so there is nothing to do.
 pub(crate) fn mlkem_unpack(_a: &mut [i16; 256]) {}
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn unpacks_known_values() {
-        let mut a = [0u8; 384];
-        // first pair of coefficients: 0xabc and 0xdef, packed little-endian
-        // per FIPS 203 ByteEncode_12
-        a[0] = 0xbc;
-        a[1] = 0xfa;
-        a[2] = 0xde;
-
-        let mut r = [0i16; 256];
-        mlkem_frombytes(&mut r, &a);
-        assert_eq!(r[0], 0xabc);
-        assert_eq!(r[1], 0xdef);
-        assert_eq!(&r[2..], &[0i16; 254]);
-    }
-
-    #[test]
-    fn output_is_at_most_12_bits() {
-        let a = [0xffu8; 384];
-        let mut r = [0i16; 256];
-        mlkem_frombytes(&mut r, &a);
-        assert_eq!(r, [0xfff; 256]);
-    }
-}

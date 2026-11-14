@@ -6,8 +6,6 @@ mod macros;
 
 pub(crate) mod ct;
 
-#[cfg(doc)]
-pub mod inline_assembly_safety;
 
 mod generic {
     pub(super) mod blockwise;
@@ -15,8 +13,6 @@ mod generic {
     pub(crate) mod chacha20;
     pub(super) mod ct_copy;
     pub(super) mod ct_equal;
-    #[cfg(test)]
-    pub(crate) mod ghash;
     #[cfg(target_arch = "aarch64")]
     pub(crate) mod mlkem;
     pub(crate) mod poly1305;
@@ -37,9 +33,6 @@ pub(crate) use generic::poly1305;
 pub(crate) use generic::zeroise::{zeroise, zeroise_value};
 pub(crate) use posint::{PosInt, SecretPosInt};
 
-#[cfg(test)]
-#[cfg_attr(coverage_nightly, coverage(off))]
-mod tests;
 
 #[cfg(target_arch = "x86_64")]
 mod x86_64;

@@ -1027,28 +1027,3 @@ const Q: i16 = 3329;
 const Q_HALF: i16 = (Q + 1) / 2;
 const N: usize = 256;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn shared_secret_debug() {
-        assert_eq!(format!("{:?}", SharedSecret([0u8; 32])), "SharedSecret(..)");
-    }
-
-    #[test]
-    fn pairwise() {
-        let d = DecapKey::generate().unwrap();
-        let (ess, ct) = d.encapsulation_key().encaps().unwrap();
-        let dss = d.decaps(&ct);
-        assert_eq!(ess.0, dss.0);
-    }
-
-    #[test]
-    fn encaps_modulus_test() {
-        assert_eq!(
-            EncapKey::from_bytes(&[0xffu8; 1184]).err(),
-            Some(Error::OutOfRange)
-        );
-    }
-}

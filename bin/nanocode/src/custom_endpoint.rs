@@ -128,7 +128,12 @@ fn fetch_models(url: &str, key: Option<&str>) -> Result<Vec<(String, Option<u64>
             .send()
             .await
             .map(nanocode_http::decode_flate_response)
-            .map_err(|error| format!("failed to list models from {url}: {error}"))?;
+            .map_err(|error| {
+                format!(
+                    "failed to list models from {url}: {}",
+                    nanocode_http::error_detail(&error)
+                )
+            })?;
         let status = response.status();
         if !status.is_success() {
             return Err(format!("failed to list models from {url}: HTTP {status}"));

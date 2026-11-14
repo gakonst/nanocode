@@ -583,7 +583,7 @@ pub(super) fn map_http_error(error: nanocode_http::Error) -> ResponsesError {
     ResponsesError::HttpRequest {
         retryable: nanocode_http::retryable(&error),
         timeout: error.is_timeout(),
-        detail: error.to_string(),
+        detail: nanocode_http::error_detail(&error),
     }
 }
 

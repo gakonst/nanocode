@@ -47,15 +47,20 @@ pub fn retryable(error: &crate::Error) -> bool {
         && (error.is_connect() || error.is_body() || error.is_request() || error.is_decode())
 }
 
-pub fn client_error(error: crate::Error) -> Error {
+#[must_use]
+pub fn error_detail(error: &crate::Error) -> String {
     let mut detail = error.to_string();
-    let mut source = std::error::Error::source(&error);
+    let mut source = std::error::Error::source(error);
     while let Some(cause) = source {
         detail.push_str(": ");
         detail.push_str(&cause.to_string());
         source = cause.source();
     }
-    Error::new(detail)
+    detail
+}
+
+pub fn client_error(error: crate::Error) -> Error {
+    Error::new(error_detail(&error))
         .retryable(retryable(&error))
         .timeout(error.is_timeout())
         .unsent(error.is_connect() || error.is_builder())

@@ -30,4 +30,6 @@ pub use http::{Method, StatusCode, Version, header};
 #[cfg(not(target_family = "wasm"))]
 pub use nanocode_url::Url;
 #[cfg(not(target_family = "wasm"))]
-pub use sender::{BoundedError, ClientSender, bounded_text, client_error, execute, retryable};
+pub use sender::{
+    BoundedError, ClientSender, bounded_text, client_error, error_detail, execute, retryable,
+};

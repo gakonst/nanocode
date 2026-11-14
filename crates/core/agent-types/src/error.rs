@@ -204,9 +204,10 @@ impl std::fmt::Display for NanocodeError {
             Self::InvalidCheckpoint(value) => {
                 write!(formatter, "invalid session checkpoint: {value}")
             }
-            Self::ExecutionPolicy { layer, source, .. } => {
-                write!(formatter, "{layer} execution policy failed: {source}")
-            }
+            Self::ExecutionPolicy { layer, source, .. } => match source.downcast_ref::<Self>() {
+                Some(agent) => std::fmt::Display::fmt(agent, formatter),
+                None => write!(formatter, "{layer} execution policy failed: {source}"),
+            },
             Self::ExecutionPolicyNotConfigured => formatter
                 .write_str("identified prompt submission requires a configured execution policy"),
             Self::InvalidExecutionPolicy(value) => {
@@ -244,9 +245,7 @@ impl std::fmt::Display for NanocodeError {
             Self::Backend { backend, source } => {
                 write!(formatter, "{backend} backend failed: {source}")
             }
-            Self::ReplayedExecutionFailed(value) => {
-                write!(formatter, "durable operation previously failed: {value}")
-            }
+            Self::ReplayedExecutionFailed(value) => formatter.write_str(value),
             Self::TokioRuntimeUnavailable => {
                 formatter.write_str("building an agent requires an active Tokio runtime")
             }
@@ -266,7 +265,10 @@ impl std::error::Error for NanocodeError {
             Self::ResolveWorkspace { source, .. } => Some(source),
             Self::SerializePromptPrefix(value) => Some(value),
             Self::Shutdown(value) => std::error::Error::source(value),
-            Self::ExecutionPolicy { source, .. } => Some(source),
+            Self::ExecutionPolicy { source, .. } => match source.downcast_ref::<Self>() {
+                Some(agent) => std::error::Error::source(agent),
+                None => Some(source),
+            },
             Self::ExecutionPayload(value) => Some(value),
             Self::Backend { source, .. } => Some(source),
             Self::Event(value) => std::error::Error::source(value),

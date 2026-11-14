@@ -397,6 +397,13 @@ impl VarIndex {
     }
 
     /// Adds `v` unless the key has a binding already.
+    fn clear(&mut self) {
+        if self.len != 0 {
+            self.slots.fill((0, 0));
+            self.len = 0;
+        }
+    }
+
     fn insert(&mut self, key: u64, v: VarId) {
         if (self.len + 1) * 2 > self.slots.len() {
             let cap = (self.slots.len() * 2).max(64);
@@ -425,33 +432,79 @@ impl VarIndex {
 
 pub(super) const BODY_SCOPE: ScopeId = 0;
 
+#[derive(Default)]
+pub(super) struct Spare {
+    children: Vec<FuncId>,
+    code: CodeBuf<Phase1>,
+    scopes: Vec<Scope>,
+    vars: Vec<Var>,
+    refs: Vec<NameRef>,
+    captures: Vec<Capture>,
+    capture_names: Vec<Atom>,
+    consts: Vec<Value>,
+    handlers: Vec<HandlerLabels>,
+    lines: Vec<(u32, u32)>,
+    var_decls: Vec<(Atom, ScopeId)>,
+    params: Vec<VarId>,
+    param_props: Vec<Atom>,
+    index: VarIndex,
+    temps: Vec<(VarId, &'static str, u32)>,
+}
+
 impl FuncState {
     pub fn new(id: FuncId, kind: FuncKind, parent: Option<(FuncId, ScopeId)>) -> Self {
+        Self::reusing(id, kind, parent, Spare::default())
+    }
+
+    pub fn reusing(
+        id: FuncId,
+        kind: FuncKind,
+        parent: Option<(FuncId, ScopeId)>,
+        spare: Spare,
+    ) -> Self {
+        let Spare {
+            children,
+            code,
+            mut scopes,
+            vars,
+            refs,
+            captures,
+            capture_names,
+            consts,
+            handlers,
+            lines,
+            var_decls,
+            params,
+            param_props,
+            index,
+            temps,
+        } = spare;
+        scopes.push(Scope {
+            parent: None,
+            #[cfg(feature = "dump")]
+            pos: 0,
+            kind: ScopeKind::Body,
+            vars: Vec::new(),
+            funcs: Vec::new(),
+            copies: Vec::new(),
+        });
         FuncState {
             id,
             kind,
             parent,
-            children: Vec::new(),
+            children,
             name: Atom::NULL,
-            code: CodeBuf::phase1(),
-            scopes: alloc::vec![Scope {
-                parent: None,
-                #[cfg(feature = "dump")]
-                pos: 0,
-                kind: ScopeKind::Body,
-                vars: Vec::new(),
-                funcs: Vec::new(),
-                copies: Vec::new(),
-            }],
-            vars: Vec::new(),
-            refs: Vec::new(),
-            captures: Vec::new(),
-            capture_names: Vec::new(),
-            consts: Vec::new(),
-            handlers: Vec::new(),
-            lines: Vec::new(),
-            var_decls: Vec::new(),
-            params: Vec::new(),
+            code: CodeBuf::phase1_from(code),
+            scopes,
+            vars,
+            refs,
+            captures,
+            capture_names,
+            consts,
+            handlers,
+            lines,
+            var_decls,
+            params,
             param_count: 0,
             length: 0,
             simple_params: true,
@@ -476,11 +529,11 @@ impl FuncState {
             async_region: None,
             src_start: 0,
             src_end: 0,
-            param_props: Vec::new(),
+            param_props,
             ns: None,
             var_scope: BODY_SCOPE,
-            index: VarIndex::default(),
-            temps: Vec::new(),
+            index,
+            temps,
             #[cfg(feature = "dump")]
             smap: None,
             #[cfg(feature = "lazy")]
@@ -493,6 +546,58 @@ impl FuncState {
             owner: FuncKind::Normal,
             #[cfg(feature = "lazy")]
             after_q: false,
+        }
+    }
+
+    pub fn recycle(self) -> Spare {
+        let FuncState {
+            mut children,
+            code,
+            mut scopes,
+            mut vars,
+            mut refs,
+            mut captures,
+            mut capture_names,
+            mut consts,
+            mut handlers,
+            mut lines,
+            mut var_decls,
+            mut params,
+            mut param_props,
+            mut index,
+            mut temps,
+            ..
+        } = self;
+        children.clear();
+        scopes.clear();
+        vars.clear();
+        refs.clear();
+        captures.clear();
+        capture_names.clear();
+        consts.clear();
+        handlers.clear();
+        lines.clear();
+        var_decls.clear();
+        params.clear();
+        param_props.clear();
+        index.clear();
+        temps.clear();
+        Spare {
+            children,
+            code,
+            scopes,
+            vars,
+            refs,
+            captures,
+            capture_names,
+            consts,
+            handlers,
+            lines,
+            var_decls,
+            params,
+            param_props,
+            index,
+            temps,
         }
     }
 

@@ -330,6 +330,7 @@ impl<'a, 'h> Parser<'a, 'h> {
         let atom_new_target = crate::heap::atoms::NEW_TARGET;
         let atom_home = crate::heap::atoms::HOME;
         let atom_active = crate::heap::atoms::ACTIVE;
+        let f = FuncState::reusing(0, kind, None, heap.compile_scratch.spare());
         let mut p = Parser {
             lx,
             tok,
@@ -337,7 +338,7 @@ impl<'a, 'h> Parser<'a, 'h> {
             src,
             heap,
             opts,
-            f: FuncState::new(0, kind, None),
+            f,
             stack: Vec::new(),
             done: alloc::vec![None],
             scope: BODY_SCOPE,
@@ -574,8 +575,9 @@ impl<'a, 'h> Parser<'a, 'h> {
     pub fn begin_function(&mut self, kind: FuncKind) -> PResult<()> {
         let id = self.done.len() as FuncId;
         self.done.push(None);
+        let spare = self.heap.compile_scratch.spare();
         #[allow(unused_mut)]
-        let mut child = FuncState::new(id, kind, Some((self.f.id, self.scope)));
+        let mut child = FuncState::reusing(id, kind, Some((self.f.id, self.scope)), spare);
         #[cfg(feature = "dump")]
         if self.smaps {
             child.smap = Some(Default::default());

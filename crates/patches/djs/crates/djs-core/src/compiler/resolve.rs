@@ -590,8 +590,9 @@ pub(super) fn finish(
             }
             _ => {}
         }
-        let mut phase1 = core::mem::take(&mut f.code)
-            .finish()
+        let mut phase1 = f
+            .code
+            .take_finished()
             .map_err(|e| internal(&crate::detail::detail("bytecode", &e)))?;
         let f = &funcs[id];
         let t = emit_function(
@@ -618,7 +619,12 @@ pub(super) fn finish(
             maps.as_deref_mut(),
         )?;
         templates[id] = t;
+        funcs[id].code.reclaim(phase1);
     }
+    scratch.spares.clear();
+    scratch
+        .spares
+        .extend(funcs.into_iter().map(FuncState::recycle));
     heap.compile_scratch = scratch;
     #[cfg(not(feature = "lazy"))]
     {
@@ -632,7 +638,7 @@ pub(super) fn finish(
             if pool.values.is_empty() {
                 continue;
             }
-            let members: Vec<Ref> = (0..funcs.len())
+            let members: Vec<Ref> = (0..templates.len())
                 .filter(|&id| plan.pool_of[id] == i && plan.emit[id] == 2)
                 .map(|id| templates[id])
                 .collect();
@@ -1603,6 +1609,7 @@ fn emit_function(
         children,
         names: all_names,
         line_bytes,
+        spares: core::mem::take(&mut scratch.spares),
     };
     t
 }
@@ -1685,6 +1692,13 @@ pub(crate) struct Scratch {
     children: Vec<Ref>,
     names: Vec<Atom>,
     line_bytes: Vec<u8>,
+    spares: Vec<super::func::Spare>,
+}
+
+impl Scratch {
+    pub(super) fn spare(&mut self) -> super::func::Spare {
+        self.spares.pop().unwrap_or_default()
+    }
 }
 
 /// A const enum member read through the binding of declaration `d`: the

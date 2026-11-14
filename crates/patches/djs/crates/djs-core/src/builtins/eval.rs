@@ -78,14 +78,25 @@ pub(crate) fn compile_function(
     params: Str,
     body: Str,
 ) -> Compiled {
-    let mut src = Vec::new();
-    src.extend_from_slice(kind.prefix().as_bytes());
-    src.extend_from_slice(b" anonymous(");
-    src.extend_from_slice(&utf8(heap, params));
+    const NAME: &str = " anonymous(";
+    const OPEN: &str = "\n) {\n";
+    const CLOSE: &str = "\n}";
+    let mut src = alloc::string::String::with_capacity(
+        kind.prefix().len()
+            + NAME.len()
+            + heap.str_len(params) as usize
+            + OPEN.len()
+            + heap.str_len(body) as usize
+            + CLOSE.len(),
+    );
+    src.push_str(kind.prefix());
+    src.push_str(NAME);
+    heap.push_str_to(params, &mut src);
     let params_close = src.len() as u32 + 1;
-    src.extend_from_slice(b"\n) {\n");
-    src.extend_from_slice(&utf8(heap, body));
-    src.extend_from_slice(b"\n}");
+    src.push_str(OPEN);
+    heap.push_str_to(body, &mut src);
+    src.push_str(CLOSE);
+    let src = src.into_bytes();
     match compiler::compile_dynamic_function(
         heap,
         &src,

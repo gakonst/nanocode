@@ -177,7 +177,16 @@ impl CodeBuf<Final> {
 impl CodeBuf<Phase1> {
     /// An empty buffer for phase-1 code.
     pub fn phase1() -> Self {
-        let mut b = Self::make(0);
+        Self::phase1_from(Self::make(0))
+    }
+
+    pub fn phase1_from(mut b: Self) -> Self {
+        b.code.clear();
+        b.insns.clear();
+        b.labels.clear();
+        b.fixups.clear();
+        b.last = None;
+        b.error = None;
         // Most functions are small: start where doubling from 4 would take three steps.
         b.insns.reserve(32);
         b
@@ -516,7 +525,11 @@ impl CodeBuf<Phase1> {
     }
 
     /// Checks that every label used by a jump was placed and returns the code.
-    pub fn finish(self) -> Result<Phase1Code, CodeError> {
+    pub fn finish(mut self) -> Result<Phase1Code, CodeError> {
+        self.take_finished()
+    }
+
+    pub fn take_finished(&mut self) -> Result<Phase1Code, CodeError> {
         if let Some(e) = self.error {
             return Err(e);
         }
@@ -526,8 +539,12 @@ impl CodeBuf<Phase1> {
             }
         }
         Ok(Phase1Code {
-            insns: self.insns,
+            insns: core::mem::take(&mut self.insns),
             label_count: self.labels.len() as u32,
         })
+    }
+
+    pub fn reclaim(&mut self, code: Phase1Code) {
+        self.insns = code.insns;
     }
 }

@@ -18,7 +18,7 @@ pub(crate) struct SystemRandom;
 
 impl RandomSource for SystemRandom {
     fn fill(&mut self, out: &mut [u8]) -> Result<(), Error> {
-        getrandom::fill(out).map_err(|_| Error::RngFailed)
+        nanocode_platform::fill_random(out).map_err(|_| Error::RngFailed)
     }
 }
 

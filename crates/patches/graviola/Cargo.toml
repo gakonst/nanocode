@@ -24,8 +24,7 @@ doctest = false
 bench = false
 
 [dependencies]
-cfg-if = "1"
-getrandom = "0.3"
+nanocode-platform = { path = "../../core/platform" }
 
 [lints.rust.unexpected_cfgs]
 level = "warn"

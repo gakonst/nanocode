@@ -208,19 +208,8 @@ impl HaveBmi2 {
         }
     }
 }
-#[cfg(not(debug_assertions))]
 pub(crate) fn test_toggle(_id: &str, detected: bool) -> bool {
     detected
-}
-
-#[cfg(debug_assertions)]
-pub(crate) fn test_toggle(id: &str, detected: bool) -> bool {
-    if std::env::var(format!("GRAVIOLA_CPU_DISABLE_{id}")).is_ok() {
-        println!("DEBUG: denying cpuid {id:?}");
-        false
-    } else {
-        detected
-    }
 }
 
 pub(crate) fn verify_cpu_features() {

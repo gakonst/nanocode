@@ -6,8 +6,8 @@ use std::{
     task::{Context, Poll, Waker},
 };
 
+use nanocode_io::{AsyncRead, AsyncWrite, ReadBuf};
 use nanocode_sync::Slot;
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 use crate::rng::Rng;
 

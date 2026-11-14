@@ -6,9 +6,9 @@ use std::{
     time::Duration,
 };
 
+use nanocode_io::ReadBuf;
 use nanocode_platform::{Instant, now};
 use nanocode_sync::{Atom, Slot};
-use tokio::io::ReadBuf;
 
 use crate::wire::Connection;
 
@@ -92,7 +92,7 @@ fn open(connection: &mut Connection) -> bool {
     let mut buffer = ReadBuf::new(&mut probe);
     let mut context = Context::from_waker(std::task::Waker::noop());
     matches!(
-        tokio::io::AsyncRead::poll_read(Pin::new(connection.io_mut()), &mut context, &mut buffer),
+        nanocode_io::AsyncRead::poll_read(Pin::new(connection.io_mut()), &mut context, &mut buffer),
         Poll::Pending
     )
 }

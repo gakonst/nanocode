@@ -170,13 +170,13 @@ impl<P: PaymentProvider + 'static> ForwardProxy<P> {
             }
         }
         drop(bundle);
-        let runtime = tokio::runtime::Builder::new_current_thread()
+        let runtime = nanocode_executor::Builder::new_current_thread()
             .enable_all()
             .build()?;
         self.listener.set_nonblocking(true)?;
         let listener = {
             let _runtime = runtime.enter();
-            tokio::net::TcpListener::from_std(self.listener)?
+            nanocode_executor::TcpListener::from_std(self.listener)?
         };
         let client = nanocode_http::Client::builder()
             .no_proxy()
@@ -297,11 +297,11 @@ impl<P: PaymentProvider + 'static> Proxy<P> {
             });
             return Reply::empty();
         }
-        match tokio::net::TcpStream::connect(authority.as_str()).await {
+        match nanocode_executor::TcpStream::connect(authority.as_str()).await {
             Ok(mut server) => {
                 nanocode_platform::spawn_task(async move {
                     if let Ok(mut upgraded) = upgrade.await {
-                        let _ = tokio::io::copy_bidirectional(&mut upgraded, &mut server).await;
+                        let _ = nanocode_io::copy_bidirectional(&mut upgraded, &mut server).await;
                     }
                 });
                 Reply::empty()

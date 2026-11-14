@@ -415,7 +415,7 @@ pub fn run_runner_with_workspace_tools(
     factory: fn(std::path::PathBuf) -> nanocode_tool_host::WorkspaceTools,
 ) -> BackendFuture<std::result::Result<(), AttachmentError>> {
     Box::pin(async move {
-        config.workspace = tokio::fs::canonicalize(&config.workspace)
+        config.workspace = nanocode_executor::fs::canonicalize(&config.workspace)
             .await
             .map_err(|error| AttachmentError::Transport(error.to_string().into()))?;
         let tools = tools

@@ -11,8 +11,8 @@ use std::{
     time::Instant,
 };
 
+use nanocode_io::{AsyncReadExt, AsyncWriteExt};
 use nanocode_sync::{Atom, Inbox, Slot};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use super::{SessionEnvironment, process, selection::Shell};
 
@@ -108,9 +108,9 @@ impl Idle {
             ..
         } = self;
         let pid = child.id();
-        let mut stdin = tokio::process::ChildStdin::from_std(stdin)?;
-        let mut stdout = tokio::process::ChildStdout::from_std(stdout)?;
-        let stderr = tokio::process::ChildStderr::from_std(stderr)?;
+        let mut stdin = nanocode_executor::process::ChildStdin::from_std(stdin)?;
+        let mut stdout = nanocode_executor::process::ChildStdout::from_std(stdout)?;
+        let stderr = nanocode_executor::process::ChildStderr::from_std(stderr)?;
         let waited = process::ProcessChild::new(
             move || {
                 child

@@ -511,7 +511,7 @@ impl EmbeddedHost {
             self.stop();
         }
         #[cfg(not(target_family = "wasm"))]
-        tokio::task::yield_now().await;
+        nanocode_executor::yield_now().await;
     }
 
     fn stop(&mut self) {

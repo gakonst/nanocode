@@ -5,11 +5,9 @@ use std::{
     task::{Context, Poll},
 };
 
+use nanocode_executor::TcpStream;
+use nanocode_io::{AsyncRead, AsyncWrite, ReadBuf};
 use nanocode_tls::rustls::{ClientConfig, pki_types::ServerName};
-use tokio::{
-    io::{AsyncRead, AsyncWrite, ReadBuf},
-    net::TcpStream,
-};
 
 use crate::{
     error::{Error, Result, TlsError, UrlError},

@@ -9,8 +9,8 @@ use nanocode_compression::{
     miniz::{self, Format, Level},
 };
 use nanocode_http::types::{HeaderMap, header};
+use nanocode_io::{AsyncRead, AsyncWrite, ReadBuf};
 use nanocode_websocket::WebSocketConfig;
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 const EXTENSION: &str = "permessage-deflate";
 pub(crate) const OFFER: &str = "permessage-deflate; client_no_context_takeover";

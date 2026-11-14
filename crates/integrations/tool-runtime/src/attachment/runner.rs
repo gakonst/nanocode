@@ -31,7 +31,7 @@ pub fn run_runner_with_tools(
 ) -> nanocode_sync::future::BoxFuture<'static, Result<(), AttachmentError>> {
     Box::pin(async move {
         super::RemoteRunner::new(config.name.clone())?;
-        let workspace = tokio::fs::canonicalize(&config.workspace)
+        let workspace = nanocode_executor::fs::canonicalize(&config.workspace)
             .await
             .map_err(|error| AttachmentError::Transport(error.to_string().into()))?;
         let metadata = super::AttachmentMetadata::machine(super::AttachmentMachine::new(
@@ -49,7 +49,7 @@ pub fn run_runner_with_tools(
                 nanocode_sync::select! {
                     result = attachment.closed() => result,
                     _ = async { while let Some(event) = events.recv().await { log_event(&event); } } => attachment.closed().await,
-                    signal = tokio::signal::ctrl_c() => { signal.map_err(|error| AttachmentError::Transport(error.to_string().into()))?; attachment.detach().await },
+                    signal = nanocode_executor::signal::ctrl_c() => { signal.map_err(|error| AttachmentError::Transport(error.to_string().into()))?; attachment.detach().await },
                 }
             }
             RunnerEndpoint::Listen(address) => {
@@ -57,7 +57,7 @@ pub fn run_runner_with_tools(
                     return Err(AttachmentError::Transport("plaintext runner listeners require a loopback address; use a TLS proxy for remote access".into()));
                 }
                 let target = AttachmentTarget::new(format!("ws://{address}/"), config.token)?;
-                let listener = tokio::net::TcpListener::bind(address)
+                let listener = nanocode_executor::TcpListener::bind(address)
                     .await
                     .map_err(|error| AttachmentError::Transport(error.to_string().into()))?;
                 let runtime = Arc::new(
@@ -86,7 +86,7 @@ pub fn run_runner_with_tools(
                 nanocode_sync::select! {
                     _ = &mut running => {},
                     _ = async { while let Some(event) = event_rx.recv().await { log_event(&event); } } => {},
-                    signal = tokio::signal::ctrl_c() => {
+                    signal = nanocode_executor::signal::ctrl_c() => {
                         signal.map_err(|error| AttachmentError::Transport(error.to_string().into()))?;
                         let _ = commands.send(driver::Command::Detach).await;
                         running.await;

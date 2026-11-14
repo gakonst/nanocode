@@ -8,7 +8,7 @@ use std::{
     task::{Context, Poll, Waker},
 };
 
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use nanocode_io::{AsyncRead, AsyncWrite, ReadBuf};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum End {

@@ -2,12 +2,12 @@ use crate::{
     driver::{McpClient, McpError},
     tool::{Limits, STOPPED, stepped},
 };
+use nanocode_executor::process::Command;
 use nanocode_platform::timeout;
 use nanocode_sync::Owned;
 use nanocode_tool_contracts::ToolOutput;
 use serde_json::{Map, Value, json};
 use std::sync::Arc;
-use tokio::process::Command;
 
 type Spawn = Arc<dyn Fn() -> Command + Send + Sync>;
 

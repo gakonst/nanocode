@@ -24,10 +24,11 @@ serde_json.workspace = true
 nanocode-trace.workspace = true
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
+nanocode-io.workspace = true
 nanocode-process.workspace = true
 nanocode-http.workspace = true
 nanocode-tls.workspace = true
-tokio = { workspace = true, features = ["fs", "io-util", "net", "rt", "signal", "time"] }
+nanocode-executor.workspace = true
 nanocode-websocket.workspace = true
 nanocode-url.workspace = true
 nanocode-platform.workspace = true

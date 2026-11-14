@@ -1,5 +1,6 @@
 use std::{
     marker::PhantomData,
+    pin::Pin,
     ptr,
     sync::{
         Arc,
@@ -62,6 +63,41 @@ fn reclaim_box<T>(raw: *mut T) -> Option<Box<T>> {
         return None;
     }
     Some(unsafe { Box::from_raw(raw) })
+}
+
+pub struct AtomicPinBox<T> {
+    inner: AtomicBox<T>,
+}
+
+impl<T> Default for AtomicPinBox<T> {
+    fn default() -> Self {
+        Self::empty()
+    }
+}
+
+impl<T> AtomicPinBox<T> {
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self {
+            inner: AtomicBox::empty(),
+        }
+    }
+
+    #[must_use]
+    pub fn new(value: T) -> Self {
+        Self {
+            inner: AtomicBox::new(Some(Box::new(value))),
+        }
+    }
+
+    pub fn take(&self) -> Option<Pin<Box<T>>> {
+        self.inner.take().map(Box::into_pin)
+    }
+
+    pub fn store(&self, value: Option<Pin<Box<T>>>) {
+        self.inner
+            .store(value.map(|value| unsafe { Pin::into_inner_unchecked(value) }));
+    }
 }
 
 pub struct AtomicArc<T> {

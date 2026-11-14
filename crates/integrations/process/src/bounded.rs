@@ -1,8 +1,6 @@
+use nanocode_executor::process::Command;
+use nanocode_io::{AsyncReadExt as _, AsyncWriteExt as _};
 use std::{io, process::Stdio, time::Duration};
-use tokio::{
-    io::{AsyncReadExt as _, AsyncWriteExt as _},
-    process::Command,
-};
 
 pub enum Input<'a> {
     Bytes(&'a [u8]),

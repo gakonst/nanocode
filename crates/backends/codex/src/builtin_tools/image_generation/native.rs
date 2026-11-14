@@ -181,17 +181,17 @@ async fn write_image(path: PathBuf, bytes: Vec<u8>) -> Result<PathBuf, String> {
     let parent = path
         .parent()
         .ok_or_else(|| format!("generated image path `{}` has no parent", path.display()))?;
-    tokio::fs::create_dir_all(parent)
+    nanocode_executor::fs::create_dir_all(parent)
         .await
         .map_err(|error| format!("unable to create `{}`: {error}", parent.display()))?;
-    tokio::fs::write(&path, bytes)
+    nanocode_executor::fs::write(&path, bytes)
         .await
         .map_err(|error| format!("unable to write `{}`: {error}", path.display()))?;
     Ok(path)
 }
 
 async fn local_image_url(path: PathBuf) -> Result<String, String> {
-    let bytes = tokio::fs::read(&path).await.map_err(|error| {
+    let bytes = nanocode_executor::fs::read(&path).await.map_err(|error| {
         format!(
             "unable to read referenced image at `{}`: {error}",
             path.display()

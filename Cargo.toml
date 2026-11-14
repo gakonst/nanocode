@@ -13,6 +13,7 @@ members = [
     "crates/core/itoa",
     "crates/core/memchr",
     "crates/core/process",
+    "crates/core/executor",
     "crates/integrations/agent-host",
     "crates/runtime/tool-host",
     "crates/runtime/code-mode",
@@ -138,6 +139,8 @@ nanocode-python-capi = { version = "0.7.0", path = "crates/core/python-capi" }
 nanocode-machine = { version = "0.7.0", path = "crates/core/machine" }
 nanocode-sync = { version = "0.7.0", path = "crates/core/sync" }
 nanocode-trace = { version = "0.7.0", path = "crates/core/trace" }
+nanocode-io = { version = "0.7.0", path = "crates/core/io" }
+nanocode-executor = { version = "0.7.0", path = "crates/core/executor" }
 nanocode-sys = { version = "0.7.0", path = "crates/core/sys" }
 nanocode-flags = { version = "0.7.0", path = "crates/core/flags" }
 nanocode-tempo = { version = "0.7.0", path = "crates/core/tempo" }
@@ -166,7 +169,6 @@ psh-engine = { path = "crates/patches/psh/crates/psh-engine" }
 psh-utils = { path = "crates/patches/psh/crates/psh-utils" }
 serde = { version = "1.0.228", features = ["derive", "rc"] }
 serde_json = { version = "1.0.149", features = ["float_roundtrip", "raw_value"] }
-tokio = "1.48.0"
 unicode-normalization = { path = "crates/core/unicode-normalization" }
 nanocode-url = { version = "0.7.0", path = "crates/core/url" }
 nanocode-zstd = { version = "0.7.0", path = "crates/core/zstd" }

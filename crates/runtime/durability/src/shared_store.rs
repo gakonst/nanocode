@@ -1864,11 +1864,11 @@ pub(crate) fn spawn_driver(driver: impl Future<Output = ()> + Send + 'static) ->
         host.spawn(Box::pin(driver));
         return Ok(());
     }
-    static RUNTIME: std::sync::OnceLock<Option<tokio::runtime::Handle>> =
+    static RUNTIME: std::sync::OnceLock<Option<nanocode_executor::Handle>> =
         std::sync::OnceLock::new();
     let runtime = RUNTIME
         .get_or_init(|| {
-            let runtime = tokio::runtime::Builder::new_current_thread()
+            let runtime = nanocode_executor::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .ok()?;

@@ -6,16 +6,14 @@ use crate::egress::{
     tls::Tls,
     wire::{Credential, Grant, Secret},
 };
+use nanocode_executor::JoinHandle;
+use nanocode_executor::{TcpListener, UnixListener};
 use std::{
     io,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
-};
-use tokio::{
-    net::{TcpListener, UnixListener},
-    task::JoinHandle,
 };
 
 const LOCAL: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);

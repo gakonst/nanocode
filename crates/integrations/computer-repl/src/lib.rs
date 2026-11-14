@@ -3,6 +3,8 @@
 #[cfg(unix)]
 pub mod browser;
 
+use nanocode_executor::process::{Child, ChildStdin, ChildStdout, Command};
+use nanocode_io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use nanocode_sync::{mpsc, oneshot};
 use nanocode_sys::base64::STANDARD;
 use nanocode_tool_contracts::{
@@ -20,10 +22,6 @@ use std::{
     process::Stdio,
     sync::Arc,
     time::Duration,
-};
-use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
-    process::{Child, ChildStdin, ChildStdout, Command},
 };
 
 const BASE64_ERROR: &str = "Base64Error";

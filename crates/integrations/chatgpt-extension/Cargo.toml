@@ -15,6 +15,7 @@ description = "Drive Chromium tabs through the official ChatGPT extension by pro
 include = ["src/**", "Cargo.toml"]
 
 [target.'cfg(unix)'.dependencies]
+nanocode-io.workspace = true
 nanocode-platform.workspace = true
 nanocode-sync.workspace = true
 nanocode-tool-contracts.workspace = true
@@ -22,7 +23,7 @@ libc.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 nanocode-digest.workspace = true
-tokio = { workspace = true, features = ["io-util", "net", "rt", "time"] }
+nanocode-executor.workspace = true
 nanocode-url.workspace = true
 
 [lints]

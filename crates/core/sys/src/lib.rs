@@ -8,10 +8,12 @@ pub mod blake3;
 #[cfg(all(target_vendor = "apple", not(target_os = "macos")))]
 pub mod security;
 mod atomic;
+mod bilock;
 pub mod queue;
 pub mod base64;
 pub mod crc32;
 mod decimal;
+mod exclusive;
 pub mod lz4;
 pub mod memchr;
 #[cfg(target_os = "macos")]
@@ -40,8 +42,10 @@ pub mod trust_settings;
 pub mod webp;
 mod zero;
 
-pub use atomic::{AtomicArc, AtomicBox, AtomicStatic};
+pub use atomic::{AtomicArc, AtomicBox, AtomicPinBox, AtomicStatic};
+pub use bilock::{BiLock, BiLockGuard};
 pub use decimal::DecimalText;
+pub use exclusive::Exclusive;
 pub use inline::{InlineVec, OwnedItems, new_arc_with};
 pub use pin::{Scope, Scoped};
 #[cfg(any(unix, windows))]

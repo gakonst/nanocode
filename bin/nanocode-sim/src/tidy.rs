@@ -27,15 +27,17 @@ const BANNED: &[(&str, &str)] = &[
     ("thread::spawn", BYPASSES_HOST),
     ("thread::Builder", BYPASSES_HOST),
     ("getrandom", BYPASSES_HOST),
-    ("tokio::time", BYPASSES_HOST),
-    ("tokio::spawn", BYPASSES_HOST),
-    ("tokio::runtime", BYPASSES_HOST),
+    ("nanocode_executor::sleep", BYPASSES_HOST),
+    ("nanocode_executor::timeout", BYPASSES_HOST),
+    ("nanocode_executor::spawn", BYPASSES_HOST),
+    ("nanocode_executor::Builder", BYPASSES_HOST),
+    ("nanocode_executor::Handle", BYPASSES_HOST),
     ("FuturesUnordered", WAKE_ORDER),
     ("FuturesOrdered", JOIN_ORDER),
     ("join_all", JOIN_ORDER),
 ];
 
-const TOKIO_GROUP: &str = "use tokio::{";
+const EXECUTOR_GROUP: &str = "use nanocode_executor::{";
 
 struct Allowed {
     path: &'static str,
@@ -119,8 +121,14 @@ const ALLOWED: &[Allowed] = &[
     },
     Allowed {
         path: "crates/runtime/durability/src/shared_store.rs",
-        call: "tokio::runtime",
-        uses: 2,
+        call: "nanocode_executor::Handle",
+        uses: 1,
+        why: "without a host, SharedStore drivers run on one current_thread runtime on their own thread; spawn_driver gives them to an installed host first",
+    },
+    Allowed {
+        path: "crates/runtime/durability/src/shared_store.rs",
+        call: "nanocode_executor::Builder",
+        uses: 1,
         why: "without a host, SharedStore drivers run on one current_thread runtime on their own thread; spawn_driver gives them to an installed host first",
     },
     Allowed {
@@ -149,14 +157,20 @@ fn sources(directory: &Path, found: &mut Vec<PathBuf>) -> std::io::Result<()> {
 fn grouped(member: &str) -> Option<&'static str> {
     let member = member.trim();
     let name = member.split_whitespace().next().unwrap_or_default();
-    if name == "spawn" {
-        return Some("tokio::spawn");
+    if name.starts_with("spawn") {
+        return Some("nanocode_executor::spawn");
     }
-    if name == "time" || name.starts_with("time::") {
-        return Some("tokio::time");
+    if name.starts_with("sleep") {
+        return Some("nanocode_executor::sleep");
     }
-    if name == "runtime" || name.starts_with("runtime::") {
-        return Some("tokio::runtime");
+    if name.starts_with("timeout") {
+        return Some("nanocode_executor::timeout");
+    }
+    if name == "Builder" {
+        return Some("nanocode_executor::Builder");
+    }
+    if name == "Handle" {
+        return Some("nanocode_executor::Handle");
     }
     None
 }
@@ -170,9 +184,9 @@ impl Group {
     fn calls(&mut self, line: &str) -> Vec<&'static str> {
         let inside = if self.depth > 0 {
             line
-        } else if let Some(at) = line.find(TOKIO_GROUP) {
+        } else if let Some(at) = line.find(EXECUTOR_GROUP) {
             self.depth = 1;
-            &line[at + TOKIO_GROUP.len()..]
+            &line[at + EXECUTOR_GROUP.len()..]
         } else {
             return Vec::new();
         };

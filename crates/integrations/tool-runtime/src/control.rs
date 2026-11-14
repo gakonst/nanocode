@@ -1,3 +1,5 @@
+use nanocode_executor::{UnixListener, UnixStream};
+use nanocode_io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use nanocode_platform::{sleep, timeout};
 use nanocode_sync::mpsc;
 use std::{
@@ -7,10 +9,6 @@ use std::{
     os::unix::fs::PermissionsExt,
     path::Path,
     time::Duration,
-};
-use tokio::{
-    io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
-    net::{UnixListener, UnixStream},
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -109,11 +107,7 @@ where
 
 pub async fn read_line(reader: &mut (impl AsyncBufRead + Unpin), max: u64) -> Option<String> {
     let mut line = Vec::new();
-    let read = (&mut *reader)
-        .take(max)
-        .read_until(b'\n', &mut line)
-        .await
-        .ok()?;
+    let read = reader.take(max).read_until(b'\n', &mut line).await.ok()?;
     if read == 0 || (line.last() != Some(&b'\n') && read as u64 >= max) {
         return None;
     }

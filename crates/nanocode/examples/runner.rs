@@ -14,11 +14,9 @@ mod native {
         attachment::AttachmentTarget,
         remote::{SocketPolicy, serve_accept, serve_connect},
     };
+    use nanocode_executor::{JoinError, JoinSet};
+    use nanocode_executor::{TcpListener, TcpStream};
     use nanocode_sync::watch;
-    use tokio::{
-        net::{TcpListener, TcpStream},
-        task::{JoinError, JoinSet},
-    };
 
     type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
 
@@ -147,14 +145,14 @@ a second signal during multi-session shutdown aborts the remaining sessions.
 
     #[cfg(unix)]
     struct Shutdown {
-        interrupt: tokio::signal::unix::Signal,
-        terminate: tokio::signal::unix::Signal,
+        interrupt: nanocode_executor::signal::unix::Signal,
+        terminate: nanocode_executor::signal::unix::Signal,
     }
 
     #[cfg(unix)]
     impl Shutdown {
         fn install() -> Result<Self> {
-            use tokio::signal::unix::{SignalKind, signal};
+            use nanocode_executor::signal::unix::{SignalKind, signal};
             Ok(Self {
                 interrupt: signal(SignalKind::interrupt())?,
                 terminate: signal(SignalKind::terminate())?,
@@ -179,7 +177,7 @@ a second signal during multi-session shutdown aborts the remaining sessions.
         }
 
         async fn recv(&mut self) -> Result<&'static str> {
-            tokio::signal::ctrl_c().await?;
+            nanocode_executor::signal::ctrl_c().await?;
             Ok("Ctrl-C")
         }
     }
@@ -208,7 +206,7 @@ a second signal during multi-session shutdown aborts the remaining sessions.
 
     async fn run(args: Args, token: String) -> Result<()> {
         let mut shutdown = Shutdown::install()?;
-        let workspace = tokio::fs::canonicalize(&args.workspace).await?;
+        let workspace = nanocode_executor::fs::canonicalize(&args.workspace).await?;
         let tools = Tools::builder()
             .web_search(false)
             .image_generation(false)
@@ -401,7 +399,7 @@ a second signal during multi-session shutdown aborts the remaining sessions.
     }
 
     async fn bridge(mut brain: TcpStream, mut upstream: TcpStream) -> std::io::Result<()> {
-        tokio::io::copy_bidirectional(&mut brain, &mut upstream)
+        nanocode_io::copy_bidirectional(&mut brain, &mut upstream)
             .await
             .map(drop)
     }
@@ -417,11 +415,11 @@ a second signal during multi-session shutdown aborts the remaining sessions.
         }
         let token = read_token(&args.token)?;
         let runtime = if args.multi_session {
-            tokio::runtime::Builder::new_multi_thread()
+            nanocode_executor::Builder::new_multi_thread()
                 .enable_all()
                 .build()?
         } else {
-            tokio::runtime::Builder::new_current_thread()
+            nanocode_executor::Builder::new_current_thread()
                 .enable_all()
                 .build()?
         };

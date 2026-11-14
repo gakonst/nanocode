@@ -10,10 +10,10 @@ pub struct Exhausted;
 #[cfg(not(target_family = "wasm"))]
 #[inline]
 pub fn budget(context: &mut Context<'_>) -> Poll<()> {
-    if tokio::task::coop::has_budget_remaining() {
+    if nanocode_executor::coop::has_budget_remaining() {
         return Poll::Ready(());
     }
-    tokio::task::coop::poll_proceed(context).map(drop)
+    nanocode_executor::coop::poll_proceed(context).map(drop)
 }
 
 #[cfg(target_family = "wasm")]

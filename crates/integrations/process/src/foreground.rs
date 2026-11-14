@@ -1,6 +1,6 @@
 use super::{process, selection};
+use nanocode_io::{AsyncRead, AsyncReadExt};
 use std::{ffi::OsString, path::Path, time::Duration};
-use tokio::io::{AsyncRead, AsyncReadExt};
 
 pub use nanocode_process_contracts::{ForegroundOutput, OutputSink};
 

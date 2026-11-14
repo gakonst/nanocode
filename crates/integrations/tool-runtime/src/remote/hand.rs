@@ -4,7 +4,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use tokio::net::TcpListener;
+use nanocode_executor::TcpListener;
 
 use super::native::{
     Dial, DialStages, Role, Served, SocketPolicy, dial_staged, error, hand_core, request_headers,
@@ -253,7 +253,9 @@ impl Hand {
                 Some(directory) => directory,
                 None => std::env::current_dir().map_err(error)?,
             };
-            let directory = tokio::fs::canonicalize(&directory).await.map_err(error)?;
+            let directory = nanocode_executor::fs::canonicalize(&directory)
+                .await
+                .map_err(error)?;
             let name = match self.name {
                 Some(name) => name,
                 None => Self::machine_name()?,
@@ -471,8 +473,8 @@ impl Hand {
                     events(HandEvent::Listening {
                         endpoint: format!("ws://{}/", listener.local_addr().map_err(error)?),
                     });
-                    let mut connections: tokio::task::JoinSet<Result<(), CodeModeHostError>> =
-                        tokio::task::JoinSet::new();
+                    let mut connections: nanocode_executor::JoinSet<Result<(), CodeModeHostError>> =
+                        nanocode_executor::JoinSet::new();
                     loop {
                         nanocode_sync::select! {
                             Some(finished) = connections.join_next(), if !connections.is_empty() => {
@@ -507,7 +509,7 @@ impl Hand {
 }
 
 struct Serving {
-    task: tokio::task::JoinHandle<Served>,
+    task: nanocode_executor::JoinHandle<Served>,
     notes: mpsc::UnboundedReceiver<Note>,
 }
 
@@ -543,7 +545,7 @@ impl Serving {
     }
 }
 
-async fn ended(task: &mut tokio::task::JoinHandle<Served>) -> Served {
+async fn ended(task: &mut nanocode_executor::JoinHandle<Served>) -> Served {
     task.await.unwrap_or_else(|issue| Served {
         result: Err(error(issue)),
         close_code: None,

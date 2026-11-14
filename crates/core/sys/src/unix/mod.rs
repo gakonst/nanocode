@@ -1,6 +1,8 @@
 #[cfg(target_os = "linux")]
 pub mod confine;
 mod host;
+pub mod poll;
+pub mod signal;
 
 pub use host::*;
 

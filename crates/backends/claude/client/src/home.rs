@@ -7,11 +7,9 @@ use std::{
     time::Duration,
 };
 
+use nanocode_executor::{TcpListener, TcpStream};
+use nanocode_io::{AsyncReadExt as _, AsyncWriteExt as _};
 use serde::{Deserialize, Serialize};
-use tokio::{
-    io::{AsyncReadExt as _, AsyncWriteExt as _},
-    net::{TcpListener, TcpStream},
-};
 
 use crate::{
     ClaudeAuthFuture, ClaudeAuthProvider, ClaudeAuthUnavailable,

@@ -25,7 +25,8 @@ nanocode-trace.workspace = true
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 nanocode-bytes.workspace = true
-tokio = { workspace = true, features = ["fs", "io-util", "net", "process"] }
+nanocode-io.workspace = true
+nanocode-executor.workspace = true
 nanocode-tls.workspace = true
 unicode-normalization.workspace = true
 

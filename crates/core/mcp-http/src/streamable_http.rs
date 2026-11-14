@@ -165,12 +165,12 @@ struct Cursor {
 }
 
 #[cfg(not(target_family = "wasm"))]
-type Background = tokio::task::JoinHandle<()>;
+type Background = nanocode_executor::JoinHandle<()>;
 #[cfg(target_family = "wasm")]
 type Background = nanocode_sync::future::AbortHandle;
 
 #[cfg(not(target_family = "wasm"))]
-type Tasks = tokio::task::JoinSet<Option<RequestId>>;
+type Tasks = nanocode_executor::JoinSet<Option<RequestId>>;
 #[cfg(target_family = "wasm")]
 type Tasks = nanocode_sync::stream::FuturesUnordered<
     nanocode_sync::future::LocalBoxFuture<'static, Option<RequestId>>,

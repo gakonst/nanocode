@@ -121,8 +121,8 @@ fn main() -> std::process::ExitCode {
             Ok(())
         }
         Command::Interactive => tui::run(config),
-        Command::Exec => tokio_runtime()?.block_on(exec(config, prompt)),
-        Command::Sessions => tokio_runtime()?.block_on(sessions(&config)),
+        Command::Exec => nanocode_runtime()?.block_on(exec(config, prompt)),
+        Command::Sessions => nanocode_runtime()?.block_on(sessions(&config)),
     });
     match outcome {
         Ok(()) => std::process::ExitCode::SUCCESS,
@@ -133,8 +133,8 @@ fn main() -> std::process::ExitCode {
     }
 }
 
-fn tokio_runtime() -> Result<tokio::runtime::Runtime> {
-    let mut builder = tokio::runtime::Builder::new_multi_thread();
+fn nanocode_runtime() -> Result<nanocode_executor::Runtime> {
+    let mut builder = nanocode_executor::Builder::new_multi_thread();
     builder.worker_threads(1).enable_all();
     Ok(builder.build()?)
 }

@@ -18,6 +18,7 @@ bench = false
 
 [dependencies]
 nanocode-bytes.workspace = true
+nanocode-io.workspace = true
 nanocode = { path = "../../crates/nanocode", default-features = false, features = ["local-cells"] }
 nanocode-agent-core.workspace = true
 nanocode-code-mode.workspace = true
@@ -36,7 +37,6 @@ nanocode-sys.workspace = true
 nanocode-turnlog.workspace = true
 nanocode-websocket.workspace = true
 serde_json.workspace = true
-tokio = { workspace = true, features = ["io-util"] }
 nanocode-trace.workspace = true
 
 [lints]

@@ -29,7 +29,7 @@ nanocode-platform.workspace = true
 nanocode-store-jsonl.workspace = true
 nanocode-tool-runtime.workspace = true
 nanocode-process.workspace = true
-tokio = { workspace = true, features = ["rt"] }
+nanocode-executor.workspace = true
 
 [features]
 # Computer use (trycua cua-driver and the browser extension). Off, the host

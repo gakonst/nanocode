@@ -219,7 +219,7 @@ pub fn run_with(clients: ModelClients) -> ExitCode {
     );
     let runtime_started = std::time::Instant::now();
     let runtime = match startup.in_scope(|| {
-        tokio::runtime::Builder::new_multi_thread()
+        nanocode_executor::Builder::new_multi_thread()
             .worker_threads(1)
             .enable_all()
             .build()
@@ -748,9 +748,23 @@ async fn list_sessions(args: SessionsArgs) -> Result<()> {
         .await?;
     let more = page.len() > limit;
     page.truncate(limit);
+    let elsewhere = page.is_empty()
+        && !args.all
+        && !store
+            .list_page(None, 1, |record| {
+                sessions::user_facing(record.lineage.origin)
+            })
+            .await?
+            .is_empty();
     let printed = print_sessions(&page);
     if more && printed.is_ok() {
         eprintln!("nanocode: more sessions than the {limit} shown; --limit <n> lists more");
+    }
+    if elsewhere {
+        eprintln!(
+            "nanocode: no saved sessions in {}; nanocode sessions --all lists every workspace's",
+            workspace.display()
+        );
     }
     store.flush().await?;
     Ok(unless_closed(printed)?)
@@ -900,7 +914,7 @@ async fn hand(args: HandArgs) -> Result<()> {
             result?;
             left?;
         }
-        signal = tokio::signal::ctrl_c() => {
+        signal = nanocode_executor::signal::ctrl_c() => {
             signal?;
             leave_reader()?;
         }
@@ -915,9 +929,11 @@ async fn hand(args: HandArgs) -> Result<()> {
 
 #[cfg(unix)]
 async fn terminated() -> std::io::Result<()> {
-    tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?
-        .recv()
-        .await;
+    nanocode_executor::signal::unix::signal(
+        nanocode_executor::signal::unix::SignalKind::terminate(),
+    )?
+    .recv()
+    .await;
     Ok(())
 }
 

@@ -101,7 +101,9 @@ pub(super) enum SavedExecutor {
 }
 
 pub(crate) async fn read(path: &std::path::Path) -> Result<State> {
-    Ok(serde_json::from_slice(&tokio::fs::read(path).await?)?)
+    Ok(serde_json::from_slice(
+        &nanocode_executor::fs::read(path).await?,
+    )?)
 }
 
 impl App {
@@ -302,9 +304,9 @@ impl App {
 
 #[cfg(unix)]
 pub(super) struct Instance {
-    socket: std::sync::Arc<tokio::net::UnixDatagram>,
+    socket: std::sync::Arc<nanocode_executor::UnixDatagram>,
     path: PathBuf,
-    listener: tokio::task::JoinHandle<()>,
+    listener: nanocode_executor::JoinHandle<()>,
 }
 
 #[cfg(unix)]
@@ -327,7 +329,7 @@ impl Instance {
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(error.into()),
         }
-        let socket = std::sync::Arc::new(tokio::net::UnixDatagram::bind(&path)?);
+        let socket = std::sync::Arc::new(nanocode_executor::UnixDatagram::bind(&path)?);
         let receiver = socket.clone();
         let listener = nanocode_platform::spawn_task(async move {
             let mut message = [0; REQUEST.len() + 1];
@@ -357,9 +359,10 @@ impl Instance {
     }
 
     pub(super) async fn broadcast(&self) -> Result<()> {
-        let mut entries =
-            tokio::fs::read_dir(self.path.parent().ok_or("reload socket has no directory")?)
-                .await?;
+        let mut entries = nanocode_executor::fs::read_dir(
+            self.path.parent().ok_or("reload socket has no directory")?,
+        )
+        .await?;
         let mut failures = Vec::new();
         while let Some(entry) = entries.next_entry().await? {
             let path = entry.path();
@@ -374,7 +377,7 @@ impl Instance {
                         io::ErrorKind::ConnectionRefused | io::ErrorKind::NotFound
                     ) =>
                 {
-                    if let Err(error) = tokio::fs::remove_file(&path).await
+                    if let Err(error) = nanocode_executor::fs::remove_file(&path).await
                         && error.kind() != io::ErrorKind::NotFound
                     {
                         failures.push(format!("{}: {error}", path.display()));
@@ -390,10 +393,10 @@ impl Instance {
     }
 
     pub(super) async fn save(&self, state: &State) -> Result<PathBuf> {
-        use tokio::io::AsyncWriteExt;
+        use nanocode_io::AsyncWriteExt;
         let path = self.path.with_extension("json");
         let bytes = serde_json::to_vec(state)?;
-        let mut file = tokio::fs::OpenOptions::new()
+        let mut file = nanocode_executor::fs::OpenOptions::new()
             .write(true)
             .create(true)
             .truncate(true)
@@ -409,7 +412,7 @@ impl Instance {
         self.listener.abort();
         drop(self.listener.await);
         drop(self.socket);
-        tokio::fs::remove_file(self.path).await?;
+        nanocode_executor::fs::remove_file(self.path).await?;
         Ok(())
     }
 }

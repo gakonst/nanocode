@@ -1,4 +1,6 @@
 use crate::postgres::{Host, PgError, PgOptions, TlsMode, wire};
+use nanocode_executor::TcpStream;
+use nanocode_io::{AsyncReadExt as _, AsyncWriteExt as _};
 use nanocode_sync::SwapOption;
 use rustls::{
     ClientConfig, DigitallySignedStruct, RootCertStore, SignatureScheme,
@@ -7,10 +9,6 @@ use rustls::{
     pki_types::{CertificateDer, ServerName, UnixTime, pem::PemObject},
 };
 use std::{io, sync::Arc};
-use tokio::{
-    io::{AsyncReadExt as _, AsyncWriteExt as _},
-    net::TcpStream,
-};
 
 const ACCEPTS_TLS: u8 = b'S';
 const REFUSES_TLS: u8 = b'N';
@@ -19,7 +17,7 @@ pub(super) enum Stream {
     Tcp(TcpStream),
     Tls(Box<nanocode_tls::ClientStream<TcpStream>>),
     #[cfg(unix)]
-    Unix(tokio::net::UnixStream),
+    Unix(nanocode_executor::UnixStream),
 }
 
 impl Stream {
@@ -32,7 +30,9 @@ impl Stream {
             #[cfg(unix)]
             Host::Unix(directory) => {
                 let socket = directory.join(format!(".s.PGSQL.{}", options.port));
-                return Ok(Self::Unix(tokio::net::UnixStream::connect(socket).await?));
+                return Ok(Self::Unix(
+                    nanocode_executor::UnixStream::connect(socket).await?,
+                ));
             }
             #[cfg(not(unix))]
             Host::Unix(_) => {

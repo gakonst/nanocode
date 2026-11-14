@@ -3,7 +3,7 @@ use std::{
     time::Instant,
 };
 
-use tokio::task::AbortHandle;
+use nanocode_executor::AbortHandle;
 
 use nanocode::{
     ForkRequest, PromptRequest, TurnControl,

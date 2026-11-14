@@ -233,7 +233,7 @@ Examples:
         let transport = if let Some(endpoint) = &args.connect {
             SocketTransport::connect(AttachmentTarget::new(endpoint, token)?, policy).await?
         } else {
-            let listener = tokio::net::TcpListener::bind(
+            let listener = nanocode_executor::TcpListener::bind(
                 args.listen.as_deref().ok_or("missing --listen address")?,
             )
             .await?;
@@ -359,7 +359,7 @@ Examples:
         let Some(args) = parse()? else {
             return Ok(());
         };
-        tokio::runtime::Builder::new_current_thread()
+        nanocode_executor::Builder::new_current_thread()
             .enable_all()
             .build()?
             .block_on(run(args))

@@ -2,7 +2,7 @@ use std::process::ExitCode;
 
 #[cfg(target_os = "macos")]
 fn main() -> ExitCode {
-    match tokio::runtime::Builder::new_multi_thread()
+    match nanocode_executor::Builder::new_multi_thread()
         .enable_all()
         .build()
     {

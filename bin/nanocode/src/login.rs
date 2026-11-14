@@ -202,7 +202,7 @@ async fn tempo_wallet(args: &[&str]) -> Result<serde_json::Value, String> {
         .chain([std::path::PathBuf::from("tempo")]);
     let mut ran = None;
     for program in candidates {
-        match tokio::process::Command::new(&program)
+        match nanocode_executor::process::Command::new(&program)
             .args(args)
             .args(["--format", "json"])
             .output()

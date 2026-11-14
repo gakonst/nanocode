@@ -6,6 +6,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+use nanocode_executor::{TcpListener, TcpStream, ToSocketAddrs};
 use nanocode_sync::{Atom, Slot};
 use nanocode_sync::{Sink, SinkExt, Stream, StreamExt, future};
 use nanocode_sync::{mpsc, oneshot, watch};
@@ -15,7 +16,6 @@ use nanocode_websocket::{
 };
 use serde::Deserialize;
 use serde_json::{Value, json, value::RawValue};
-use tokio::net::{TcpListener, TcpStream, ToSocketAddrs};
 
 use super::AttachmentError;
 use crate::{
@@ -1000,7 +1000,7 @@ type Runners = Arc<Atom<HashMap<Box<str>, RemoteRunner>>>;
 pub struct RunnerHost {
     endpoint: Box<str>,
     runners: Runners,
-    accept: tokio::task::JoinHandle<()>,
+    accept: nanocode_executor::JoinHandle<()>,
 }
 
 impl fmt::Debug for RunnerHost {
@@ -1074,7 +1074,7 @@ impl RunnerHost {
 }
 
 async fn accept_runners(listener: TcpListener, runners: Runners) {
-    let mut connections = tokio::task::JoinSet::new();
+    let mut connections = nanocode_executor::JoinSet::new();
     loop {
         nanocode_sync::select! {
             Some(_) = connections.join_next(), if !connections.is_empty() => {}
@@ -1298,7 +1298,7 @@ fn now_ms() -> u64 {
         })
 }
 
-pub struct RunnerConnection(tokio::task::JoinHandle<()>);
+pub struct RunnerConnection(nanocode_executor::JoinHandle<()>);
 
 impl Drop for RunnerConnection {
     fn drop(&mut self) {
@@ -1306,8 +1306,9 @@ impl Drop for RunnerConnection {
     }
 }
 
-pub(crate) type DialedSocket =
-    nanocode_websocket::WebSocketStream<nanocode_websocket::MaybeTlsStream<tokio::net::TcpStream>>;
+pub(crate) type DialedSocket = nanocode_websocket::WebSocketStream<
+    nanocode_websocket::MaybeTlsStream<nanocode_executor::TcpStream>,
+>;
 
 impl RemoteRunner {
     pub fn connect(

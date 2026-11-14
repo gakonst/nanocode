@@ -14,12 +14,13 @@ description = "Reusable native process and PTY execution"
 nanocode-process-contracts.workspace = true
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
+nanocode-io.workspace = true
 nanocode-home.workspace = true
 nanocode-sync.workspace = true
 nanocode-trace.workspace = true
 nanocode-platform.workspace = true
 serde_json.workspace = true
-tokio = { workspace = true, features = ["io-util", "process", "rt", "signal", "time"] }
+nanocode-executor.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

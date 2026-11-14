@@ -1,4 +1,9 @@
 use super::wire::{BIG_ENDIAN, LITTLE_ENDIAN, Malformed, Reader, Value, Writer, signature};
+use nanocode_executor::{
+    UnixStream,
+    net::unix::{OwnedReadHalf, OwnedWriteHalf},
+};
+use nanocode_io::{AsyncReadExt, AsyncWriteExt};
 use nanocode_sync::{mpsc, oneshot};
 use std::{
     collections::HashMap,
@@ -6,13 +11,6 @@ use std::{
     os::{
         linux::net::SocketAddrExt,
         unix::net::{SocketAddr, UnixStream as StdStream},
-    },
-};
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::{
-        UnixStream,
-        unix::{OwnedReadHalf, OwnedWriteHalf},
     },
 };
 

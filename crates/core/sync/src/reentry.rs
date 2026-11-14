@@ -1,4 +1,5 @@
 use crate::Atom;
+use nanocode_executor::{Id, try_id};
 use std::{
     collections::HashMap,
     sync::{
@@ -8,7 +9,6 @@ use std::{
     thread,
     thread::ThreadId,
 };
-use tokio::task::{Id, try_id};
 
 #[derive(Clone, Default)]
 pub struct Reentry(Arc<Claims>);

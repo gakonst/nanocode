@@ -1,18 +1,58 @@
 use crate::future::{Either, join, select};
+use nanocode_executor::TcpStream;
+use nanocode_io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf, split};
 use nanocode_platform::{Instant, sleep_until};
 use std::{
-    pin::pin,
+    io::IoSlice,
+    pin::{Pin, pin},
     sync::atomic::{AtomicU64, Ordering},
+    task::{Context, Poll},
     time::Duration,
-};
-use tokio::{
-    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, split},
-    net::TcpStream,
 };
 
 pub trait Duplex: AsyncRead + AsyncWrite + Send + Unpin {}
 
 impl<T: AsyncRead + AsyncWrite + Send + Unpin> Duplex for T {}
+
+impl AsyncRead for Box<dyn Duplex> {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut **self.get_mut()).poll_read(context, buf)
+    }
+}
+
+impl AsyncWrite for Box<dyn Duplex> {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        Pin::new(&mut **self.get_mut()).poll_write(context, buf)
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut **self.get_mut()).poll_flush(context)
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut **self.get_mut()).poll_shutdown(context)
+    }
+
+    fn poll_write_vectored(
+        self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        bufs: &[IoSlice<'_>],
+    ) -> Poll<std::io::Result<usize>> {
+        Pin::new(&mut **self.get_mut()).poll_write_vectored(context, bufs)
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        (**self).is_write_vectored()
+    }
+}
 
 pub async fn splice(a: TcpStream, b: TcpStream, idle: Duration) -> std::io::Result<()> {
     a.set_nodelay(true)?;

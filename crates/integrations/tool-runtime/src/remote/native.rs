@@ -17,13 +17,11 @@ use std::{
     time::Duration,
 };
 
+use nanocode_executor::{TcpListener, TcpStream};
+use nanocode_io::{AsyncRead, AsyncWrite};
 use nanocode_sync::{Atom, Owned, Signal};
 use nanocode_sync::{mpsc, watch};
 use nanocode_websocket::{IntoClientRequest, Message, WebSocketStream};
-use tokio::{
-    io::{AsyncRead, AsyncWrite},
-    net::{TcpListener, TcpStream},
-};
 
 #[derive(Clone, Copy)]
 pub struct SocketPolicy {
@@ -341,7 +339,7 @@ pub(super) async fn dial_staged(
         .to_owned();
     let port = uri.port_u16().unwrap_or(if secure { 443 } else { 80 });
     let socket = nanocode_platform::timeout(policy.request_timeout, async {
-        let addresses = tokio::net::lookup_host((host.as_str(), port))
+        let addresses = nanocode_executor::lookup_host((host.as_str(), port))
             .await
             .map_err(|issue| Dial::Failed(error(format!("resolving {host}: {issue}"))))?
             .collect::<Vec<_>>();
@@ -558,7 +556,7 @@ async fn write_all<S: Sink<Message, Error = nanocode_websocket::Error> + Unpin>(
     .map_err(error)
 }
 
-struct Writer(tokio::task::JoinHandle<Result<(), CodeModeHostError>>);
+struct Writer(nanocode_executor::JoinHandle<Result<(), CodeModeHostError>>);
 impl Drop for Writer {
     fn drop(&mut self) {
         self.0.abort();
@@ -797,7 +795,7 @@ struct SocketLink<S> {
 
 enum Received {
     Stopped,
-    Written(Result<Result<(), CodeModeHostError>, tokio::task::JoinError>),
+    Written(Result<Result<(), CodeModeHostError>, nanocode_executor::JoinError>),
     Frame(Result<Option<Frame>, CodeModeHostError>),
     Unresponsive,
 }

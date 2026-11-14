@@ -5652,6 +5652,10 @@ impl State {
             let error = match result {
                 Ok(mut response) => {
                     telemetry::complete_attempt(&attempt_span);
+                    let blank = |block: &ContentBlock| matches!(block, ContentBlock::Text { text, .. } if text.trim().is_empty());
+                    if !response.content.iter().all(blank) {
+                        response.content.retain(|block| !blank(block));
+                    }
                     if let (Some(thread), Some(turn)) = (thread, &turn) {
                         let completed_at = nanocode_platform::now();
                         thread

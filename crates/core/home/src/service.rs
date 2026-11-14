@@ -277,6 +277,7 @@ impl ServiceProgram {
              {restart_note}\
              Restart=on-failure\n\
              RestartSec={seconds}\n\
+             OOMPolicy=continue\n\
              \n\
              [Install]\n\
              WantedBy=default.target\n",

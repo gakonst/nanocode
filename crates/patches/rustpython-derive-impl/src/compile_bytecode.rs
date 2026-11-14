@@ -14,18 +14,16 @@
 //! ```
 
 use crate::Diagnostic;
-use proc_macro2::{Span, TokenStream};
-use quote::quote;
+use nanocode_macro_support::{Span, Tokens};
+use nanocode_macro_support::quote;
 use rustpython_compiler_core::{Mode, bytecode::CodeObject, frozen};
 use std::{
     collections::HashMap,
     fs,
     path::{Path, PathBuf},
 };
-use syn::{
-    self, LitByteStr, LitStr, Macro,
-    parse::{ParseStream, Parser, Result as ParseResult},
-    spanned::Spanned,
+use nanocode_macro_support::{
+    self, LitStr, Literal, Macro, ParseBuffer, ParseStream, Result as ParseResult, Spanned,
 };
 
 enum CompilationSourceKind {
@@ -231,15 +229,15 @@ impl CompilationSource {
 }
 
 impl PyCompileArgs {
-    fn parse(input: TokenStream, allow_dir: bool) -> Result<Self, Diagnostic> {
+    fn parse(input: Tokens, allow_dir: bool) -> Result<Self, Diagnostic> {
         let mut module_name = None;
         let mut mode = None;
         let mut source: Option<CompilationSource> = None;
         let mut crate_name = None;
 
-        fn assert_source_empty(source: Option<&CompilationSource>) -> Result<(), syn::Error> {
+        fn assert_source_empty(source: Option<&CompilationSource>) -> Result<(), nanocode_macro_support::Error> {
             if let Some(source) = source {
-                Err(syn::Error::new(
+                Err(nanocode_macro_support::Error::new(
                     source.span.0,
                     "Cannot have more than one source",
                 ))
@@ -248,21 +246,21 @@ impl PyCompileArgs {
             }
         }
 
-        syn::meta::parser(|meta| {
+        let input = ParseBuffer::new(input);
+        let parse_arguments = |meta: nanocode_macro_support::NestedMeta<'_>| {
             let ident = meta
                 .path
                 .get_ident()
                 .ok_or_else(|| meta.error("unknown arg"))?;
-            let check_str = || meta.value()?.call(parse_str);
+            let check_str = || parse_str(meta.value()?);
             let str_path = || {
                 let s = check_str()?;
                 let mut base_path = s
                     .span()
-                    .unwrap()
                     .local_file()
                     .ok_or_else(|| err_span!(s, "filepath literal has no span information"))?;
                 base_path.pop();
-                Ok::<_, syn::Error>((base_path, PathBuf::from(s.value())))
+                Ok::<_, nanocode_macro_support::Error>((base_path, PathBuf::from(s.value())))
             };
             if ident == "mode" {
                 let s = check_str()?;
@@ -277,14 +275,14 @@ impl PyCompileArgs {
                 let code = check_str()?.value();
                 source = Some(CompilationSource {
                     kind: CompilationSourceKind::SourceCode(code),
-                    span: (ident.span(), meta.input.cursor().span()),
+                    span: (ident.span(), meta.input.span()),
                 });
             } else if ident == "file" {
                 assert_source_empty(source.as_ref())?;
                 let (base, rel_path) = str_path()?;
                 source = Some(CompilationSource {
                     kind: CompilationSourceKind::File { base, rel_path },
-                    span: (ident.span(), meta.input.cursor().span()),
+                    span: (ident.span(), meta.input.span()),
                 });
             } else if ident == "dir" {
                 if !allow_dir {
@@ -295,7 +293,7 @@ impl PyCompileArgs {
                 let (base, rel_path) = str_path()?;
                 source = Some(CompilationSource {
                     kind: CompilationSourceKind::Dir { base, rel_path },
-                    span: (ident.span(), meta.input.cursor().span()),
+                    span: (ident.span(), meta.input.span()),
                 });
             } else if ident == "crate_name" {
                 let name = check_str()?.parse()?;
@@ -304,11 +302,13 @@ impl PyCompileArgs {
                 return Err(meta.error("unknown attr"));
             }
             Ok(())
-        })
-        .parse2(input)?;
+        };
+        if !input.is_empty() {
+            nanocode_macro_support::parse_nested_meta(&input, parse_arguments)?;
+        }
 
         let source = source.ok_or_else(|| {
-            syn::Error::new(
+            nanocode_macro_support::Error::new(
                 Span::call_site(),
                 "Must have either file or source in py_compile!()/py_freeze!()",
             )
@@ -318,19 +318,23 @@ impl PyCompileArgs {
             source,
             mode: mode.unwrap_or(Mode::Exec),
             module_name: module_name.unwrap_or_else(|| "frozen".to_owned()),
-            crate_name: crate_name.unwrap_or_else(|| syn::parse_quote!(::rustpython_vm)),
+            crate_name: crate_name.unwrap_or_else(|| parse_quote!(::rustpython_vm)),
         })
     }
 }
 
 fn parse_str(input: ParseStream<'_>) -> ParseResult<LitStr> {
     let span = input.span();
-    if input.peek(LitStr) {
-        input.parse()
-    } else if let Ok(mac) = input.parse::<Macro>() {
+    let start = input.position();
+    if let Ok(literal) = input.parse::<LitStr>() {
+        Ok(literal)
+    } else if let Ok(mac) = {
+        input.reset(start);
+        input.parse::<Macro>()
+    } {
         Ok(LitStr::new(&mac.tokens.to_string(), mac.span()))
     } else {
-        Err(syn::Error::new(span, "Expected string or stringify macro"))
+        Err(nanocode_macro_support::Error::new(span, "Expected string or stringify macro"))
     }
 }
 
@@ -338,13 +342,13 @@ struct PyCompileArgs {
     source: CompilationSource,
     mode: Mode,
     module_name: String,
-    crate_name: syn::Path,
+    crate_name: nanocode_macro_support::Path,
 }
 
 pub(crate) fn impl_py_compile(
-    input: TokenStream,
+    input: Tokens,
     compiler: &dyn Compiler,
-) -> Result<TokenStream, Diagnostic> {
+) -> Result<Tokens, Diagnostic> {
     let args = PyCompileArgs::parse(input, false)?;
 
     let crate_name = args.crate_name;
@@ -353,7 +357,7 @@ pub(crate) fn impl_py_compile(
         .compile_single(args.mode, &args.module_name, compiler)?;
 
     let frozen = frozen::FrozenCodeObject::encode(&code);
-    let bytes = LitByteStr::new(&frozen.bytes, Span::call_site());
+    let bytes = Literal::byte_string(&frozen.bytes);
 
     let output = quote! {
         #crate_name::frozen::FrozenCodeObject { bytes: &#bytes[..] }
@@ -363,9 +367,9 @@ pub(crate) fn impl_py_compile(
 }
 
 pub(crate) fn impl_py_freeze(
-    input: TokenStream,
+    input: Tokens,
     compiler: &dyn Compiler,
-) -> Result<TokenStream, Diagnostic> {
+) -> Result<Tokens, Diagnostic> {
     let args = PyCompileArgs::parse(input, true)?;
 
     let crate_name = args.crate_name;
@@ -380,7 +384,7 @@ pub(crate) fn impl_py_freeze(
         };
         (&**k, v)
     }));
-    let bytes = LitByteStr::new(&data.bytes, Span::call_site());
+    let bytes = Literal::byte_string(&data.bytes);
 
     let output = quote! {
         #crate_name::frozen::FrozenLib::from_ref(#bytes)

@@ -4,12 +4,10 @@ mod manifest;
 mod toml;
 
 use manifest::{FoundCrate, crate_name};
-use proc_macro::TokenStream;
-use proc_macro2::Span;
-use quote::{format_ident, quote};
-use syn::{
-    DeriveInput, Error, FnArg, GenericArgument, ItemFn, LitStr, Pat, PathArguments, ReturnType,
-    Token, Type, parse::Parser, punctuated::Punctuated,
+use nanocode_macro_support::{
+    DeriveInput, Error, Expr, FnArg, GenericArgument, ItemFn, Lit, LitStr, ParseBuffer, ParseStream, Pat, Path,
+    PathArguments, ReturnType, Span, TokenStream, Tokens, Type, Visibility, expression_tokens, format_ident,
+    parse_meta_path, parse_stream, quote, token::Comma, Token,
 };
 
 mod json_schema;
@@ -20,9 +18,14 @@ struct ToolArgs {
     parallel: bool,
 }
 
+struct ToolArgument {
+    path: Path,
+    value: Expr,
+}
+
 #[proc_macro_derive(JsonSchema, attributes(serde))]
 pub fn derive_json_schema(item: TokenStream) -> TokenStream {
-    syn::parse::<DeriveInput>(item)
+    parse_stream::<DeriveInput>(item)
         .and_then(|input| json_schema::expand(&input, &nanocode_path().0))
         .unwrap_or_else(Error::into_compile_error)
         .into()
@@ -30,17 +33,14 @@ pub fn derive_json_schema(item: TokenStream) -> TokenStream {
 
 #[proc_macro_attribute]
 pub fn tool(attributes: TokenStream, item: TokenStream) -> TokenStream {
-    expand_tool(attributes.into(), item.into())
+    expand_tool(attributes, item)
         .unwrap_or_else(Error::into_compile_error)
         .into()
 }
 
-fn expand_tool(
-    attributes: proc_macro2::TokenStream,
-    item: proc_macro2::TokenStream,
-) -> syn::Result<proc_macro2::TokenStream> {
+fn expand_tool(attributes: TokenStream, item: TokenStream) -> nanocode_macro_support::Result<Tokens> {
     let arguments = parse_args(attributes)?;
-    let function = syn::parse2::<ItemFn>(item)?;
+    let function = parse_stream::<ItemFn>(item)?;
     validate_signature(&function)?;
     let output = result_output(&function.sig.output)?;
     let original_ident = &function.sig.ident;
@@ -62,7 +62,7 @@ fn expand_tool(
 
     let mut hidden_function = function.clone();
     hidden_function.sig.ident = handler_ident.clone();
-    hidden_function.vis = syn::Visibility::Inherited;
+    hidden_function.vis = Visibility::Inherited;
     let attrs = &function.attrs;
 
     Ok(quote! {
@@ -123,10 +123,10 @@ fn expand_tool(
     })
 }
 
-fn validate_signature(function: &ItemFn) -> syn::Result<()> {
+fn validate_signature(function: &ItemFn) -> nanocode_macro_support::Result<()> {
     if function.sig.asyncness.is_none() {
         return Err(Error::new_spanned(
-            function.sig.fn_token,
+            &function.sig.fn_token,
             "#[tool] requires an async function",
         ));
     }
@@ -139,9 +139,7 @@ fn validate_signature(function: &ItemFn) -> syn::Result<()> {
     Ok(())
 }
 
-fn function_arguments(
-    function: &ItemFn,
-) -> syn::Result<(Vec<proc_macro2::TokenStream>, Vec<proc_macro2::TokenStream>)> {
+fn function_arguments(function: &ItemFn) -> nanocode_macro_support::Result<(Vec<Tokens>, Vec<Tokens>)> {
     let mut fields = Vec::with_capacity(function.sig.inputs.len());
     let mut calls = Vec::with_capacity(function.sig.inputs.len());
     for argument in &function.sig.inputs {
@@ -165,9 +163,31 @@ fn function_arguments(
     Ok((fields, calls))
 }
 
-fn parse_args(attributes: proc_macro2::TokenStream) -> syn::Result<ToolArgs> {
-    let entries =
-        Punctuated::<syn::MetaNameValue, Token![,]>::parse_terminated.parse2(attributes)?;
+fn parse_argument(input: ParseStream<'_>) -> nanocode_macro_support::Result<ToolArgument> {
+    let path = parse_meta_path(input)?;
+    input.parse_punct('=')?;
+    let value = expression_tokens(input, ',');
+    if value.is_empty() {
+        return Err(input.error("expected an expression"));
+    }
+    Ok(ToolArgument { path, value: Expr::from_meta_value(&value) })
+}
+
+fn parse_entries(attributes: TokenStream) -> nanocode_macro_support::Result<Vec<ToolArgument>> {
+    let input = ParseBuffer::from_stream(attributes);
+    let mut entries = Vec::new();
+    while !input.is_empty() {
+        entries.push(parse_argument(&input)?);
+        if input.is_empty() {
+            break;
+        }
+        Comma::parse_token(&input)?;
+    }
+    Ok(entries)
+}
+
+fn parse_args(attributes: TokenStream) -> nanocode_macro_support::Result<ToolArgs> {
+    let entries = parse_entries(attributes)?;
     let mut description = None;
     let mut name = None;
     let mut parallel = None;
@@ -213,11 +233,11 @@ fn parse_args(attributes: proc_macro2::TokenStream) -> syn::Result<ToolArgs> {
     })
 }
 
-fn parse_string_literal(expression: syn::Expr) -> syn::Result<LitStr> {
-    let syn::Expr::Lit(expression) = expression else {
+fn parse_string_literal(expression: Expr) -> nanocode_macro_support::Result<LitStr> {
+    let Expr::Lit(expression) = expression else {
         return Err(Error::new_spanned(expression, "expected a string literal"));
     };
-    let syn::Lit::Str(value) = expression.lit else {
+    let Lit::Str(value) = expression.lit else {
         return Err(Error::new_spanned(
             expression.lit,
             "expected a string literal",
@@ -226,11 +246,11 @@ fn parse_string_literal(expression: syn::Expr) -> syn::Result<LitStr> {
     Ok(value)
 }
 
-fn parse_bool_literal(expression: syn::Expr) -> syn::Result<bool> {
-    let syn::Expr::Lit(expression) = expression else {
+fn parse_bool_literal(expression: Expr) -> nanocode_macro_support::Result<bool> {
+    let Expr::Lit(expression) = expression else {
         return Err(Error::new_spanned(expression, "expected a boolean literal"));
     };
-    let syn::Lit::Bool(value) = expression.lit else {
+    let Lit::Bool(value) = expression.lit else {
         return Err(Error::new_spanned(
             expression.lit,
             "expected a boolean literal",
@@ -239,7 +259,7 @@ fn parse_bool_literal(expression: syn::Expr) -> syn::Result<bool> {
     Ok(value.value)
 }
 
-fn result_output(output: &ReturnType) -> syn::Result<&Type> {
+fn result_output(output: &ReturnType) -> nanocode_macro_support::Result<&Type> {
     let ReturnType::Type(_, ty) = output else {
         return Err(Error::new_spanned(
             output,
@@ -271,7 +291,7 @@ fn result_output(output: &ReturnType) -> syn::Result<&Type> {
         .ok_or_else(|| Error::new_spanned(ty, "expected Result<T, E>"))
 }
 
-fn nanocode_path() -> (proc_macro2::TokenStream, String) {
+fn nanocode_path() -> (Tokens, String) {
     for package in [
         "nanocode-tools",
         "nanocode",
@@ -285,14 +305,14 @@ fn nanocode_path() -> (proc_macro2::TokenStream, String) {
                 FoundCrate::Itself => package.replace('-', "_"),
                 FoundCrate::Name(name) => name,
             };
-            let ident = syn::Ident::new(&name, Span::call_site());
+            let ident = nanocode_macro_support::Ident::new(&name, Span::call_site());
             return (quote!(::#ident), format!("::{name}"));
         }
     }
     (quote!(::nanocode_tools), "::nanocode_tools".to_owned())
 }
 
-fn pascal_case(ident: &syn::Ident) -> String {
+fn pascal_case(ident: &nanocode_macro_support::Ident) -> String {
     ident
         .to_string()
         .split('_')

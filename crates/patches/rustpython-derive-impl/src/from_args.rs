@@ -1,10 +1,93 @@
-use proc_macro2::TokenStream;
-use quote::{ToTokens, quote};
-use syn::ext::IdentExt;
-use syn::meta::ParseNestedMeta;
-use syn::{
-    Attribute, Data, DeriveInput, Expr, Field, Ident, Lit, Result, Token, Type, parse_quote,
-};
+use nanocode_macro_support::Tokens;
+use nanocode_macro_support::{ToTokens, quote};
+use nanocode_macro_support::NestedMeta as ParseNestedMeta;
+use nanocode_macro_support::{Attribute, Data, DeriveInput, Expr, Field, Ident, Lit, LitInt, Result, Type};
+
+enum LiteralKind<'a> {
+    Str,
+    ByteStr,
+    Bool(bool),
+    Int(&'a LitInt),
+    Float(String),
+    Byte(u8),
+    Char(char),
+    Other,
+}
+
+fn unescape_character(body: &str) -> Option<char> {
+    let mut characters = body.chars();
+    let first = characters.next()?;
+    let value = if first == '\\' {
+        match characters.next()? {
+            'n' => '\n',
+            'r' => '\r',
+            't' => '\t',
+            '\\' => '\\',
+            '0' => '\0',
+            '\'' => '\'',
+            '"' => '"',
+            'x' => {
+                let digits: String = characters.by_ref().take(2).collect();
+                char::from(u8::from_str_radix(&digits, 16).ok()?)
+            }
+            'u' => {
+                let rest: String = characters.by_ref().collect();
+                let digits = rest.strip_prefix('{')?.strip_suffix('}')?.replace('_', "");
+                return char::from_u32(u32::from_str_radix(&digits, 16).ok()?);
+            }
+            _ => return None,
+        }
+    } else {
+        first
+    };
+    characters.next().is_none().then_some(value)
+}
+
+fn float_digits(text: &str) -> Option<String> {
+    let radix_prefixed = text.starts_with("0x") || text.starts_with("0o") || text.starts_with("0b");
+    if radix_prefixed || !text.starts_with(|character: char| character.is_ascii_digit()) {
+        return None;
+    }
+    let (number, suffixed) = match text.strip_suffix("f32").or_else(|| text.strip_suffix("f64")) {
+        Some(number) => (number, true),
+        None => (text, false),
+    };
+    let fractional = number.contains(['.', 'e', 'E']);
+    let valid = number
+        .chars()
+        .all(|character| character.is_ascii_digit() || matches!(character, '.' | 'e' | 'E' | '+' | '-' | '_'));
+    (valid && (fractional || suffixed)).then(|| number.replace('_', ""))
+}
+
+fn literal_kind(lit: &Lit) -> LiteralKind<'_> {
+    match lit {
+        Lit::Str(_) => LiteralKind::Str,
+        Lit::Bool(boolean) => LiteralKind::Bool(boolean.value),
+        Lit::Int(integer) => LiteralKind::Int(integer),
+        Lit::Other(literal) => {
+            let text = literal.to_string();
+            if text.starts_with("b\"") || text.starts_with("br\"") || text.starts_with("br#") {
+                return LiteralKind::ByteStr;
+            }
+            if let Some(body) = text.strip_prefix("b'").and_then(|rest| rest.strip_suffix('\'')) {
+                return match unescape_character(body).and_then(|character| u8::try_from(character).ok()) {
+                    Some(byte) => LiteralKind::Byte(byte),
+                    None => LiteralKind::Other,
+                };
+            }
+            if let Some(body) = text.strip_prefix('\'').and_then(|rest| rest.strip_suffix('\'')) {
+                return match unescape_character(body) {
+                    Some(character) => LiteralKind::Char(character),
+                    None => LiteralKind::Other,
+                };
+            }
+            match float_digits(&text) {
+                Some(digits) => LiteralKind::Float(digits),
+                None => LiteralKind::Other,
+            }
+        }
+    }
+}
 
 /// The kind of the python parameter, this corresponds to the value of Parameter.kind
 /// (https://docs.python.org/3/library/inspect.html#inspect.Parameter.kind)
@@ -89,7 +172,7 @@ impl ArgAttribute {
             return Err(meta.error("can't put additional arguments on a flatten arg"));
         }
 
-        if meta.path.is_ident("default") && meta.input.peek(Token![=]) {
+        if meta.path.is_ident("default") && meta.input.peek_punct('=') {
             if matches!(self.default, Some(Some(_))) {
                 return Err(meta.error("Default already set"));
             }
@@ -109,7 +192,7 @@ impl ArgAttribute {
             if self.py_default.is_some() {
                 return Err(meta.error("py_default already set"));
             }
-            let val = meta.value()?.parse::<syn::LitStr>()?;
+            let val = meta.value()?.parse::<nanocode_macro_support::LitStr>()?;
             if val.value() == "<unrepresentable>" {
                 return Err(meta.error(
                     "py_default = \"<unrepresentable>\" is not allowed; use OptionalArg when a \
@@ -122,13 +205,13 @@ impl ArgAttribute {
             if self.name.is_some() {
                 return Err(meta.error("already have a name"));
             }
-            let val = meta.value()?.parse::<syn::LitStr>()?;
+            let val = meta.value()?.parse::<nanocode_macro_support::LitStr>()?;
             self.name = Some(val.value())
         } else if meta.path.is_ident("error_msg") {
             if self.error_msg.is_some() {
                 return Err(meta.error("already have an error_msg"));
             }
-            let val = meta.value()?.parse::<syn::LitStr>()?;
+            let val = meta.value()?.parse::<nanocode_macro_support::LitStr>()?;
             self.error_msg = Some(val.value())
         } else {
             return Err(meta.error("Unrecognized pyarg attribute"));
@@ -139,7 +222,7 @@ impl ArgAttribute {
 }
 
 impl TryFrom<&Field> for ArgAttribute {
-    type Error = syn::Error;
+    type Error = nanocode_macro_support::Error;
 
     fn try_from(field: &Field) -> core::result::Result<Self, Self::Error> {
         let mut pyarg_attrs = field
@@ -156,7 +239,7 @@ impl TryFrom<&Field> for ArgAttribute {
     }
 }
 
-fn generate_field((i, field): (usize, &Field)) -> Result<TokenStream> {
+fn generate_field((i, field): (usize, &Field)) -> Result<Tokens> {
     let attr = ArgAttribute::try_from(field)?;
     let name = field.ident.as_ref();
     let name_string = name.map(|ident| ident.unraw().to_string());
@@ -168,7 +251,7 @@ fn generate_field((i, field): (usize, &Field)) -> Result<TokenStream> {
 
     let field_name = match name {
         Some(id) => id.to_token_stream(),
-        None => syn::Index::from(i).into_token_stream(),
+        None => nanocode_macro_support::Index::from(i).into_token_stream(),
     };
 
     if let ParameterKind::Flatten = attr.kind {
@@ -272,7 +355,7 @@ fn is_phantom(field: &Field) -> bool {
         .is_some_and(|ident| ident.unraw().to_string().starts_with("_phantom"))
 }
 
-fn repr_path() -> TokenStream {
+fn repr_path() -> Tokens {
     quote!(::rustpython_vm::function::DefaultRepr)
 }
 
@@ -285,7 +368,7 @@ fn is_primitive_int(ty: &Type) -> bool {
     };
     // The last segment decides, so `core::ffi::c_int` counts too.
     path.qself.is_none()
-        && matches!(last.arguments, syn::PathArguments::None)
+        && matches!(last.arguments, nanocode_macro_support::PathArguments::None)
         && matches!(
             last.ident.to_string().as_str(),
             "i8" | "i16"
@@ -320,7 +403,7 @@ fn absolute_const_ident(expr: &Expr) -> Result<Option<Ident>> {
         return Ok(None);
     }
     let segments = &path.path.segments;
-    if segments.len() == 1 && matches!(segments[0].arguments, syn::PathArguments::None) {
+    if segments.len() == 1 && matches!(segments[0].arguments, nanocode_macro_support::PathArguments::None) {
         return Ok(Some(segments[0].ident.clone()));
     }
     bail_span!(
@@ -342,7 +425,7 @@ fn is_float_ty(ty: &Type) -> bool {
         return false;
     };
     path.qself.is_none()
-        && matches!(last.arguments, syn::PathArguments::None)
+        && matches!(last.arguments, nanocode_macro_support::PathArguments::None)
         && matches!(last.ident.to_string().as_str(), "f32" | "f64")
 }
 
@@ -380,29 +463,28 @@ fn is_wrapped_arg_ty(ty: &Type) -> bool {
 }
 
 /// Expression passed to `ToPyObject` for a string, bytes, int, float, or bool literal.
-fn literal_object_expr(expr: &Expr) -> Option<TokenStream> {
+fn literal_object_expr(expr: &Expr) -> Option<Tokens> {
     match expr {
-        Expr::Lit(syn::ExprLit { lit, .. }) => match lit {
-            Lit::Str(_) | Lit::ByteStr(_) | Lit::Bool(_) => Some(expr.to_token_stream()),
-            Lit::Int(_) => Some(quote!((#expr as i128))),
-            Lit::Float(_) => Some(quote!((#expr as f64))),
+        Expr::Lit(nanocode_macro_support::ExprLit { lit, .. }) => match literal_kind(lit) {
+            LiteralKind::Str | LiteralKind::ByteStr | LiteralKind::Bool(_) => Some(expr.to_token_stream()),
+            LiteralKind::Int(_) => Some(quote!((#expr as i128))),
+            LiteralKind::Float(_) => Some(quote!((#expr as f64))),
             _ => None,
         },
-        Expr::Unary(syn::ExprUnary {
-            op: syn::UnOp::Neg(_),
+        Expr::Unary(nanocode_macro_support::ExprUnary {
+            op: nanocode_macro_support::UnOp::Neg(_),
             expr: inner,
             ..
         }) => match inner.as_ref() {
-            Expr::Lit(syn::ExprLit {
-                lit: Lit::Int(_), ..
-            }) => Some(quote!((#expr as i128))),
-            Expr::Lit(syn::ExprLit {
-                lit: Lit::Float(_), ..
-            }) => Some(quote!((#expr as f64))),
+            Expr::Lit(nanocode_macro_support::ExprLit { lit, .. }) => match literal_kind(lit) {
+                LiteralKind::Int(_) => Some(quote!((#expr as i128))),
+                LiteralKind::Float(_) => Some(quote!((#expr as f64))),
+                _ => None,
+            },
             _ => None,
         },
-        Expr::Paren(syn::ExprParen { expr: inner, .. })
-        | Expr::Group(syn::ExprGroup { expr: inner, .. }) => literal_object_expr(inner),
+        Expr::Paren(nanocode_macro_support::ExprParen { expr: inner, .. })
+        | Expr::Group(nanocode_macro_support::ExprGroup { expr: inner, .. }) => literal_object_expr(inner),
         _ => None,
     }
 }
@@ -416,67 +498,60 @@ fn float_literal_text(digits: &str) -> String {
 }
 
 /// Typed default for a literal, a negative literal, or the path `None`.
-fn literal_default_repr(expr: &Expr) -> Option<TokenStream> {
+fn literal_default_repr(expr: &Expr) -> Option<Tokens> {
     let repr = repr_path();
     match expr {
-        Expr::Lit(syn::ExprLit { lit, .. }) => match lit {
-            Lit::Bool(b) => {
-                let v = b.value();
-                Some(quote!(#repr::Bool(#v)))
-            }
-            Lit::Int(i) => {
+        Expr::Lit(nanocode_macro_support::ExprLit { lit, .. }) => match literal_kind(lit) {
+            LiteralKind::Bool(v) => Some(quote!(#repr::Bool(#v))),
+            LiteralKind::Int(i) => {
                 let v: i128 = i.base10_parse().ok()?;
                 Some(quote!(#repr::Int(#v)))
             }
-            Lit::Float(f) => {
-                let text = float_literal_text(f.base10_digits());
+            LiteralKind::Float(digits) => {
+                let text = float_literal_text(&digits);
                 Some(quote!(#repr::Raw(#text)))
             }
-            Lit::Str(s) => Some(quote!(#repr::Str(#s))),
-            Lit::ByteStr(b) => Some(quote!(#repr::Bytes(#b))),
-            Lit::Byte(b) => {
-                let v = b.value();
-                Some(quote!(#repr::Bytes(&[#v])))
-            }
-            Lit::Char(c) => {
-                let s = c.value().to_string();
+            LiteralKind::Str => Some(quote!(#repr::Str(#lit))),
+            LiteralKind::ByteStr => Some(quote!(#repr::Bytes(#lit))),
+            LiteralKind::Byte(v) => Some(quote!(#repr::Bytes(&[#v]))),
+            LiteralKind::Char(c) => {
+                let s = c.to_string();
                 Some(quote!(#repr::Str(#s)))
             }
-            _ => None,
+            LiteralKind::Other => None,
         },
         Expr::Path(path) if path.qself.is_none() && path.path.is_ident("None") => {
             Some(quote!(#repr::None))
         }
-        Expr::Unary(syn::ExprUnary {
-            op: syn::UnOp::Neg(_),
+        Expr::Unary(nanocode_macro_support::ExprUnary {
+            op: nanocode_macro_support::UnOp::Neg(_),
             expr: inner,
             ..
         }) => match inner.as_ref() {
-            Expr::Lit(syn::ExprLit {
-                lit: Lit::Int(i), ..
-            }) => {
-                let v: i128 = i.base10_parse().ok()?;
-                let v = v.checked_neg()?;
-                Some(quote!(#repr::Int(#v)))
-            }
-            Expr::Lit(syn::ExprLit {
-                lit: Lit::Float(f), ..
-            }) => {
-                let text = float_literal_text(f.base10_digits());
-                text.starts_with(|c: char| c.is_ascii_digit()).then(|| {
-                    let text = format!("-{text}");
-                    quote!(#repr::Raw(#text))
-                })
-            }
+            Expr::Lit(nanocode_macro_support::ExprLit { lit, .. }) => match literal_kind(lit) {
+                LiteralKind::Int(i) => {
+                    let v: i128 = i.base10_parse().ok()?;
+                    let v = v.checked_neg()?;
+                    Some(quote!(#repr::Int(#v)))
+                }
+                LiteralKind::Float(digits) => {
+                    let text = float_literal_text(&digits);
+                    text.starts_with(|c: char| c.is_ascii_digit()).then(|| {
+                        let text = format!("-{text}");
+                        quote!(#repr::Raw(#text))
+                    })
+                }
+                _ => None,
+            },
             _ => None,
         },
-        Expr::Paren(syn::ExprParen { expr: inner, .. })
-        | Expr::Group(syn::ExprGroup { expr: inner, .. }) => literal_default_repr(inner),
+        Expr::Paren(nanocode_macro_support::ExprParen { expr: inner, .. })
+        | Expr::Group(nanocode_macro_support::ExprGroup { expr: inner, .. }) => literal_default_repr(inner),
         _ => None,
     }
 }
 
-fn value_default_repr(field: &Field, expr: &Expr) -> TokenStream {
+fn value_default_repr(field: &Field, expr: &Expr) -> Tokens {
     if let Some(lit) = literal_default_repr(expr) {
         return lit;
     }
@@ -494,7 +569,7 @@ fn value_default_repr(field: &Field, expr: &Expr) -> TokenStream {
     }
 }
 
-fn signature_default(field: &Field, attr: &ArgAttribute) -> Result<TokenStream> {
+fn signature_default(field: &Field, attr: &ArgAttribute) -> Result<Tokens> {
     let repr = repr_path();
     if let Some(text) = &attr.py_default {
         return Ok(quote!(Some(#repr::Raw(#text))));
@@ -530,7 +605,7 @@ fn signature_default(field: &Field, attr: &ArgAttribute) -> Result<TokenStream> 
     Ok(quote!(None))
 }
 
-fn param_token(field: &Field, attr: &ArgAttribute) -> Result<TokenStream> {
+fn param_token(field: &Field, attr: &ArgAttribute) -> Result<Tokens> {
     if let ParameterKind::Flatten = attr.kind {
         let ty = &field.ty;
         return Ok(quote! {
@@ -583,8 +658,8 @@ fn compute_arity_bounds(field_attrs: &[ArgAttribute]) -> (usize, usize) {
     (min_arity, max_arity)
 }
 
-pub(crate) fn impl_from_args(input: DeriveInput) -> Result<TokenStream> {
-    let Data::Struct(syn::DataStruct {
+pub(crate) fn impl_from_args(input: DeriveInput) -> Result<Tokens> {
+    let Data::Struct(nanocode_macro_support::DataStruct {
         fields: struct_fields,
         ..
     }) = input.data
@@ -596,7 +671,7 @@ pub(crate) fn impl_from_args(input: DeriveInput) -> Result<TokenStream> {
         .iter()
         .enumerate()
         .map(generate_field)
-        .collect::<Result<TokenStream>>()?;
+        .collect::<Result<Tokens>>()?;
     let field_attrs = struct_fields
         .iter()
         .map(ArgAttribute::try_from)

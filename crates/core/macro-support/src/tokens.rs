@@ -10,24 +10,45 @@ use proc_macro::{
 
 use crate::ident::Ident;
 
+#[derive(Clone)]
+struct VerbatimRange {
+    start: usize,
+    end: usize,
+    stream: TokenStream,
+}
+
 #[derive(Clone, Default)]
 pub struct Tokens {
     trees: Vec<TokenTree>,
+    verbatim: Vec<VerbatimRange>,
 }
 
 impl Tokens {
     pub const fn new() -> Self {
-        Self { trees: Vec::new() }
-    }
-
-    pub fn from_stream(stream: TokenStream) -> Self {
         Self {
-            trees: stream.into_iter().collect(),
+            trees: Vec::new(),
+            verbatim: Vec::new(),
         }
     }
 
+    pub fn from_stream(stream: TokenStream) -> Self {
+        let trees: Vec<TokenTree> = stream.clone().into_iter().collect();
+        let mut verbatim = Vec::new();
+        if !trees.is_empty() {
+            verbatim.push(VerbatimRange {
+                start: 0,
+                end: trees.len(),
+                stream,
+            });
+        }
+        Self { trees, verbatim }
+    }
+
     pub const fn from_trees(trees: Vec<TokenTree>) -> Self {
-        Self { trees }
+        Self {
+            trees,
+            verbatim: Vec::new(),
+        }
     }
 
     pub fn push(&mut self, tree: impl Into<TokenTree>) {
@@ -63,6 +84,13 @@ impl Tokens {
     }
 
     pub fn extend(&mut self, other: Self) {
+        let offset = self.trees.len();
+        self.verbatim
+            .extend(other.verbatim.into_iter().map(|range| VerbatimRange {
+                start: range.start + offset,
+                end: range.end + offset,
+                stream: range.stream,
+            }));
         self.trees.extend(other.trees);
     }
 
@@ -79,7 +107,27 @@ impl Tokens {
     }
 
     pub fn into_stream(self) -> TokenStream {
-        self.trees.into_iter().collect()
+        self.stream()
+    }
+
+    fn stream(&self) -> TokenStream {
+        let mut parts = Vec::with_capacity(self.verbatim.len() * 2 + 1);
+        let mut position = 0;
+        for range in &self.verbatim {
+            assert!(position <= range.start, "verbatim ranges are ordered");
+            assert!(range.start < range.end, "a verbatim range holds a tree");
+            assert!(range.end <= self.trees.len(), "a verbatim range lies within the trees");
+            parts.push(
+                self.trees[position..range.start]
+                    .iter()
+                    .cloned()
+                    .collect::<TokenStream>(),
+            );
+            parts.push(range.stream.clone());
+            position = range.end;
+        }
+        parts.push(self.trees[position..].iter().cloned().collect());
+        parts.into_iter().collect()
     }
 
     pub fn first_span(&self) -> Option<Span> {
@@ -105,9 +153,7 @@ impl From<Tokens> for TokenStream {
 
 impl FromIterator<TokenTree> for Tokens {
     fn from_iter<I: IntoIterator<Item = TokenTree>>(iter: I) -> Self {
-        Self {
-            trees: iter.into_iter().collect(),
-        }
+        Self::from_trees(iter.into_iter().collect())
     }
 }
 
@@ -132,8 +178,7 @@ impl IntoIterator for Tokens {
 
 impl fmt::Display for Tokens {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let stream: TokenStream = self.trees.iter().cloned().collect();
-        fmt::Display::fmt(&stream, formatter)
+        fmt::Display::fmt(&self.stream(), formatter)
     }
 }
 
@@ -200,7 +245,7 @@ impl<T: ToTokens> ToTokens for Option<T> {
 
 impl ToTokens for Tokens {
     fn to_tokens(&self, tokens: &mut Tokens) {
-        tokens.trees.extend(self.trees.iter().cloned());
+        tokens.extend(self.clone());
     }
 
     fn into_token_stream(self) -> Tokens {
@@ -210,7 +255,7 @@ impl ToTokens for Tokens {
 
 impl ToTokens for TokenStream {
     fn to_tokens(&self, tokens: &mut Tokens) {
-        tokens.trees.extend(self.clone());
+        tokens.extend(Tokens::from_stream(self.clone()));
     }
 }
 

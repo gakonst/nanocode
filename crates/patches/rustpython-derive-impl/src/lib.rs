@@ -21,29 +21,29 @@ mod pystructseq;
 mod pytraverse;
 
 use error::Diagnostic;
-use proc_macro2::TokenStream;
-use quote::ToTokens;
-use syn::{DeriveInput, Item};
+use nanocode_macro_support::Tokens;
+use nanocode_macro_support::ToTokens;
+use nanocode_macro_support::{DeriveInput, Item};
 use crate::syn_ext::types::PunctuatedNestedMeta;
 
 pub use pymodule::PyModuleArgs;
 
 pub use compile_bytecode::Compiler;
 
-fn result_to_tokens(result: Result<TokenStream, impl Into<Diagnostic>>) -> TokenStream {
+fn result_to_tokens(result: Result<Tokens, impl Into<Diagnostic>>) -> Tokens {
     result
         .map_err(|e| e.into())
         .unwrap_or_else(ToTokens::into_token_stream)
 }
 
 #[must_use]
-pub fn derive_from_args(input: DeriveInput) -> TokenStream {
+pub fn derive_from_args(input: DeriveInput) -> Tokens {
     result_to_tokens(from_args::impl_from_args(input))
 }
 
 #[must_use]
-pub fn pyclass(attr: PunctuatedNestedMeta, item: Item) -> TokenStream {
-    if matches!(item, syn::Item::Impl(_) | syn::Item::Trait(_)) {
+pub fn pyclass(attr: PunctuatedNestedMeta, item: Item) -> Tokens {
+    if matches!(item, nanocode_macro_support::Item::Impl(_) | nanocode_macro_support::Item::Trait(_)) {
         result_to_tokens(pyclass::impl_pyclass_impl(attr, item))
     } else {
         result_to_tokens(pyclass::impl_pyclass(attr, item))
@@ -51,8 +51,8 @@ pub fn pyclass(attr: PunctuatedNestedMeta, item: Item) -> TokenStream {
 }
 
 #[must_use]
-pub fn pyexception(attr: PunctuatedNestedMeta, item: Item) -> TokenStream {
-    if matches!(item, syn::Item::Impl(_)) {
+pub fn pyexception(attr: PunctuatedNestedMeta, item: Item) -> Tokens {
+    if matches!(item, nanocode_macro_support::Item::Impl(_)) {
         pyclass::impl_pyexception_impl(attr, item)
     } else {
         result_to_tokens(pyclass::impl_pyexception(attr, &item))
@@ -60,34 +60,34 @@ pub fn pyexception(attr: PunctuatedNestedMeta, item: Item) -> TokenStream {
 }
 
 #[must_use]
-pub fn pymodule(attr: PyModuleArgs, item: Item) -> TokenStream {
+pub fn pymodule(attr: PyModuleArgs, item: Item) -> Tokens {
     result_to_tokens(pymodule::impl_pymodule(attr, item))
 }
 
 #[must_use]
-pub fn pystruct_sequence(attr: PunctuatedNestedMeta, item: Item) -> TokenStream {
+pub fn pystruct_sequence(attr: PunctuatedNestedMeta, item: Item) -> Tokens {
     result_to_tokens(pystructseq::impl_pystruct_sequence(attr, item))
 }
 
 #[must_use]
-pub fn pystruct_sequence_data(attr: PunctuatedNestedMeta, item: Item) -> TokenStream {
+pub fn pystruct_sequence_data(attr: PunctuatedNestedMeta, item: Item) -> Tokens {
     result_to_tokens(pystructseq::impl_pystruct_sequence_data(attr, item))
 }
 
-pub fn py_compile(input: TokenStream, compiler: &dyn Compiler) -> TokenStream {
+pub fn py_compile(input: Tokens, compiler: &dyn Compiler) -> Tokens {
     result_to_tokens(compile_bytecode::impl_py_compile(input, compiler))
 }
 
-pub fn py_freeze(input: TokenStream, compiler: &dyn Compiler) -> TokenStream {
+pub fn py_freeze(input: Tokens, compiler: &dyn Compiler) -> Tokens {
     result_to_tokens(compile_bytecode::impl_py_freeze(input, compiler))
 }
 
 #[must_use]
-pub fn pypayload(input: DeriveInput) -> TokenStream {
+pub fn pypayload(input: DeriveInput) -> Tokens {
     pypayload::impl_pypayload(input)
 }
 
 #[must_use]
-pub fn pytraverse(item: DeriveInput) -> TokenStream {
+pub fn pytraverse(item: DeriveInput) -> Tokens {
     result_to_tokens(pytraverse::impl_pytraverse(item))
 }

@@ -1,10 +1,9 @@
-use proc_macro2::TokenStream;
-use quote::quote;
-use std::collections::BTreeSet;
-use syn::{
-    Attribute, Data, DataEnum, DeriveInput, Error, Expr, ExprLit, ExprPath, Fields, Ident, Lit,
-    LitStr, Member, Meta, Token, Type, parse_quote, punctuated::Punctuated,
+use nanocode_macro_support::{
+    Attribute, Data, DataEnum, DeriveInput, Error, ExprPath, Fields, Ident, Lit, LitStr, Member,
+    Meta, Parse, Span, Tokens, TypeParamBound, Type, parse_terminated, parse_tokens,
+    quote, token::Comma,
 };
+use std::collections::BTreeSet;
 
 const UNSUPPORTED_SERDE_ATTRIBUTES: [&str; 3] = ["remote", "with", "rename_all_fields"];
 
@@ -21,7 +20,7 @@ enum RenameRule {
 }
 
 impl RenameRule {
-    fn parse(text: &LitStr) -> syn::Result<Self> {
+    fn parse(text: &LitStr) -> nanocode_macro_support::Result<Self> {
         match text.value().as_str() {
             "lowercase" => Ok(Self::Lower),
             "UPPERCASE" => Ok(Self::Upper),
@@ -170,13 +169,14 @@ fn unraw(ident: &Ident) -> String {
     ident.to_string().trim_start_matches("r#").to_owned()
 }
 
-fn serde_metas(attributes: &[Attribute]) -> syn::Result<Vec<Meta>> {
+fn serde_metas(attributes: &[Attribute]) -> nanocode_macro_support::Result<Vec<Meta>> {
     let mut metas = Vec::new();
     for attribute in attributes
         .iter()
         .filter(|attribute| attribute.path().is_ident("serde"))
     {
-        metas.extend(attribute.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)?);
+        let list = attribute.meta.require_list()?;
+        metas.extend(list.parse_args_with(|input| parse_terminated::<Meta, Comma>(input, Meta::parse))?);
     }
     Ok(metas)
 }
@@ -188,31 +188,27 @@ fn meta_name(meta: &Meta) -> String {
         .unwrap_or_default()
 }
 
-fn string_value(meta: &Meta) -> syn::Result<LitStr> {
+fn string_value(meta: &Meta) -> nanocode_macro_support::Result<LitStr> {
     let Meta::NameValue(pair) = meta else {
         return Err(Error::new_spanned(
             meta,
             "JsonSchema supports only the name = \"...\" form of this serde attribute",
         ));
     };
-    let Expr::Lit(ExprLit {
-        lit: Lit::Str(text),
-        ..
-    }) = &pair.value
-    else {
+    let Some(Lit::Str(text)) = pair.value_lit() else {
         return Err(Error::new_spanned(&pair.value, "expected a string literal"));
     };
-    Ok(text.clone())
+    Ok(text)
 }
 
-fn flag(meta: &Meta) -> syn::Result<bool> {
+fn flag(meta: &Meta) -> nanocode_macro_support::Result<bool> {
     match meta {
         Meta::Path(_) => Ok(true),
         _ => Err(Error::new_spanned(meta, "expected a bare serde flag")),
     }
 }
 
-fn set_once<T>(slot: &mut Option<T>, value: T, meta: &Meta) -> syn::Result<()> {
+fn set_once<T>(slot: &mut Option<T>, value: T, meta: &Meta) -> nanocode_macro_support::Result<()> {
     if slot.is_some() {
         return Err(Error::new_spanned(meta, "duplicate serde attribute"));
     }
@@ -220,14 +216,14 @@ fn set_once<T>(slot: &mut Option<T>, value: T, meta: &Meta) -> syn::Result<()> {
     Ok(())
 }
 
-fn default_value(meta: &Meta) -> syn::Result<DefaultValue> {
+fn default_value(meta: &Meta) -> nanocode_macro_support::Result<DefaultValue> {
     match meta {
         Meta::Path(_) => Ok(DefaultValue::Trait),
         _ => Ok(DefaultValue::Function(string_value(meta)?.parse()?)),
     }
 }
 
-fn rejected(meta: &Meta) -> syn::Result<()> {
+fn rejected(meta: &Meta) -> nanocode_macro_support::Result<()> {
     if UNSUPPORTED_SERDE_ATTRIBUTES.contains(&meta_name(meta).as_str()) {
         return Err(Error::new_spanned(
             meta,
@@ -238,7 +234,7 @@ fn rejected(meta: &Meta) -> syn::Result<()> {
 }
 
 impl ContainerAttributes {
-    fn parse(attributes: &[Attribute]) -> syn::Result<Self> {
+    fn parse(attributes: &[Attribute]) -> nanocode_macro_support::Result<Self> {
         let mut parsed = Self::default();
         for meta in serde_metas(attributes)? {
             match meta_name(&meta).as_str() {
@@ -260,7 +256,7 @@ impl ContainerAttributes {
         Ok(parsed)
     }
 
-    fn tagging(&self) -> syn::Result<Tagging> {
+    fn tagging(&self) -> nanocode_macro_support::Result<Tagging> {
         match (self.untagged, &self.tag, &self.content) {
             (false, None, None) => Ok(Tagging::External),
             (true, None, None) => Ok(Tagging::Untagged),
@@ -270,7 +266,7 @@ impl ContainerAttributes {
                 content: content.clone(),
             }),
             _ => Err(Error::new(
-                proc_macro2::Span::call_site(),
+                Span::call_site(),
                 "conflicting serde enum representation attributes",
             )),
         }
@@ -278,7 +274,7 @@ impl ContainerAttributes {
 }
 
 impl FieldAttributes {
-    fn parse(attributes: &[Attribute], container_has_default: bool) -> syn::Result<Self> {
+    fn parse(attributes: &[Attribute], container_has_default: bool) -> nanocode_macro_support::Result<Self> {
         let mut parsed = Self::default();
         for meta in serde_metas(attributes)? {
             match meta_name(&meta).as_str() {
@@ -308,7 +304,7 @@ impl FieldAttributes {
 }
 
 impl VariantAttributes {
-    fn parse(attributes: &[Attribute]) -> syn::Result<Self> {
+    fn parse(attributes: &[Attribute]) -> nanocode_macro_support::Result<Self> {
         let mut parsed = Self::default();
         for meta in serde_metas(attributes)? {
             match meta_name(&meta).as_str() {
@@ -365,7 +361,7 @@ impl Documentation {
         self.title.is_none() && self.description.is_none() && !self.deprecated
     }
 
-    fn apply(&self, private: &TokenStream, schema: TokenStream) -> TokenStream {
+    fn apply(&self, private: &Tokens, schema: Tokens) -> Tokens {
         let mut schema = schema;
         if let Some(title) = &self.title {
             schema = quote!(#private::with_title(#schema, #title));
@@ -386,11 +382,8 @@ fn documentation(attributes: &[Attribute]) -> Option<String> {
         .filter(|attribute| attribute.path().is_ident("doc"))
         .filter_map(|attribute| {
             let pair = attribute.meta.require_name_value().ok()?;
-            match &pair.value {
-                Expr::Lit(ExprLit {
-                    lit: Lit::Str(text),
-                    ..
-                }) => Some(text.value()),
+            match pair.value_lit() {
+                Some(Lit::Str(text)) => Some(text.value()),
                 _ => None,
             }
         })
@@ -440,7 +433,7 @@ fn field_models(
     fields: &Fields,
     rename_all: Option<RenameRule>,
     container_has_default: bool,
-) -> syn::Result<Vec<FieldModel<'_>>> {
+) -> nanocode_macro_support::Result<Vec<FieldModel<'_>>> {
     let mut models = Vec::with_capacity(fields.len());
     for (index, field) in fields.iter().enumerate() {
         let attributes = FieldAttributes::parse(&field.attrs, container_has_default)?;
@@ -466,12 +459,12 @@ fn field_models(
 }
 
 struct Generator<'a> {
-    private: TokenStream,
+    private: Tokens,
     container: &'a ContainerAttributes,
 }
 
 impl Generator<'_> {
-    fn structure(&self, fields: &Fields) -> syn::Result<TokenStream> {
+    fn structure(&self, fields: &Fields) -> nanocode_macro_support::Result<Tokens> {
         let has_default = self.container.default.is_some();
         let models = field_models(fields, self.container.rename_all, has_default)?;
         match style(fields) {
@@ -489,7 +482,7 @@ impl Generator<'_> {
         }
     }
 
-    fn tuple(&self, fields: &[FieldModel<'_>]) -> TokenStream {
+    fn tuple(&self, fields: &[FieldModel<'_>]) -> Tokens {
         let private = &self.private;
         let types = fields
             .iter()
@@ -503,7 +496,7 @@ impl Generator<'_> {
         fields: &[FieldModel<'_>],
         container_default: Option<&DefaultValue>,
         deny_unknown_fields: bool,
-    ) -> syn::Result<TokenStream> {
+    ) -> nanocode_macro_support::Result<Tokens> {
         let private = &self.private;
         let (flattened, properties): (Vec<_>, Vec<_>) = fields
             .iter()
@@ -555,7 +548,7 @@ impl Generator<'_> {
         }})
     }
 
-    fn enumeration(&self, data: &DataEnum) -> syn::Result<TokenStream> {
+    fn enumeration(&self, data: &DataEnum) -> nanocode_macro_support::Result<Tokens> {
         let tagging = self.container.tagging()?;
         let mut variants = Vec::with_capacity(data.variants.len());
         for variant in &data.variants {
@@ -636,7 +629,7 @@ impl Generator<'_> {
         &self,
         variants: &[VariantModel<'_>],
         unique: bool,
-    ) -> syn::Result<TokenStream> {
+    ) -> nanocode_macro_support::Result<Tokens> {
         let private = &self.private;
         let (unit, complex): (Vec<_>, Vec<_>) = variants
             .iter()
@@ -663,7 +656,7 @@ impl Generator<'_> {
         Ok(quote!(#private::variants(#unique, ::std::vec![#(#schemas),*])))
     }
 
-    fn untagged_variant(&self, variant: &VariantModel<'_>, deny: bool) -> syn::Result<TokenStream> {
+    fn untagged_variant(&self, variant: &VariantModel<'_>, deny: bool) -> nanocode_macro_support::Result<Tokens> {
         match variant.style {
             Style::Unit => Ok(quote!(generator.subschema_for::<()>())),
             Style::Newtype => {
@@ -679,7 +672,7 @@ impl Generator<'_> {
         &self,
         variant: &VariantModel<'_>,
         deny: bool,
-    ) -> syn::Result<Option<TokenStream>> {
+    ) -> nanocode_macro_support::Result<Option<Tokens>> {
         let private = &self.private;
         match variant.style {
             Style::Unit => Ok(None),
@@ -698,7 +691,7 @@ impl Generator<'_> {
 fn field_default(
     field: &FieldModel<'_>,
     container_has_default: bool,
-) -> syn::Result<Option<TokenStream>> {
+) -> nanocode_macro_support::Result<Option<Tokens>> {
     let attributes = &field.attributes;
     if attributes.skip_serializing || (attributes.default.is_none() && !container_has_default) {
         return Ok(None);
@@ -734,8 +727,8 @@ fn field_default(
 fn names(
     input: &DeriveInput,
     container: &ContainerAttributes,
-    private: &TokenStream,
-) -> syn::Result<(TokenStream, TokenStream)> {
+    private: &Tokens,
+) -> nanocode_macro_support::Result<(Tokens, Tokens)> {
     let base_name = container
         .rename
         .clone()
@@ -787,12 +780,14 @@ fn names(
     ))
 }
 
-pub fn expand(input: &DeriveInput, nanocode: &TokenStream) -> syn::Result<TokenStream> {
+pub fn expand(input: &DeriveInput, nanocode: &Tokens) -> nanocode_macro_support::Result<Tokens> {
     let private = quote!(#nanocode::__private::json_schema);
     let container = ContainerAttributes::parse(&input.attrs)?;
     let mut generics = input.generics.clone();
     for parameter in generics.type_params_mut() {
-        parameter.bounds.push(parse_quote!(#private::JsonSchema));
+        let bound = parse_tokens::<TypeParamBound>(quote!(#private::JsonSchema))
+            .expect("a JsonSchema trait path parses as a bound");
+        parameter.bounds.push(bound);
     }
     let (impl_generics, type_generics, where_clause) = generics.split_for_impl();
     let ident = &input.ident;

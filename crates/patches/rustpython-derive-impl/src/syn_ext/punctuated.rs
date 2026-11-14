@@ -1,4 +1,4 @@
-use syn::punctuated::{Pair, Punctuated};
+use nanocode_macro_support::{Pair, Punctuated};
 
 pub trait PunctuatedExt<T, P> {
     fn remove(&mut self, index: usize) -> Pair<T, P>

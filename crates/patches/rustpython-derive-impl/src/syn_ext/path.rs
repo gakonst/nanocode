@@ -1,5 +1,5 @@
 use crate::syn_ext::ident::GetIdent;
-use syn::{Ident, Path};
+use nanocode_macro_support::{Ident, Path};
 
 pub trait GetPath {
     fn get_path(&self) -> Option<&Path>;

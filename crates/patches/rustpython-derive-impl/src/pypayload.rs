@@ -1,8 +1,8 @@
-use proc_macro2::TokenStream;
-use quote::quote;
-use syn::DeriveInput;
+use nanocode_macro_support::Tokens;
+use nanocode_macro_support::quote;
+use nanocode_macro_support::DeriveInput;
 
-pub(crate) fn impl_pypayload(input: DeriveInput) -> TokenStream {
+pub(crate) fn impl_pypayload(input: DeriveInput) -> Tokens {
     let ty = &input.ident;
 
     quote! {

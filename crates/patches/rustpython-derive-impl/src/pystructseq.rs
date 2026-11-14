@@ -1,9 +1,9 @@
 use crate::util::{ItemMeta, ItemMetaInner};
-use proc_macro2::TokenStream;
-use quote::{format_ident, quote};
-use syn::{DeriveInput, Ident, Item, Result};
+use nanocode_macro_support::Tokens;
+use nanocode_macro_support::{format_ident, quote};
+use nanocode_macro_support::{DeriveInput, Ident, Item, Result};
 use crate::syn_ext::ext::{AttributeExt, AttributeIteratorExt, GetIdent};
-use crate::syn_ext::types::{Meta, PunctuatedNestedMeta};
+use crate::syn_ext::types::{Meta, MetaNameValue, PunctuatedNestedMeta};
 
 // #[pystruct_sequence_data] - For Data structs
 
@@ -23,7 +23,7 @@ struct ParsedField {
     ident: Ident,
     kind: FieldKind,
     /// Optional cfg attributes for conditional compilation
-    cfg_attrs: Vec<syn::Attribute>,
+    cfg_attrs: Vec<nanocode_macro_support::Attribute>,
 }
 
 /// Parsed field info from struct
@@ -64,11 +64,11 @@ impl FieldInfo {
 
 /// Parse field info from struct
 fn parse_fields(input: &mut DeriveInput) -> Result<FieldInfo> {
-    let syn::Data::Struct(struc) = &mut input.data else {
+    let nanocode_macro_support::Data::Struct(struc) = &mut input.data else {
         bail_span!(input, "#[pystruct_sequence_data] can only be on a struct")
     };
 
-    let syn::Fields::Named(fields) = &mut struc.fields else {
+    let nanocode_macro_support::Fields::Named(fields) = &mut struc.fields else {
         bail_span!(
             input,
             "#[pystruct_sequence_data] can only be on a struct with named fields"
@@ -176,7 +176,7 @@ fn has_try_from_object(attr: &PunctuatedNestedMeta) -> bool {
 pub(crate) fn impl_pystruct_sequence_data(
     attr: PunctuatedNestedMeta,
     item: Item,
-) -> Result<TokenStream> {
+) -> Result<Tokens> {
     let Item::Struct(item_struct) = item else {
         bail_span!(
             item,
@@ -190,8 +190,8 @@ pub(crate) fn impl_pystruct_sequence_data(
         vis: item_struct.vis.clone(),
         ident: item_struct.ident.clone(),
         generics: item_struct.generics.clone(),
-        data: syn::Data::Struct(syn::DataStruct {
-            struct_token: item_struct.struct_token,
+        data: nanocode_macro_support::Data::Struct(nanocode_macro_support::DataStruct {
+            struct_token: item_struct.struct_token.clone(),
             fields: item_struct.fields.clone(),
             semi_token: item_struct.semi_token,
         }),
@@ -368,7 +368,7 @@ pub(crate) fn impl_pystruct_sequence_data(
     // For attribute macro, we need to output the original struct as well
     // But first, strip #[pystruct_sequence] attributes from fields
     let mut clean_struct = item_struct;
-    if let syn::Fields::Named(ref mut fields) = clean_struct.fields {
+    if let nanocode_macro_support::Fields::Named(ref mut fields) = clean_struct.fields {
         for field in &mut fields.named {
             field
                 .attrs
@@ -406,10 +406,10 @@ impl PyStructSequenceMeta {
         const KEY: &str = "name";
         let inner = self.inner();
         if let Some((_, meta)) = inner.meta_map.get(KEY) {
-            if let Meta::NameValue(syn::MetaNameValue {
+            if let Meta::NameValue(MetaNameValue {
                 value:
-                    syn::Expr::Lit(syn::ExprLit {
-                        lit: syn::Lit::Str(lit),
+                    nanocode_macro_support::Expr::Lit(nanocode_macro_support::ExprLit {
+                        lit: nanocode_macro_support::Lit::Str(lit),
                         ..
                     }),
                 ..
@@ -429,10 +429,10 @@ impl PyStructSequenceMeta {
         const KEY: &str = "module";
         let inner = self.inner();
         if let Some((_, meta)) = inner.meta_map.get(KEY) {
-            if let Meta::NameValue(syn::MetaNameValue {
+            if let Meta::NameValue(MetaNameValue {
                 value:
-                    syn::Expr::Lit(syn::ExprLit {
-                        lit: syn::Lit::Str(lit),
+                    nanocode_macro_support::Expr::Lit(nanocode_macro_support::ExprLit {
+                        lit: nanocode_macro_support::Lit::Str(lit),
                         ..
                     }),
                 ..
@@ -452,10 +452,10 @@ impl PyStructSequenceMeta {
         const KEY: &str = "data";
         let inner = self.inner();
         if let Some((_, meta)) = inner.meta_map.get(KEY) {
-            if let Meta::NameValue(syn::MetaNameValue {
+            if let Meta::NameValue(MetaNameValue {
                 value:
-                    syn::Expr::Lit(syn::ExprLit {
-                        lit: syn::Lit::Str(lit),
+                    nanocode_macro_support::Expr::Lit(nanocode_macro_support::ExprLit {
+                        lit: nanocode_macro_support::Lit::Str(lit),
                         ..
                     }),
                 ..
@@ -492,7 +492,7 @@ impl PyStructSequenceMeta {
 pub(crate) fn impl_pystruct_sequence(
     attr: PunctuatedNestedMeta,
     item: Item,
-) -> Result<TokenStream> {
+) -> Result<Tokens> {
     let Item::Struct(struct_item) = item else {
         bail_span!(item, "#[pystruct_sequence] can only be applied to a struct");
     };
@@ -506,7 +506,7 @@ pub(crate) fn impl_pystruct_sequence(
     let data_ident = meta.data_type()?;
 
     let class_name = meta.class_name()?.ok_or_else(|| {
-        syn::Error::new_spanned(
+        nanocode_macro_support::Error::new_spanned(
             &struct_item.ident,
             "#[pystruct_sequence] requires name parameter",
         )

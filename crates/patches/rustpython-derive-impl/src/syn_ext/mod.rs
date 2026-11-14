@@ -19,6 +19,7 @@ pub mod ext {
 
 pub mod types {
     pub use super::meta::{
-        Meta1 as Meta, MetaList1 as MetaList, NestedMeta, PunctuatedNestedMeta,
+        Meta1 as Meta, MetaList1 as MetaList, MetaNameValue1 as MetaNameValue, NestedMeta,
+        PunctuatedNestedMeta,
     };
 }

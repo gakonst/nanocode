@@ -100,12 +100,14 @@ pub(crate) const NEXT: u32 = 11;
 const CATALOG: u32 = 12;
 const QUIET: u32 = 13;
 const EXIT: u32 = 14;
+const STORE: u32 = 15;
 
-const HOST_FNS: [(u32, &str); 12] = [
+const HOST_FNS: [(u32, &str); 13] = [
     (TOOL, "__nanocodeTool"),
     (CONTENT, "__nanocodeContent"),
     (TEXT, "__nanocodeText"),
     (LOAD, "__nanocodeLoad"),
+    (STORE, "__nanocodeStore"),
     (NOTIFY, "__nanocodeNotify"),
     (YIELD, "__nanocodeYield"),
     (SET_TIMEOUT, "__nanocodeSetTimeout"),
@@ -329,6 +331,7 @@ pub(crate) struct ExecutionState {
     pub(crate) execution_id: u64,
     pub(crate) events: VecDeque<RuntimeEvent>,
     stored: HashMap<String, Arc<RawValue>>,
+    written: HashMap<String, Arc<RawValue>>,
     tools: Option<Arc<CellTools>>,
     pending_tools: HashSet<u64>,
     pending_timeouts: HashMap<u64, PendingTimeout>,
@@ -371,6 +374,7 @@ impl ExecutionState {
             execution_id: 0,
             events: VecDeque::new(),
             stored: HashMap::new(),
+            written: HashMap::new(),
             tools: None,
             pending_tools: HashSet::new(),
             pending_timeouts: HashMap::new(),
@@ -607,6 +611,17 @@ impl ExecutionState {
                 Ok(self.stored.get(&key).map_or(Reply::Nothing, |value| {
                     Reply::Text(Cow::Borrowed(value.get()))
                 }))
+            }
+            STORE => {
+                let key = text(call, 0)?;
+                let value = RawValue::from_string(text(call, 1)?).map_err(|error| {
+                    Throw::type_error(format!(
+                        "Unable to store {}: {error}",
+                        Value::from(key.as_str())
+                    ))
+                })?;
+                self.written.insert(key, Arc::from(value));
+                Ok(Reply::Nothing)
             }
             NOTIFY => {
                 let text = without_data_urls(text(call, 0)?);
@@ -846,11 +861,7 @@ impl ExecutionState {
         let terminal: ExecutionTerminal = serde_json::from_str(encoded)
             .map_err(|error| format!("embedded Code Mode returned an invalid result: {error}"))?;
         let cell_id = self.execution_id;
-        let stored = terminal
-            .stored
-            .into_iter()
-            .map(|(key, value)| (key, Arc::from(value)))
-            .collect();
+        let stored = self.take_written();
         let event = match (terminal.kind, terminal.message) {
             (TerminalKind::Done, _) => RuntimeEvent::Done { cell_id, stored },
             (TerminalKind::Error, Some(message)) => RuntimeEvent::Error {
@@ -866,6 +877,10 @@ impl ExecutionState {
         };
         self.send(event);
         Ok(())
+    }
+
+    pub(crate) fn take_written(&mut self) -> HashMap<String, Arc<RawValue>> {
+        std::mem::take(&mut self.written)
     }
 
     pub(crate) fn send_waiting(&mut self) {
@@ -1006,8 +1021,6 @@ struct ExecutionTerminal {
     #[serde(rename = "type")]
     kind: TerminalKind,
     message: Option<String>,
-    #[serde(default)]
-    stored: HashMap<String, Box<RawValue>>,
 }
 
 pub struct CellTools {

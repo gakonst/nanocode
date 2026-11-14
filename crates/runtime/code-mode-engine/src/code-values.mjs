@@ -17,7 +17,7 @@ function createValueHelpers() {
       key = `${key}`;
       const encoded = JSON.stringify(value);
       if (encoded === undefined) throw `Unable to store ${JSON.stringify(key)}. Only plain serializable objects can be stored.`;
-      return [key, JSON.parse(encoded)];
+      return [key, JSON.parse(encoded), encoded];
     },
 
     normalizeImage(value, detail) {

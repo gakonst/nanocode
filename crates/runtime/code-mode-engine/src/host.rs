@@ -95,10 +95,11 @@ impl Machine {
             let step = match instance.step() {
                 Ok(step) => step,
                 Err(djs_embed::Error::OutOfMemory) => {
+                    let stored = state.take_written();
                     state.send(RuntimeEvent::Error {
                         cell_id: state.execution_id,
                         message: "Script stopped: the cell ran out of memory.".to_owned(),
-                        stored: HashMap::new(),
+                        stored,
                     });
                     return Ok(Ran::Finished);
                 }
@@ -510,10 +511,11 @@ impl EmbeddedHost {
             machine.slices += 1;
             machine.slices >= INTERRUPT_CHECKS.get()
         }) {
+            let stored = self.state.take_written();
             self.state.send(RuntimeEvent::Error {
                 cell_id: self.state.execution_id,
                 message: EXHAUSTED.to_owned(),
-                stored: HashMap::new(),
+                stored,
             });
             self.stop();
         }
@@ -587,5 +589,9 @@ impl EmbeddedHost {
 
     pub async fn terminate(&mut self) {
         self.stop();
+    }
+
+    pub fn take_stored(&mut self) -> HashMap<String, Arc<RawValue>> {
+        self.state.take_written()
     }
 }

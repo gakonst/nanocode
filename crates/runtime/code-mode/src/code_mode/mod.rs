@@ -525,7 +525,9 @@ enum CellTerminal {
         message: String,
         stored: HashMap<String, Arc<RawValue>>,
     },
-    Terminated,
+    Terminated {
+        stored: HashMap<String, Arc<RawValue>>,
+    },
     Diverged {
         message: String,
     },
@@ -3037,16 +3039,22 @@ async fn run_cell_actor(
     };
     let terminal = match selected {
         Some(terminal) if lifecycle.claim_completion() => terminal,
-        Some(_) | None => {
+        selected => {
             let termination_started_at = nanocode_platform::now();
             host.worker.terminate().await;
             record_elapsed("host.termination_ns", termination_started_at);
-            Ok(CellTerminal::Terminated)
+            let stored = match selected {
+                Some(Ok(
+                    CellTerminal::Completed { stored } | CellTerminal::ScriptFailed { stored, .. },
+                )) => stored,
+                _ => host.worker.take_stored(),
+            };
+            Ok(CellTerminal::Terminated { stored })
         }
     };
     let (status, otel_status) = match &terminal {
         Ok(CellTerminal::Completed { .. }) => ("completed", "OK"),
-        Ok(CellTerminal::Terminated) => ("cancelled", "ERROR"),
+        Ok(CellTerminal::Terminated { .. }) => ("cancelled", "ERROR"),
         Ok(
             CellTerminal::ScriptFailed { .. }
             | CellTerminal::Diverged { .. }
@@ -3056,7 +3064,7 @@ async fn run_cell_actor(
     };
     nanocode_trace::Span::current().record("status", status);
     nanocode_trace::Span::current().record("otel.status_code", otel_status);
-    let terminated = matches!(&terminal, Ok(CellTerminal::Terminated));
+    let terminated = matches!(&terminal, Ok(CellTerminal::Terminated { .. }));
     let host_healthy = matches!(
         &terminal,
         Ok(CellTerminal::Completed { .. }
@@ -3075,29 +3083,11 @@ async fn run_cell_actor(
     }
     match terminal {
         Ok(CellTerminal::Completed { stored }) => {
-            shared_stored.update(|shared| {
-                shared.extend(
-                    stored
-                        .iter()
-                        .map(|(key, value)| (key.clone(), Arc::clone(value))),
-                )
-            });
-            if let Some(record) = record.as_ref().filter(|_| !stored.is_empty()) {
-                record.save_stored(&shared_stored).await;
-            }
+            keep_stored(&shared_stored, record.as_deref(), stored).await;
             let _ = updates.send(CellUpdate::Completed);
         }
         Ok(CellTerminal::ScriptFailed { message, stored }) => {
-            shared_stored.update(|shared| {
-                shared.extend(
-                    stored
-                        .iter()
-                        .map(|(key, value)| (key.clone(), Arc::clone(value))),
-                )
-            });
-            if let Some(record) = record.as_ref().filter(|_| !stored.is_empty()) {
-                record.save_stored(&shared_stored).await;
-            }
+            keep_stored(&shared_stored, record.as_deref(), stored).await;
             let _ = updates.send(CellUpdate::ScriptFailed { message });
         }
         Ok(CellTerminal::Diverged { message }) => {
@@ -3107,10 +3097,12 @@ async fn run_cell_actor(
             }
             let _ = updates.send(CellUpdate::HostFailed(message));
         }
-        Ok(CellTerminal::Terminated) => {
+        Ok(CellTerminal::Terminated { stored }) => {
+            keep_stored(&shared_stored, record.as_deref(), stored).await;
             let _ = updates.send(CellUpdate::Terminated);
         }
         Ok(CellTerminal::Stopped { message }) => {
+            keep_stored(&shared_stored, record.as_deref(), host.worker.take_stored()).await;
             let _ = updates.send(CellUpdate::ScriptFailed { message });
         }
         Err(failure) => {
@@ -3131,6 +3123,26 @@ async fn run_cell_actor(
     lifecycle.close();
     tools.cell_observed(&context.call_id, true);
     record_elapsed("duration_ns", started_at);
+}
+
+async fn keep_stored(
+    shared_stored: &Atom<HashMap<String, Arc<RawValue>>>,
+    record: Option<&CellRecord>,
+    stored: HashMap<String, Arc<RawValue>>,
+) {
+    if stored.is_empty() {
+        return;
+    }
+    shared_stored.update(|shared| {
+        shared.extend(
+            stored
+                .iter()
+                .map(|(key, value)| (key.clone(), Arc::clone(value))),
+        )
+    });
+    if let Some(record) = record {
+        record.save_stored(shared_stored).await;
+    }
 }
 
 fn record_elapsed(field: &'static str, started_at: Instant) {

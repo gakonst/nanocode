@@ -9,6 +9,7 @@
   const nativeContent = native("__nanocodeContent");
   const nativeText = native("__nanocodeText");
   const nativeLoad = native("__nanocodeLoad");
+  const nativeStore = native("__nanocodeStore");
   const nativeNotify = native("__nanocodeNotify");
   const nativeYield = native("__nanocodeYield");
   const nativeSetTimeout = native("__nanocodeSetTimeout");
@@ -472,7 +473,6 @@
     let descriptions;
     let schemas;
     const stored = new Map();
-    const storedWrites = new Map();
     const declaredTools = Object.create(null);
     let ended = false;
     let threw = false;
@@ -493,11 +493,10 @@
         resolve();
       });
     });
-    const done = jsonStringify({ type: "done", stored: {} });
-    const written = () => storedWrites.size ? Object.fromEntries(storedWrites) : {};
+    const done = jsonStringify({ type: "done" });
     const terminal = () => failure === undefined
-      ? storedWrites.size ? jsonStringify({ type: "done", stored: written() }) : done
-      : jsonStringify({ type: "error", message: failure, stored: written() });
+      ? done
+      : jsonStringify({ type: "error", message: failure });
     const invokeTool = (name, input, host = false, observed = false) => {
       const encodedInput = input === undefined ? "null" : jsonStringify(input);
       return callTool(name, encodedInput, host, observed);
@@ -546,9 +545,9 @@
 
     function store(key, value) {
       const normalizedKey = storageKey(key, "store");
-      const [, normalizedValue] = storeSnapshot(normalizedKey, value);
+      const [, normalizedValue, encoded] = storeSnapshot(normalizedKey, value);
+      nativeStore(normalizedKey, encoded);
       stored.set(normalizedKey, normalizedValue);
-      storedWrites.set(normalizedKey, normalizedValue);
     }
 
     function load(key) {
@@ -632,7 +631,6 @@
         return jsonStringify({
           type: "error",
           message: failure ?? thrownText(error),
-          stored: written(),
         });
       }
     };

@@ -16,7 +16,7 @@ use tokio::sync::{mpsc, oneshot, watch};
 use super::{
     Answers, HandCapability, HandEnvironment, HandHostInfo, HandPermission, LOCAL_TOOLS_UNKNOWN,
     NOT_RECEIVED, REQUEST_IN_USE, RemoteContext, RemoteFrame as Frame, RemoteOperation, SentCalls,
-    asked_key, encode_output, output_from_wire, output_to_wire,
+    asked_key, encode_output_sharing_images, output_from_wire, output_to_wire,
 };
 use crate::{
     Tool, ToolContext, ToolDefinition, ToolInput, ToolOutput,
@@ -473,7 +473,10 @@ impl Outgoing {
         }
     }
     fn encode(&self, frame: &Frame) -> Result<String, CodeModeHostError> {
-        frame.encode(self.limit.load(Ordering::Relaxed))
+        let limit = self.limit.load(Ordering::Relaxed);
+        frame
+            .encode(limit)
+            .or_else(|issue| fit_images(frame, limit).ok_or(issue))
     }
     fn connected(&self) -> bool {
         self.wire.get().is_some()
@@ -503,6 +506,96 @@ impl Outgoing {
             Err(issue) => self.send(&fallback(&issue)).map(|()| false),
         }
     }
+}
+
+fn fit_images(frame: &Frame, limit: usize) -> Option<String> {
+    let bytes = serde_json::to_string(frame).ok()?.len();
+    let fitted = |value: &Value| {
+        let mut value = value.clone();
+        shrink_images(&mut value, bytes, limit).then_some(value)
+    };
+    let frame = match frame {
+        Frame::Reply {
+            id,
+            result: Ok(Some(value)),
+        } => Frame::Reply {
+            id: *id,
+            result: Ok(Some(fitted(value)?)),
+        },
+        Frame::Update { id, update } => Frame::Update {
+            id: *id,
+            update: fitted(update)?,
+        },
+        Frame::DetachedUpdate {
+            session_id,
+            origin_call_id,
+            update,
+        } => Frame::DetachedUpdate {
+            session_id: session_id.clone(),
+            origin_call_id: origin_call_id.clone(),
+            update: fitted(update)?,
+        },
+        _ => return None,
+    };
+    frame.encode(limit).ok()
+}
+
+fn image_data_urls<'a>(value: &'a Value, urls: &mut HashMap<&'a str, usize>) {
+    match value {
+        Value::String(text) if text.starts_with("data:image/") && text.contains(";base64,") => {
+            *urls.entry(text).or_default() += 1;
+        }
+        Value::Array(items) => items.iter().for_each(|item| image_data_urls(item, urls)),
+        Value::Object(fields) => fields.values().for_each(|item| image_data_urls(item, urls)),
+        _ => {}
+    }
+}
+
+fn replace_strings(value: &mut Value, replacements: &HashMap<String, String>) {
+    match value {
+        Value::String(text) => {
+            if let Some(replacement) = replacements.get(text.as_str()) {
+                text.clone_from(replacement);
+            }
+        }
+        Value::Array(items) => items
+            .iter_mut()
+            .for_each(|item| replace_strings(item, replacements)),
+        Value::Object(fields) => fields
+            .values_mut()
+            .for_each(|item| replace_strings(item, replacements)),
+        _ => {}
+    }
+}
+
+fn shrink_images(value: &mut Value, frame_bytes: usize, limit: usize) -> bool {
+    let mut urls = HashMap::new();
+    image_data_urls(value, &mut urls);
+    let images = urls
+        .iter()
+        .map(|(url, count)| url.len().saturating_mul(*count))
+        .sum::<usize>();
+    let Some(available) = limit.checked_sub(frame_bytes.saturating_sub(images)) else {
+        return false;
+    };
+    if images == 0 {
+        return false;
+    }
+    let replacements = urls
+        .keys()
+        .filter_map(|url| {
+            let share = u128::try_from(available).ok()? * u128::try_from(url.len()).ok()?
+                / u128::try_from(images).ok()?;
+            let share = usize::try_from(share).ok()?;
+            (url.len() > share).then(|| {
+                let fitted =
+                    nanocode_image::fit_data_url(url, share).unwrap_or_else(|_| (*url).to_owned());
+                ((*url).to_owned(), fitted)
+            })
+        })
+        .collect::<HashMap<_, _>>();
+    replace_strings(value, &replacements);
+    true
 }
 
 fn unsent_update(update: &CodeModeUpdate<'_>, issue: &CodeModeHostError) -> Value {
@@ -2052,6 +2145,7 @@ impl State {
                 resumable,
                 answers,
                 asks,
+                shared_images,
             } => {
                 self.bus.answering.store(answers, Ordering::SeqCst);
                 self.bus.asking.store(asks, Ordering::SeqCst);
@@ -2063,6 +2157,7 @@ impl State {
                     output_prefix,
                     resumable,
                     answers,
+                    shared_images,
                 )
                 .await?;
             }
@@ -2081,6 +2176,7 @@ impl State {
         output_prefix: bool,
         resumable: bool,
         answers: bool,
+        shared_images: bool,
     ) -> Result<(), CodeModeHostError> {
         let outgoing = self.outgoing.clone();
         if let Some(bytes) = max_frame_bytes {
@@ -2388,6 +2484,7 @@ impl State {
                     output_prefix,
                     resumable,
                     answers,
+                    shared_images,
                     &cancelled,
                     &mut status,
                     &mut full,
@@ -2416,6 +2513,7 @@ async fn run(
     output_prefix: bool,
     resumable: bool,
     answers: bool,
+    shared_images: bool,
     cancelled: &Cancel,
     status: &mut Option<String>,
     full: &mut Option<Value>,
@@ -2440,6 +2538,7 @@ async fn run(
         catalog: catalog.clone(),
         calls: SentCalls::new(compact)
             .output_prefix(output_prefix)
+            .shared_images(shared_images)
             .answers(answered.clone())
             .asks(asks),
     };
@@ -2488,7 +2587,7 @@ async fn run(
             ..
         } => {
             nanocode_sync::select! {
-                output = session.call(&name, input, context.owned()) => encode_output(output, compact, output_prefix).and_then(|value| {
+                output = session.call(&name, input, context.owned()) => encode_output_sharing_images(output, compact, output_prefix, shared_images).and_then(|value| {
                     if resumable && value.get("output_prefix").is_some() {
                         *full = Some(output_to_wire(output_from_wire(value.clone())?, compact)?);
                     }

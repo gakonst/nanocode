@@ -979,6 +979,7 @@ impl Client {
             resumable: self.resumes.is_some(),
             answers: true,
             asks: true,
+            shared_images: true,
         }
     }
 

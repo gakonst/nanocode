@@ -71,10 +71,21 @@ pub fn encode_output(
     compact: bool,
     output_prefix: bool,
 ) -> Result<Value, CodeModeHostError> {
+    encode_output_sharing_images(output, compact, output_prefix, false)
+}
+
+pub fn encode_output_sharing_images(
+    output: ToolOutput,
+    compact: bool,
+    output_prefix: bool,
+    shared_images: bool,
+) -> Result<Value, CodeModeHostError> {
     let mut value = serde_json::to_value(output.into_wire().map_err(error)?).map_err(error)?;
     if let Some(fields) = value.as_object_mut() {
         if fields.get("structured_result") == fields.get("output") {
             fields.insert("structured_result".into(), Value::Null);
+        } else if compact && shared_images && fields.get("output").is_some_and(Value::is_array) {
+            share_images(fields);
         } else if compact
             && let (Some(Value::String(text)), Some(structured)) =
                 (fields.get("output"), fields.get("structured_result"))
@@ -102,7 +113,104 @@ pub fn encode_output(
     Ok(value)
 }
 
+fn image_urls(output: Option<&Value>) -> Vec<&str> {
+    output
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .map(|item| {
+            item.get("image_url")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+        })
+        .collect()
+}
+
+fn pointer_token(key: &str) -> String {
+    key.replace('~', "~0").replace('/', "~1")
+}
+
+fn shared_paths(value: &mut Value, urls: &[&str], path: &str, shared: &mut Map<String, Value>) {
+    match value {
+        Value::String(text) => {
+            if let Some(index) = urls.iter().position(|url| !url.is_empty() && url == text) {
+                shared.insert(path.to_owned(), json!(index));
+                *value = Value::Null;
+            }
+        }
+        Value::Array(items) => {
+            for (index, item) in items.iter_mut().enumerate() {
+                shared_paths(item, urls, &format!("{path}/{index}"), shared);
+            }
+        }
+        Value::Object(fields) => {
+            for (key, item) in fields.iter_mut() {
+                shared_paths(
+                    item,
+                    urls,
+                    &format!("{path}/{}", pointer_token(key)),
+                    shared,
+                );
+            }
+        }
+        _ => {}
+    }
+}
+
+fn share_images(fields: &mut Map<String, Value>) {
+    let Some(mut structured) = fields.remove("structured_result") else {
+        return;
+    };
+    let mut shared = Map::new();
+    shared_paths(
+        &mut structured,
+        &image_urls(fields.get("output")),
+        "",
+        &mut shared,
+    );
+    fields.insert("structured_result".into(), structured);
+    if !shared.is_empty() {
+        fields.insert("output_images".into(), Value::Object(shared));
+    }
+}
+
+fn restore_images(fields: &mut Map<String, Value>) -> Result<(), CodeModeHostError> {
+    let Some(shared) = fields.remove("output_images") else {
+        return Ok(());
+    };
+    let Value::Object(shared) = shared else {
+        return Err(error(
+            "output_images must map JSON pointers to output indexes",
+        ));
+    };
+    let urls = image_urls(fields.get("output"))
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let structured = fields
+        .get_mut("structured_result")
+        .ok_or_else(|| error("output_images needs a structured result"))?;
+    for (pointer, index) in shared {
+        let url = index
+            .as_u64()
+            .and_then(|index| urls.get(usize::try_from(index).ok()?))
+            .filter(|url| !url.is_empty())
+            .ok_or_else(|| error(format!("output_images names no output image for {pointer}")))?;
+        let slot = if pointer.is_empty() {
+            Some(&mut *structured)
+        } else {
+            structured.pointer_mut(&pointer)
+        };
+        *slot.ok_or_else(|| error(format!("output_images names a missing path {pointer}")))? =
+            Value::String(url.clone());
+    }
+    Ok(())
+}
+
 pub fn output_from_wire(mut value: Value) -> Result<ToolOutput, CodeModeHostError> {
+    if let Some(fields) = value.as_object_mut() {
+        restore_images(fields)?;
+    }
     if let Some(fields) = value.as_object_mut()
         && !fields.contains_key("output")
     {
@@ -167,6 +275,7 @@ impl Answers {
 pub struct SentCalls {
     compact: bool,
     output_prefix: bool,
+    shared_images: bool,
     answers: Option<Arc<Answers>>,
     asks: Option<Arc<Answers>>,
     started: HashSet<String>,
@@ -185,6 +294,12 @@ impl SentCalls {
     #[must_use]
     pub const fn output_prefix(mut self, output_prefix: bool) -> Self {
         self.output_prefix = output_prefix;
+        self
+    }
+
+    #[must_use]
+    pub const fn shared_images(mut self, shared_images: bool) -> Self {
+        self.shared_images = shared_images;
         self
     }
 
@@ -307,6 +422,9 @@ impl SentCalls {
             } else {
                 fields.insert("output".into(), output);
                 fields.insert("structured_result".into(), call.structured_result.clone());
+                if self.shared_images {
+                    share_images(&mut fields);
+                }
             }
         } else {
             fields.insert("output".into(), output);
@@ -335,6 +453,7 @@ fn call_id(fields: &Map<String, Value>) -> String {
 }
 
 fn expand_result(fields: &mut Map<String, Value>) -> Result<(), CodeModeHostError> {
+    restore_images(fields)?;
     if let Some(head) = fields.remove("output_prefix") {
         let text = joined(head, fields.get("structured_result"))?;
         fields.insert("output".into(), Value::String(text));

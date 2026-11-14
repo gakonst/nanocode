@@ -754,7 +754,6 @@ fn load_for_prompt_bytes(
     Ok(image)
 }
 
-#[cfg(not(target_family = "wasm"))]
 pub fn load_for_prompt_data_url(
     path: &Path,
     file_bytes: Vec<u8>,
@@ -919,4 +918,82 @@ const fn format_to_mime(format: Format) -> &'static str {
         Format::WebP => "image/webp",
         _ => "image/png",
     }
+}
+
+pub fn fit_data_url(url: &str, max_bytes: usize) -> Result<String, String> {
+    if url.len() <= max_bytes {
+        return Ok(url.to_owned());
+    }
+    let bytes =
+        decode_data_url(url, MAX_PROMPT_IMAGE_INPUT_BYTES).map_err(|error| error.to_string())?;
+    let format = guess_format(&bytes).ok_or_else(|| DecodeError::UnknownFormat.to_string())?;
+    let limits = Limits {
+        alloc_bytes_max: MAX_PROMPT_IMAGE_DECODE_BYTES,
+        dimension_max: None,
+    };
+    let image = Decoder::new(&bytes, format, limits)
+        .and_then(Decoder::decode)
+        .map_err(|error| error.to_string())?
+        .image;
+    drop(bytes);
+    let rgb: Vec<u8> = image
+        .to_rgba8()
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .flat_map(|pixel| {
+            let alpha = u16::from(pixel[3]);
+            [0, 1, 2].map(|channel| {
+                ((u16::from(pixel[channel]) * alpha + 255 * (255 - alpha) + 127) / 255) as u8
+            })
+        })
+        .collect();
+    let (full_width, full_height) = (image.width(), image.height());
+    drop(image);
+    let full = Image::new(full_width, full_height, Pixels::Rgb8(rgb))
+        .ok_or_else(|| "decoded image has inconsistent dimensions".to_owned())?;
+    let (mut width, mut height) = (full_width, full_height);
+    loop {
+        let jpeg = if (width, height) == (full_width, full_height) {
+            encode_jpeg(&full)
+        } else {
+            encode_jpeg(&thumbnail(&full, width, height))
+        }?;
+        let fitted = encode_data_url("image/jpeg", &jpeg);
+        if fitted.len() <= max_bytes {
+            return Ok(fitted);
+        }
+        if (width, height) == (1, 1) {
+            return Err(format!(
+                "a 1x1 JPEG data URL of {} bytes exceeds {max_bytes} bytes",
+                fitted.len()
+            ));
+        }
+        #[allow(clippy::cast_precision_loss)]
+        let scale = (max_bytes as f64 / fitted.len() as f64).sqrt();
+        let next = (
+            floored_dimension(f64::from(width) * scale),
+            floored_dimension(f64::from(height) * scale),
+        );
+        (width, height) = if next == (width, height) {
+            (
+                width.saturating_sub(1).max(1),
+                height.saturating_sub(1).max(1),
+            )
+        } else {
+            next
+        };
+    }
+}
+
+fn encode_jpeg(image: &Image) -> Result<Vec<u8>, String> {
+    nanocode_jpeg::encode(
+        &image.to_rgb8(),
+        image.width(),
+        image.height(),
+        nanocode_jpeg::Color::Rgb,
+        JPEG_QUALITY,
+        None,
+    )
+    .map_err(|error| format!("unable to encode image as JPEG: {error}"))
 }

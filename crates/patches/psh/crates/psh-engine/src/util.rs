@@ -94,7 +94,7 @@ pub struct UtilPolicy {
 pub(crate) async fn lookup(vp: &Vp, name: &[u8]) -> Option<&'static UtilEntry> {
     // A path, or a name bound to a path with `hash -p` (or remembered from running the
     // program), names the program; `bash` and `sh` run in psh before utilities (D1410).
-    if crate::builtins::hash::hashed(vp, name).is_some() {
+    if crate::builtins::hash::hashed(vp, name).await.is_some() {
         return None;
     }
     if nested::is_shell(vp, name) {

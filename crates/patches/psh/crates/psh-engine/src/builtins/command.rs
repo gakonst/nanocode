@@ -96,7 +96,7 @@ async fn lookup(vp: &Vp, name: &[u8], o: Lookup) -> Vec<Kind> {
         return found;
     }
     if !o.all {
-        if let Some(p) = hash::hashed(vp, name) {
+        if let Some(p) = hash::hashed(vp, name).await {
             found.push(Kind::File(p, true));
         } else if let Some(p) = hash::search(vp, name, None).await {
             found.push(Kind::File(p, false));
@@ -109,7 +109,7 @@ async fn lookup(vp: &Vp, name: &[u8], o: Lookup) -> Vec<Kind> {
         .map(<[u8]>::to_vec)
         .unwrap_or_else(|| exec::DEFAULT_PATH.to_vec());
     if o.path_only
-        && let Some(p) = hash::hashed(vp, name)
+        && let Some(p) = hash::hashed(vp, name).await
     {
         found.push(Kind::File(p, false));
     }
@@ -203,6 +203,12 @@ pub(super) async fn command(vp: &mut Vp, args: &[Vec<u8>]) -> R {
             };
             any = true;
             if verbose {
+                let k = match k {
+                    Kind::File(p, false) if !name.contains(&b'/') => {
+                        Kind::File(vp.abs_path(p.strip_prefix(b"./").unwrap_or(&p)), false)
+                    }
+                    k => k,
+                };
                 describe(&mut buf, name, &k);
             } else {
                 match k {

@@ -1,0 +1,22 @@
+[package]
+name = "getrandom"
+version = "0.3.4"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The operating system's random source behind the getrandom API graviola calls"
+autotests = false
+autobenches = false
+
+[dependencies]
+nanocode-sys.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+test = false
+doctest = false
+bench = false

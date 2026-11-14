@@ -11,6 +11,8 @@ members = [
     "crates/core/unicode-normalization",
     "crates/core/itoa",
     "crates/core/shlex",
+    "crates/core/getrandom",
+    "crates/core/cfg-if",
     "crates/core/process",
     "crates/integrations/agent-host",
     "crates/runtime/tool-host",
@@ -185,6 +187,8 @@ rustpython-vm = { version = "=0.6.0", default-features = false, features = ["com
 [patch.crates-io]
 rustls-platform-verifier = { path = "crates/patches/rustls-platform-verifier" }
 rustls-webpki = { path = "crates/patches/rustls-webpki" }
+cfg-if = { path = "crates/core/cfg-if" }
+getrandom = { path = "crates/core/getrandom" }
 itoa = { path = "crates/core/itoa" }
 pymath = { path = "crates/patches/pymath" }
 rustpython-codegen = { path = "crates/patches/rustpython-codegen" }

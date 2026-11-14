@@ -194,6 +194,9 @@ rustpython-vm = { version = "=0.6.0", default-features = false, features = ["com
 
 [patch.crates-io]
 serde_derive = { path = "crates/core/serde-derive" }
+serde = { path = "crates/patches/serde" }
+serde_core = { path = "crates/patches/serde_core" }
+serde_json = { path = "crates/patches/serde_json" }
 rustls-platform-verifier = { path = "crates/patches/rustls-platform-verifier" }
 rustls = { path = "crates/patches/rustls" }
 rustls-pki-types = { path = "crates/patches/rustls-pki-types" }

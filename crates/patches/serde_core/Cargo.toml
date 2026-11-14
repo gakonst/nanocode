@@ -1,0 +1,25 @@
+[package]
+edition = "2021"
+rust-version = "1.56"
+name = "serde_core"
+version = "1.0.228"
+build = "build.rs"
+description = "Serde traits only, with no support for derive -- use the `serde` crate instead"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/serde-rs/serde"
+publish = false
+
+[features]
+alloc = []
+default = ["std", "result"]
+rc = []
+result = []
+std = []
+unstable = []
+
+[lib]
+name = "serde_core"
+path = "src/lib.rs"
+test = false
+doctest = false
+bench = false

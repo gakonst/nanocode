@@ -1,0 +1,34 @@
+[package]
+edition = "2021"
+rust-version = "1.56"
+name = "serde"
+version = "1.0.228"
+build = "build.rs"
+description = "A generic serialization/deserialization framework"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/serde-rs/serde"
+publish = false
+
+[features]
+alloc = ["serde_core/alloc"]
+default = ["std"]
+derive = ["serde_derive"]
+rc = ["serde_core/rc"]
+std = ["serde_core/std"]
+unstable = ["serde_core/unstable"]
+
+[lib]
+name = "serde"
+path = "src/lib.rs"
+test = false
+doctest = false
+bench = false
+
+[dependencies.serde_core]
+version = "=1.0.228"
+features = ["result"]
+default-features = false
+
+[dependencies.serde_derive]
+version = "1"
+optional = true

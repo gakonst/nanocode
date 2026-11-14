@@ -14,6 +14,7 @@ members = [
     "crates/core/shlex",
     "crates/core/getrandom",
     "crates/core/cfg-if",
+    "crates/core/once_cell",
     "crates/core/process",
     "crates/integrations/agent-host",
     "crates/runtime/tool-host",
@@ -192,6 +193,7 @@ rustpython-vm = { version = "=0.6.0", default-features = false, features = ["com
 rustls-platform-verifier = { path = "crates/patches/rustls-platform-verifier" }
 rustls-webpki = { path = "crates/patches/rustls-webpki" }
 cfg-if = { path = "crates/core/cfg-if" }
+once_cell = { path = "crates/core/once_cell" }
 getrandom = { path = "crates/core/getrandom" }
 itoa = { path = "crates/core/itoa" }
 pymath = { path = "crates/patches/pymath" }

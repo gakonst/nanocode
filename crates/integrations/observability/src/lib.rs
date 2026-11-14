@@ -124,6 +124,8 @@ pub enum ObservabilityError {
 
     Output(io::Error),
 
+    LocalFile(PathBuf, io::Error),
+
     Otlp(OtlpError),
 
     OTelSdk(ExportError),
@@ -136,6 +138,9 @@ impl std::fmt::Display for ObservabilityError {
         match self {
             Self::Filter(value) => write!(formatter, "invalid tracing filter: {value}"),
             Self::Output(value) => write!(formatter, "failed to open tracing output: {value}"),
+            Self::LocalFile(path, value) => {
+                write!(formatter, "cannot write {}: {value}", path.display())
+            }
             Self::Otlp(value) => write!(formatter, "failed to configure OTLP exporter: {value}"),
             Self::OTelSdk(value) => write!(
                 formatter,
@@ -152,7 +157,7 @@ impl std::error::Error for ObservabilityError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Filter(value) => Some(value),
-            Self::Output(value) => Some(value),
+            Self::Output(value) | Self::LocalFile(_, value) => Some(value),
             Self::Otlp(value) => Some(value),
             Self::OTelSdk(value) => Some(value),
             _ => None,
@@ -286,7 +291,10 @@ impl ObservabilityBuilder {
                     version: None,
                 };
                 let files = directory
-                    .map(|directory| file::Exporters::create(directory, &resource, &tracer_scope))
+                    .map(|directory| {
+                        file::Exporters::create(directory, &resource, &tracer_scope)
+                            .map_err(|error| ObservabilityError::LocalFile(directory.into(), error))
+                    })
                     .transpose()?;
                 let (traces, metrics) = files.map_or((None, None), |files| {
                     (Some(files.traces), Some(files.metrics))
@@ -335,16 +343,16 @@ impl ObservabilityBuilder {
         })
     }
 
-    fn writer(&self) -> Result<Option<Box<dyn io::Write + Send>>, io::Error> {
+    fn writer(&self) -> Result<Option<Box<dyn io::Write + Send>>, ObservabilityError> {
         match &self.output {
             LogOutput::Stderr => Ok(Some(Box::new(io::stderr()))),
             LogOutput::File(path) => {
-                if let Some(parent) = path.parent() {
-                    std::fs::create_dir_all(parent)?;
-                }
-                Ok(Some(Box::new(
-                    OpenOptions::new().create(true).append(true).open(path)?,
-                )))
+                let opened = path
+                    .parent()
+                    .map_or(Ok(()), std::fs::create_dir_all)
+                    .and_then(|()| OpenOptions::new().create(true).append(true).open(path))
+                    .map_err(|error| ObservabilityError::LocalFile(path.clone(), error))?;
+                Ok(Some(Box::new(opened)))
             }
             LogOutput::Disabled => Ok(None),
         }

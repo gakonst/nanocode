@@ -199,8 +199,18 @@ impl Sessions {
     }
 
     pub(super) fn open_home(home: &Path) -> Result<Self, StoreError> {
-        let mut sessions = Self::open(home.join("sessions"))?;
-        sessions.shared = Shared::open(home)?;
+        let unwritable = |error: StoreError| {
+            let detail = match error {
+                StoreError::Backend(detail) => detail,
+                other => other.to_string(),
+            };
+            StoreError::Backend(format!(
+                "cannot open the session store in {}: {detail}",
+                home.display()
+            ))
+        };
+        let mut sessions = Self::open(home.join("sessions")).map_err(unwritable)?;
+        sessions.shared = Shared::open(home).map_err(unwritable)?;
         let legacy = home.join("sessions.jsonl");
         if legacy.is_file() {
             super::migrate::migrate(&mut sessions, &legacy)?;

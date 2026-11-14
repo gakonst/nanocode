@@ -66,20 +66,39 @@ fn install_telemetry(
     cli: &Cli,
     home: &Path,
 ) -> Result<Option<nanocode_observability::ObservabilityGuard>> {
+    match telemetry(cli, home, true).install() {
+        Err(nanocode_observability::ObservabilityError::LocalFile(path, error))
+            if path.starts_with(home) =>
+        {
+            eprintln!(
+                "nanocode: running without local logs and telemetry: cannot write {}: {error}; set --home or NANOCODE_HOME to a writable directory to keep them",
+                path.display()
+            );
+            Ok(Some(telemetry(cli, home, false).install()?))
+        }
+        installed => Ok(Some(installed?)),
+    }
+}
+
+fn telemetry(
+    cli: &Cli,
+    home: &Path,
+    local_files: bool,
+) -> nanocode_observability::ObservabilityBuilder {
     let args = &cli.observability;
     let interactive = !matches!(
         cli.command,
         Some(Command::Exec(_) | Command::Hand(_) | Command::Sessions(_) | Command::Models)
     ) && !is_cua(cli);
-    let output = match (args.log_filter().is_some(), interactive) {
-        (false, _) => nanocode_observability::LogOutput::Disabled,
-        (true, false) => nanocode_observability::LogOutput::Stderr,
-        (true, true) => {
+    let output = match (args.log_filter().is_some(), interactive, local_files) {
+        (false, _, _) | (true, true, false) => nanocode_observability::LogOutput::Disabled,
+        (true, false, _) => nanocode_observability::LogOutput::Stderr,
+        (true, true, true) => {
             nanocode_observability::LogOutput::File(home.join("log").join("nanocode.log"))
         }
     };
-    Ok(Some(
-        args.builder(
+    let builder = args
+        .builder(
             "nanocode",
             env!("CARGO_PKG_VERSION"),
             output,
@@ -89,10 +108,12 @@ fn install_telemetry(
                 nanocode_observability::Telemetry::Agent
             },
         )
-        .otlp_directory(home.join("log").join("otel"))
-        .shutdown_timeout(TELEMETRY_SHUTDOWN)
-        .install()?,
-    ))
+        .shutdown_timeout(TELEMETRY_SHUTDOWN);
+    if local_files {
+        builder.otlp_directory(home.join("log").join("otel"))
+    } else {
+        builder
+    }
 }
 
 #[cfg(unix)]

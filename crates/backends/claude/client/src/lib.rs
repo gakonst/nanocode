@@ -10,6 +10,7 @@ use nanocode_sync::{Stream, StreamExt, stream};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+mod admission;
 mod auth;
 #[cfg(not(target_family = "wasm"))]
 mod claude_code;
@@ -1691,6 +1692,7 @@ enum HttpConnection {
 
 #[derive(Clone)]
 pub struct ClaudeClient {
+    admission: Arc<admission::Admission>,
     http: HttpConnection,
     endpoint: String,
     auth: ClientAuth,
@@ -1706,6 +1708,7 @@ pub struct ClaudeClient {
 impl ClaudeClient {
     pub fn new(http: HttpClient, endpoint: impl Into<String>, api_key: impl Into<String>) -> Self {
         Self {
+            admission: Arc::default(),
             http: HttpConnection::Client(http),
             endpoint: endpoint.into(),
             auth: ClientAuth::ApiKey(api_key.into()),
@@ -1757,6 +1760,7 @@ impl ClaudeClient {
         headers: nanocode_http::types::header::HeaderMap,
     ) -> Self {
         Self {
+            admission: Arc::default(),
             http: HttpConnection::Client(http),
             endpoint: endpoint.into(),
             auth: ClientAuth::Headers(headers),
@@ -1775,6 +1779,7 @@ impl ClaudeClient {
         provider: Arc<dyn ClaudeAuthProvider>,
     ) -> Self {
         Self {
+            admission: Arc::default(),
             http: HttpConnection::Client(http),
             endpoint: endpoint.into(),
             auth: ClientAuth::Provider(provider),
@@ -2081,6 +2086,22 @@ impl ClaudeClient {
     }
 
     async fn post(&self, wire: &PreparedWire) -> Result<(HttpResponse, Vec<String>), ClaudeError> {
+        let permit = self.admission.admit().await;
+        let posted = self.post_admitted(wire).await;
+        match &posted {
+            Ok(_) => permit.accepted(),
+            Err(error @ ClaudeError::Http { retry_after, .. }) if error.is_throttled() => {
+                permit.throttled(*retry_after);
+            }
+            Err(_) => drop(permit),
+        }
+        posted
+    }
+
+    async fn post_admitted(
+        &self,
+        wire: &PreparedWire,
+    ) -> Result<(HttpResponse, Vec<String>), ClaudeError> {
         let mut retried = false;
 
         let mut credentials = Vec::<String>::new();

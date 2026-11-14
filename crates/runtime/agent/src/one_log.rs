@@ -51,6 +51,8 @@ pub struct Policy {
 }
 
 pub struct OneLog {
+    answered: Atom<BTreeMap<(String, u64), u64>>,
+    dispatched: Atom<BTreeMap<(String, u64), BTreeSet<u64>>>,
     durable_settles: Atom<bool>,
     effects: Atom<Effects>,
     log: nanocode_turnlog::TurnLog,
@@ -256,6 +258,8 @@ impl OneLog {
             })
             .await;
         Ok(Arc::new(Self {
+            answered: Atom::default(),
+            dispatched: Atom::default(),
             durable_settles: Atom::new(false),
             effects: Atom::new(Effects::builtin().merged(policy.effects)),
             log,
@@ -1217,7 +1221,40 @@ impl CellJournalSink for OneLogJournals {
                 .iter()
                 .any(|entry| matches!(entry, JournalEntry::Timeout { .. }));
             let pending = log.unsaved.read(|unsaved| unsaved.get(&cell) == Some(&seq));
-            if external.is_empty() && !(timed && (fresh || pending)) {
+            let started = update
+                .calls
+                .iter()
+                .filter(|call| {
+                    matches!(call.state, JournaledCallState::Running)
+                        && log.effect_of(&call.name).needs_row()
+                })
+                .map(|call| call.id)
+                .collect::<Vec<_>>();
+            let results = update
+                .entries
+                .iter()
+                .filter_map(|entry| match entry {
+                    JournalEntry::Result { id, .. } => Some(*id),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            let answered = log.dispatched.update(|dispatched| {
+                let calls = dispatched.entry(cell.clone()).or_default();
+                calls.extend(started.iter().copied());
+                let before = calls.len();
+                calls.retain(|id| !results.contains(id));
+                let answered = calls.len() < before;
+                if calls.is_empty() || update.finished {
+                    dispatched.remove(&cell);
+                }
+                answered
+            });
+            let owed = log.answered.read(|owed| owed.get(&cell) == Some(&seq));
+            if external.is_empty()
+                && !owed
+                && !(answered && (timed || update.finished))
+                && !(timed && (fresh || pending))
+            {
                 log.unsaved.update(|unsaved| {
                     if update.finished {
                         unsaved.remove(&cell);
@@ -1225,9 +1262,17 @@ impl CellJournalSink for OneLogJournals {
                         unsaved.insert(cell.clone(), seq);
                     }
                 });
+                log.answered.update(|owed| {
+                    if update.finished {
+                        owed.remove(&cell);
+                    } else if answered {
+                        owed.insert(cell.clone(), seq);
+                    }
+                });
                 return Ok(());
             }
             log.unsaved.update(|unsaved| unsaved.remove(&cell));
+            log.answered.update(|owed| owed.remove(&cell));
             for call in external {
                 lease.push(call).map_err(|error| error.to_string())?;
             }
@@ -1244,6 +1289,10 @@ impl CellJournalSink for OneLogJournals {
         let session = session_id.to_owned();
         log.unsaved
             .update(|unsaved| unsaved.remove(&(session.clone(), cell_id)));
+        log.answered
+            .update(|owed| owed.remove(&(session.clone(), cell_id)));
+        log.dispatched
+            .update(|dispatched| dispatched.remove(&(session.clone(), cell_id)));
         Box::pin(async move {
             if let Err(error) = log.log.lease().await.push(Record::Forget {
                 cell: cell_id,

@@ -6,8 +6,7 @@ mkdir -p "$out"
 cd "$root"
 for triple in aarch64-apple-darwin x86_64-apple-darwin; do
   cp "$(scripts/build-cli.sh nanocode-cli nanocode "$triple")" "$out/nanocode-$triple"
-  cargo build --locked --profile dist --target "$triple" -p nanocode-cua-driver
-  cp "target/$triple/dist/nanocode-cua-driver" "$out/nanocode-cua-driver-$triple"
+  cp "$(scripts/build-cli.sh nanocode-cua-driver nanocode-cua-driver "$triple")" "$out/nanocode-cua-driver-$triple"
 done
 for arch in arm64 amd64; do
   case $arch in arm64) triple=aarch64-unknown-linux-gnu ;; amd64) triple=x86_64-unknown-linux-gnu ;; esac

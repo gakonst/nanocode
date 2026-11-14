@@ -463,6 +463,7 @@ fn context(message: &'static str) -> impl FnOnce(CertificateFault) -> Fault {
 
 impl CertificateAuthority {
     fn generate() -> Result<(Self, Vec<u8>), Fault> {
+        nanocode_tls::cpu::check().map_err(|error| Fault::config(error.to_string()))?;
         let crypto = CryptoProvider::get_default().cloned().ok_or_else(|| {
             Fault::config("install a default rustls CryptoProvider before binding a ForwardProxy")
         })?;

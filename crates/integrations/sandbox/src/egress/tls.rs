@@ -102,6 +102,7 @@ impl Tls {
     }
 
     pub fn with_roots(name: &str, roots: RootCertStore) -> io::Result<Self> {
+        nanocode_tls::cpu::check()?;
         let (issuer, der) = Issuer::self_signed(name)?;
         let pem = certificate::pem(&der);
         Self::issuing(
@@ -114,6 +115,10 @@ impl Tls {
     }
 
     pub fn from_ca(ca: &Ca, roots: RootCertStore, leaves: Leaves) -> Result<Self, BadCa> {
+        nanocode_tls::cpu::check().map_err(|cause| BadCa {
+            what: "this CPU",
+            cause: Box::new(cause),
+        })?;
         let key = KeyPair::from_pem(&ca.key).map_err(|cause| BadCa {
             what: "the egress CA's key",
             cause: Box::new(cause),
@@ -134,6 +139,7 @@ impl Tls {
         roots: RootCertStore,
         leaves: Leaves,
     ) -> io::Result<Self> {
+        nanocode_tls::cpu::check()?;
         let ca_der = CertificateDer::from_pem_slice(ca_pem.as_bytes()).map_err(other)?;
         Self::issuing(issuer, ca_der, ca_pem.to_owned(), roots, leaves)
     }

@@ -103,6 +103,7 @@ impl Stream {
 }
 
 async fn config(options: &PgOptions) -> Result<Arc<ClientConfig>, PgError> {
+    nanocode_tls::cpu::check()?;
     nanocode_tls::install_default_rustls_crypto_provider();
     match (options.tls, &options.root_certificate) {
         (TlsMode::VerifyFull, None) => Ok(nanocode_tls::native_client_config().await?),

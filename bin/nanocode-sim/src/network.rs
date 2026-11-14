@@ -7,6 +7,7 @@ use nanocode_sync::Slot;
 
 use crate::{
     rng::{PPM, Rng},
+    httpd::WireMutation,
     server::ModelServer,
     world::World,
 };
@@ -102,9 +103,9 @@ fn transport(detail: &str, unsent: bool) -> HttpError {
 }
 
 impl Network {
-    pub fn new(seed: u64, world: Arc<World>, faults: NetworkFaults) -> Self {
+    pub fn new(seed: u64, world: Arc<World>, faults: NetworkFaults, mutation: WireMutation) -> Self {
         Self {
-            server: ModelServer::new(seed, Arc::clone(&world)),
+            server: ModelServer::new(seed, Arc::clone(&world), mutation == WireMutation::ToolResultTwice),
             world,
             faults,
             rng: Slot::new(Some(Rng::derive(seed, "network"))),

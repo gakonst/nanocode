@@ -3,12 +3,14 @@ mod disk;
 mod executor;
 mod faults;
 mod host;
+mod httpd;
 mod log;
 mod model;
 mod onelog;
 mod rng;
 mod scripted;
 mod simulate;
+mod socket;
 mod store;
 mod tidy;
 mod turnlog;
@@ -28,7 +30,8 @@ use crate::{
     simulate::{Options, run_seed},
     store::Mutation,
     turns::{Invariant, PolicyKind, TurnMutation, TurnOptions, TurnStats},
-    whole::{StoreKind, WholeOptions, WholeStats},
+    httpd::WireMutation,
+    whole::{StoreKind, WholeOptions, WholeStats, WireKind},
 };
 
 const DEFAULT_OPS: u64 = 1000;
@@ -55,10 +58,11 @@ type Caught = BTreeMap<Invariant, (u64, u64, (u64, u64))>;
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: nanocode-sim --tidy | (--seed S | --seeds A..B) [--scenario store|agents|turns|runtime] [--ops N] [--twice] [--mutation {}] [--records content|slots] [--verbose]\n       turns: [--mutation {}] [--without {}]... [--live-seqs temporary|floor|gap|reuse] [--calm] [--policy reference|turnlog] [--row-limit BYTES] [--long TURNS] [--snapshot-ratio K] [--retain TURNS]\n       runtime: [--store memory|kv] [--calm]",
+        "usage: nanocode-sim --tidy | (--seed S | --seeds A..B) [--scenario store|agents|turns|runtime] [--ops N] [--twice] [--mutation {}] [--records content|slots] [--verbose]\n       turns: [--mutation {}] [--without {}]... [--live-seqs temporary|floor|gap|reuse] [--calm] [--policy reference|turnlog] [--row-limit BYTES] [--long TURNS] [--snapshot-ratio K] [--retain TURNS]\n       runtime: [--store memory|kv] [--calm] [--wire transport|http] [--mutation {}]",
         Mutation::names(),
         TurnMutation::names(),
-        onelog::PROTECTIONS.join("|")
+        onelog::PROTECTIONS.join("|"),
+        WireMutation::NAMES
     );
     ExitCode::from(2)
 }
@@ -101,6 +105,7 @@ fn parse_args(args: &[String]) -> Option<Args> {
             "--verbose" => options.verbose = true,
             "--calm" => turns.calm = true,
             "--store" => whole.store = Some(StoreKind::parse(rest.next()?)?),
+            "--wire" => whole.wire = WireKind::parse(rest.next()?)?,
             "--policy" => turns.policy = PolicyKind::parse(rest.next()?)?,
             "--row-limit" => turns.row_limit = Some(rest.next()?.parse().ok()?),
             "--long" => turns.long = Some(rest.next()?.parse().ok()?),
@@ -134,7 +139,8 @@ fn parse_args(args: &[String]) -> Option<Args> {
         (_, None) => {}
         (Scenario::Store, Some(name)) => options.mutation = Mutation::parse(name)?,
         (Scenario::Turns, Some(name)) => turns.mutation = TurnMutation::parse(name)?,
-        (Scenario::Agents | Scenario::Runtime, Some(_)) => return None,
+        (Scenario::Runtime, Some(name)) => whole.mutation = WireMutation::parse(name)?,
+        (Scenario::Agents, Some(_)) => return None,
     }
     turns.verbose = options.verbose;
     whole.verbose = options.verbose;
@@ -162,6 +168,14 @@ fn replay(seed: u64, args: &Args) -> String {
         }
         if args.whole.calm {
             command.push_str(" --calm");
+        }
+        if args.whole.wire != WireKind::Transport {
+            command.push_str(" --wire ");
+            command.push_str(args.whole.wire.name());
+        }
+        if args.whole.mutation != WireMutation::None {
+            command.push_str(" --mutation ");
+            command.push_str(args.whole.mutation.name());
         }
         return command;
     }
@@ -396,9 +410,10 @@ fn main() -> ExitCode {
         return usage();
     };
     let mutation = args.options.mutation;
-    let experiment = args.scenario == Scenario::Turns
+    let experiment = (args.scenario == Scenario::Turns
         && (args.turns.mutation != TurnMutation::None
-            || args.turns.protections != Protections::ALL);
+            || args.turns.protections != Protections::ALL))
+        || (args.scenario == Scenario::Runtime && args.whole.mutation != WireMutation::None);
     let (mut passed, mut failed) = (0_u64, 0_u64);
     let mut totals = Stats::default();
     let mut agent_totals = AgentStats::default();
@@ -429,9 +444,21 @@ fn main() -> ExitCode {
     }
     if args.scenario == Scenario::Runtime {
         println!(
-            "RESULT seeds={}..{} scenario=runtime passed={passed} failed={failed} twice={} stats={whole_totals:?}",
-            args.seeds.start, args.seeds.end, args.twice
+            "RESULT seeds={}..{} scenario=runtime wire={} mutation={} passed={passed} failed={failed} twice={} stats={whole_totals:?}",
+            args.seeds.start,
+            args.seeds.end,
+            args.whole.wire.name(),
+            args.whole.mutation.name(),
+            args.twice
         );
+        if args.whole.mutation != WireMutation::None {
+            if failed > 0 {
+                println!("MUTATION {} caught by {failed} seeds", args.whole.mutation.name());
+                return ExitCode::SUCCESS;
+            }
+            println!("MUTATION {} NOT caught", args.whole.mutation.name());
+            return ExitCode::FAILURE;
+        }
         return if failed == 0 {
             ExitCode::SUCCESS
         } else {

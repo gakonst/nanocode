@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 use crate::{
     executor::{Clock, Ended, Executor, Task},
     faults::Profile,
+    httpd::{Connector, HttpFaults, HttpServer, WireMutation},
     network::{Network, NetworkFaults, Transport},
     rng::Rng,
     server::{EFFECT_TOOL, final_text, root_prompt},
@@ -32,6 +33,7 @@ pub const RESUBMIT_DELAY: Duration = Duration::from_secs(5);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 const ENDPOINT: &str = "http://model.sim/v1";
+const MESSAGES_URL: &str = "http://model.sim/v1/messages";
 const EPOCHS_MAX: u64 = CRASHES_MAX + 1;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -57,11 +59,54 @@ impl StoreKind {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WireKind {
+    #[default]
+    Transport,
+    Http,
+}
+
+impl WireKind {
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "transport" => Some(Self::Transport),
+            "http" => Some(Self::Http),
+            _ => None,
+        }
+    }
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Transport => "transport",
+            Self::Http => "http",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
 pub struct WholeOptions {
     pub store: Option<StoreKind>,
     pub calm: bool,
     pub verbose: bool,
+    pub wire: WireKind,
+    pub mutation: WireMutation,
+}
+
+impl Default for WholeOptions {
+    fn default() -> Self {
+        Self {
+            store: None,
+            calm: false,
+            verbose: false,
+            wire: WireKind::Transport,
+            mutation: WireMutation::None,
+        }
+    }
+}
+
+enum Wire {
+    Transport(Arc<Network>),
+    Http(Arc<HttpServer>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -80,6 +125,8 @@ struct Shape {
     store: StoreKind,
     crashes: Vec<u64>,
     faults: NetworkFaults,
+    http_faults: HttpFaults,
+    wire: WireKind,
 }
 
 impl Shape {
@@ -123,12 +170,15 @@ impl Shape {
             store,
             crashes,
             faults: NetworkFaults::of(seed, options.calm),
+            http_faults: HttpFaults::of(seed, options.calm),
+            wire: options.wire,
         }
     }
 
     fn describe(&self) -> String {
         format!(
-            "scenario=runtime stop={:?} stop_after_ms={} resident<={:?} roots={} turns={} store={} crashes_ms={:?} calm_network={}",
+            "scenario=runtime wire={} stop={:?} stop_after_ms={} resident<={:?} roots={} turns={} store={} crashes_ms={:?} calm_network={}",
+            self.wire.name(),
             self.stop,
             self.stop_after.as_millis(),
             self.hibernation,
@@ -136,7 +186,10 @@ impl Shape {
             self.turns,
             self.store.name(),
             self.crashes.iter().map(|at| at / 1_000_000).collect::<Vec<_>>(),
-            self.faults.calm()
+            match self.wire {
+                WireKind::Transport => self.faults.calm(),
+                WireKind::Http => self.http_faults.calm(),
+            }
         )
     }
 }
@@ -165,6 +218,8 @@ impl WholeStats {
         self.world.submitted += other.world.submitted;
         self.world.waits += other.world.waits;
         self.world.faults += other.world.faults;
+        self.world.connections += other.world.connections;
+        self.world.reuses += other.world.reuses;
     }
 }
 
@@ -230,10 +285,29 @@ impl Durable {
     }
 }
 
-fn runtime(store: SessionStore, network: &Arc<Network>, world: &Arc<World>) -> Result<Nanocode, String> {
-    let claude = ClaudeClient::messages_api(ENDPOINT, "sk-sim", CONNECT_TIMEOUT, IDLE_TIMEOUT)
-        .map_err(|error| format!("claude client: {error}"))?
-        .with_transport(Transport(Arc::clone(network)));
+fn claude(wire: &Wire) -> Result<ClaudeClient, String> {
+    match wire {
+        Wire::Transport(network) => Ok(ClaudeClient::messages_api(ENDPOINT, "sk-sim", CONNECT_TIMEOUT, IDLE_TIMEOUT)
+            .map_err(|error| format!("claude client: {error}"))?
+            .with_transport(Transport(Arc::clone(network)))),
+        Wire::Http(server) => {
+            let builder = nanocode_http::Client::builder()
+                .no_proxy()
+                .connect_timeout(CONNECT_TIMEOUT)
+                .default_headers(nanocode_http::accept_encoding(nanocode_http::header::HeaderMap::new()))
+                .connector(Connector(Arc::clone(server)));
+            let builder = match server.mutation() {
+                WireMutation::NoReadTimeout => builder,
+                _ => builder.read_timeout(IDLE_TIMEOUT),
+            };
+            let http = builder.build().map_err(|error| format!("http client: {error}"))?;
+            Ok(ClaudeClient::new(http, MESSAGES_URL, "sk-sim"))
+        }
+    }
+}
+
+fn runtime(store: SessionStore, wire: &Wire, world: &Arc<World>) -> Result<Nanocode, String> {
+    let claude = claude(wire)?;
     Nanocode::builder()
         .claude(claude)
         .tools(tools(world))
@@ -483,14 +557,14 @@ async fn epoch(
     durable: &Durable,
     shape: &Shape,
     epoch: u64,
-    network: &Arc<Network>,
+    wire: &Wire,
     world: &Arc<World>,
     client: &Client,
 ) -> Result<(), String> {
     world.trace(&format!("epoch {epoch}"));
     nanocode::claude::durability::forget_templates();
     let store = durable.session_store()?;
-    let runtime = runtime(store.clone(), network, world)?;
+    let runtime = runtime(store.clone(), wire, world)?;
     if let (Some(control), Some(resident_max)) = (runtime.subagents(), shape.hibernation) {
         control.set_hibernation(true);
         control.set_max_resident(resident_max);
@@ -535,7 +609,10 @@ pub fn simulate(seed: u64, options: WholeOptions) -> WholeOutcome {
     let clock = Clock::new();
     crate::host::enter(seed, &clock);
     let world = World::new(Arc::clone(&clock), options.verbose);
-    let network = Arc::new(Network::new(seed, Arc::clone(&world), shape.faults));
+    let wire = match shape.wire {
+        WireKind::Transport => Wire::Transport(Arc::new(Network::new(seed, Arc::clone(&world), shape.faults, options.mutation))),
+        WireKind::Http => Wire::Http(Arc::new(HttpServer::new(seed, Arc::clone(&world), shape.http_faults, options.mutation, IDLE_TIMEOUT))),
+    };
     let durable = Durable {
         kind: shape.store,
         kv: (shape.store == StoreKind::Kv).then(|| {
@@ -566,7 +643,7 @@ pub fn simulate(seed: u64, options: WholeOptions) -> WholeOutcome {
             Rng::derive(seed, &format!("scheduler {number}")),
         );
         let task: Task<'_> = Box::pin(async {
-            let outcome = epoch(&durable, &shape, number, &network, &world, &client).await;
+            let outcome = epoch(&durable, &shape, number, &wire, &world, &client).await;
             result.replace(Some(outcome));
         });
         let crash_at = crashes.pop_front();

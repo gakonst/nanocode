@@ -19,6 +19,8 @@ pub struct WorldCounts {
     pub submitted: u64,
     pub waits: u64,
     pub faults: u64,
+    pub connections: u64,
+    pub reuses: u64,
 }
 
 #[derive(Default)]

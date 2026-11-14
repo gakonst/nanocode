@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::BTreeSet, sync::Arc};
 
 use serde_json::{Value, json};
 
@@ -284,11 +284,88 @@ pub struct Reply {
 pub struct ModelServer {
     seed: u64,
     world: Arc<World>,
+    tool_result_twice: bool,
+}
+
+fn blocks(message: &Value) -> &[Value] {
+    message
+        .get("content")
+        .and_then(Value::as_array)
+        .map_or(&[], Vec::as_slice)
+}
+
+fn role(message: &Value) -> Option<&str> {
+    message.get("role").and_then(Value::as_str)
+}
+
+fn of_type<'a>(blocks: &'a [Value], kind: &'a str, key: &'a str) -> impl Iterator<Item = &'a str> + 'a {
+    blocks
+        .iter()
+        .filter(move |block| block.get("type").and_then(Value::as_str) == Some(kind))
+        .filter_map(move |block| block.get(key).and_then(Value::as_str))
+}
+
+fn duplicate_first_tool_result(messages: &mut [Value]) {
+    for message in messages {
+        let Some(blocks) = message.get_mut("content").and_then(Value::as_array_mut) else {
+            continue;
+        };
+        if let Some(at) = blocks
+            .iter()
+            .position(|block| block.get("type").and_then(Value::as_str) == Some("tool_result"))
+        {
+            let copy = blocks[at].clone();
+            blocks.insert(at + 1, copy);
+            return;
+        }
+    }
 }
 
 impl ModelServer {
-    pub const fn new(seed: u64, world: Arc<World>) -> Self {
-        Self { seed, world }
+    pub const fn new(seed: u64, world: Arc<World>, tool_result_twice: bool) -> Self {
+        Self {
+            seed,
+            world,
+            tool_result_twice,
+        }
+    }
+
+    fn check_tool_results(&self, label: &str, messages: &[Value]) {
+        let mut pending: Vec<&str> = Vec::new();
+        let mut answered: BTreeSet<&str> = BTreeSet::new();
+        for message in messages {
+            match role(message) {
+                Some("assistant") => {
+                    if let Some(id) = pending.first() {
+                        self.world.wrong(format!(
+                            "{label}'s request has an assistant message after tool_use {id} without its result"
+                        ));
+                    }
+                    pending = of_type(blocks(message), "tool_use", "id").collect();
+                }
+                Some("user") => {
+                    for id in of_type(blocks(message), "tool_result", "tool_use_id") {
+                        if !answered.insert(id) {
+                            self.world.wrong(format!(
+                                "{label}'s request carries the result of tool_use {id} more than once"
+                            ));
+                        }
+                        if !pending.contains(&id) {
+                            self.world.wrong(format!(
+                                "{label}'s request carries a result for tool_use {id}, which the message before did not call"
+                            ));
+                        }
+                    }
+                    if let Some(id) = pending.iter().find(|id| !answered.contains(*id)) {
+                        self.world.wrong(format!(
+                            "{label}'s request leaves tool_use {id} without a result in the next message"
+                        ));
+                    }
+                    pending.clear();
+                }
+                _ => {}
+            }
+        }
     }
 
     fn check(&self, label: &str, messages: &[Value]) {
@@ -337,17 +414,21 @@ impl ModelServer {
             .and_then(Value::as_str)
             .unwrap_or("claude")
             .to_owned();
-        let messages = request
+        let mut messages = request
             .get("messages")
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
+        if self.tool_result_twice {
+            duplicate_first_tool_result(&mut messages);
+        }
         let Some(conversation) = read(&messages) else {
             return Err("a request with no simulated agent in it".to_owned());
         };
         let label = conversation.agent.label().to_owned();
         self.world.count(|counts| counts.requests += 1);
         self.check(&label, &messages);
+        self.check_tool_results(&label, &messages);
         if let Agent::Root { turn, .. } = conversation.agent {
             self.check_root(&label, turn, &messages);
         }

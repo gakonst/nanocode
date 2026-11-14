@@ -789,11 +789,12 @@ impl Host {
         if config.subagents == Subagents::Off {
             builder = builder.without_subagents();
         }
-        let runtime = builder
-            .harness_model(model.clone())
-            .thinking(thinking)
-            .build_async()
-            .await?;
+        let builder = builder.harness_model(model.clone()).thinking(thinking);
+        let runtime = if config.headless {
+            builder.build_async().await?
+        } else {
+            builder.build()?
+        };
         if let (Some(subagents), Some(tempo)) = (runtime.subagents(), &config.clients.tempo) {
             tempo.offer(subagents);
         }

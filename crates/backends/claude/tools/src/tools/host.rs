@@ -1,4 +1,4 @@
-use nanocode_tools::{JsonSchema, SchemaSettings};
+use nanocode_tools::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
@@ -143,6 +143,8 @@ impl ToolOutput {
 
 pub const MAX_HOST_INPUT_BYTES: usize = 64 * 1024;
 
+pub const MAX_TASK_OUTPUT_TIMEOUT_MS: u64 = 300_000;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum HostTool {
     TaskOutput,
@@ -158,6 +160,11 @@ impl HostTool {
             Self::TaskOutput => "TaskOutput",
             Self::TaskStop => "TaskStop",
         }
+    }
+
+    #[must_use]
+    pub fn definition(self) -> Value {
+        definition(self)
     }
 }
 
@@ -214,6 +221,11 @@ impl<H: ClaudeHost> ClaudeHostTools<H> {
         let request = match tool {
             HostTool::TaskOutput => {
                 let request: TaskOutputRequest = decode(input)?;
+                if request.timeout > MAX_TASK_OUTPUT_TIMEOUT_MS {
+                    return Err(format!(
+                        "timeout must be 0..{MAX_TASK_OUTPUT_TIMEOUT_MS} milliseconds"
+                    ));
+                }
                 HostRequest::TaskOutput(request)
             }
             HostTool::TaskStop => {
@@ -227,15 +239,12 @@ impl<H: ClaudeHost> ClaudeHostTools<H> {
 fn decode<T: serde::de::DeserializeOwned>(input: Value) -> Result<T, String> {
     serde_json::from_value(input).map_err(|e| format!("invalid Claude host input: {e}"))
 }
-fn schema<T: JsonSchema>() -> Value {
-    Value::Object(SchemaSettings::draft07().root_schema_for::<T>())
-}
 fn definition(tool: HostTool) -> Value {
     match tool {
         HostTool::TaskOutput => json!({
             "name": tool.name(),
             "description": "SDK extension: read a host-owned background task's status and output, optionally waiting up to timeout milliseconds.",
-            "input_schema": schema::<TaskOutputRequest>()
+            "input_schema": {"type":"object","properties":{"task_id":{"type":"string"},"block":{"type":"boolean","default":default_block()},"timeout":{"type":"integer","minimum":0,"maximum":MAX_TASK_OUTPUT_TIMEOUT_MS,"default":default_timeout(),"description":format!("Milliseconds to wait when block is true: 0 to {MAX_TASK_OUTPUT_TIMEOUT_MS}, default {}", default_timeout())}},"required":["task_id"],"additionalProperties":false}
         }),
         _ => crate::upstream::tool_value(tool.name()),
     }

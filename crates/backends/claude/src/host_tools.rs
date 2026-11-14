@@ -9,7 +9,9 @@ use std::{
 };
 
 use crate::tools::{
-    BashExecution, BashExecutor, BashRequest, BashResult, ClaudeBash, host::HostTool, text_files,
+    BashExecution, BashExecutor, BashRequest, BashResult, ClaudeBash,
+    host::{HostTool, MAX_TASK_OUTPUT_TIMEOUT_MS},
+    text_files,
 };
 use nanocode_agent_core::input::ImageDetail;
 use nanocode_process_contracts::{FileHost, ForegroundCommand, ForegroundExecutor};
@@ -416,8 +418,10 @@ impl HostTaskTool {
         let timeout = fields
             .get("timeout")
             .map_or(Some(30_000), Value::as_u64)
-            .filter(|value| *value <= 300_000)
-            .ok_or("timeout must be 0..300000 milliseconds")?;
+            .filter(|value| *value <= MAX_TASK_OUTPUT_TIMEOUT_MS)
+            .ok_or_else(|| {
+                format!("timeout must be 0..{MAX_TASK_OUTPUT_TIMEOUT_MS} milliseconds")
+            })?;
         if block {
             let _ = nanocode_platform::timeout(Duration::from_millis(timeout), job.finished.wait())
                 .await;
@@ -470,10 +474,11 @@ impl Tool for HostTaskTool {
             )
             .with_output_schema(crate::claude_output::host_schema(name));
         }
+        let definition = self.tool.definition();
         ToolDefinition::function(
             name,
-            "SDK extension: retrieve a background Bash task's result, optionally waiting for completion.",
-            json!({"type":"object","properties":{"task_id":{"type":"string"},"block":{"type":"boolean","default":true},"timeout":{"type":"integer","minimum":0,"maximum":300000,"default":30000,"description":"Milliseconds to wait when block is true: 0 to 300000, default 30000"}},"required":["task_id"],"additionalProperties":false}),
+            definition["description"].as_str().unwrap_or_default(),
+            definition["input_schema"].clone(),
         )
         .with_output_schema(crate::claude_output::host_schema(name))
     }

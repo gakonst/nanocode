@@ -30,7 +30,10 @@ use super::{
 use crate::{
     Tool, ToolDefinition, ToolInput,
     code_mode_spec::{DEFAULT_YIELD, source_yielding, wait_yielding},
-    embedded::{CodeModeExecution, CodeModeHostError, CodeModeObserver, HandCalls, HostFuture},
+    embedded::{
+        CodeModeExecution, CodeModeHostError, CodeModeObserver, HandCalls, HostFuture,
+        nested_tool_input,
+    },
 };
 
 pub const PEER_CLOSED: &str = "runner disconnected";
@@ -869,19 +872,22 @@ impl Client {
                     authoritative.call_id = context.call_id;
                     let owned = authoritative.owned();
                     let input = if freeform {
-                        ToolInput::Freeform(
+                        Ok(ToolInput::Freeform(
                             input
                                 .as_str()
                                 .ok_or_else(|| error("freeform callback must be a string"))?
                                 .into(),
-                        )
+                        ))
                     } else {
-                        ToolInput::Function(serde_json::value::to_raw_value(&input).map_err(error)?)
+                        nested_tool_input(&tool.definition(), &name, input)
                     };
-                    let mut output = tool
-                        .execute(input, owned.as_context())
-                        .await
-                        .map_err(error)?;
+                    let mut output = match input {
+                        Ok(input) => tool
+                            .execute(input, owned.as_context())
+                            .await
+                            .map_err(error)?,
+                        Err(refused) => refused,
+                    };
                     hold(&mut output);
                     encode_output(output, compact, output_prefix)
                 },

@@ -8,17 +8,17 @@ use std::{
 
 use nanocode_sync::Atom;
 use nanocode_sync::FutureExt;
-use serde_json::{Value, json, value::to_raw_value};
+use serde_json::{Value, json};
 
 use super::{
     CellJournals, CodeModeExecution, CodeModeObserver, CodeModeRuntime, IgnoreCodeModeUpdates,
 };
 use crate::{
-    CodeModeToolset, Tool, ToolContext, ToolDefinition, ToolInput, ToolOutput,
+    CodeModeToolset, Tool, ToolContext, ToolDefinition, ToolOutput,
     code_mode_description::normalize_identifier,
     embedded::{
         CodeModeHost, CodeModeHostError, EmbeddedToolMode, HandCalls, HostFuture, OwnedToolContext,
-        declares_hand, host_owned_name, take_hand, tool_not_available,
+        declares_hand, host_owned_name, nested_tool_input, take_hand, tool_not_available,
     },
 };
 
@@ -246,44 +246,7 @@ fn recover<'a>(
     context: ToolContext<'a>,
 ) -> Option<HostFuture<'a, Option<ToolOutput>>> {
     let (tool, definition) = found?;
-    tool.recover(tool_input(definition, name, input).ok()?, context)
-}
-
-fn tool_input(
-    definition: &ToolDefinition,
-    name: &str,
-    input: Value,
-) -> Result<ToolInput, ToolOutput> {
-    match definition {
-        ToolDefinition::Function { .. } | ToolDefinition::ToolSearch { .. }
-            if !input.is_object() =>
-        {
-            Err(ToolOutput::error(format!(
-                "nested function tool {name} requires an object argument"
-            )))
-        }
-        ToolDefinition::Function { .. } | ToolDefinition::ToolSearch { .. } => to_raw_value(&input)
-            .map(ToolInput::Function)
-            .map_err(|error| ToolOutput::error(format!("failed to encode {name} input: {error}"))),
-        ToolDefinition::Custom { .. } => match &input {
-            Value::String(input) => Ok(ToolInput::Freeform(input.clone())),
-            Value::Object(fields) if fields.len() == 1 => fields
-                .get("input")
-                .and_then(Value::as_str)
-                .map(|input| ToolInput::Freeform(input.to_owned()))
-                .ok_or_else(|| {
-                    ToolOutput::error(format!(
-                        "nested freeform tool {name} requires a string argument or {{ input }}"
-                    ))
-                }),
-            _ => Err(ToolOutput::error(format!(
-                "nested freeform tool {name} requires a string argument or {{ input }}"
-            ))),
-        },
-        _ => Err(ToolOutput::error(format!(
-            "unsupported nested tool call: {name}"
-        ))),
-    }
+    tool.recover(nested_tool_input(definition, name, input).ok()?, context)
 }
 
 fn execute<'a>(
@@ -296,7 +259,7 @@ fn execute<'a>(
         let Some((tool, definition)) = found else {
             return tool_not_available(name);
         };
-        let input = match tool_input(definition, name, input) {
+        let input = match nested_tool_input(definition, name, input) {
             Ok(input) => input,
             Err(output) => return output,
         };

@@ -3,7 +3,7 @@ mod types;
 
 use std::{error::Error, fmt, future::Future, pin::Pin};
 
-use serde_json::Value;
+use serde_json::{Value, value::to_raw_value};
 
 use crate::{ToolContext, ToolDefinition, ToolInput, ToolOutput};
 
@@ -536,5 +536,42 @@ impl<T: CodeModeHost + ?Sized> CodeModeHost for std::sync::Arc<T> {
     }
     fn cancel<'a>(&'a self, session_id: &'a str) -> HostFuture<'a, Result<(), CodeModeHostError>> {
         (**self).cancel(session_id)
+    }
+}
+
+pub(crate) fn nested_tool_input(
+    definition: &ToolDefinition,
+    name: &str,
+    input: Value,
+) -> Result<ToolInput, ToolOutput> {
+    match definition {
+        ToolDefinition::Function { .. } | ToolDefinition::ToolSearch { .. }
+            if !input.is_object() =>
+        {
+            Err(ToolOutput::error(format!(
+                "nested function tool {name} requires an object argument"
+            )))
+        }
+        ToolDefinition::Function { .. } | ToolDefinition::ToolSearch { .. } => to_raw_value(&input)
+            .map(ToolInput::Function)
+            .map_err(|error| ToolOutput::error(format!("failed to encode {name} input: {error}"))),
+        ToolDefinition::Custom { .. } => match &input {
+            Value::String(input) => Ok(ToolInput::Freeform(input.clone())),
+            Value::Object(fields) if fields.len() == 1 => fields
+                .get("input")
+                .and_then(Value::as_str)
+                .map(|input| ToolInput::Freeform(input.to_owned()))
+                .ok_or_else(|| {
+                    ToolOutput::error(format!(
+                        "nested freeform tool {name} requires a string argument or {{ input }}"
+                    ))
+                }),
+            _ => Err(ToolOutput::error(format!(
+                "nested freeform tool {name} requires a string argument or {{ input }}"
+            ))),
+        },
+        _ => Err(ToolOutput::error(format!(
+            "unsupported nested tool call: {name}"
+        ))),
     }
 }

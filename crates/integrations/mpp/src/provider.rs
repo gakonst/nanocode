@@ -7,11 +7,11 @@ use nanocode_http::header::HeaderMap;
 use super::error::Fault;
 use super::protocol::{Challenge, Credential, Receipt};
 
-pub(crate) type PaymentEventFuture = Pin<Box<dyn Future<Output = Result<(), Fault>> + Send>>;
-pub(crate) type ManagementFuture<'a> =
+pub type PaymentEventFuture = Pin<Box<dyn Future<Output = Result<(), Fault>> + Send>>;
+pub type ManagementFuture<'a> =
     Pin<Box<dyn Future<Output = Result<Option<Receipt>, Fault>> + Send + 'a>>;
 
-pub(crate) trait ManagementTransport: Send + Sync {
+pub trait ManagementTransport: Send + Sync {
     fn send<'a>(
         &'a self,
         challenge: &'a Challenge,
@@ -20,13 +20,13 @@ pub(crate) trait ManagementTransport: Send + Sync {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct PaymentContext {
-    pub(crate) url: Url,
-    pub(crate) headers: HeaderMap,
-    pub(crate) http_client: Option<nanocode_http::Client>,
+pub struct PaymentContext {
+    pub url: Url,
+    pub headers: HeaderMap,
+    pub http_client: Option<nanocode_http::Client>,
 }
 
-pub(crate) trait PaymentProvider: Clone + Send + Sync {
+pub trait PaymentProvider: Clone + Send + Sync {
     fn supports(&self, method: &str, intent: &str) -> bool;
 
     fn select_challenge<'a>(&self, challenges: &[&'a Challenge]) -> Option<&'a Challenge>;
@@ -89,7 +89,7 @@ pub(crate) trait PaymentProvider: Clone + Send + Sync {
     fn accept_payment_header(&self) -> Option<String>;
 }
 
-pub(crate) struct PendingPayment<P: PaymentProvider> {
+pub struct PendingPayment<P: PaymentProvider> {
     provider: P,
     challenge: Challenge,
     credential: Credential,
@@ -106,15 +106,15 @@ impl<P: PaymentProvider> PendingPayment<P> {
         }
     }
 
-    pub(crate) const fn challenge(&self) -> &Challenge {
+    pub const fn challenge(&self) -> &Challenge {
         &self.challenge
     }
 
-    pub(crate) const fn credential(&self) -> &Credential {
+    pub const fn credential(&self) -> &Credential {
         &self.credential
     }
 
-    pub(crate) async fn commit(mut self) -> Result<(), Fault> {
+    pub async fn commit(mut self) -> Result<(), Fault> {
         self.provider
             .commit_payment(&self.challenge, &self.credential)
             .await?;
@@ -122,7 +122,7 @@ impl<P: PaymentProvider> PendingPayment<P> {
         Ok(())
     }
 
-    pub(crate) async fn rollback(mut self) -> Result<(), Fault> {
+    pub async fn rollback(mut self) -> Result<(), Fault> {
         self.provider
             .rollback_payment(&self.challenge, &self.credential)
             .await?;

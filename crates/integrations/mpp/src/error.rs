@@ -1,7 +1,7 @@
 use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Fault {
+pub enum Fault {
     Config(String),
     Http(String),
     Json(String),
@@ -51,7 +51,7 @@ impl Fault {
         Self::Http(message.into())
     }
 
-    pub(crate) const fn is_insufficient_balance(&self) -> bool {
+    pub const fn is_insufficient_balance(&self) -> bool {
         matches!(
             self,
             Self::InsufficientBalance(_) | Self::TokenBalance { .. }

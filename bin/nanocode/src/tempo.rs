@@ -13,34 +13,17 @@ use nanocode::{
 };
 use nanocode_sync::{Atom, Signal, SingleFlight};
 use serde_json::Value;
-use tokio::sync::mpsc::UnboundedSender;
 
-mod accounts;
-mod charge;
-mod error;
-mod events;
-mod flow;
-mod identity;
-mod keys;
-mod mcp;
-mod payer;
-mod protocol;
-mod provider;
-mod proxy;
-mod rpc;
-mod session;
-mod signing;
-mod store;
-mod tx;
-mod x509;
-
-use self::{
+use nanocode_mpp::{
+    Listeners, accounts,
     charge::AutoswapConfig,
     error::Fault,
     events::{Deposit, Events},
-    flow::{DEFAULT_MAX_PAYMENT_RETRIES, Exchange, FlowError, Policy},
+    flow::{self, DEFAULT_MAX_PAYMENT_RETRIES, Exchange, FlowError, Policy},
+    http_client,
     identity::{Asker, Identity, Proved},
-    mcp::McpPayment,
+    mcp::{self, McpPayment},
+    notify,
     payer::Payer,
     protocol::{Challenge, Credential, INTENT_CHARGE, INTENT_SESSION, METHOD_NAME, Receipt},
     provider::{
@@ -263,8 +246,6 @@ impl Exchange for NextExchange<'_> {
     }
 }
 
-type Listeners = Atom<Vec<UnboundedSender<String>>>;
-
 #[derive(Clone)]
 struct Payments {
     client: Arc<Atom<Option<nanocode_http::Client>>>,
@@ -390,19 +371,7 @@ impl Payments {
     }
 
     fn client(&self) -> std::result::Result<nanocode_http::Client, String> {
-        if let Some(client) = self.client.read(Clone::clone) {
-            return Ok(client);
-        }
-        let client = nanocode_http::Client::builder()
-            .redirect(nanocode_http::redirect::Policy::none())
-            .default_headers(nanocode_http::accept_encoding(
-                nanocode_http::header::HeaderMap::new(),
-            ))
-            .build()
-            .map_err(|error| error.to_string())?;
-        Ok(self
-            .client
-            .update(|slot| slot.get_or_insert_with(|| client.clone()).clone()))
+        http_client(&self.client)
     }
 
     fn wallet(&self, url: &nanocode_http::Url, terms: &Terms) -> Wallet {
@@ -1190,21 +1159,6 @@ fn symbol(currency: &str, machine: Address) -> String {
     }
 }
 
-fn notify(listeners: &Listeners, notice: Option<String>) {
-    let Some(notice) = notice else {
-        return;
-    };
-    let gone = listeners.read(|listeners| {
-        listeners
-            .iter()
-            .filter(|listener| listener.send(notice.clone()).is_err())
-            .count()
-    });
-    if gone > 0 {
-        listeners.update(|listeners| listeners.retain(|listener| !listener.is_closed()));
-    }
-}
-
 fn bar(change: i128, peak: i128) -> char {
     if change <= 0 {
         return BARS[0];
@@ -1850,7 +1804,8 @@ pub(crate) fn apply(
     };
     let payments = Payments::new(machine, served, args.tempo_session.clone());
     let identity = Arc::new(Identity::new(
-        payments.clone(),
+        payments.client.clone(),
+        payments.listeners.clone(),
         &args.identity_issuer,
         args.identity_email.clone(),
         &args.identity_attestation,

@@ -62,10 +62,10 @@ const MANAGEMENT_DROPPED_HEADERS: [&str; 9] = [
 ];
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct SessionSpend {
+pub struct SessionSpend {
     pub(crate) spent: u128,
     pub(crate) last: Option<u128>,
-    pub(crate) remaining: u128,
+    pub remaining: u128,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -204,7 +204,7 @@ impl Default for Shared {
 }
 
 #[derive(Clone)]
-pub(crate) struct SessionProvider {
+pub struct SessionProvider {
     signer: PrimitiveSigner,
     rpc: Rpc,
     authorized_signer: Option<Address>,
@@ -441,7 +441,7 @@ impl SessionProvider {
         self.authorized_signer.unwrap_or(self.signer.address())
     }
 
-    pub(crate) fn spend(&self) -> SessionSpend {
+    pub fn spend(&self) -> SessionSpend {
         let ledger = self.shared.spend.get();
         let remaining = self.shared.channels.read(|channels| {
             channels
@@ -2085,7 +2085,7 @@ impl SessionProvider {
         Ok(true)
     }
 
-    pub(crate) async fn close(
+    pub async fn close(
         &self,
         client: &nanocode_http::Client,
         url: &str,
@@ -2663,7 +2663,10 @@ impl SessionProvider {
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
             let provider = self.clone();
             let id = channel_id.clone();
-            nanocode_platform::spawn_on(&runtime, async move { provider.save_server_spent(&id).await });
+            nanocode_platform::spawn_on(
+                &runtime,
+                async move { provider.save_server_spent(&id).await },
+            );
         }
         if self.is_pending_open(&channel_id)
             && let Some(entry) = self.channel_by_id(&channel_id)

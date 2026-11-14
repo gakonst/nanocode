@@ -12,7 +12,7 @@ const ACCEPT_PAYMENT: &str = "accept-payment";
 const SCIENTIFIC_UPPER: i32 = 21;
 const SCIENTIFIC_LOWER: i32 = -6;
 
-pub(crate) fn extract_challenges_from_data(payment_required: &Value) -> Option<Vec<Challenge>> {
+pub fn extract_challenges_from_data(payment_required: &Value) -> Option<Vec<Challenge>> {
     let challenges: Vec<Challenge> = payment_required
         .get("challenges")?
         .as_array()?
@@ -46,7 +46,7 @@ fn decoded(encoded: &Encoded) -> Result<Value, Fault> {
     })
 }
 
-pub(crate) fn credential_value(credential: &Credential) -> Result<Value, Fault> {
+pub fn credential_value(credential: &Credential) -> Result<Value, Fault> {
     let mut value =
         serde_json::to_value(credential).map_err(|error| Fault::Config(error.to_string()))?;
     let challenge = value
@@ -155,28 +155,28 @@ fn canonical(value: &Value, text: &mut String) {
 }
 
 #[derive(Clone)]
-pub(crate) struct McpPayment<P> {
+pub struct McpPayment<P> {
     provider: P,
     context: PaymentContext,
 }
 
 impl<P: PaymentProvider> McpPayment<P> {
-    pub(crate) const fn new(provider: P, context: PaymentContext) -> Self {
+    pub const fn new(provider: P, context: PaymentContext) -> Self {
         Self { provider, context }
     }
 
-    pub(crate) const fn provider(&self) -> &P {
+    pub const fn provider(&self) -> &P {
         &self.provider
     }
 
-    pub(crate) async fn prepare(
+    pub async fn prepare(
         &self,
         challenges: &[Challenge],
     ) -> Result<Option<PendingPayment<P>>, Fault> {
         self.prepare_inner(challenges, None).await
     }
 
-    pub(crate) async fn prepare_with_management(
+    pub async fn prepare_with_management(
         &self,
         challenges: &[Challenge],
         management: &dyn ManagementTransport,
@@ -184,7 +184,7 @@ impl<P: PaymentProvider> McpPayment<P> {
         self.prepare_inner(challenges, Some(management)).await
     }
 
-    pub(crate) fn record_receipt(&self, challenge: &Challenge, receipt: &Receipt) -> Option<u128> {
+    pub fn record_receipt(&self, challenge: &Challenge, receipt: &Receipt) -> Option<u128> {
         self.provider
             .record_receipt(&self.context, challenge, receipt)
     }

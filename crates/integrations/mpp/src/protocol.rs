@@ -7,9 +7,9 @@ use serde_json::Value;
 
 use super::error::Fault;
 
-pub(crate) const METHOD_NAME: &str = "tempo";
-pub(crate) const INTENT_CHARGE: &str = "charge";
-pub(crate) const INTENT_SESSION: &str = "session";
+pub const METHOD_NAME: &str = "tempo";
+pub const INTENT_CHARGE: &str = "charge";
+pub const INTENT_SESSION: &str = "session";
 pub(crate) const PAYMENT_SCHEME: &str = "Payment";
 pub(crate) const PAYMENT_AUTHORIZATION_HEADER: &str = "Payment-Authorization";
 pub(crate) const PAYMENT_RECEIPT_HEADER: &str = "payment-receipt";
@@ -32,7 +32,7 @@ const Q_SCALE: f32 = 1000.0;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
-pub(crate) struct Encoded(String);
+pub struct Encoded(String);
 
 impl Encoded {
     pub(crate) fn from_raw(raw: impl Into<String>) -> Self {
@@ -43,7 +43,7 @@ impl Encoded {
         &self.0
     }
 
-    pub(crate) fn decode<T: serde::de::DeserializeOwned>(&self) -> Result<T, Fault> {
+    pub fn decode<T: serde::de::DeserializeOwned>(&self) -> Result<T, Fault> {
         let bytes = decode_url(&self.0)?;
         serde_json::from_slice(&bytes).map_err(|error| {
             Fault::InvalidChallenge(Some(format!("Failed to decode base64url JSON: {error}")))
@@ -66,14 +66,14 @@ pub(crate) fn decode_url(input: &str) -> Result<Vec<u8>, Fault> {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct Challenge {
+pub struct Challenge {
     pub(crate) id: String,
     pub(crate) realm: String,
     pub(crate) method: String,
-    pub(crate) intent: String,
-    pub(crate) request: Encoded,
+    pub intent: String,
+    pub request: Encoded,
     pub(crate) expires: Option<String>,
-    pub(crate) description: Option<String>,
+    pub description: Option<String>,
     pub(crate) digest: Option<String>,
     pub(crate) opaque: Option<Encoded>,
     pub(crate) header: Option<String>,
@@ -161,7 +161,7 @@ impl Challenge {
         self.request.decode::<Value>().ok()
     }
 
-    pub(crate) fn amount(&self) -> Option<u128> {
+    pub fn amount(&self) -> Option<u128> {
         self.request_value()?.get("amount")?.as_str()?.parse().ok()
     }
 }
@@ -186,7 +186,7 @@ pub(crate) struct ChallengeEcho {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct Credential {
+pub struct Credential {
     pub(crate) challenge: ChallengeEcho,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) source: Option<String>,
@@ -228,11 +228,11 @@ impl Credential {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct Receipt {
+pub struct Receipt {
     pub(crate) status: String,
     pub(crate) method: String,
     pub(crate) timestamp: String,
-    pub(crate) reference: String,
+    pub reference: String,
     #[serde(rename = "externalId", skip_serializing_if = "Option::is_none")]
     pub(crate) external_id: Option<String>,
     #[serde(rename = "subscriptionId", skip_serializing_if = "Option::is_none")]
@@ -277,13 +277,13 @@ impl Receipt {
         Ok(receipt)
     }
 
-    pub(crate) fn from_value(value: Value) -> Option<Self> {
+    pub fn from_value(value: Value) -> Option<Self> {
         let receipt: Self = serde_json::from_value(value).ok()?;
         serde_json::from_value::<ReceiptStatus>(Value::from(receipt.status.clone())).ok()?;
         Some(receipt)
     }
 
-    pub(crate) fn extension(&self, key: &str) -> Option<&str> {
+    pub fn extension(&self, key: &str) -> Option<&str> {
         self.extensions.get(key)?.as_str()
     }
 }

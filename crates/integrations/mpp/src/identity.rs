@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use nanocode_http::header::{HeaderMap, HeaderValue};
 use nanocode_http::{Request, Response, StatusCode, Url};
@@ -12,7 +13,7 @@ use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
 use super::flow::{Exchange, HttpFault};
 use super::protocol::{Challenge, PAYMENT_RECEIPT_HEADER, decode_url, now_seconds};
-use super::{Payments, notify};
+use super::{Listeners, http_client, notify};
 
 pub(crate) const ATTESTATION_HEADER: &str = "identity-attestation";
 pub(crate) const REQUIRED_HEADER: &str = "identity-attestation-required";
@@ -32,7 +33,7 @@ const PRIVATE_DIRECTORY_MODE: u32 = 0o700;
 const UNASKED: &str = "nanocode exec asks for the code only on a terminal and with --identity-email: run nanocode and answer with /pass, run exec in a terminal with --identity-email <address>, or give --identity-attestation <pass>";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Asker {
+pub enum Asker {
     Pass,
     Stdin,
     Nobody,
@@ -129,14 +130,15 @@ pub(crate) struct Rejected {
     sent: Vec<String>,
 }
 
-pub(crate) struct Identity {
+pub struct Identity {
     issuers: Vec<String>,
     email: Atom<Option<String>>,
     held: Atom<BTreeMap<String, Held>>,
     flight: SingleFlight<(String, Result<Option<String>, String>)>,
     answers: UnboundedSender<Answer>,
     inbox: Slot<UnboundedReceiver<Answer>>,
-    payments: Payments,
+    client: Arc<Atom<Option<nanocode_http::Client>>>,
+    listeners: Arc<Listeners>,
     asker: Asker,
     passes: Option<PathBuf>,
 }
@@ -155,8 +157,9 @@ impl Drop for Lent<'_> {
 }
 
 impl Identity {
-    pub(crate) fn new(
-        payments: Payments,
+    pub fn new(
+        client: Arc<Atom<Option<nanocode_http::Client>>>,
+        listeners: Arc<Listeners>,
         issuers: &[String],
         email: Option<String>,
         attestations: &[String],
@@ -195,13 +198,14 @@ impl Identity {
             flight: SingleFlight::default(),
             answers,
             inbox: Slot::new(Some(inbox)),
-            payments,
+            client,
+            listeners,
             asker,
             passes,
         })
     }
 
-    pub(crate) fn answer(&self, text: &str) {
+    pub fn answer(&self, text: &str) {
         let answer = Answer::parse(text);
         if let Answer::Email(email) = &answer {
             drop(self.email.set(Some(email.clone())));
@@ -212,7 +216,7 @@ impl Identity {
     }
 
     fn notice(&self, text: String) {
-        notify(&self.payments.listeners, Some(text));
+        notify(&self.listeners, Some(text));
     }
 
     pub(crate) fn prove(&self, request: &mut Request) {
@@ -434,7 +438,7 @@ impl Identity {
                 }
             }
         };
-        let client = self.payments.client()?;
+        let client = http_client(&self.client)?;
         let id = post(
             &client,
             issuer,
@@ -533,7 +537,8 @@ impl Identity {
             return;
         };
         let (key, token) = (key.to_owned(), token.to_owned());
-        let forgotten = nanocode_platform::spawn_blocking(move || forget(&directory, &key, &token)).await;
+        let forgotten =
+            nanocode_platform::spawn_blocking(move || forget(&directory, &key, &token)).await;
         if let Ok(Err(error)) = forgotten {
             tracing::warn!(target: "nanocode", error = %error, "a refused email pass stays on disk");
         }
@@ -680,9 +685,9 @@ async fn post(
     }
 }
 
-pub(crate) struct Proved<'a, X> {
-    pub(crate) exchange: X,
-    pub(crate) identity: Option<&'a Identity>,
+pub struct Proved<'a, X> {
+    pub exchange: X,
+    pub identity: Option<&'a Identity>,
 }
 
 impl<X: Exchange> Exchange for Proved<'_, X> {

@@ -386,7 +386,7 @@ fn can_pay_fees(token: Address) -> bool {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct AutoswapConfig {
+pub struct AutoswapConfig {
     pub(crate) token_in: Address,
     pub(crate) slippage_bps: u16,
     pub(crate) max_amount_in: Option<u128>,

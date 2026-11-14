@@ -22,7 +22,7 @@ const WORD: usize = 32;
 const SELECTOR: usize = 4;
 
 #[derive(Debug)]
-pub(crate) enum AccountsError {
+pub enum AccountsError {
     HomeUnavailable,
     Read {
         path: PathBuf,
@@ -558,6 +558,6 @@ pub(crate) fn active_account(state: &PersistedAccountsState) -> Result<Address, 
     }
 }
 
-pub(crate) fn default_active_account() -> Result<Address, AccountsError> {
+pub fn default_active_account() -> Result<Address, AccountsError> {
     active_account(&load_state(&default_store_path()?)?)
 }

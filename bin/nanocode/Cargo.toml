@@ -26,7 +26,6 @@ bench = false
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 futures-util.workspace = true
-bytes.workspace = true
 http.workspace = true
 mimalloc = { workspace = true, features = ["no_thp"] }
 nanocode = { path = "../../crates/nanocode", version = "0.7.0", default-features = false, features = ["local-cells"] }
@@ -34,6 +33,7 @@ nanocode-agent-host = { path = "../../crates/integrations/agent-host", version =
 nanocode-arguments.workspace = true
 nanocode-computer-repl = { path = "../../crates/integrations/computer-repl", version = "0.7.0" }
 nanocode-home = { path = "../../crates/core/home", version = "0.7.0" }
+nanocode-mpp.workspace = true
 nanocode-observability = { path = "../../crates/integrations/observability", version = "0.7.0" }
 nanocode-store-jsonl = { path = "../../crates/integrations/store-jsonl", version = "0.7.0" }
 nanocode-sync.workspace = true
@@ -42,10 +42,8 @@ nanocode-tempo.workspace = true
 nanocode-tui = { path = "../../crates/tui", version = "0.7.0" }
 serde_json = { workspace = true, features = ["preserve_order"] }
 nanocode-platform.workspace = true
-graviola.workspace = true
 serde.workspace = true
 tokio = { workspace = true, features = ["macros", "process", "rt-multi-thread", "signal", "sync", "time"] }
-tokio-rustls = { workspace = true, features = ["tls12"] }
 tracing.workspace = true
 
 [target.'cfg(unix)'.dependencies]

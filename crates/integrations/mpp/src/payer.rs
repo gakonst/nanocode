@@ -36,7 +36,7 @@ struct SessionSettings {
 }
 
 #[derive(Clone)]
-pub(crate) struct Payer {
+pub struct Payer {
     accounts: Accounts,
     autoswap: Option<AutoswapConfig>,
     preferred_currency: Option<Address>,
@@ -56,7 +56,7 @@ fn http_origin(url: &str) -> Option<String> {
 }
 
 impl Payer {
-    pub(crate) fn from_default_store() -> Result<Self, Fault> {
+    pub fn from_default_store() -> Result<Self, Fault> {
         let accounts = Accounts::from_default_store().map_err(|error| {
             Fault::Config(format!("failed to open Tempo Accounts store: {error}"))
         })?;
@@ -73,22 +73,22 @@ impl Payer {
         })
     }
 
-    pub(crate) const fn with_expected_chain_id(mut self, chain_id: u64) -> Self {
+    pub const fn with_expected_chain_id(mut self, chain_id: u64) -> Self {
         self.expected_chain_id = Some(chain_id);
         self
     }
 
-    pub(crate) const fn with_preferred_currency(mut self, currency: Address) -> Self {
+    pub const fn with_preferred_currency(mut self, currency: Address) -> Self {
         self.preferred_currency = Some(currency);
         self
     }
 
-    pub(crate) const fn with_autoswap(mut self, config: AutoswapConfig) -> Self {
+    pub const fn with_autoswap(mut self, config: AutoswapConfig) -> Self {
         self.autoswap = Some(config);
         self
     }
 
-    pub(crate) fn with_session_store(mut self, store: impl Into<ChannelStore>) -> Self {
+    pub fn with_session_store(mut self, store: impl Into<ChannelStore>) -> Self {
         self.session = Some(AccountsSession {
             store: store.into(),
             providers: Arc::default(),
@@ -96,27 +96,27 @@ impl Payer {
         self
     }
 
-    pub(crate) const fn with_session_default_deposit(mut self, amount: u128) -> Self {
+    pub const fn with_session_default_deposit(mut self, amount: u128) -> Self {
         self.settings.default_deposit = Some(amount);
         self
     }
 
-    pub(crate) const fn with_session_top_up_amount(mut self, amount: u128) -> Self {
+    pub const fn with_session_top_up_amount(mut self, amount: u128) -> Self {
         self.settings.top_up_amount = Some(amount);
         self
     }
 
-    pub(crate) const fn with_session_prepaid_requests(mut self, requests: u32) -> Self {
+    pub const fn with_session_prepaid_requests(mut self, requests: u32) -> Self {
         self.settings.prepaid_requests = Some(requests);
         self
     }
 
-    pub(crate) fn with_session_events(mut self, events: Events) -> Self {
+    pub fn with_session_events(mut self, events: Events) -> Self {
         self.settings.events = Some(events);
         self
     }
 
-    pub(crate) const fn with_session_fee_token(mut self, token: Address) -> Self {
+    pub const fn with_session_fee_token(mut self, token: Address) -> Self {
         self.settings.fee_token = Some(token);
         self
     }
@@ -153,7 +153,7 @@ impl Payer {
         Ok(provider)
     }
 
-    pub(crate) fn session_for(&self, url: &str) -> Result<SessionProvider, Fault> {
+    pub fn session_for(&self, url: &str) -> Result<SessionProvider, Fault> {
         self.configured_session_provider(Some(url))
     }
 
@@ -248,7 +248,7 @@ impl Payer {
         Ok(provider)
     }
 
-    pub(crate) async fn preconnect(
+    pub async fn preconnect(
         &self,
         client: &nanocode_http::Client,
         url: &str,

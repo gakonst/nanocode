@@ -74,7 +74,7 @@ pub fn parse_args(args: &[Vec<u8>]) -> Result<Invocation, String> {
         }
         if a.starts_with(b"--") {
             if a == b"--posix" {
-                return Err("--posix: POSIX mode is not supported".into());
+                options.extend([b"-o".to_vec(), b"posix".to_vec()]);
             }
             if UNSUPPORTED_LONG
                 .iter()
@@ -112,9 +112,6 @@ pub fn parse_args(args: &[Vec<u8>]) -> Result<Invocation, String> {
                             .and_then(crate::options::shopt_index)
                             .is_some()
                     };
-                    if c == b'o' && name == b"posix" && on {
-                        return Err("-o posix: POSIX mode is not supported".into());
-                    }
                     if !known {
                         return Err(format!(
                             "{}: invalid {}option name",

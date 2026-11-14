@@ -70,6 +70,7 @@ async fn lookup(vp: &Vp, name: &[u8], o: Lookup) -> Vec<Kind> {
             found.push(Kind::Keyword);
         }
         if !o.no_funcs
+            && (o.all || !super::is_special(vp, name))
             && let Some(f) = std::str::from_utf8(name).ok().and_then(|n| vp.funcs.get(n))
         {
             found.push(Kind::Function(f.clone()));
@@ -308,7 +309,10 @@ pub(super) async fn type_(vp: &mut Vp, args: &[Vec<u8>]) -> R {
     let mut status = 0;
     let mut buf = Vec::new();
     for name in &args[i..] {
-        let kinds = lookup(vp, name, o).await;
+        let mut kinds = lookup(vp, name, o).await;
+        if !o.all {
+            kinds.truncate(1);
+        }
         if kinds.is_empty() {
             status = 1;
             if !kind_only && !path && !force_path {

@@ -41,6 +41,7 @@ pub(crate) fn command<'a>(
     if !cmd.redirects.is_empty()
         || !vp.traps.map.is_empty()
         || vp.opts.get(SetOpt::Xtrace)
+        || vp.opts.get(SetOpt::Posix)
         || (vp.top && vp.sigs.peek(&vp.core) != 0)
         || vp.job.as_ref().is_some_and(|j| j.killed().is_some())
     {

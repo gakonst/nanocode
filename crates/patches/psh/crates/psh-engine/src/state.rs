@@ -337,6 +337,7 @@ pub(crate) struct Vp {
     /// except the last, `!`) is running, or a function or compound command called from
     /// one (D1281).
     pub no_errexit: bool,
+    pub bad_assign: bool,
     /// Traps (D1283); shared with subshells until one changes them.
     pub traps: Rc<crate::builtins::trap::Traps>,
     /// A trap action is running, entered with this `$?`: DEBUG and ERR traps do not

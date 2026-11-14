@@ -48,9 +48,6 @@ pub(crate) async fn shopt(vp: &mut Vp, args: &[Vec<u8>]) -> R {
         for name in names {
             if o {
                 match options::by_name(name) {
-                    Some(options::SetOpt::Posix) if set => {
-                        return super::set::refuse_posix(vp).await;
-                    }
                     Some(opt) => super::set::set_opt(vp, opt, set),
                     None => {
                         vp.error(&format!("shopt: {}: invalid shell option name", s(name)))

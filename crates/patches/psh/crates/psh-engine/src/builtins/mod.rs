@@ -37,8 +37,8 @@ pub(crate) type BuiltinFn = for<'a> fn(&'a mut Vp, &'a [Vec<u8>]) -> LocalBoxFut
 pub(crate) struct Builtin {
     pub run: BuiltinFn,
     /// A POSIX special builtin. Outside POSIX mode bash treats them like the others;
-    /// `set -o posix` will (assignments in front of them stay, errors end the shell).
-    #[allow(dead_code)]
+    /// under `set -o posix` they come before functions, assignments in front of them
+    /// stay, and their usage, assignment and redirection errors end the shell.
     pub special: bool,
 }
 
@@ -132,6 +132,23 @@ pub(crate) async fn help_option(vp: &Vp, name: &[u8]) -> bool {
         let _ = f.write_all(text.as_bytes()).await;
     }
     true
+}
+
+pub(crate) fn is_special(vp: &Vp, name: &[u8]) -> bool {
+    vp.opts.get(crate::options::SetOpt::Posix) && get(vp, name).is_some_and(|b| b.special)
+}
+
+pub(crate) fn special_outcome(vp: &mut Vp, name: &[u8], r: R) -> R {
+    let bad = std::mem::take(&mut vp.bad_assign);
+    if !is_special(vp, name) {
+        return r;
+    }
+    match r {
+        Ok(2) if !vp.no_errexit => Err(Unwind::Exit(2)),
+        Ok(st) if st != 0 && bad => Err(Unwind::Exit(st)),
+        Err(Unwind::Abort(st)) if bad || !vp.no_errexit => Err(Unwind::Exit(st)),
+        r => r,
+    }
 }
 
 pub(crate) fn get(vp: &Vp, name: &[u8]) -> Option<Builtin> {
@@ -296,7 +313,7 @@ async fn echo(vp: &mut Vp, args: &[Vec<u8>]) -> R {
     // `shopt -s xpg_echo`: escapes by default (`-E` still turns them off).
     let mut escapes = vp.opts.shopt(crate::options::Shopt::XpgEcho);
     let mut i = 1;
-    while i < args.len() {
+    while i < args.len() && !(escapes && vp.opts.get(crate::options::SetOpt::Posix)) {
         let a = &args[i];
         if a.len() < 2 || a[0] != b'-' || !a[1..].iter().all(|c| b"neE".contains(c)) {
             break;
@@ -587,6 +604,7 @@ async fn unset(vp: &mut Vp, args: &[Vec<u8>]) -> R {
             }
             vp.error(&format!("unset: `{}': not a valid identifier", s(a)))
                 .await;
+            vp.bad_assign = true;
             status = 1;
             continue;
         }
@@ -613,6 +631,7 @@ async fn unset(vp: &mut Vp, args: &[Vec<u8>]) -> R {
         if vp.vars.get(&n).is_some_and(|v| v.readonly) {
             vp.error(&format!("unset: {n}: cannot unset: readonly variable"))
                 .await;
+            vp.bad_assign = true;
             status = 1;
             continue;
         }
@@ -680,7 +699,13 @@ async fn exit(vp: &mut Vp, args: &[Vec<u8>]) -> R {
         _ => {
             // The rest of the line is abandoned.
             vp.error("exit: too many arguments").await;
-            Err(Unwind::Abort(2))
+            Err(Unwind::Abort(
+                if vp.opts.get(crate::options::SetOpt::Posix) {
+                    1
+                } else {
+                    2
+                },
+            ))
         }
     }
 }
@@ -706,6 +731,9 @@ async fn return_(vp: &mut Vp, args: &[Vec<u8>]) -> R {
             None => {
                 vp.error(&format!("return: {}: numeric argument required", s(a)))
                     .await;
+                if vp.opts.get(crate::options::SetOpt::Posix) {
+                    return Ok(2);
+                }
                 Err(Unwind::Return(2))
             }
         },
@@ -751,6 +779,9 @@ async fn loop_control(vp: &mut Vp, args: &[Vec<u8>], name: &str) -> R {
             }
         },
     };
+    if vp.loops == 0 && vp.opts.get(crate::options::SetOpt::Posix) {
+        return Ok(0);
+    }
     if vp.loops == 0 {
         vp.error(&format!(
             "{name}: only meaningful in a `for', `while', or `until' loop"
@@ -957,6 +988,10 @@ async fn shift(vp: &mut Vp, args: &[Vec<u8>]) -> R {
         },
     };
     if n > vp.args.len() {
+        if vp.opts.get(crate::options::SetOpt::Posix) {
+            vp.error(&format!("shift: {n}: shift count out of range"))
+                .await;
+        }
         return Ok(1);
     }
     vp.args.drain(..n);

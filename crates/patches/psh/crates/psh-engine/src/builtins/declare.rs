@@ -128,7 +128,7 @@ impl Which {
         })
     }
 
-    fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         match self {
             Which::Declare => "declare",
             Which::Typeset => "typeset",
@@ -407,6 +407,7 @@ declare -fx {n}
         if !is_name(raw) {
             vp.error(&format!("{bname}: `{}': not a valid identifier", a.shown()))
                 .await;
+            vp.bad_assign = true;
             status = 1;
             continue;
         }
@@ -416,6 +417,7 @@ declare -fx {n}
         {
             vp.error(&format!("{bname}: `{}': not a valid identifier", a.shown()))
                 .await;
+            vp.bad_assign = true;
             status = 1;
             continue;
         }
@@ -436,8 +438,17 @@ declare -fx {n}
         }
         match declare_one(vp, &name, &a, &o, local).await {
             Ok(()) => {}
+            Err(DeclError::Msg(msg))
+                if matches!(which, Which::Export | Which::Readonly)
+                    && msg.ends_with(": readonly variable") =>
+            {
+                vp.error(&msg).await;
+                vp.bad_assign = true;
+                status = 1;
+            }
             Err(DeclError::Msg(msg)) => {
                 vp.error(&format!("{bname}: {msg}")).await;
+                vp.bad_assign = true;
                 status = 1;
             }
             Err(DeclError::Unwind(u)) => return Err(u),

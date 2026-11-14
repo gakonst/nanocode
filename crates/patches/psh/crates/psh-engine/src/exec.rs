@@ -129,11 +129,7 @@ async fn run_background(vp: &mut Vp, code: &Rc<Code>, list: ListId, item: usize)
         // The job's own status is not errexit's or the ERR trap's to judge (only the
         // commands inside it are).
         let p = &ao.first;
-        let r = if ao.rest.is_empty()
-            && p.stages.len() == 1
-            && !p.negated()
-            && p.time.is_none()
-        {
+        let r = if ao.rest.is_empty() && p.stages.len() == 1 && !p.negated() && p.time.is_none() {
             run_command_unchecked(&mut sub, &code, p.stages[0].cmd).await
         } else {
             Box::pin(run_andor(&mut sub, &code, ao)).await
@@ -938,6 +934,11 @@ async fn define_function(
         .await;
         return Ok(1);
     };
+    if builtins::is_special(vp, name.as_bytes()) {
+        vp.line = code.line(cmd.span.end.saturating_sub(1));
+        vp.error(&format!("`{name}': is a special builtin")).await;
+        return Err(Unwind::Exit(2));
+    }
     let source = vp.msg_name();
     Rc::make_mut(&mut vp.funcs).insert(
         name,
@@ -1484,6 +1485,16 @@ async fn prefix_assigns(
                     // The value with the variable's attributes (`-i` adds on `+=`); it
                     // is set for the command's duration only.
                     let target = vp.resolve(name).into_owned();
+                    if vp.vars.get(&target).is_some_and(|v| v.readonly) {
+                        vp.error(&format!("{target}: readonly variable")).await;
+                        if vp.opts.get(SetOpt::Posix) {
+                            if builtins::is_special(vp, &argv[0]) {
+                                return Err(Unwind::Exit(1));
+                            }
+                            return Err(Unwind::Abort(1));
+                        }
+                        continue;
+                    }
                     vp.prepare_value_unchecked(&target, v, a.append).map(|v| {
                         temps.push((target.clone(), vp.vars.get(&target).cloned()));
                         vp.vars.entry(&target).set(v.clone());
@@ -1510,6 +1521,11 @@ async fn prefix_assigns(
         };
         if let Err(msg) = r {
             vp.error(&msg).await;
+            if vp.opts.get(SetOpt::Posix)
+                && argv.first().is_none_or(|n| builtins::is_special(vp, n))
+            {
+                return Err(Unwind::Exit(1));
+            }
             return Err(Unwind::Abort(1));
         }
     }
@@ -1523,16 +1539,29 @@ async fn prepare_simple(
     s: &SimpleCommand,
 ) -> Result<Prepared, Unwind> {
     vp.line = code.line(cmd.span.start);
+    let via = if vp.opts.get(SetOpt::Posix) {
+        s.words
+            .iter()
+            .take_while(|w| {
+                psh_syntax::literal_text(&code.ast, w).as_deref() == Some("command")
+                    && !vp.funcs.contains_key("command")
+            })
+            .count()
+            .min(s.words.len().saturating_sub(1))
+    } else {
+        0
+    };
     let decl = s
         .words
-        .first()
+        .get(via)
         .and_then(|w| psh_syntax::literal_text(&code.ast, w))
         // A function of that name shadows the builtin.
         .filter(|t| !vp.funcs.contains_key(t.as_str()))
         .and_then(|t| builtins::declare::Which::from_name(t.as_bytes()));
     let mut decl_args = None;
     let (argv, mut subst_status) = if decl.is_some() {
-        let (name, args, st) = Box::pin(expand::expand_decl_args(vp, code, &s.words)).await?;
+        let (name, args, st) =
+            Box::pin(expand::expand_decl_args(vp, code, &s.words[via..])).await?;
         decl_args = Some(args);
         (vec![name], st)
     } else {
@@ -1604,7 +1633,7 @@ async fn prepare_simple(
         return Ok(Prepared::Done(if ok? { status } else { 1 }));
     }
     if let (Some(which), Some(args)) = (decl, decl_args) {
-        return Ok(Prepared::Decl(which, args, assigns));
+        return Ok(Prepared::Decl(which, args, assigns, via > 0));
     }
     Ok(Prepared::Run(argv, assigns))
 }
@@ -1617,6 +1646,7 @@ enum Prepared {
         builtins::declare::Which,
         Vec<builtins::declare::DeclArg>,
         Vec<(String, Vec<u8>)>,
+        bool,
     ),
 }
 
@@ -1642,7 +1672,7 @@ fn run_simple<'a>(
                 }
                 (argv, assigns)
             }
-            Prepared::Decl(which, args, assigns) => {
+            Prepared::Decl(which, args, assigns, via) => {
                 if vp.opts.get(SetOpt::Xtrace) {
                     let mut words = vec![code.ast.text(s.words[0].span).as_bytes().to_vec()];
                     for a in &args {
@@ -1676,16 +1706,28 @@ fn run_simple<'a>(
                     vp.set_var(&n, v);
                 }
                 let saved = vp.fds.clone();
+                vp.bad_assign = false;
                 let r = if cmd.redirects.is_empty()
                     || Box::pin(apply_redirects(vp, code, &cmd.redirects)).await?
                 {
                     Box::pin(builtins::declare::run(vp, which, args)).await
+                } else if !via && builtins::is_special(vp, which.name().as_bytes()) {
+                    restore_fds(vp, saved.clone());
+                    Err(Unwind::Exit(1))
                 } else {
                     Ok(1)
+                };
+                let special = !via && builtins::is_special(vp, which.name().as_bytes());
+                let r = if via {
+                    vp.bad_assign = false;
+                    r
+                } else {
+                    builtins::special_outcome(vp, which.name().as_bytes(), r)
                 };
                 restore_fds(vp, saved);
                 for (n, v) in old {
                     match v {
+                        _ if special => {}
                         Some(v) => vp.vars.insert(&n, v),
                         None => {
                             vp.vars.remove(&n);
@@ -1706,7 +1748,11 @@ fn run_simple<'a>(
             let ok = Box::pin(apply_redirects(vp, code, &cmd.redirects)).await;
             // Nothing is restored, so nothing to apply again.
             vp.var_fds.clear();
-            return Ok(if ok? { 0 } else { 1 });
+            return match ok? {
+                true => Ok(0),
+                false if builtins::is_special(vp, b"exec") => Err(Unwind::Exit(1)),
+                false => Ok(1),
+            };
         }
 
         let saved = vp.fds.clone();
@@ -1714,6 +1760,9 @@ fn run_simple<'a>(
             Ok(true) => {}
             Ok(false) => {
                 restore_fds(vp, saved);
+                if builtins::is_special(vp, &argv[0]) {
+                    return Err(Unwind::Exit(1));
+                }
                 return Ok(1);
             }
             Err(u) => {
@@ -1744,6 +1793,10 @@ fn run_argv(
         return Box::pin(run_job_argv(vp, argv, assigns));
     }
     let name = &argv[0];
+    if builtins::is_special(vp, name) {
+        vp.exec_now = false;
+        return Box::pin(run_builtin(vp, argv, assigns));
+    }
     // Functions come first, even before special builtins (bash outside POSIX mode).
     if let Some(f) = std::str::from_utf8(name)
         .ok()
@@ -1789,16 +1842,19 @@ pub(crate) async fn run_builtin(
             var.exported = true;
             vp.assigned_dynamic(&n);
         }
+        vp.bad_assign = false;
         let r = builtins::call(vp, b, &argv).await;
+        let keep = builtins::is_special(vp, &name);
         for (n, old) in saved {
             match old {
+                _ if keep => {}
                 Some(var) => vp.vars.insert(&n, var),
                 None => {
                     vp.vars.remove(&n);
                 }
             }
         }
-        return r;
+        return builtins::special_outcome(vp, &name, r);
     }
     Ok(0)
 }

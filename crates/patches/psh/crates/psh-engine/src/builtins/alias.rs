@@ -11,7 +11,21 @@ use crate::state::{R, Vp};
 
 /// `alias [-p] [name[=value] ...]`.
 pub(crate) async fn alias(vp: &mut Vp, args: &[Vec<u8>]) -> R {
-    let outcome = alias_args(&mut vp.aliases, &args[1..]);
+    let mut outcome = alias_args(&mut vp.aliases, &args[1..]);
+    if vp.opts.get(crate::options::SetOpt::Posix)
+        && !args[1..]
+            .iter()
+            .take_while(|a| a.starts_with(b"-") && *a != b"--")
+            .any(|a| a.contains(&b'p'))
+    {
+        for o in &mut outcome.output {
+            if let Output::Stdout(line) = o
+                && let Some(rest) = line.strip_prefix(b"alias ")
+            {
+                *line = rest.strip_prefix(b"-- ").unwrap_or(rest).to_vec();
+            }
+        }
+    }
     emit(vp, "alias", outcome).await
 }
 

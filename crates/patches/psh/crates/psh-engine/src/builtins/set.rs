@@ -60,7 +60,6 @@ pub(crate) async fn set(vp: &mut Vp, args: &[Vec<u8>]) -> R {
                     {
                         i += 1;
                         match options::by_name(name) {
-                            Some(SetOpt::Posix) if on => return refuse_posix(vp).await,
                             Some(opt) => steps.push(Step::Opt(opt, on)),
                             None => {
                                 // An unknown name stops here; what came before applies.
@@ -135,12 +134,6 @@ async fn apply(vp: &mut Vp, steps: Vec<Step>) -> R {
         }
     }
     Ok(0)
-}
-
-/// POSIX mode is out of scope (D002): turning it on fails loudly, like any feature psh
-/// does not have, rather than running on with bash semantics (D1280).
-pub(crate) async fn refuse_posix(vp: &Vp) -> R {
-    crate::expand::unsupported(vp, "set -o posix").await
 }
 
 /// Turns an option on or off and keeps `SHELLOPTS` in step.

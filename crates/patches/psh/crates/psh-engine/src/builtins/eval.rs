@@ -148,6 +148,7 @@ pub(super) async fn source(vp: &mut Vp, args: &[Vec<u8>]) -> R {
         None => {
             vp.error(&format!("{}: No such file or directory", s(file)))
                 .await;
+            vp.bad_assign = true;
             return Ok(1);
         }
     };
@@ -156,10 +157,12 @@ pub(super) async fn source(vp: &mut Vp, args: &[Vec<u8>]) -> R {
         Err(None) => {
             vp.error(&format!("{name}: {}: is a directory", s(file)))
                 .await;
+            vp.bad_assign = true;
             return Ok(1);
         }
         Err(Some(msg)) => {
             vp.error(&format!("{}: {msg}", s(file))).await;
+            vp.bad_assign = true;
             return Ok(1);
         }
     };

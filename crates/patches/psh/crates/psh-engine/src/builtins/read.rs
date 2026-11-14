@@ -231,7 +231,19 @@ pub(super) async fn read(vp: &mut Vp, args: &[Vec<u8>]) -> R {
         let b = match got.unwrap_or(Got::Signal) {
             Got::Signal => {
                 input.give_back();
+                let pending = vp.sigs.peek(&vp.core);
                 super::trap::take_signals(vp).await?;
+                if vp.opts.get(crate::options::SetOpt::Posix)
+                    && let Some(sig) = (1..64).find(|&sig| {
+                        pending & (1u64 << sig) != 0
+                            && vp
+                                .traps
+                                .action(super::trap::TrapKey::Signal(sig))
+                                .is_some_and(|a| !a.is_empty())
+                    })
+                {
+                    return Ok(128 + sig);
+                }
                 continue;
             }
             Got::Byte(b) => b,

@@ -327,6 +327,7 @@ impl Shell {
             disabled: Default::default(),
             opts,
             no_errexit: false,
+            bad_assign: false,
             traps: Rc::new(Default::default()),
             in_trap: None,
             top: true,

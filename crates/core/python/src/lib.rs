@@ -1,3 +1,4 @@
+mod capi;
 mod host;
 mod imports;
 mod psh;
@@ -262,8 +263,10 @@ impl Python {
         let builder = Interpreter::builder(settings);
         let defs = rustpython_stdlib::stdlib_module_defs(&builder.ctx);
         let host = host::module_def(&builder.ctx);
+        let extensions = capi::module_defs(&builder.ctx);
         let interpreter = builder
             .add_native_modules(&defs)
+            .add_native_modules(&extensions)
             .add_native_module(host)
             .add_frozen_modules(rustpython_pylib::FROZEN_STDLIB)
             .build();

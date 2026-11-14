@@ -1,0 +1,28 @@
+[package]
+name = "nanocode-python-capi"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "CPython 3.13's C API for python3: C extension modules compiled into it, the object layout they read and the functions they call"
+autotests = false
+autobenches = false
+build = "build.rs"
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+missing_const_for_fn = "warn"
+use_self = "warn"
+redundant_clone = "warn"
+large_enum_variant = "allow"
+result_large_err = "allow"
+
+[lib]
+test = false
+doctest = false
+bench = false

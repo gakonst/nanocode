@@ -156,6 +156,26 @@ impl PyMethodDef {
         }
     }
 
+    pub const fn new_dyn(
+        name: &'static str,
+        func: &'static dyn PyNativeFn,
+        flags: PyMethodFlags,
+        doc: super::ItemDoc,
+    ) -> Self {
+        Self {
+            name,
+            func,
+            flags,
+            #[cfg(feature = "doc")]
+            doc_off: doc.offset,
+            #[cfg(feature = "doc")]
+            doc_len: doc.len,
+            #[cfg(feature = "doc")]
+            doc_body_pending: false,
+            doc: doc.text,
+        }
+    }
+
     pub fn to_proper_method(
         &'static self,
         class: &'static Py<PyType>,

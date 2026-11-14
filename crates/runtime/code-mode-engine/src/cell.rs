@@ -596,7 +596,7 @@ impl ExecutionState {
                 }))
             }
             NOTIFY => {
-                let text = text(call, 0)?;
+                let text = without_data_urls(text(call, 0)?);
                 self.send(RuntimeEvent::Notify {
                     cell_id: self.execution_id,
                     text,

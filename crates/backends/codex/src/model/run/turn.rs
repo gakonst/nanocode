@@ -460,7 +460,7 @@ impl ModelRun {
             session.context.require_full_reinjection();
         }
         let current_context = session.context.capture(
-            session.tools.working_directory(),
+            &session.tools.context_directory(),
             session.tools.default_shell_name(),
             self.context_source.execution_environment(),
         );
@@ -565,7 +565,7 @@ impl ModelRun {
             let mut context = ContextState::new(selected_agents_md, ContextBaseline::Missing);
             context.observe_host_instructions(&self.config.host_instructions());
             let context_snapshot = context.capture(
-                tools.working_directory(),
+                &tools.context_directory(),
                 tools.default_shell_name(),
                 self.context_source.execution_environment(),
             );

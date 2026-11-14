@@ -648,7 +648,7 @@ impl ModelRun {
         let context = ContextState::new(selected_agents_md, ContextBaseline::Missing);
         let canonical_context = context
             .capture(
-                tools.working_directory(),
+                &tools.context_directory(),
                 tools.default_shell_name(),
                 self.context_source.execution_environment(),
             )

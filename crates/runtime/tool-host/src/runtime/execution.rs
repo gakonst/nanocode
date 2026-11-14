@@ -84,6 +84,14 @@ impl ToolRuntime {
         }
     }
 
+    #[must_use]
+    pub fn context_directory(&self) -> Arc<str> {
+        match &self.inner {
+            Runtime::Native(runtime) => Arc::from(runtime.working_directory()),
+            Runtime::Host(runtime) => runtime.context_directory(),
+        }
+    }
+
     pub fn is_code_only(&self) -> bool {
         match &self.inner {
             Runtime::Native(runtime) => runtime.is_code_only(),

@@ -118,6 +118,16 @@ impl EmbeddedToolRuntime {
     }
 
     #[must_use]
+    pub fn context_directory(&self) -> Arc<str> {
+        match (&self.host, &self.session_id) {
+            (Some(host), Some(session_id)) => host
+                .working_directory(session_id)
+                .map_or_else(|| Arc::clone(&self.working_directory), Arc::from),
+            _ => Arc::clone(&self.working_directory),
+        }
+    }
+
+    #[must_use]
     pub fn control(&self) -> EmbeddedToolRuntimeControl {
         EmbeddedToolRuntimeControl {
             host: self.host.clone(),

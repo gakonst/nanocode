@@ -22,7 +22,6 @@ bench = false
 
 [dependencies]
 pki-types = { package = "rustls-pki-types", version = "1.12", default-features = false }
-untrusted = "0.9"
 
 [lints.rust.unexpected_cfgs]
 level = "warn"

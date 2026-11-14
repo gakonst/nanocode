@@ -7,7 +7,7 @@ use pki_types::{SignatureVerificationAlgorithm, SubjectPublicKeyInfoDer};
 /// in [RFC 7250](https://www.rfc-editor.org/rfc/rfc7250).
 #[derive(Debug)]
 pub struct RawPublicKeyEntity<'a> {
-    inner: untrusted::Input<'a>,
+    inner: crate::untrusted::Input<'a>,
 }
 
 impl<'a> TryFrom<&'a SubjectPublicKeyInfoDer<'a>> for RawPublicKeyEntity<'a> {
@@ -16,7 +16,7 @@ impl<'a> TryFrom<&'a SubjectPublicKeyInfoDer<'a>> for RawPublicKeyEntity<'a> {
     /// Parse the ASN.1 DER-encoded SPKI encoding of the raw public key `spki`.
     /// Since we are parsing a raw public key, we first strip the outer sequence tag.
     fn try_from(spki: &'a SubjectPublicKeyInfoDer<'a>) -> Result<Self, Self::Error> {
-        let input = untrusted::Input::from(spki.as_ref());
+        let input = crate::untrusted::Input::from(spki.as_ref());
         let spki = input.read_all(
             Error::TrailingData(DerTypeId::SubjectPublicKeyInfo),
             |reader| {
@@ -43,8 +43,8 @@ impl RawPublicKeyEntity<'_> {
         signed_data::verify_signature(
             signature_alg,
             self.inner,
-            untrusted::Input::from(msg),
-            untrusted::Input::from(signature),
+            crate::untrusted::Input::from(msg),
+            crate::untrusted::Input::from(signature),
         )
     }
 }

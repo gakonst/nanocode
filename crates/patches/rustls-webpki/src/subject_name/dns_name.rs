@@ -26,7 +26,7 @@ use crate::error::{Error, InvalidNameContext};
 use crate::subject_name::Subtrees;
 
 pub(crate) fn verify_dns_names(reference: &DnsName<'_>, cert: &Cert<'_>) -> Result<(), Error> {
-    let dns_name = untrusted::Input::from(reference.as_ref().as_bytes());
+    let dns_name = crate::untrusted::Input::from(reference.as_ref().as_bytes());
     let result = NameIterator::new(cert.subject_alt_name).find_map(|result| {
         let name = match result {
             Ok(name) => name,
@@ -86,7 +86,7 @@ impl<'a> WildcardDnsNameRef<'a> {
     /// syntactically-valid DNS name.
     pub(crate) fn try_from_ascii(dns_name: &'a [u8]) -> Result<Self, InvalidDnsNameError> {
         if !is_valid_dns_id(
-            untrusted::Input::from(dns_name),
+            crate::untrusted::Input::from(dns_name),
             IdRole::Reference,
             Wildcards::Allow,
         ) {
@@ -236,9 +236,9 @@ impl core::fmt::Debug for WildcardDnsNameRef<'_> {
 //     incorporated into the spec:
 //     https://www.ietf.org/mail-archive/web/pkix/current/msg21192.html
 pub(super) fn presented_id_matches_reference_id(
-    presented_dns_id: untrusted::Input<'_>,
+    presented_dns_id: crate::untrusted::Input<'_>,
     reference_dns_id_role: IdRole,
-    reference_dns_id: untrusted::Input<'_>,
+    reference_dns_id: crate::untrusted::Input<'_>,
 ) -> Result<bool, Error> {
     if !is_valid_dns_id(presented_dns_id, IdRole::Presented, Wildcards::Allow) {
         return Err(Error::MalformedDnsIdentifier);
@@ -251,8 +251,8 @@ pub(super) fn presented_id_matches_reference_id(
         });
     }
 
-    let mut presented = untrusted::Reader::new(presented_dns_id);
-    let mut reference = untrusted::Reader::new(reference_dns_id);
+    let mut presented = crate::untrusted::Reader::new(presented_dns_id);
+    let mut reference = crate::untrusted::Reader::new(reference_dns_id);
 
     match reference_dns_id_role {
         IdRole::Reference => (),
@@ -406,7 +406,7 @@ pub(super) enum IdRole {
 // https://bugzilla.mozilla.org/show_bug.cgi?id=1136616: As an exception to the
 // requirement above, underscores are also allowed in names for compatibility.
 fn is_valid_dns_id(
-    hostname: untrusted::Input<'_>,
+    hostname: crate::untrusted::Input<'_>,
     id_role: IdRole,
     allow_wildcards: Wildcards,
 ) -> bool {
@@ -415,7 +415,7 @@ fn is_valid_dns_id(
         return false;
     }
 
-    let mut input = untrusted::Reader::new(hostname);
+    let mut input = crate::untrusted::Reader::new(hostname);
 
     if matches!(id_role, IdRole::NameConstraint(_)) && input.at_end() {
         return true;
@@ -900,9 +900,9 @@ mod tests {
     fn presented_matches_reference_test() {
         for (presented, reference, expected_result) in PRESENTED_MATCHES_REFERENCE {
             let actual_result = presented_id_matches_reference_id(
-                untrusted::Input::from(presented),
+                crate::untrusted::Input::from(presented),
                 IdRole::Reference,
-                untrusted::Input::from(reference),
+                crate::untrusted::Input::from(reference),
             );
             assert_eq!(
                 &actual_result, expected_result,
@@ -978,9 +978,9 @@ mod tests {
     fn presented_matches_constraint_test() {
         for (presented, constraint, expected_result) in PRESENTED_MATCHES_CONSTRAINT {
             let actual_result = presented_id_matches_reference_id(
-                untrusted::Input::from(presented),
+                crate::untrusted::Input::from(presented),
                 IdRole::NameConstraint(Subtrees::Permitted),
-                untrusted::Input::from(constraint),
+                crate::untrusted::Input::from(constraint),
             );
             assert_eq!(
                 &actual_result, expected_result,
@@ -993,9 +993,9 @@ mod tests {
     fn wildcard_san_not_contained_in_constraint() {
         for (presented, constraint, expected_result) in WILDCARD_CONSTRAINT_CONTAINMENT {
             let actual_result = presented_id_matches_reference_id(
-                untrusted::Input::from(presented),
+                crate::untrusted::Input::from(presented),
                 IdRole::NameConstraint(Subtrees::Permitted),
-                untrusted::Input::from(constraint),
+                crate::untrusted::Input::from(constraint),
             );
             assert_eq!(
                 &actual_result, expected_result,
@@ -1030,9 +1030,9 @@ mod tests {
     fn wildcard_san_could_match_excluded_subtree() {
         for (presented, constraint, expected_result) in WILDCARD_EXCLUDED_INTERSECTION {
             let actual_result = presented_id_matches_reference_id(
-                untrusted::Input::from(presented),
+                crate::untrusted::Input::from(presented),
                 IdRole::NameConstraint(Subtrees::Excluded),
-                untrusted::Input::from(constraint),
+                crate::untrusted::Input::from(constraint),
             );
             assert_eq!(
                 &actual_result, expected_result,

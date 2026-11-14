@@ -67,7 +67,7 @@ impl<'a> TryFrom<&'a CertificateDer<'a>> for EndEntityCert<'a> {
     /// `cert_der`.
     fn try_from(cert: &'a CertificateDer<'a>) -> Result<Self, Self::Error> {
         Ok(Self {
-            inner: cert::Cert::from_der(untrusted::Input::from(cert.as_ref()))?,
+            inner: cert::Cert::from_der(crate::untrusted::Input::from(cert.as_ref()))?,
         })
     }
 }
@@ -164,8 +164,8 @@ impl EndEntityCert<'_> {
         signed_data::verify_signature(
             signature_alg,
             self.inner.spki,
-            untrusted::Input::from(msg),
-            untrusted::Input::from(signature),
+            crate::untrusted::Input::from(msg),
+            crate::untrusted::Input::from(signature),
         )
     }
 }

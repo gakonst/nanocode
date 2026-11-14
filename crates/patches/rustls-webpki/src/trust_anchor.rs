@@ -27,7 +27,7 @@ use crate::error::{DerTypeId, Error};
 pub fn anchor_from_trusted_cert<'a>(
     cert: &'a CertificateDer<'a>,
 ) -> Result<TrustAnchor<'a>, Error> {
-    let cert_der = untrusted::Input::from(cert.as_ref());
+    let cert_der = crate::untrusted::Input::from(cert.as_ref());
 
     // v1 certificates will result in `Error::BadDer` because `parse_cert` will
     // expect a version field that isn't there. In that case, try to parse the
@@ -45,7 +45,7 @@ pub fn anchor_from_trusted_cert<'a>(
 
 /// Parses a v1 certificate directly into a TrustAnchor.
 fn extract_trust_anchor_from_v1_cert_der(
-    cert_der: untrusted::Input<'_>,
+    cert_der: crate::untrusted::Input<'_>,
 ) -> Result<TrustAnchor<'_>, Error> {
     // X.509 Certificate: https://tools.ietf.org/html/rfc5280#section-4.1.
     cert_der.read_all(Error::BadDer, |cert_der| {
@@ -98,7 +98,7 @@ impl<'a> From<Cert<'a>> for TrustAnchor<'a> {
     }
 }
 
-fn skip(input: &mut untrusted::Reader<'_>, tag: der::Tag) -> Result<(), Error> {
+fn skip(input: &mut crate::untrusted::Reader<'_>, tag: der::Tag) -> Result<(), Error> {
     der::expect_tag(input, tag).map(|_| ())
 }
 

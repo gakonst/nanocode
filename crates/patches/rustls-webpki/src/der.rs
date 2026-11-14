@@ -21,15 +21,15 @@ use crate::{Error, error::DerTypeId};
 /// Iterator to parse a sequence of DER-encoded values of type `T`.
 #[derive(Debug)]
 pub struct DerIterator<'a, T> {
-    reader: untrusted::Reader<'a>,
+    reader: crate::untrusted::Reader<'a>,
     marker: PhantomData<T>,
 }
 
 impl<'a, T> DerIterator<'a, T> {
     /// [`DerIterator`] will consume all of the bytes in `input` reading values of type `T`.
-    pub(crate) fn new(input: untrusted::Input<'a>) -> Self {
+    pub(crate) fn new(input: crate::untrusted::Input<'a>) -> Self {
         Self {
-            reader: untrusted::Reader::new(input),
+            reader: crate::untrusted::Reader::new(input),
             marker: PhantomData,
         }
     }
@@ -45,12 +45,12 @@ impl<'a, T: FromDer<'a>> Iterator for DerIterator<'a, T> {
 
 pub(crate) trait FromDer<'a>: Sized + 'a {
     /// Parse a value of type `Self` from the given DER-encoded input.
-    fn from_der(reader: &mut untrusted::Reader<'a>) -> Result<Self, Error>;
+    fn from_der(reader: &mut crate::untrusted::Reader<'a>) -> Result<Self, Error>;
 
     const TYPE_ID: DerTypeId;
 }
 
-pub(crate) fn read_all<'a, T: FromDer<'a>>(input: untrusted::Input<'a>) -> Result<T, Error> {
+pub(crate) fn read_all<'a, T: FromDer<'a>>(input: crate::untrusted::Input<'a>) -> Result<T, Error> {
     input.read_all(Error::TrailingData(T::TYPE_ID), T::from_der)
 }
 
@@ -94,10 +94,10 @@ impl From<Tag> for u8 {
 
 #[inline(always)]
 pub(crate) fn expect_tag_and_get_value_limited<'a>(
-    input: &mut untrusted::Reader<'a>,
+    input: &mut crate::untrusted::Reader<'a>,
     tag: Tag,
     size_limit: usize,
-) -> Result<untrusted::Input<'a>, Error> {
+) -> Result<crate::untrusted::Input<'a>, Error> {
     let (actual_tag, inner) = read_tag_and_get_value_limited(input, size_limit)?;
     if usize::from(tag) != usize::from(actual_tag) {
         return Err(Error::BadDer);
@@ -106,10 +106,10 @@ pub(crate) fn expect_tag_and_get_value_limited<'a>(
 }
 
 pub(crate) fn nested_limited<'a, R>(
-    input: &mut untrusted::Reader<'a>,
+    input: &mut crate::untrusted::Reader<'a>,
     tag: Tag,
     error: Error,
-    decoder: impl FnOnce(&mut untrusted::Reader<'a>) -> Result<R, Error>,
+    decoder: impl FnOnce(&mut crate::untrusted::Reader<'a>) -> Result<R, Error>,
     size_limit: usize,
 ) -> Result<R, Error> {
     match expect_tag_and_get_value_limited(input, tag, size_limit) {
@@ -121,18 +121,18 @@ pub(crate) fn nested_limited<'a, R>(
 // TODO: investigate taking decoder as a reference to reduce generated code
 // size.
 pub(crate) fn nested<'a, R>(
-    input: &mut untrusted::Reader<'a>,
+    input: &mut crate::untrusted::Reader<'a>,
     tag: Tag,
     error: Error,
-    decoder: impl FnOnce(&mut untrusted::Reader<'a>) -> Result<R, Error>,
+    decoder: impl FnOnce(&mut crate::untrusted::Reader<'a>) -> Result<R, Error>,
 ) -> Result<R, Error> {
     nested_limited(input, tag, error, decoder, TWO_BYTE_DER_SIZE)
 }
 
 pub(crate) fn expect_tag<'a>(
-    input: &mut untrusted::Reader<'a>,
+    input: &mut crate::untrusted::Reader<'a>,
     tag: Tag,
-) -> Result<untrusted::Input<'a>, Error> {
+) -> Result<crate::untrusted::Input<'a>, Error> {
     let (actual_tag, value) = read_tag_and_get_value_limited(input, TWO_BYTE_DER_SIZE)?;
     if usize::from(tag) != usize::from(actual_tag) {
         return Err(Error::BadDer);
@@ -143,16 +143,16 @@ pub(crate) fn expect_tag<'a>(
 
 #[inline(always)]
 pub(crate) fn read_tag_and_get_value<'a>(
-    input: &mut untrusted::Reader<'a>,
-) -> Result<(u8, untrusted::Input<'a>), Error> {
+    input: &mut crate::untrusted::Reader<'a>,
+) -> Result<(u8, crate::untrusted::Input<'a>), Error> {
     read_tag_and_get_value_limited(input, TWO_BYTE_DER_SIZE)
 }
 
 #[inline(always)]
 pub(crate) fn read_tag_and_get_value_limited<'a>(
-    input: &mut untrusted::Reader<'a>,
+    input: &mut crate::untrusted::Reader<'a>,
     size_limit: usize,
-) -> Result<(u8, untrusted::Input<'a>), Error> {
+) -> Result<(u8, crate::untrusted::Input<'a>), Error> {
     let tag = input.read_byte().map_err(end_of_input_err)?;
     if (tag & HIGH_TAG_RANGE_START) == HIGH_TAG_RANGE_START {
         return Err(Error::BadDer); // High tag number form is not allowed.
@@ -308,12 +308,12 @@ const LONG_FORM_LEN_FOUR_BYTES_MAX: usize = 0xff_ff_ff_ff;
 // TODO: investigate taking decoder as a reference to reduce generated code
 // size.
 pub(crate) fn nested_of_mut<'a>(
-    input: &mut untrusted::Reader<'a>,
+    input: &mut crate::untrusted::Reader<'a>,
     outer_tag: Tag,
     inner_tag: Tag,
     error: Error,
     allow_empty: bool,
-    mut decoder: impl FnMut(&mut untrusted::Reader<'a>) -> Result<(), Error>,
+    mut decoder: impl FnMut(&mut crate::untrusted::Reader<'a>) -> Result<(), Error>,
 ) -> Result<(), Error> {
     nested(input, outer_tag, error.clone(), |outer| {
         if allow_empty && outer.at_end() {
@@ -330,8 +330,8 @@ pub(crate) fn nested_of_mut<'a>(
 }
 
 pub(crate) fn bit_string_with_no_unused_bits<'a>(
-    input: &mut untrusted::Reader<'a>,
-) -> Result<untrusted::Input<'a>, Error> {
+    input: &mut crate::untrusted::Reader<'a>,
+) -> Result<crate::untrusted::Input<'a>, Error> {
     nested(
         input,
         Tag::BitString,
@@ -370,7 +370,7 @@ impl BitStringFlags<'_> {
 //
 // [0]: https://security.stackexchange.com/a/10396
 // [1]: https://www.itu.int/ITU-T/studygroups/com17/languages/X.690-0207.pdf
-pub(crate) fn bit_string_flags(input: untrusted::Input<'_>) -> Result<BitStringFlags<'_>, Error> {
+pub(crate) fn bit_string_flags(input: crate::untrusted::Input<'_>) -> Result<BitStringFlags<'_>, Error> {
     input.read_all(Error::BadDer, |bit_string| {
         // ITU X690-0207 11.2:
         //   "The initial octet shall encode, as an unsigned binary integer with bit 1 as the least
@@ -397,7 +397,7 @@ pub(crate) fn bit_string_flags(input: untrusted::Input<'_>) -> Result<BitStringF
 }
 
 impl<'a> FromDer<'a> for u8 {
-    fn from_der(reader: &mut untrusted::Reader<'a>) -> Result<Self, Error> {
+    fn from_der(reader: &mut crate::untrusted::Reader<'a>) -> Result<Self, Error> {
         match *nonnegative_integer(reader)?.as_slice_less_safe() {
             [b] => Ok(b),
             _ => Err(Error::BadDer),
@@ -408,8 +408,8 @@ impl<'a> FromDer<'a> for u8 {
 }
 
 pub(crate) fn nonnegative_integer<'a>(
-    input: &mut untrusted::Reader<'a>,
-) -> Result<untrusted::Input<'a>, Error> {
+    input: &mut crate::untrusted::Reader<'a>,
+) -> Result<crate::untrusted::Input<'a>, Error> {
     let value = expect_tag(input, Tag::Integer)?;
     match value
         .as_slice_less_safe()
@@ -422,7 +422,7 @@ pub(crate) fn nonnegative_integer<'a>(
                 // Zero
                 None => Ok(value),
                 // Necessary leading zero.
-                Some(&second) if second & 0x80 == 0x80 => Ok(untrusted::Input::from(rest)),
+                Some(&second) if second & 0x80 == 0x80 => Ok(crate::untrusted::Input::from(rest)),
                 // Unnecessary leading zero.
                 _ => Err(Error::BadDer),
             }
@@ -434,14 +434,14 @@ pub(crate) fn nonnegative_integer<'a>(
     }
 }
 
-pub(crate) fn end_of_input_err(_: untrusted::EndOfInput) -> Error {
+pub(crate) fn end_of_input_err(_: crate::untrusted::EndOfInput) -> Error {
     Error::BadDer
 }
 
 // Like mozilla::pkix, we accept the nonconformant explicit encoding of
 // the default value (false) for compatibility with real-world certificates.
 impl<'a> FromDer<'a> for bool {
-    fn from_der(reader: &mut untrusted::Reader<'a>) -> Result<Self, Error> {
+    fn from_der(reader: &mut crate::untrusted::Reader<'a>) -> Result<Self, Error> {
         if !reader.peek(Tag::Boolean.into()) {
             return Ok(false);
         }
@@ -592,8 +592,8 @@ mod tests {
         );
     }
 
-    fn bytes_reader(bytes: &[u8]) -> untrusted::Reader<'_> {
-        untrusted::Reader::new(untrusted::Input::from(bytes))
+    fn bytes_reader(bytes: &[u8]) -> crate::untrusted::Reader<'_> {
+        crate::untrusted::Reader::new(crate::untrusted::Input::from(bytes))
     }
 
     #[test]
@@ -608,7 +608,7 @@ mod tests {
         ];
 
         for input in inputs {
-            let mut bytes = untrusted::Reader::new(untrusted::Input::from(input));
+            let mut bytes = crate::untrusted::Reader::new(crate::untrusted::Input::from(input));
             // read_tag_and_get_value should reject DER with encoded lengths larger than two
             // bytes as BadDer.
             assert!(matches!(
@@ -622,7 +622,7 @@ mod tests {
     fn read_tag_and_get_value_limited_high_form() {
         use super::{Error, LONG_FORM_LEN_TWO_BYTES_MAX, read_tag_and_get_value_limited};
 
-        let mut bytes = untrusted::Reader::new(untrusted::Input::from(&[0xFF]));
+        let mut bytes = crate::untrusted::Reader::new(crate::untrusted::Input::from(&[0xFF]));
         // read_tag_and_get_value_limited_high_form should reject DER with "high tag number form" tags.
         assert!(matches!(
             read_tag_and_get_value_limited(&mut bytes, LONG_FORM_LEN_TWO_BYTES_MAX),
@@ -646,7 +646,7 @@ mod tests {
         ];
 
         for input in inputs {
-            let mut bytes = untrusted::Reader::new(untrusted::Input::from(input));
+            let mut bytes = crate::untrusted::Reader::new(crate::untrusted::Input::from(input));
             // read_tag_and_get_value_limited should reject DER with non-canonical lengths.
             assert!(matches!(
                 read_tag_and_get_value_limited(&mut bytes, LONG_FORM_LEN_TWO_BYTES_MAX),
@@ -706,7 +706,7 @@ mod tests {
         ];
 
         for tc in testcases {
-            let mut bytes = untrusted::Reader::new(untrusted::Input::from(tc.input));
+            let mut bytes = crate::untrusted::Reader::new(crate::untrusted::Input::from(tc.input));
 
             let res = read_tag_and_get_value_limited(&mut bytes, tc.limit);
             match &tc.err {
@@ -748,7 +748,7 @@ mod tests {
     fn misencoded_bit_string_flags() {
         use super::{Error, bit_string_flags};
 
-        let bad_padding_example = untrusted::Input::from(&[
+        let bad_padding_example = crate::untrusted::Input::from(&[
             0x08, // 8 bit of padding (illegal!).
             0x06, // 1 byte of bit flags asserting bits 5 and 6.
         ]);
@@ -757,7 +757,7 @@ mod tests {
             Err(Error::BadDer)
         ));
 
-        let bad_padding_example = untrusted::Input::from(&[
+        let bad_padding_example = crate::untrusted::Input::from(&[
             0x01, // 1 bit of padding.
                  // No flags value (illegal with padding!).
         ]);
@@ -769,7 +769,7 @@ mod tests {
         // invalid padding for empty set
         for pad in 1..=255 {
             assert_eq!(
-                bit_string_flags(untrusted::Input::from(&[pad])).err(),
+                bit_string_flags(crate::untrusted::Input::from(&[pad])).err(),
                 Some(Error::BadDer)
             );
         }
@@ -779,7 +779,7 @@ mod tests {
     fn valid_bit_string_flags() {
         use super::bit_string_flags;
 
-        let example_key_usage = untrusted::Input::from(&[
+        let example_key_usage = crate::untrusted::Input::from(&[
             0x01, // 1 bit of padding.
             0x06, // 1 byte of bit flags asserting bits 5 and 6.
         ]);
@@ -801,7 +801,7 @@ mod tests {
 
     #[test]
     fn empty_bit_string_flags() {
-        let bs = super::bit_string_flags(untrusted::Input::from(&[0x00])).unwrap();
+        let bs = super::bit_string_flags(crate::untrusted::Input::from(&[0x00])).unwrap();
 
         // all bits are unset
         for b in 0..256 {
@@ -812,7 +812,7 @@ mod tests {
     #[test]
     fn mispadded_bit_string_flags() {
         assert_eq!(
-            super::bit_string_flags(untrusted::Input::from(&[0x04, 0xff])).err(),
+            super::bit_string_flags(crate::untrusted::Input::from(&[0x04, 0xff])).err(),
             Some(super::Error::BadDer)
         );
     }
@@ -823,19 +823,19 @@ mod tests {
 
         for value in 0..=127 {
             let data = [Tag::Integer.into(), 1, value];
-            let mut rd = untrusted::Reader::new(untrusted::Input::from(&data));
+            let mut rd = crate::untrusted::Reader::new(crate::untrusted::Input::from(&data));
             assert_eq!(u8::from_der(&mut rd), Ok(value),);
         }
 
         for value in 128..=255 {
             let data = [Tag::Integer.into(), 2, 0x00, value];
-            let mut rd = untrusted::Reader::new(untrusted::Input::from(&data));
+            let mut rd = crate::untrusted::Reader::new(crate::untrusted::Input::from(&data));
             assert_eq!(u8::from_der(&mut rd), Ok(value),);
         }
 
         // not an integer
         assert_eq!(
-            u8::from_der(&mut untrusted::Reader::new(untrusted::Input::from(&[
+            u8::from_der(&mut crate::untrusted::Reader::new(crate::untrusted::Input::from(&[
                 Tag::Sequence.into(),
                 1,
                 1
@@ -845,7 +845,7 @@ mod tests {
 
         // negative
         assert_eq!(
-            u8::from_der(&mut untrusted::Reader::new(untrusted::Input::from(&[
+            u8::from_der(&mut crate::untrusted::Reader::new(crate::untrusted::Input::from(&[
                 Tag::Integer.into(),
                 1,
                 0xff
@@ -855,7 +855,7 @@ mod tests {
 
         // positive but too large
         assert_eq!(
-            u8::from_der(&mut untrusted::Reader::new(untrusted::Input::from(&[
+            u8::from_der(&mut crate::untrusted::Reader::new(crate::untrusted::Input::from(&[
                 Tag::Integer.into(),
                 2,
                 0x01,
@@ -866,7 +866,7 @@ mod tests {
 
         // unnecessary leading zero
         assert_eq!(
-            u8::from_der(&mut untrusted::Reader::new(untrusted::Input::from(&[
+            u8::from_der(&mut crate::untrusted::Reader::new(crate::untrusted::Input::from(&[
                 Tag::Integer.into(),
                 2,
                 0x00,
@@ -877,19 +877,19 @@ mod tests {
 
         // truncations
         assert_eq!(
-            u8::from_der(&mut untrusted::Reader::new(untrusted::Input::from(&[]))),
+            u8::from_der(&mut crate::untrusted::Reader::new(crate::untrusted::Input::from(&[]))),
             Err(Error::BadDer)
         );
 
         assert_eq!(
-            u8::from_der(&mut untrusted::Reader::new(untrusted::Input::from(&[
+            u8::from_der(&mut crate::untrusted::Reader::new(crate::untrusted::Input::from(&[
                 Tag::Integer.into(),
             ]))),
             Err(Error::BadDer)
         );
 
         assert_eq!(
-            u8::from_der(&mut untrusted::Reader::new(untrusted::Input::from(&[
+            u8::from_der(&mut crate::untrusted::Reader::new(crate::untrusted::Input::from(&[
                 Tag::Integer.into(),
                 1,
             ]))),
@@ -897,7 +897,7 @@ mod tests {
         );
 
         assert_eq!(
-            u8::from_der(&mut untrusted::Reader::new(untrusted::Input::from(&[
+            u8::from_der(&mut crate::untrusted::Reader::new(crate::untrusted::Input::from(&[
                 Tag::Integer.into(),
                 2,
                 0

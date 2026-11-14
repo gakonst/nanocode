@@ -28,38 +28,38 @@ use crate::x509::{
 
 /// A parsed X509 certificate.
 pub struct Cert<'a> {
-    pub(crate) serial: untrusted::Input<'a>,
+    pub(crate) serial: crate::untrusted::Input<'a>,
     pub(crate) signed_data: SignedData<'a>,
-    pub(crate) issuer: untrusted::Input<'a>,
-    pub(crate) validity: untrusted::Input<'a>,
-    pub(crate) subject: untrusted::Input<'a>,
-    pub(crate) spki: untrusted::Input<'a>,
+    pub(crate) issuer: crate::untrusted::Input<'a>,
+    pub(crate) validity: crate::untrusted::Input<'a>,
+    pub(crate) subject: crate::untrusted::Input<'a>,
+    pub(crate) spki: crate::untrusted::Input<'a>,
 
-    pub(crate) basic_constraints: Option<untrusted::Input<'a>>,
+    pub(crate) basic_constraints: Option<crate::untrusted::Input<'a>>,
     // key usage (KU) extension (if any). When validating certificate revocation lists (CRLs) this
     // field will be consulted to determine if the cert is allowed to sign CRLs. For cert validation
     // this field is ignored (for more detail see in `verify_cert.rs` and
     // `check_issuer_independent_properties`).
-    pub(crate) key_usage: Option<untrusted::Input<'a>>,
-    pub(crate) eku: Option<untrusted::Input<'a>>,
-    pub(crate) name_constraints: Option<untrusted::Input<'a>>,
-    pub(crate) subject_alt_name: Option<untrusted::Input<'a>>,
-    pub(crate) crl_distribution_points: Option<untrusted::Input<'a>>,
+    pub(crate) key_usage: Option<crate::untrusted::Input<'a>>,
+    pub(crate) eku: Option<crate::untrusted::Input<'a>>,
+    pub(crate) name_constraints: Option<crate::untrusted::Input<'a>>,
+    pub(crate) subject_alt_name: Option<crate::untrusted::Input<'a>>,
+    pub(crate) crl_distribution_points: Option<crate::untrusted::Input<'a>>,
 
     der: CertificateDer<'a>,
 }
 
 impl<'a> Cert<'a> {
-    pub(crate) fn for_trust_anchor(cert_der: untrusted::Input<'a>) -> Result<Self, Error> {
+    pub(crate) fn for_trust_anchor(cert_der: crate::untrusted::Input<'a>) -> Result<Self, Error> {
         Self::from_input(cert_der, UnknownExtensionPolicy::IgnoreCritical)
     }
 
-    pub(crate) fn from_der(cert_der: untrusted::Input<'a>) -> Result<Self, Error> {
+    pub(crate) fn from_der(cert_der: crate::untrusted::Input<'a>) -> Result<Self, Error> {
         Self::from_input(cert_der, UnknownExtensionPolicy::default())
     }
 
     fn from_input(
-        cert_der: untrusted::Input<'a>,
+        cert_der: crate::untrusted::Input<'a>,
         ext_policy: UnknownExtensionPolicy,
     ) -> Result<Self, Error> {
         let (tbs, signed_data) =
@@ -255,7 +255,7 @@ impl<'a> Cert<'a> {
 
 // mozilla::pkix supports v1, v2, v3, and v4, including both the implicit
 // (correct) and explicit (incorrect) encoding of v1. We allow only v3.
-fn version3(input: &mut untrusted::Reader<'_>) -> Result<(), Error> {
+fn version3(input: &mut crate::untrusted::Reader<'_>) -> Result<(), Error> {
     der::nested(
         input,
         der::Tag::ContextSpecificConstructed0,
@@ -272,8 +272,8 @@ fn version3(input: &mut untrusted::Reader<'_>) -> Result<(), Error> {
 }
 
 pub(crate) fn lenient_certificate_serial_number<'a>(
-    input: &mut untrusted::Reader<'a>,
-) -> Result<untrusted::Input<'a>, Error> {
+    input: &mut crate::untrusted::Reader<'a>,
+) -> Result<crate::untrusted::Input<'a>, Error> {
     // https://tools.ietf.org/html/rfc5280#section-4.1.2.2:
     // * Conforming CAs MUST NOT use serialNumber values longer than 20 octets."
     // * "The serial number MUST be a positive integer [...]"
@@ -338,7 +338,7 @@ fn remember_cert_extension<'a>(
 /// [^1]: <https://datatracker.ietf.org/doc/html/rfc5280#section-4.2.1.13>
 pub(crate) struct CrlDistributionPoint<'a> {
     /// distributionPoint describes the location of CRL information.
-    distribution_point: Option<untrusted::Input<'a>>,
+    distribution_point: Option<crate::untrusted::Input<'a>>,
 
     /// reasons holds a bit flag set of certificate revocation reasons associated with the
     /// CRL distribution point.
@@ -346,20 +346,20 @@ pub(crate) struct CrlDistributionPoint<'a> {
 
     /// when the CRL issuer is not the certificate issuer, crl_issuer identifies the issuer of the
     /// CRL.
-    pub(crate) crl_issuer: Option<untrusted::Input<'a>>,
+    pub(crate) crl_issuer: Option<crate::untrusted::Input<'a>>,
 }
 
 impl<'a> CrlDistributionPoint<'a> {
     /// Return the distribution point names (if any).
     pub(crate) fn names(&self) -> Result<Option<DistributionPointName<'a>>, Error> {
         self.distribution_point
-            .map(|input| DistributionPointName::from_der(&mut untrusted::Reader::new(input)))
+            .map(|input| DistributionPointName::from_der(&mut crate::untrusted::Reader::new(input)))
             .transpose()
     }
 }
 
 impl<'a> FromDer<'a> for CrlDistributionPoint<'a> {
-    fn from_der(reader: &mut untrusted::Reader<'a>) -> Result<Self, Error> {
+    fn from_der(reader: &mut crate::untrusted::Reader<'a>) -> Result<Self, Error> {
         // RFC 5280 section §4.2.1.13:
         //   A DistributionPoint consists of three fields, each of which is optional:
         //   distributionPoint, reasons, and cRLIssuer.
@@ -421,11 +421,11 @@ mod tests {
     //       is read correctly here instead of in tests/integration.rs.
     fn test_serial_read() {
         let ee = include_bytes!("../tests/misc/serial_neg_ee.der");
-        let cert = Cert::from_der(untrusted::Input::from(ee)).expect("failed to parse certificate");
+        let cert = Cert::from_der(crate::untrusted::Input::from(ee)).expect("failed to parse certificate");
         assert_eq!(cert.serial.as_slice_less_safe(), &[255, 33, 82, 65, 17]);
 
         let ee = include_bytes!("../tests/misc/serial_large_positive.der");
-        let cert = Cert::from_der(untrusted::Input::from(ee)).expect("failed to parse certificate");
+        let cert = Cert::from_der(crate::untrusted::Input::from(ee)).expect("failed to parse certificate");
         assert_eq!(
             cert.serial.as_slice_less_safe(),
             &[
@@ -439,7 +439,7 @@ mod tests {
     #[test]
     fn test_spki_read() {
         let ee = include_bytes!("../tests/ed25519/ee.der");
-        let cert = Cert::from_der(untrusted::Input::from(ee)).expect("failed to parse certificate");
+        let cert = Cert::from_der(crate::untrusted::Input::from(ee)).expect("failed to parse certificate");
         // How did I get this lovely string of hex bytes?
         // openssl x509 -in tests/ed25519/ee.der -pubkey -noout > pubkey.pem
         // openssl ec -pubin -in pubkey.pem -outform DER -out pubkey.der
@@ -458,9 +458,9 @@ mod tests {
     fn test_crl_distribution_point_netflix() {
         let ee = include_bytes!("../tests/netflix/ee.der");
         let inter = include_bytes!("../tests/netflix/inter.der");
-        let ee_cert = Cert::from_der(untrusted::Input::from(ee)).expect("failed to parse EE cert");
+        let ee_cert = Cert::from_der(crate::untrusted::Input::from(ee)).expect("failed to parse EE cert");
         let cert =
-            Cert::from_der(untrusted::Input::from(inter)).expect("failed to parse certificate");
+            Cert::from_der(crate::untrusted::Input::from(inter)).expect("failed to parse certificate");
 
         // The end entity certificate shouldn't have a distribution point.
         assert!(ee_cert.crl_distribution_points.is_none());
@@ -525,7 +525,7 @@ mod tests {
     fn test_crl_distribution_point_with_reasons() {
         let der = include_bytes!("../tests/crl_distrib_point/with_reasons.der");
         let cert =
-            Cert::from_der(untrusted::Input::from(der)).expect("failed to parse certificate");
+            Cert::from_der(crate::untrusted::Input::from(der)).expect("failed to parse certificate");
 
         // We expect to be able to parse the intermediate certificate's CRL distribution points.
         let crl_distribution_points = cert
@@ -564,7 +564,7 @@ mod tests {
     fn test_crl_distribution_point_with_crl_issuer() {
         let der = include_bytes!("../tests/crl_distrib_point/with_crl_issuer.der");
         let cert =
-            Cert::from_der(untrusted::Input::from(der)).expect("failed to parse certificate");
+            Cert::from_der(crate::untrusted::Input::from(der)).expect("failed to parse certificate");
 
         // We expect to be able to parse the intermediate certificate's CRL distribution points.
         let crl_distribution_points = cert
@@ -592,7 +592,7 @@ mod tests {
         //   ascii2der -i tests/crl_distrib_point/unknown_tag.der.txt -o tests/crl_distrib_point/unknown_tag.der
         let der = include_bytes!("../tests/crl_distrib_point/unknown_tag.der");
         let cert =
-            Cert::from_der(untrusted::Input::from(der)).expect("failed to parse certificate");
+            Cert::from_der(crate::untrusted::Input::from(der)).expect("failed to parse certificate");
 
         // We expect there to be a distribution point extension, but parsing it should fail
         // due to the unknown tag in the SEQUENCE.
@@ -610,7 +610,7 @@ mod tests {
         //   ascii2der -i tests/crl_distrib_point/only_reasons.der.txt -o tests/crl_distrib_point/only_reasons.der
         let der = include_bytes!("../tests/crl_distrib_point/only_reasons.der");
         let cert =
-            Cert::from_der(untrusted::Input::from(der)).expect("failed to parse certificate");
+            Cert::from_der(crate::untrusted::Input::from(der)).expect("failed to parse certificate");
 
         // We expect there to be a distribution point extension, but parsing it should fail
         // because no distribution points or cRLIssuer are set in the SEQUENCE, just reason codes.
@@ -626,7 +626,7 @@ mod tests {
     fn test_crl_distribution_point_name_relative_to_issuer() {
         let der = include_bytes!("../tests/crl_distrib_point/dp_name_relative_to_issuer.der");
         let cert =
-            Cert::from_der(untrusted::Input::from(der)).expect("failed to parse certificate");
+            Cert::from_der(crate::untrusted::Input::from(der)).expect("failed to parse certificate");
 
         // We expect to be able to parse the intermediate certificate's CRL distribution points.
         let crl_distribution_points = cert
@@ -664,7 +664,7 @@ mod tests {
         //   ascii2der -i tests/crl_distrib_point/unknown_dp_name_tag.der.txt > tests/crl_distrib_point/unknown_dp_name_tag.der
         let der = include_bytes!("../tests/crl_distrib_point/unknown_dp_name_tag.der");
         let cert =
-            Cert::from_der(untrusted::Input::from(der)).expect("failed to parse certificate");
+            Cert::from_der(crate::untrusted::Input::from(der)).expect("failed to parse certificate");
 
         // We expect to be able to parse the intermediate certificate's CRL distribution points.
         let crl_distribution_points = cert
@@ -689,7 +689,7 @@ mod tests {
     fn test_crl_distribution_point_multiple() {
         let der = include_bytes!("../tests/crl_distrib_point/multiple_distribution_points.der");
         let cert =
-            Cert::from_der(untrusted::Input::from(der)).expect("failed to parse certificate");
+            Cert::from_der(crate::untrusted::Input::from(der)).expect("failed to parse certificate");
 
         // We expect to be able to parse the intermediate certificate's CRL distribution points.
         let crl_distribution_points = cert

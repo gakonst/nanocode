@@ -25,8 +25,8 @@ use crate::error::{Error, InvalidNameContext};
 
 pub(crate) fn verify_ip_address_names(reference: &IpAddr, cert: &Cert<'_>) -> Result<(), Error> {
     let ip_address = match reference {
-        IpAddr::V4(ip) => untrusted::Input::from(ip.as_ref()),
-        IpAddr::V6(ip) => untrusted::Input::from(ip.as_ref()),
+        IpAddr::V4(ip) => crate::untrusted::Input::from(ip.as_ref()),
+        IpAddr::V6(ip) => crate::untrusted::Input::from(ip.as_ref()),
     };
 
     let result = NameIterator::new(cert.subject_alt_name).find_map(|result| {
@@ -74,8 +74,8 @@ pub(crate) fn verify_ip_address_names(reference: &IpAddr, cert: &Cert<'_>) -> Re
 //   exactly four octets.  For IP version 6, as specified in
 //   [RFC2460], the octet string MUST contain exactly sixteen octets.
 fn presented_id_matches_reference_id(
-    presented_id: untrusted::Input<'_>,
-    reference_id: untrusted::Input<'_>,
+    presented_id: crate::untrusted::Input<'_>,
+    reference_id: crate::untrusted::Input<'_>,
 ) -> bool {
     match (presented_id.len(), reference_id.len()) {
         (4, 4) => (),
@@ -85,8 +85,8 @@ fn presented_id_matches_reference_id(
         }
     };
 
-    let mut presented_ip_address = untrusted::Reader::new(presented_id);
-    let mut reference_ip_address = untrusted::Reader::new(reference_id);
+    let mut presented_ip_address = crate::untrusted::Reader::new(presented_id);
+    let mut reference_ip_address = crate::untrusted::Reader::new(reference_id);
     while !presented_ip_address.at_end() {
         let presented_ip_address_byte = presented_ip_address.read_byte().unwrap();
         let reference_ip_address_byte = reference_ip_address.read_byte().unwrap();
@@ -108,8 +108,8 @@ fn presented_id_matches_reference_id(
 //     octets C0 00 02 00 FF FF FF 00, representing the CIDR notation
 //     192.0.2.0/24 (mask 255.255.255.0).
 pub(super) fn presented_id_matches_constraint(
-    name: untrusted::Input<'_>,
-    constraint: untrusted::Input<'_>,
+    name: crate::untrusted::Input<'_>,
+    constraint: crate::untrusted::Input<'_>,
 ) -> Result<bool, Error> {
     match (name.len(), constraint.len()) {
         (4, 8) => (),
@@ -137,9 +137,9 @@ pub(super) fn presented_id_matches_constraint(
         Ok((address, mask))
     })?;
 
-    let mut name = untrusted::Reader::new(name);
-    let mut constraint_address = untrusted::Reader::new(constraint_address);
-    let mut constraint_mask = untrusted::Reader::new(constraint_mask);
+    let mut name = crate::untrusted::Reader::new(name);
+    let mut constraint_address = crate::untrusted::Reader::new(constraint_address);
+    let mut constraint_mask = crate::untrusted::Reader::new(constraint_mask);
     let mut seen_zero_bit = false;
 
     loop {
@@ -224,8 +224,8 @@ mod tests {
         for (name, constraint, match_result) in names_and_constraints {
             assert_eq!(
                 presented_id_matches_constraint(
-                    untrusted::Input::from(&name),
-                    untrusted::Input::from(&constraint),
+                    crate::untrusted::Input::from(&name),
+                    crate::untrusted::Input::from(&constraint),
                 ),
                 match_result
             )
@@ -234,8 +234,8 @@ mod tests {
         // Invalid name length (shorter)
         assert_eq!(
             presented_id_matches_constraint(
-                untrusted::Input::from(&[0xC0, 0x00, 0x02]),
-                untrusted::Input::from(&[0xC0, 0x00, 0x02, 0x00, 0xFF, 0xFF, 0xFF, 0x00]),
+                crate::untrusted::Input::from(&[0xC0, 0x00, 0x02]),
+                crate::untrusted::Input::from(&[0xC0, 0x00, 0x02, 0x00, 0xFF, 0xFF, 0xFF, 0x00]),
             ),
             Err(Error::BadDer),
         );
@@ -243,8 +243,8 @@ mod tests {
         // Invalid name length (longer)
         assert_eq!(
             presented_id_matches_constraint(
-                untrusted::Input::from(&[0xC0, 0x00, 0x02, 0x00, 0x00]),
-                untrusted::Input::from(&[0xC0, 0x00, 0x02, 0x00, 0xFF, 0xFF, 0xFF, 0x00]),
+                crate::untrusted::Input::from(&[0xC0, 0x00, 0x02, 0x00, 0x00]),
+                crate::untrusted::Input::from(&[0xC0, 0x00, 0x02, 0x00, 0xFF, 0xFF, 0xFF, 0x00]),
             ),
             Err(Error::BadDer),
         );
@@ -252,8 +252,8 @@ mod tests {
         // Unmatching constraint size (shorter)
         assert_eq!(
             presented_id_matches_constraint(
-                untrusted::Input::from(&[0xC0, 0x00, 0x02, 0x00]),
-                untrusted::Input::from(&[0xC0, 0x00, 0x02, 0x00, 0xFF, 0xFF, 0xFF]),
+                crate::untrusted::Input::from(&[0xC0, 0x00, 0x02, 0x00]),
+                crate::untrusted::Input::from(&[0xC0, 0x00, 0x02, 0x00, 0xFF, 0xFF, 0xFF]),
             ),
             Err(Error::InvalidNetworkMaskConstraint),
         );
@@ -261,8 +261,8 @@ mod tests {
         // Unmatching constraint size (longer)
         assert_eq!(
             presented_id_matches_constraint(
-                untrusted::Input::from(&[0xC0, 0x00, 0x02, 0x00]),
-                untrusted::Input::from(&[0xC0, 0x00, 0x02, 0x00, 0xFF, 0xFF, 0xFF, 0x00, 0x00]),
+                crate::untrusted::Input::from(&[0xC0, 0x00, 0x02, 0x00]),
+                crate::untrusted::Input::from(&[0xC0, 0x00, 0x02, 0x00, 0xFF, 0xFF, 0xFF, 0x00, 0x00]),
             ),
             Err(Error::InvalidNetworkMaskConstraint),
         );
@@ -270,8 +270,8 @@ mod tests {
         // Unmatching constraint size (IPv6 constraint for IPv4 address)
         assert_eq!(
             presented_id_matches_constraint(
-                untrusted::Input::from(&[0xC0, 0x00, 0x02, 0x00]),
-                untrusted::Input::from(&[
+                crate::untrusted::Input::from(&[0xC0, 0x00, 0x02, 0x00]),
+                crate::untrusted::Input::from(&[
                     0x20, 0x01, 0x0D, 0xB8, 0xAB, 0xCD, 0x00, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00,
                     0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00,
                     0x00, 0x00, 0x00, 0x00, 0x00, 0x00
@@ -358,8 +358,8 @@ mod tests {
         for (name, constraint, match_result) in names_and_constraints {
             assert_eq!(
                 presented_id_matches_constraint(
-                    untrusted::Input::from(&name),
-                    untrusted::Input::from(&constraint),
+                    crate::untrusted::Input::from(&name),
+                    crate::untrusted::Input::from(&constraint),
                 ),
                 match_result
             )
@@ -368,11 +368,11 @@ mod tests {
         // Invalid name length (shorter)
         assert_eq!(
             presented_id_matches_constraint(
-                untrusted::Input::from(&[
+                crate::untrusted::Input::from(&[
                     0x20, 0x01, 0x0D, 0xB8, 0xAB, 0xCD, 0x00, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00,
                     0x00, 0x00
                 ]),
-                untrusted::Input::from(&[
+                crate::untrusted::Input::from(&[
                     0x20, 0x01, 0x0D, 0xB8, 0xAB, 0xCD, 0x00, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00,
                     0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00,
                     0x00, 0x00, 0x00, 0x00, 0x00, 0x00
@@ -384,11 +384,11 @@ mod tests {
         // Invalid name length (longer)
         assert_eq!(
             presented_id_matches_constraint(
-                untrusted::Input::from(&[
+                crate::untrusted::Input::from(&[
                     0x20, 0x01, 0x0D, 0xB8, 0xAB, 0xCD, 0x00, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00,
                     0x00, 0x00, 0x00, 0x00
                 ]),
-                untrusted::Input::from(&[
+                crate::untrusted::Input::from(&[
                     0x20, 0x01, 0x0D, 0xB8, 0xAB, 0xCD, 0x00, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00,
                     0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00,
                     0x00, 0x00, 0x00, 0x00, 0x00, 0x00
@@ -400,11 +400,11 @@ mod tests {
         // Unmatching constraint size (shorter)
         assert_eq!(
             presented_id_matches_constraint(
-                untrusted::Input::from(&[
+                crate::untrusted::Input::from(&[
                     0x20, 0x01, 0x0D, 0xB8, 0xAB, 0xCD, 0x00, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00,
                     0x00, 0x00, 0x00,
                 ]),
-                untrusted::Input::from(&[
+                crate::untrusted::Input::from(&[
                     0x20, 0x01, 0x0D, 0xB8, 0xAB, 0xCD, 0x00, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00,
                     0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00,
                     0x00, 0x00, 0x00, 0x00, 0x00
@@ -416,11 +416,11 @@ mod tests {
         // Unmatching constraint size (longer)
         assert_eq!(
             presented_id_matches_constraint(
-                untrusted::Input::from(&[
+                crate::untrusted::Input::from(&[
                     0x20, 0x01, 0x0D, 0xB8, 0xAB, 0xCD, 0x00, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00,
                     0x00, 0x00, 0x00,
                 ]),
-                untrusted::Input::from(&[
+                crate::untrusted::Input::from(&[
                     0x20, 0x01, 0x0D, 0xB8, 0xAB, 0xCD, 0x00, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00,
                     0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00,
                     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
@@ -432,11 +432,11 @@ mod tests {
         // Unmatching constraint size (IPv4 constraint for IPv6 address)
         assert_eq!(
             presented_id_matches_constraint(
-                untrusted::Input::from(&[
+                crate::untrusted::Input::from(&[
                     0x20, 0x01, 0x0D, 0xB8, 0xAB, 0xCD, 0x00, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00,
                     0x00, 0x00, 0x00,
                 ]),
-                untrusted::Input::from(&[0xC0, 0x00, 0x02, 0x00, 0xFF, 0xFF, 0xFF, 0x00]),
+                crate::untrusted::Input::from(&[0xC0, 0x00, 0x02, 0x00, 0xFF, 0xFF, 0xFF, 0x00]),
             ),
             Ok(false),
         );
@@ -445,38 +445,38 @@ mod tests {
     #[test]
     fn test_presented_id_matches_reference_id() {
         assert!(!presented_id_matches_reference_id(
-            untrusted::Input::from(&[]),
-            untrusted::Input::from(&[]),
+            crate::untrusted::Input::from(&[]),
+            crate::untrusted::Input::from(&[]),
         ));
 
         assert!(!presented_id_matches_reference_id(
-            untrusted::Input::from(&[0x01]),
-            untrusted::Input::from(&[])
+            crate::untrusted::Input::from(&[0x01]),
+            crate::untrusted::Input::from(&[])
         ));
 
         assert!(!presented_id_matches_reference_id(
-            untrusted::Input::from(&[]),
-            untrusted::Input::from(&[0x01])
+            crate::untrusted::Input::from(&[]),
+            crate::untrusted::Input::from(&[0x01])
         ));
 
         assert!(presented_id_matches_reference_id(
-            untrusted::Input::from(&[1, 2, 3, 4]),
-            untrusted::Input::from(&[1, 2, 3, 4])
+            crate::untrusted::Input::from(&[1, 2, 3, 4]),
+            crate::untrusted::Input::from(&[1, 2, 3, 4])
         ));
 
         assert!(!presented_id_matches_reference_id(
-            untrusted::Input::from(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]),
-            untrusted::Input::from(&[1, 2, 3, 4])
+            crate::untrusted::Input::from(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]),
+            crate::untrusted::Input::from(&[1, 2, 3, 4])
         ));
 
         assert!(!presented_id_matches_reference_id(
-            untrusted::Input::from(&[1, 2, 3, 4]),
-            untrusted::Input::from(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16])
+            crate::untrusted::Input::from(&[1, 2, 3, 4]),
+            crate::untrusted::Input::from(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16])
         ));
 
         assert!(presented_id_matches_reference_id(
-            untrusted::Input::from(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]),
-            untrusted::Input::from(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16])
+            crate::untrusted::Input::from(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]),
+            crate::untrusted::Input::from(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16])
         ));
     }
 
@@ -485,34 +485,34 @@ mod tests {
         // wrong length names
         assert_eq!(
             presented_id_matches_constraint(
-                untrusted::Input::from(b"\x00\x00\x00"),
-                untrusted::Input::from(b"")
+                crate::untrusted::Input::from(b"\x00\x00\x00"),
+                crate::untrusted::Input::from(b"")
             ),
             Err(Error::BadDer)
         );
         assert_eq!(
             presented_id_matches_constraint(
-                untrusted::Input::from(b"\x00\x00\x00\x00\x00"),
-                untrusted::Input::from(b"")
+                crate::untrusted::Input::from(b"\x00\x00\x00\x00\x00"),
+                crate::untrusted::Input::from(b"")
             ),
             Err(Error::BadDer)
         );
 
         assert_eq!(
             presented_id_matches_constraint(
-                untrusted::Input::from(
+                crate::untrusted::Input::from(
                     b"\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
                 ),
-                untrusted::Input::from(b"")
+                crate::untrusted::Input::from(b"")
             ),
             Err(Error::BadDer)
         );
         assert_eq!(
             presented_id_matches_constraint(
-                untrusted::Input::from(
+                crate::untrusted::Input::from(
                     b"\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
                 ),
-                untrusted::Input::from(b"")
+                crate::untrusted::Input::from(b"")
             ),
             Err(Error::BadDer)
         );
@@ -520,44 +520,44 @@ mod tests {
         // wrong length constraints
         assert_eq!(
             presented_id_matches_constraint(
-                untrusted::Input::from(b"\x00\x00\x00\x00"),
-                untrusted::Input::from(b"\x00\x00\x00\x00\xff\xff\xff")
+                crate::untrusted::Input::from(b"\x00\x00\x00\x00"),
+                crate::untrusted::Input::from(b"\x00\x00\x00\x00\xff\xff\xff")
             ),
             Err(Error::InvalidNetworkMaskConstraint)
         );
         assert_eq!(
             presented_id_matches_constraint(
-                untrusted::Input::from(b"\x00\x00\x00\x00"),
-                untrusted::Input::from(b"\x00\x00\x00\x00\xff\xff\xff\xff\x00")
+                crate::untrusted::Input::from(b"\x00\x00\x00\x00"),
+                crate::untrusted::Input::from(b"\x00\x00\x00\x00\xff\xff\xff\xff\x00")
             ),
             Err(Error::InvalidNetworkMaskConstraint)
         );
         assert_eq!(
-            presented_id_matches_constraint(untrusted::Input::from(b"\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"),
-                                            untrusted::Input::from(b"\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\
+            presented_id_matches_constraint(crate::untrusted::Input::from(b"\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"),
+                                            crate::untrusted::Input::from(b"\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\
                                                                      \xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff")),
             Err(Error::InvalidNetworkMaskConstraint)
         );
         assert_eq!(
-            presented_id_matches_constraint(untrusted::Input::from(b"\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"),
-                                            untrusted::Input::from(b"\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\
+            presented_id_matches_constraint(crate::untrusted::Input::from(b"\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"),
+                                            crate::untrusted::Input::from(b"\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\
                                                                      \xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff")),
             Err(Error::InvalidNetworkMaskConstraint)
         );
 
         // ipv4-length not considered for ipv6-length name, and vv
         assert_eq!(
-            presented_id_matches_constraint(untrusted::Input::from(b"\x00\x00\x00\x00"),
-                                            untrusted::Input::from(b"\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\
+            presented_id_matches_constraint(crate::untrusted::Input::from(b"\x00\x00\x00\x00"),
+                                            crate::untrusted::Input::from(b"\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\
                                                                      \xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff")),
             Ok(false)
         );
         assert_eq!(
             presented_id_matches_constraint(
-                untrusted::Input::from(
+                crate::untrusted::Input::from(
                     b"\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
                 ),
-                untrusted::Input::from(b"\x00\x00\x00\x00\xff\xff\xff\xff")
+                crate::untrusted::Input::from(b"\x00\x00\x00\x00\xff\xff\xff\xff")
             ),
             Ok(false)
         );
@@ -694,8 +694,8 @@ mod alloc_tests {
             };
             let constraint_bytes = [ca_bytes, cm_bytes].concat();
             let actual_result = presented_id_matches_constraint(
-                untrusted::Input::from(&presented_bytes),
-                untrusted::Input::from(&constraint_bytes),
+                crate::untrusted::Input::from(&presented_bytes),
+                crate::untrusted::Input::from(&constraint_bytes),
             );
             assert_eq!(
                 &actual_result, expected_result,

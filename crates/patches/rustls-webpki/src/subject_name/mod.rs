@@ -30,7 +30,7 @@ pub(crate) use ip_address::verify_ip_address_names;
 
 // https://tools.ietf.org/html/rfc5280#section-4.2.1.10
 pub(crate) fn check_name_constraints(
-    constraints: Option<&mut untrusted::Reader<'_>>,
+    constraints: Option<&mut crate::untrusted::Reader<'_>>,
     path: &PathNode<'_>,
     budget: &mut Budget,
 ) -> Result<(), Error> {
@@ -40,9 +40,9 @@ pub(crate) fn check_name_constraints(
     };
 
     fn parse_subtrees<'b>(
-        inner: &mut untrusted::Reader<'b>,
+        inner: &mut crate::untrusted::Reader<'b>,
         subtrees_tag: der::Tag,
-    ) -> Result<Option<untrusted::Input<'b>>, Error> {
+    ) -> Result<Option<crate::untrusted::Input<'b>>, Error> {
         if !inner.peek(subtrees_tag.into()) {
             return Ok(None);
         }
@@ -88,8 +88,8 @@ pub(crate) fn check_name_constraints(
 
 fn check_presented_id_conforms_to_constraints(
     name: GeneralName<'_>,
-    permitted_subtrees: Option<untrusted::Input<'_>>,
-    excluded_subtrees: Option<untrusted::Input<'_>>,
+    permitted_subtrees: Option<crate::untrusted::Input<'_>>,
+    excluded_subtrees: Option<crate::untrusted::Input<'_>>,
     budget: &mut Budget,
 ) -> Option<Result<(), Error>> {
     let subtrees = [
@@ -97,13 +97,13 @@ fn check_presented_id_conforms_to_constraints(
         (Subtrees::Excluded, excluded_subtrees),
     ];
 
-    fn general_subtree<'b>(input: &mut untrusted::Reader<'b>) -> Result<GeneralName<'b>, Error> {
+    fn general_subtree<'b>(input: &mut crate::untrusted::Reader<'b>) -> Result<GeneralName<'b>, Error> {
         der::read_all(der::expect_tag(input, der::Tag::Sequence)?)
     }
 
     for (subtrees, constraints) in subtrees {
         let mut constraints = match constraints {
-            Some(constraints) => untrusted::Reader::new(constraints),
+            Some(constraints) => crate::untrusted::Reader::new(constraints),
             None => continue,
         };
 
@@ -228,13 +228,13 @@ enum Subtrees {
 }
 
 pub(crate) struct NameIterator<'a> {
-    subject_alt_name: Option<untrusted::Reader<'a>>,
+    subject_alt_name: Option<crate::untrusted::Reader<'a>>,
 }
 
 impl<'a> NameIterator<'a> {
-    pub(crate) fn new(subject_alt_name: Option<untrusted::Input<'a>>) -> Self {
+    pub(crate) fn new(subject_alt_name: Option<crate::untrusted::Input<'a>>) -> Self {
         Self {
-            subject_alt_name: subject_alt_name.map(untrusted::Reader::new),
+            subject_alt_name: subject_alt_name.map(crate::untrusted::Reader::new),
         }
     }
 }
@@ -274,10 +274,10 @@ impl<'a> Iterator for NameIterator<'a> {
 // `GeneralName` in other contexts.
 #[derive(Clone, Copy)]
 pub(crate) enum GeneralName<'a> {
-    DnsName(untrusted::Input<'a>),
+    DnsName(crate::untrusted::Input<'a>),
     DirectoryName,
-    IpAddress(untrusted::Input<'a>),
-    UniformResourceIdentifier(untrusted::Input<'a>),
+    IpAddress(crate::untrusted::Input<'a>),
+    UniformResourceIdentifier(crate::untrusted::Input<'a>),
 
     // The value is the `tag & ~(der::CONTEXT_SPECIFIC | der::CONSTRUCTED)` so
     // that the name constraint checking matches tags regardless of whether
@@ -286,7 +286,7 @@ pub(crate) enum GeneralName<'a> {
 }
 
 impl<'a> FromDer<'a> for GeneralName<'a> {
-    fn from_der(reader: &mut untrusted::Reader<'a>) -> Result<Self, Error> {
+    fn from_der(reader: &mut crate::untrusted::Reader<'a>) -> Result<Self, Error> {
         use GeneralName::*;
         use der::{CONSTRUCTED, CONTEXT_SPECIFIC};
 
@@ -413,7 +413,7 @@ mod tests {
         assert_eq!(
             format!(
                 "{:?}",
-                GeneralName::DnsName(untrusted::Input::from(b"example.com"))
+                GeneralName::DnsName(crate::untrusted::Input::from(b"example.com"))
             ),
             "DnsName(\"example.com\")"
         );
@@ -423,7 +423,7 @@ mod tests {
         assert_eq!(
             format!(
                 "{:?}",
-                GeneralName::IpAddress(untrusted::Input::from(&[192, 0, 2, 1][..]))
+                GeneralName::IpAddress(crate::untrusted::Input::from(&[192, 0, 2, 1][..]))
             ),
             "IpAddress(192.0.2.1)"
         );
@@ -431,7 +431,7 @@ mod tests {
         assert_eq!(
             format!(
                 "{:?}",
-                GeneralName::IpAddress(untrusted::Input::from(
+                GeneralName::IpAddress(crate::untrusted::Input::from(
                     &[0x20, 0x01, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x0d, 0xb8][..]
                 ))
             ),
@@ -441,7 +441,7 @@ mod tests {
         assert_eq!(
             format!(
                 "{:?}",
-                GeneralName::IpAddress(untrusted::Input::from(&[1, 2, 3, 4, 5, 6][..]))
+                GeneralName::IpAddress(crate::untrusted::Input::from(&[1, 2, 3, 4, 5, 6][..]))
             ),
             "IpAddress([invalid: 01, 02, 03, 04, 05, 06])"
         );
@@ -449,7 +449,7 @@ mod tests {
         assert_eq!(
             format!(
                 "{:?}",
-                GeneralName::UniformResourceIdentifier(untrusted::Input::from(
+                GeneralName::UniformResourceIdentifier(crate::untrusted::Input::from(
                     b"https://example.com"
                 ))
             ),
@@ -464,7 +464,7 @@ mod tests {
 
     #[test]
     fn name_iter_end_after_error() {
-        let input = untrusted::Input::from(&[0x30]);
+        let input = crate::untrusted::Input::from(&[0x30]);
         let mut iter = NameIterator::new(Some(input));
         assert_eq!(iter.next().unwrap().unwrap_err(), Error::BadDer);
         assert!(iter.next().is_none());

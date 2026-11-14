@@ -115,9 +115,9 @@ impl RevocationOptions<'_> {
     pub(crate) fn check(
         &self,
         path: &PathNode<'_>,
-        issuer_subject: untrusted::Input<'_>,
-        issuer_spki: untrusted::Input<'_>,
-        issuer_ku: Option<untrusted::Input<'_>>,
+        issuer_subject: crate::untrusted::Input<'_>,
+        issuer_spki: crate::untrusted::Input<'_>,
+        issuer_ku: Option<crate::untrusted::Input<'_>>,
         supported_sig_algs: &[&dyn SignatureVerificationAlgorithm],
         budget: &mut Budget,
         time: UnixTime,
@@ -185,10 +185,10 @@ enum KeyUsageMode {
 
 impl KeyUsageMode {
     // https://www.rfc-editor.org/rfc/rfc5280#section-4.2.1.3
-    fn check(self, input: Option<untrusted::Input<'_>>) -> Result<(), Error> {
+    fn check(self, input: Option<crate::untrusted::Input<'_>>) -> Result<(), Error> {
         let bit_string = match input {
             Some(input) => {
-                der::expect_tag(&mut untrusted::Reader::new(input), der::Tag::BitString)?
+                der::expect_tag(&mut crate::untrusted::Reader::new(input), der::Tag::BitString)?
             }
             // While RFC 5280 requires KeyUsage be present, historically the absence of a KeyUsage
             // has been treated as "Any Usage". We follow that convention here and assume the absence

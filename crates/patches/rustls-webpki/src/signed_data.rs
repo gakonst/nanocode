@@ -53,9 +53,9 @@ impl OwnedSignedData {
     /// Return a borrowed [`SignedData`] from the owned representation.
     pub(crate) fn borrow(&self) -> SignedData<'_> {
         SignedData {
-            data: untrusted::Input::from(&self.data),
-            algorithm: untrusted::Input::from(&self.algorithm),
-            signature: untrusted::Input::from(&self.signature),
+            data: crate::untrusted::Input::from(&self.data),
+            algorithm: crate::untrusted::Input::from(&self.algorithm),
+            signature: crate::untrusted::Input::from(&self.signature),
         }
     }
 }
@@ -69,18 +69,18 @@ pub(crate) struct SignedData<'a> {
     /// certificate, `tbsResponseData` in the case of an OCSP response, `tbsCertList`
     /// in the case of a CRL, and the data nested in the `digitally-signed` construct for
     /// TLS 1.2 signed data.
-    pub(crate) data: untrusted::Input<'a>,
+    pub(crate) data: crate::untrusted::Input<'a>,
 
     /// The value of the `AlgorithmIdentifier`. This would be
     /// `signatureAlgorithm` in the case of an X.509 certificate, OCSP
     /// response or CRL. This would have to be synthesized in the case of TLS 1.2
     /// signed data, since TLS does not identify algorithms by ASN.1 OIDs.
-    pub(crate) algorithm: untrusted::Input<'a>,
+    pub(crate) algorithm: crate::untrusted::Input<'a>,
 
     /// The value of the signature. This would be `signature` in an X.509
     /// certificate, OCSP response or CRL. This would be the value of
     /// `DigitallySigned.signature` for TLS 1.2 signed data.
-    pub(crate) signature: untrusted::Input<'a>,
+    pub(crate) signature: crate::untrusted::Input<'a>,
 }
 
 impl<'a> SignedData<'a> {
@@ -117,9 +117,9 @@ impl<'a> SignedData<'a> {
     /// The provided size_limit will enforce the largest possible outermost `SEQUENCE` this
     /// function will read.
     pub(crate) fn from_der(
-        der: &mut untrusted::Reader<'a>,
+        der: &mut crate::untrusted::Reader<'a>,
         size_limit: usize,
-    ) -> Result<(untrusted::Input<'a>, Self), Error> {
+    ) -> Result<(crate::untrusted::Input<'a>, Self), Error> {
         let (data, tbs) = der.read_partial(|input| {
             der::expect_tag_and_get_value_limited(input, der::Tag::Sequence, size_limit)
         })?;
@@ -158,7 +158,7 @@ impl<'a> SignedData<'a> {
 /// linearly for matches.
 pub(crate) fn verify_signed_data(
     supported_algorithms: &[&dyn SignatureVerificationAlgorithm],
-    spki_value: untrusted::Input<'_>,
+    spki_value: crate::untrusted::Input<'_>,
     signed_data: &SignedData<'_>,
     budget: &mut Budget,
 ) -> Result<(), Error> {
@@ -221,9 +221,9 @@ pub(crate) fn verify_signed_data(
 
 pub(crate) fn verify_signature(
     signature_alg: &dyn SignatureVerificationAlgorithm,
-    spki_value: untrusted::Input<'_>,
-    msg: untrusted::Input<'_>,
-    signature: untrusted::Input<'_>,
+    spki_value: crate::untrusted::Input<'_>,
+    msg: crate::untrusted::Input<'_>,
+    signature: crate::untrusted::Input<'_>,
 ) -> Result<(), Error> {
     let spki = der::read_all::<SubjectPublicKeyInfo<'_>>(spki_value)?;
     if signature_alg.public_key_alg_id().as_ref() != spki.algorithm_id_value.as_slice_less_safe() {
@@ -247,8 +247,8 @@ pub(crate) fn verify_signature(
 }
 
 pub(crate) struct SubjectPublicKeyInfo<'a> {
-    algorithm_id_value: untrusted::Input<'a>,
-    key_value: untrusted::Input<'a>,
+    algorithm_id_value: crate::untrusted::Input<'a>,
+    key_value: crate::untrusted::Input<'a>,
 }
 
 impl<'a> FromDer<'a> for SubjectPublicKeyInfo<'a> {
@@ -256,7 +256,7 @@ impl<'a> FromDer<'a> for SubjectPublicKeyInfo<'a> {
     // key value. The caller needs to check whether these match the
     // `PublicKeyAlgorithm` for the `SignatureVerificationAlgorithm` that is matched when
     // parsing the signature.
-    fn from_der(reader: &mut untrusted::Reader<'a>) -> Result<Self, Error> {
+    fn from_der(reader: &mut crate::untrusted::Reader<'a>) -> Result<Self, Error> {
         let algorithm_id_value = der::expect_tag(reader, der::Tag::Sequence)?;
         let key_value = der::bit_string_with_no_unused_bits(reader)?;
         Ok(SubjectPublicKeyInfo {

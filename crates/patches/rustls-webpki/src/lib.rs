@@ -62,6 +62,7 @@ mod signed_data;
 mod subject_name;
 mod time;
 mod trust_anchor;
+mod untrusted;
 
 mod crl;
 mod verify_cert;
@@ -99,6 +100,6 @@ pub use crl::{OwnedCertRevocationList, OwnedRevokedCert};
 /// It is empty: this build has no cryptography of its own, and rustls takes the algorithms from its crypto provider.
 pub static ALL_VERIFICATION_ALGS: &[&dyn pki_types::SignatureVerificationAlgorithm] = &[];
 
-fn public_values_eq(a: untrusted::Input<'_>, b: untrusted::Input<'_>) -> bool {
+fn public_values_eq(a: crate::untrusted::Input<'_>, b: crate::untrusted::Input<'_>) -> bool {
     a.as_slice_less_safe() == b.as_slice_less_safe()
 }

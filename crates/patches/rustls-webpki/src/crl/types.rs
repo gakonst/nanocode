@@ -104,7 +104,7 @@ impl CertRevocationList<'_> {
             // If the CRL has an issuing distribution point, parse it so we can consider its scope
             // and compare against the cert CRL distribution points, if present.
             Some(crl_idp) => {
-                match IssuingDistributionPoint::from_der(untrusted::Input::from(crl_idp)) {
+                match IssuingDistributionPoint::from_der(crate::untrusted::Input::from(crl_idp)) {
                     Ok(crl_idp) => crl_idp,
                     Err(_) => return false, // Note: shouldn't happen - we verify IDP at CRL-load.
                 }
@@ -124,7 +124,7 @@ impl CertRevocationList<'_> {
     pub(crate) fn verify_signature(
         &self,
         supported_sig_algs: &[&dyn SignatureVerificationAlgorithm],
-        issuer_spki: untrusted::Input<'_>,
+        issuer_spki: crate::untrusted::Input<'_>,
         budget: &mut Budget,
     ) -> Result<(), Error> {
         signed_data::verify_signed_data(
@@ -218,13 +218,13 @@ pub struct BorrowedCertRevocationList<'a> {
 
     /// Identifies the entity that has signed and issued this
     /// CRL.
-    issuer: untrusted::Input<'a>,
+    issuer: crate::untrusted::Input<'a>,
 
     /// An optional CRL extension that identifies the CRL distribution point and scope for the CRL.
-    issuing_distribution_point: Option<untrusted::Input<'a>>,
+    issuing_distribution_point: Option<crate::untrusted::Input<'a>>,
 
     /// List of certificates revoked by the issuer in this CRL.
-    revoked_certs: untrusted::Input<'a>,
+    revoked_certs: crate::untrusted::Input<'a>,
 
     next_update: UnixTime,
 }
@@ -241,7 +241,7 @@ impl<'a> BorrowedCertRevocationList<'a> {
     ///
     /// [^1]: <https://www.rfc-editor.org/rfc/rfc5280#section-5>
     pub fn from_der(crl_der: &'a [u8]) -> Result<Self, Error> {
-        der::read_all(untrusted::Input::from(crl_der))
+        der::read_all(crate::untrusted::Input::from(crl_der))
     }
 
     /// Convert the CRL to an [`OwnedCertRevocationList`]. This may error if any of the revoked
@@ -335,7 +335,7 @@ impl<'a> FromDer<'a> for BorrowedCertRevocationList<'a> {
     ///   * CRLs larger than (2^32)-1 bytes in size.
     ///
     /// [^1]: <https://www.rfc-editor.org/rfc/rfc5280#section-5>
-    fn from_der(reader: &mut untrusted::Reader<'a>) -> Result<Self, Error> {
+    fn from_der(reader: &mut crate::untrusted::Reader<'a>) -> Result<Self, Error> {
         let (tbs_cert_list, signed_data) = der::nested_limited(
             reader,
             Tag::Sequence,
@@ -395,7 +395,7 @@ impl<'a> FromDer<'a> for BorrowedCertRevocationList<'a> {
                     der::MAX_DER_SIZE,
                 )?
             } else {
-                untrusted::Input::from(&[])
+                crate::untrusted::Input::from(&[])
             };
 
             let mut crl = BorrowedCertRevocationList {
@@ -462,7 +462,7 @@ impl<'a> IntoIterator for &'a BorrowedCertRevocationList<'a> {
 }
 
 pub(crate) struct IssuingDistributionPoint<'a> {
-    distribution_point: Option<untrusted::Input<'a>>,
+    distribution_point: Option<crate::untrusted::Input<'a>>,
     pub(crate) only_contains_user_certs: bool,
     pub(crate) only_contains_ca_certs: bool,
     pub(crate) only_some_reasons: Option<der::BitStringFlags<'a>>,
@@ -471,7 +471,7 @@ pub(crate) struct IssuingDistributionPoint<'a> {
 }
 
 impl<'a> IssuingDistributionPoint<'a> {
-    pub(crate) fn from_der(der: untrusted::Input<'a>) -> Result<Self, Error> {
+    pub(crate) fn from_der(der: crate::untrusted::Input<'a>) -> Result<Self, Error> {
         const DISTRIBUTION_POINT_TAG: u8 = CONTEXT_SPECIFIC | CONSTRUCTED;
         const ONLY_CONTAINS_USER_CERTS_TAG: u8 = CONTEXT_SPECIFIC | 1;
         const ONLY_CONTAINS_CA_CERTS_TAG: u8 = CONTEXT_SPECIFIC | 2;
@@ -491,8 +491,8 @@ impl<'a> IssuingDistributionPoint<'a> {
         // Note: we can't use der::optional_boolean here because the distribution point
         //       booleans are context specific primitives and der::optional_boolean expects
         //       to unwrap a Tag::Boolean constructed value.
-        fn decode_bool(value: untrusted::Input<'_>) -> Result<bool, Error> {
-            let mut reader = untrusted::Reader::new(value);
+        fn decode_bool(value: crate::untrusted::Input<'_>) -> Result<bool, Error> {
+            let mut reader = crate::untrusted::Reader::new(value);
             let value = reader.read_byte().map_err(der::end_of_input_err)?;
             if !reader.at_end() {
                 return Err(Error::BadDer);
@@ -506,7 +506,7 @@ impl<'a> IssuingDistributionPoint<'a> {
 
         // RFC 5280 section §4.2.1.13:
         der::nested(
-            &mut untrusted::Reader::new(der),
+            &mut crate::untrusted::Reader::new(der),
             Tag::Sequence,
             Error::TrailingData(DerTypeId::IssuingDistributionPoint),
             |der| {
@@ -569,7 +569,7 @@ impl<'a> IssuingDistributionPoint<'a> {
     /// Return the distribution point names (if any).
     pub(crate) fn names(&self) -> Result<Option<DistributionPointName<'a>>, Error> {
         self.distribution_point
-            .map(|input| DistributionPointName::from_der(&mut untrusted::Reader::new(input)))
+            .map(|input| DistributionPointName::from_der(&mut crate::untrusted::Reader::new(input)))
             .transpose()
     }
 
@@ -755,7 +755,7 @@ impl<'a> BorrowedRevokedCert<'a> {
 }
 
 impl<'a> FromDer<'a> for BorrowedRevokedCert<'a> {
-    fn from_der(reader: &mut untrusted::Reader<'a>) -> Result<Self, Error> {
+    fn from_der(reader: &mut crate::untrusted::Reader<'a>) -> Result<Self, Error> {
         der::nested(
             reader,
             Tag::Sequence,
@@ -800,7 +800,7 @@ impl<'a> FromDer<'a> for BorrowedRevokedCert<'a> {
                     return Ok(revoked_cert);
                 }
 
-                let mut reader = untrusted::Reader::new(ext_seq);
+                let mut reader = crate::untrusted::Reader::new(ext_seq);
                 loop {
                     der::nested(
                         &mut reader,
@@ -873,7 +873,7 @@ impl RevocationReason {
 
 impl<'a> FromDer<'a> for RevocationReason {
     // RFC 5280 §5.3.1.
-    fn from_der(reader: &mut untrusted::Reader<'a>) -> Result<Self, Error> {
+    fn from_der(reader: &mut crate::untrusted::Reader<'a>) -> Result<Self, Error> {
         let input = der::expect_tag(reader, Tag::Enum)?;
         Self::try_from(input.read_all(Error::BadDer, |reason| {
             reason.read_byte().map_err(|_| Error::BadDer)
@@ -936,7 +936,7 @@ mod tests {
             assert!(owned_crl.issuing_distribution_point.is_some());
         }
 
-        let crl_issuing_dp = IssuingDistributionPoint::from_der(untrusted::Input::from(
+        let crl_issuing_dp = IssuingDistributionPoint::from_der(crate::untrusted::Input::from(
             crl_issuing_dp.as_slice_less_safe(),
         ))
         .expect("failed to parse issuing distribution point DER");
@@ -992,7 +992,7 @@ mod tests {
         );
         let ee = EndEntityCert::try_from(&ee).unwrap();
         let ca = include_bytes!("../../tests/client_auth_revocation/no_crl_ku_chain.int.a.ca.der");
-        let ca = Cert::from_der(untrusted::Input::from(&ca[..])).unwrap();
+        let ca = Cert::from_der(crate::untrusted::Input::from(&ca[..])).unwrap();
 
         let mut path = PartialPath::new(&ee);
         path.push(ca).unwrap();

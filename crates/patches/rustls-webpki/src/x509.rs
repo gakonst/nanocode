@@ -18,8 +18,8 @@ use crate::subject_name::GeneralName;
 
 pub(crate) struct Extension<'a> {
     pub(crate) critical: bool,
-    pub(crate) id: untrusted::Input<'a>,
-    pub(crate) value: untrusted::Input<'a>,
+    pub(crate) id: crate::untrusted::Input<'a>,
+    pub(crate) value: crate::untrusted::Input<'a>,
 }
 
 impl Extension<'_> {
@@ -32,7 +32,7 @@ impl Extension<'_> {
 }
 
 impl<'a> FromDer<'a> for Extension<'a> {
-    fn from_der(reader: &mut untrusted::Reader<'a>) -> Result<Self, Error> {
+    fn from_der(reader: &mut crate::untrusted::Reader<'a>) -> Result<Self, Error> {
         let id = der::expect_tag(reader, der::Tag::OID)?;
         let critical = bool::from_der(reader)?;
         let value = der::expect_tag(reader, der::Tag::OctetString)?;
@@ -100,7 +100,7 @@ pub(crate) enum DistributionPointName<'a> {
 }
 
 impl<'a> FromDer<'a> for DistributionPointName<'a> {
-    fn from_der(reader: &mut untrusted::Reader<'a>) -> Result<Self, Error> {
+    fn from_der(reader: &mut crate::untrusted::Reader<'a>) -> Result<Self, Error> {
         // RFC 5280 section §4.2.1.13:
         //   When the distributionPoint field is present, it contains either a
         //   SEQUENCE of general names or a single value, nameRelativeToCRLIssuer

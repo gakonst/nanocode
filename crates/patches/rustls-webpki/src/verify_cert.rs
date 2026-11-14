@@ -74,7 +74,7 @@ impl<'a, 'p: 'a, V: ExtendedKeyUsageValidator> ChainOptions<'a, 'p, V> {
 
         let result =
             loop_while_non_fatal_error(Error::UnknownIssuer, self.trust_anchors, |trust_anchor| {
-                let trust_anchor_subject = untrusted::Input::from(trust_anchor.subject.as_ref());
+                let trust_anchor_subject = crate::untrusted::Input::from(trust_anchor.subject.as_ref());
                 if !public_values_eq(path.head().issuer, trust_anchor_subject) {
                     return Err(Error::UnknownIssuer.into());
                 }
@@ -118,7 +118,7 @@ impl<'a, 'p: 'a, V: ExtendedKeyUsageValidator> ChainOptions<'a, 'p, V> {
         };
 
         loop_while_non_fatal_error(err, self.intermediate_certs, |cert_der| {
-            let potential_issuer = Cert::from_der(untrusted::Input::from(cert_der))?;
+            let potential_issuer = Cert::from_der(crate::untrusted::Input::from(cert_der))?;
             if !public_values_eq(potential_issuer.subject, path.head().issuer) {
                 return Err(Error::UnknownIssuer.into());
             }
@@ -154,8 +154,8 @@ impl<'a, 'p: 'a, V: ExtendedKeyUsageValidator> ChainOptions<'a, 'p, V> {
         trust_anchor: &TrustAnchor<'_>,
         budget: &mut Budget,
     ) -> Result<(), ControlFlow<Error, Error>> {
-        let mut spki_value = untrusted::Input::from(trust_anchor.subject_public_key_info.as_ref());
-        let mut issuer_subject = untrusted::Input::from(trust_anchor.subject.as_ref());
+        let mut spki_value = crate::untrusted::Input::from(trust_anchor.subject_public_key_info.as_ref());
+        let mut issuer_subject = crate::untrusted::Input::from(trust_anchor.subject.as_ref());
         let mut issuer_key_usage = None; // TODO(XXX): Consider whether to track TrustAnchor KU.
         for path in path.iter() {
             signed_data::verify_signed_data(
@@ -289,10 +289,10 @@ fn check_signed_chain_name_constraints(
     let mut name_constraints = trust_anchor
         .name_constraints
         .as_ref()
-        .map(|der| untrusted::Input::from(der.as_ref()));
+        .map(|der| crate::untrusted::Input::from(der.as_ref()));
 
     for path in path.iter() {
-        untrusted::read_all_optional(name_constraints, Error::BadDer, |value| {
+        crate::untrusted::read_all_optional(name_constraints, Error::BadDer, |value| {
             subject_name::check_name_constraints(value, &path, budget)
         })?;
 
@@ -377,29 +377,29 @@ fn check_issuer_independent_properties(
 
     cert.validity
         .read_all(Error::BadDer, |value| check_validity(value, time))?;
-    untrusted::read_all_optional(cert.basic_constraints, Error::BadDer, |value| {
+    crate::untrusted::read_all_optional(cert.basic_constraints, Error::BadDer, |value| {
         check_basic_constraints(value, role, sub_ca_count)
     })?;
-    untrusted::read_all_optional(cert.eku, Error::BadDer, |input| check_eku(input, eku))?;
+    crate::untrusted::read_all_optional(cert.eku, Error::BadDer, |input| check_eku(input, eku))?;
 
     Ok(())
 }
 
 fn check_eku(
-    input: Option<&mut untrusted::Reader<'_>>,
+    input: Option<&mut crate::untrusted::Reader<'_>>,
     eku: &impl ExtendedKeyUsageValidator,
 ) -> Result<(), Error> {
     match input {
         Some(input) if input.at_end() => Err(Error::EmptyEkuExtension),
         Some(input) => eku.validate(KeyPurposeIdIter { input }),
         None => eku.validate(KeyPurposeIdIter {
-            input: &mut untrusted::Reader::new(untrusted::Input::from(&[])),
+            input: &mut crate::untrusted::Reader::new(crate::untrusted::Input::from(&[])),
         }),
     }
 }
 
 // https://tools.ietf.org/html/rfc5280#section-4.1.2.5
-fn check_validity(input: &mut untrusted::Reader<'_>, time: UnixTime) -> Result<(), Error> {
+fn check_validity(input: &mut crate::untrusted::Reader<'_>, time: UnixTime) -> Result<(), Error> {
     let not_before = UnixTime::from_der(input)?;
     let not_after = UnixTime::from_der(input)?;
 
@@ -422,7 +422,7 @@ fn check_validity(input: &mut untrusted::Reader<'_>, time: UnixTime) -> Result<(
 
 // https://tools.ietf.org/html/rfc5280#section-4.2.1.9
 fn check_basic_constraints(
-    input: Option<&mut untrusted::Reader<'_>>,
+    input: Option<&mut crate::untrusted::Reader<'_>>,
     role: Role,
     sub_ca_count: usize,
 ) -> Result<(), Error> {
@@ -640,7 +640,7 @@ impl ExtendedKeyUsage {
 
 /// Iterator over [`KeyPurposeId`]s, for use in [`ExtendedKeyUsageValidator`].
 pub struct KeyPurposeIdIter<'a, 'r> {
-    input: &'r mut untrusted::Reader<'a>,
+    input: &'r mut crate::untrusted::Reader<'a>,
 }
 
 impl<'a, 'r> Iterator for KeyPurposeIdIter<'a, 'r> {
@@ -664,7 +664,7 @@ impl Drop for KeyPurposeIdIter<'_, '_> {
 /// An OID value indicating an Extended Key Usage (EKU) key purpose.
 #[derive(Clone, Copy)]
 pub struct KeyPurposeId<'a> {
-    oid_value: untrusted::Input<'a>,
+    oid_value: crate::untrusted::Input<'a>,
 }
 
 impl<'a> KeyPurposeId<'a> {
@@ -673,7 +673,7 @@ impl<'a> KeyPurposeId<'a> {
     /// `oid` is the OBJECT IDENTIFIER in bytes.
     pub const fn new(oid: &'a [u8]) -> Self {
         Self {
-            oid_value: untrusted::Input::from(oid),
+            oid_value: crate::untrusted::Input::from(oid),
         }
     }
 

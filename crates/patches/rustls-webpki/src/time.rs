@@ -22,7 +22,7 @@ use crate::der::{self, FromDer, Tag};
 use crate::error::{DerTypeId, Error};
 
 impl<'a> FromDer<'a> for UnixTime {
-    fn from_der(input: &mut untrusted::Reader<'a>) -> Result<Self, Error> {
+    fn from_der(input: &mut crate::untrusted::Reader<'a>) -> Result<Self, Error> {
         let is_utc_time = input.peek(Tag::UTCTime.into());
         let expected_tag = if is_utc_time {
             Tag::UTCTime
@@ -30,7 +30,7 @@ impl<'a> FromDer<'a> for UnixTime {
             Tag::GeneralizedTime
         };
 
-        fn read_digit(inner: &mut untrusted::Reader<'_>) -> Result<u64, Error> {
+        fn read_digit(inner: &mut crate::untrusted::Reader<'_>) -> Result<u64, Error> {
             const DIGIT: core::ops::RangeInclusive<u8> = b'0'..=b'9';
             let b = inner.read_byte().map_err(|_| Error::BadDerTime)?;
             if DIGIT.contains(&b) {
@@ -40,7 +40,7 @@ impl<'a> FromDer<'a> for UnixTime {
         }
 
         fn read_two_digits(
-            inner: &mut untrusted::Reader<'_>,
+            inner: &mut crate::untrusted::Reader<'_>,
             min: u64,
             max: u64,
         ) -> Result<u64, Error> {

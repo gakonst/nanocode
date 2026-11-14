@@ -226,6 +226,10 @@ async fn coproc(
 /// signals, ignoring INT and QUIT as a job of bash without job control does, and the
 /// parent's tasks are forgotten), or the shell itself when it could not fork.
 async fn fork_job(vp: &mut Vp) -> Option<i32> {
+    fork_copy(vp, true).await
+}
+
+async fn fork_copy(vp: &mut Vp, job: bool) -> Option<i32> {
     let prepared = vp.core.host.prepare_fork()?;
     let forked = {
         let _held = vp.core.sched.shared.hold();
@@ -242,6 +246,9 @@ async fn fork_job(vp: &mut Vp) -> Option<i32> {
             vp.top = true;
             vp.sigs = crate::state::Sigs::Shell;
             vp.bashpid = Some(vp.core.host.pid());
+            if !job {
+                return None;
+            }
             let mut traps = (*vp.traps).clone();
             for sig in [crate::host::SIGINT, crate::host::SIGQUIT] {
                 traps
@@ -281,6 +288,11 @@ async fn fork_job(vp: &mut Vp) -> Option<i32> {
                     crate::host::ExitStatus::Signaled(sig) => Some(sig),
                     crate::host::ExitStatus::Exited(_) => None,
                 });
+            }
+            if let crate::host::ExitStatus::Signaled(sig) = st
+                && vp.job.is_none()
+            {
+                vp.core.fg_signal.set(Some((sig, proc.pid())));
             }
             Some(st.code())
         }
@@ -414,7 +426,7 @@ async fn report_signal_death(vp: &mut Vp, code: &Rc<Code>, cmd: &Command, status
     }
     let text = String::from_utf8_lossy(&command_text(code, cmd)).into_owned();
     let desc = crate::signals::describe(sig);
-    if sig == crate::host::SIGTERM {
+    if sig == crate::host::SIGTERM || matches!(cmd.kind, CommandKind::Subshell(_)) {
         vp.error_raw(format!("{desc:<27}{text}\n").as_bytes()).await;
     } else {
         vp.error(&format!("{pid:>5} {desc:<27}{text}")).await;
@@ -797,7 +809,7 @@ fn after_command<'a>(
     // the per-level frame of `run_command_with` stays small (D1059).
     if check
         && !vp.in_subst
-        && matches!(cmd.kind, CommandKind::Simple(_))
+        && matches!(cmd.kind, CommandKind::Simple(_) | CommandKind::Subshell(_))
         && vp
             .core
             .fg_signal
@@ -908,7 +920,28 @@ async fn run_subshell(vp: &mut Vp, code: &Rc<Code>, list: ListId) -> R {
         return run_list(vp, code, list).await;
     }
     let sub = enter(vp).await?;
-    let join = spawn_sub(sub, code.clone(), Body::List(list));
+    let own_pid = vp.core.host.forks()
+        && sub.fds.all_files()
+        && code.ast.text(code.ast.list(list).span).contains("BASHPID");
+    let join = if own_pid {
+        let code = code.clone();
+        vp.core.sched.spawn(async move {
+            let mut sub = sub;
+            if let Some(status) = fork_copy(&mut sub, false).await {
+                return status;
+            }
+            let r = run_list(&mut sub, &code, list).await;
+            let last = sub.status;
+            let status = r.unwrap_or_else(|u| u.status(last));
+            let status = Box::pin(trap::exit_trap(&mut sub, status)).await;
+            if sub.core.forked.get().is_some() {
+                sub.core.forked.set(Some(Some(status)));
+            }
+            status
+        })
+    } else {
+        spawn_sub(sub, code.clone(), Body::List(list))
+    };
     // A bash subshell is a process: it runs on when the shell dies of a signal (D1903).
     let status = match crate::signals::or_signal(vp, crate::signals::Gives::Fatal, join).await {
         Ok(s) => s,

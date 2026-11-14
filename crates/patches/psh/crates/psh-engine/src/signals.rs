@@ -166,7 +166,9 @@ pub(crate) fn breaking_in(
             Some(_) => {
                 gives == Gives::Trapped || (gives == Gives::Interrupt && sig == crate::host::SIGINT)
             }
-            None => terminates(sig) && sig != crate::host::SIGQUIT,
+            None => {
+                terminates(sig) && (sig != crate::host::SIGQUIT || core.forked.get().is_some())
+            }
         }
     })
 }

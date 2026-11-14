@@ -317,6 +317,7 @@ const KILL_USAGE: &str = "kill: usage: kill [-s sigspec | -n signum | -sigspec] 
 
 /// `kill [-s sigspec | -n signum | -sigspec] pid | jobspec ...`, `kill -l [sigspec]`
 pub(super) async fn kill(vp: &mut Vp, args: &[Vec<u8>]) -> R {
+    let mut deliver = false;
     let mut sig: Option<Signal> = None;
     let mut i = 1;
     let invalid = |w: &str| format!("kill: {w}: invalid signal specification");
@@ -423,6 +424,7 @@ pub(super) async fn kill(vp: &mut Vp, args: &[Vec<u8>]) -> R {
         // its mask, as `kill $$` there; never the process an embedder runs psh in.
         if u32::try_from(pid).is_ok_and(|p| p == vp.host().pid()) {
             crate::state::Sigs::Shell.raise(&vp.core, sig);
+            deliver |= vp.top && vp.core.forked.get().is_some();
             continue;
         }
         if let Err(e) = vp.host().kill(pid, sig) {
@@ -443,6 +445,9 @@ pub(super) async fn kill(vp: &mut Vp, args: &[Vec<u8>]) -> R {
             vp.error(&format!("kill: ({pid}) - {text}")).await;
             status = 1;
         }
+    }
+    if deliver {
+        super::trap::take_signals(vp).await?;
     }
     Ok(status)
 }

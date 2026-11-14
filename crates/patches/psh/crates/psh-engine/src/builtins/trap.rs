@@ -320,7 +320,9 @@ pub(crate) async fn take_signals(vp: &mut Vp) -> Result<(), Unwind> {
             {
                 n.clone().stop_until_cont(sig).await;
             }
-            None if terminates(sig) && sig != crate::host::SIGQUIT => {
+            None if terminates(sig)
+                && (sig != crate::host::SIGQUIT || vp.core.forked.get().is_some()) =>
+            {
                 vp.sigs.died_of(&vp.core, sig);
                 return Err(Unwind::Exit(128 + sig));
             }

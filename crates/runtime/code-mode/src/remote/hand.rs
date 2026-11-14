@@ -679,6 +679,22 @@ fn reply_text(
             call.insert("metadata".into(), Value::Null);
         }
     }
+    if let Some(Value::Array(notifications)) = execution.get_mut("notifications") {
+        for notification in notifications.iter_mut() {
+            let update = Frame::Update {
+                id,
+                update: json!({ "notification": notification }),
+            };
+            if let Err(unsent) = outgoing.encode(&update)
+                && let Some(fields) = notification.as_object_mut()
+            {
+                fields.insert(
+                    "text".into(),
+                    Value::String(format!("{unsent}; the notification was not sent")),
+                );
+            }
+        }
+    }
     match outgoing.encode(&frame) {
         Ok(text) => return Ok(text),
         Err(next) => issue = next,

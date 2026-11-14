@@ -534,7 +534,7 @@ impl App {
         side.transcript.scroll_to_bottom();
         let id = side.id;
         let tx = self.tx.clone();
-        self.submissions.spawn(async move {
+        nanocode_platform::spawn_joined(&mut self.submissions, async move {
             let send = |update| drop(tx.send(AppEvent::Side { pane: id, update }));
             match agent
                 .prompt(PromptRequest::new(turn.prompt).request_id(turn.id))

@@ -43,7 +43,7 @@ pub fn run(config: Config) -> Result<()> {
     out.flush()?;
     let (cols, rows) = terminal::size()?;
     crate::tokio_runtime()?.block_on(async move {
-        let start = Start::Pending(tokio::spawn(Lite::start(config.clone())));
+        let start = Start::Pending(nanocode_platform::spawn_task(Lite::start(config.clone())));
         let mut tui = Tui {
             out,
             keys: keys(),
@@ -99,7 +99,7 @@ fn write_sequence(sequence: &str) -> std::io::Result<()> {
 
 fn keys() -> Keys {
     let (sender, receiver) = mpsc::unbounded_channel();
-    tokio::spawn(async move {
+    nanocode_platform::spawn_task(async move {
         let mut events = match EventStream::new() {
             Ok(events) => events,
             Err(error) => {
@@ -315,7 +315,7 @@ impl Tui {
             if !turn.cancelled {
                 turn.cancelled = true;
                 let control = turn.control.clone();
-                tokio::spawn(async move { control.cancel().await });
+                nanocode_platform::spawn_task(async move { control.cancel().await });
             }
             return Ok(Step::Idle);
         }

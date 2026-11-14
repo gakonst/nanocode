@@ -236,7 +236,7 @@ impl Provider {
             .await
             .ok()?;
         let app = app.to_owned();
-        let key = tokio::task::spawn_blocking(move || engine.lease_key(&app));
+        let key = nanocode_platform::spawn_blocking(move || engine.lease_key(&app));
         timeout(limits.step, key).await.ok()?.ok()?
     }
 
@@ -289,7 +289,8 @@ async fn native(desktop: &Shared, action: &str, input: &Value, limits: &Limits) 
         ));
     };
     let (owned_action, owned_input, max) = (action.to_owned(), input.clone(), limits.screenshot);
-    let step = tokio::task::spawn_blocking(move || engine.step(&owned_action, &owned_input, max));
+    let step =
+        nanocode_platform::spawn_blocking(move || engine.step(&owned_action, &owned_input, max));
     match timeout(limits.step, step).await {
         Ok(Ok(Ok(step))) => {
             let screenshot = step

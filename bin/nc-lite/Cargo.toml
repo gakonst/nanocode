@@ -21,6 +21,7 @@ nanocode-agent.workspace = true
 nanocode-agent-host.workspace = true
 nanocode-backend-codex.workspace = true
 nanocode-durability.workspace = true
+nanocode-platform.workspace = true
 nanocode-store-jsonl.workspace = true
 nanocode-tool-runtime.workspace = true
 nanocode-tui = { path = "../../crates/tui", version = "0.7.0" }

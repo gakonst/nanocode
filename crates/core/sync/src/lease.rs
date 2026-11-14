@@ -1,4 +1,5 @@
 use futures_util::future::BoxFuture;
+use nanocode_platform::spawn_task as spawn;
 use std::{
     future::Future,
     sync::{
@@ -8,7 +9,7 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
-use tokio::{spawn, time::sleep};
+use tokio::time::sleep;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Lease {

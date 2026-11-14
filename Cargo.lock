@@ -302,6 +302,7 @@ dependencies = [
  "nanocode-computer-repl",
  "nanocode-durability",
  "nanocode-home",
+ "nanocode-platform",
  "nanocode-process",
  "nanocode-process-contracts",
  "nanocode-store-jsonl",
@@ -572,6 +573,7 @@ dependencies = [
  "nanocode-jpeg",
  "nanocode-mcp",
  "nanocode-mcp-tools",
+ "nanocode-platform",
  "nanocode-sync",
  "nanocode-sys",
  "nanocode-tool-contracts",
@@ -583,6 +585,7 @@ dependencies = [
 name = "nanocode-computer-repl"
 version = "0.7.0"
 dependencies = [
+ "nanocode-platform",
  "nanocode-sync",
  "nanocode-sys",
  "nanocode-tool-contracts",
@@ -684,12 +687,12 @@ dependencies = [
  "nanocode-durability-core",
  "nanocode-gif",
  "nanocode-jpeg",
+ "nanocode-platform",
  "nanocode-png",
  "nanocode-sync",
  "nanocode-sys",
  "nanocode-types-core",
  "nanocode-webp",
- "tokio",
  "tracing",
 ]
 
@@ -1013,7 +1016,6 @@ dependencies = [
  "rustls",
  "rustls-graviola",
  "rustls-platform-verifier",
- "tokio",
  "tracing",
 ]
 
@@ -1194,6 +1196,7 @@ dependencies = [
  "nanocode-backend-codex",
  "nanocode-durability",
  "nanocode-home",
+ "nanocode-platform",
  "nanocode-psh",
  "nanocode-psh-embedded",
  "nanocode-store-jsonl",

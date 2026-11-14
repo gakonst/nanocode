@@ -23,7 +23,7 @@ nanocode-png.workspace = true
 nanocode-webp.workspace = true
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-tokio = { workspace = true, features = ["rt"]  }
+nanocode-platform.workspace = true
 
 [lints]
 workspace = true

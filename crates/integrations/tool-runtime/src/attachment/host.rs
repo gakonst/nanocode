@@ -1081,7 +1081,7 @@ async fn accept_runners(listener: TcpListener, runners: Runners) {
         tokio::select! {
             accepted = listener.accept() => match accepted {
                 Ok((stream, _)) => {
-                    connections.spawn(serve_socket(stream, Arc::clone(&runners)));
+                    nanocode_platform::spawn_joined(&mut connections, serve_socket(stream, Arc::clone(&runners)));
                 }
                 Err(error) => {
                     tracing::warn!(target: "nanocode_code_mode::attachment", %error, "runner host accept failed");

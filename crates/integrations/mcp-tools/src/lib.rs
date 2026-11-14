@@ -897,7 +897,7 @@ impl Mcp {
                 state.complete_server(&name, 0, result);
             };
             #[cfg(not(target_family = "wasm"))]
-            startup_tasks.spawn(startup);
+            nanocode_platform::spawn_joined(&mut startup_tasks, startup);
             #[cfg(target_family = "wasm")]
             nanocode_platform::spawn_local(startup);
         }

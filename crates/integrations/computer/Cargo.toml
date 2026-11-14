@@ -15,6 +15,7 @@ include = ["src/**", "Cargo.toml"]
 nanocode-computer-repl.workspace = true
 nanocode-mcp.workspace = true
 nanocode-mcp-tools.workspace = true
+nanocode-platform.workspace = true
 nanocode-sync.workspace = true
 nanocode-sys.workspace = true
 nanocode-tool-contracts.workspace = true

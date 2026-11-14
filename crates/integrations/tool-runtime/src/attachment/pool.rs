@@ -1452,7 +1452,7 @@ async fn accept(
             accepted = listener.accept() => match accepted {
                 Ok((socket, _)) => {
                     let pool = pool.clone(); let token = token.clone(); let endpoint = endpoint.clone(); let workspace = workspace.clone();
-                    connections.spawn(async move {
+                    nanocode_platform::spawn_joined(&mut connections, async move {
                         if let Err(error) = incoming(socket, pool.clone(), token, endpoint, timeout, mode, workspace).await {
                             tracing::warn!(target: "nanocode_code_mode::attachment", %error, "runner listener connection failed");
                             if let Some(pool) = pool.upgrade() { pool.emit(RunnerEvent::Failed { name: String::new(), error: error.to_string() }); }

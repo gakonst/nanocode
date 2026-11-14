@@ -2,8 +2,6 @@
 
 pub(crate) use _socket::module_def;
 
-#[cfg(feature = "ssl")]
-pub(super) use _socket::{PySocket, SockWaitKind, sock_wait, timeout_error_msg};
 
 #[pymodule]
 mod _socket {
@@ -2875,21 +2873,6 @@ mod _socket {
         Read,
         Write,
         Connect,
-    }
-
-    /// returns Ok(true) on timeout
-    #[cfg(feature = "ssl")]
-    pub(crate) fn sock_wait(
-        sock: &Socket,
-        wait_kind: SockWaitKind,
-        timeout: Option<Duration>,
-        vm: &VirtualMachine,
-    ) -> PyResult<bool> {
-        match sock_wait_deadline(sock, wait_kind, timeout.map(Deadline::new).as_ref(), vm) {
-            Ok(()) => Ok(false),
-            Err(IoOrPyException::Timeout) => Ok(true),
-            Err(e) => Err(e.into_pyexception(vm)),
-        }
     }
 
     /// returns Err(IoOrPyException::Timeout) on timeout

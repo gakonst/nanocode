@@ -31,11 +31,7 @@ pub mod fileutils;
 pub mod fs;
 #[cfg(any(unix, windows))]
 pub mod locale;
-#[cfg(feature = "native-certs")]
-pub mod native_certs;
 pub mod readline;
-#[cfg(feature = "ssl")]
-pub mod ssl;
 
 #[cfg(windows)]
 pub mod windows;

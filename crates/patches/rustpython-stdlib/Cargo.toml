@@ -15,7 +15,7 @@ rust-version = "1.95.0"
 name = "rustpython-stdlib"
 version = "0.6.0"
 authors = ["RustPython Team"]
-build = "build.rs"
+build = false
 autolib = false
 autobins = false
 autoexamples = false
@@ -28,17 +28,6 @@ repository = "https://github.com/RustPython/RustPython"
 resolver = "2"
 
 [features]
-__ssl-rustls = [
-    "ssl",
-    "rustpython-host_env/ssl",
-    "rustpython-host_env/rustls",
-    "rustpython-host_env/native-certs",
-    "rustls",
-    "rustls-pemfile",
-    "x509-parser",
-    "pem-rfc7468",
-    "webpki-roots",
-]
 compiler = ["rustpython-vm/compiler"]
 default = [
     "compiler",
@@ -49,24 +38,6 @@ doc = ["rustpython-vm/doc"]
 flame-it = ["flame"]
 host_env = ["rustpython-vm/host_env"]
 sqlite = ["dep:libsqlite3-sys"]
-ssl = ["rustpython-host_env/ssl"]
-ssl-openssl = [
-    "ssl",
-    "host_env",
-    "openssl",
-    "openssl-sys",
-    "foreign-types-shared",
-    "rustpython-host_env/native-certs",
-]
-ssl-openssl-vendor = [
-    "ssl-openssl",
-    "openssl/vendored",
-]
-ssl-rustls = [
-    "__ssl-rustls",
-    "host_env",
-    "rustls/custom-provider",
-]
 threading = [
     "rustpython-common/threading",
     "rustpython-vm/threading",
@@ -160,53 +131,10 @@ version = "1.47"
 version = "0.6.0"
 features = ["freeze-stdlib"]
 
-[target.'cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))'.dependencies.pem-rfc7468]
-version = "1.0"
-features = ["alloc"]
-optional = true
-
-[target.'cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))'.dependencies.rustls]
-version = "0.23.39"
-features = [
-    "std",
-    "tls12",
-]
-optional = true
-default-features = false
-
-[target.'cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))'.dependencies.rustls-pemfile]
-version = "2.2"
-optional = true
-
-[target.'cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))'.dependencies.webpki-roots]
-version = "1.0"
-optional = true
-
-[target.'cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))'.dependencies.x509-parser]
-version = "0.18"
-optional = true
-
 [target.'cfg(not(any(target_os = "android", target_arch = "wasm32")))'.dependencies.libsqlite3-sys]
 version = "0.38"
 features = ["bundled"]
 optional = true
-
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies.foreign-types-shared]
-version = "0.1"
-optional = true
-
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies.openssl]
-version = "0.10.80"
-optional = true
-
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies.openssl-sys]
-version = "0.9.110"
-optional = true
-
-[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies.rustls]
-version = "0.23.39"
-features = ["aws_lc_rs"]
-default-features = false
 
 [lints.clippy]
 alloc_instead_of_core = "warn"

@@ -360,6 +360,7 @@ impl Heap {
         self.regexp_shape = 0;
         self.rest_shape = 0;
         self.iter_result_shape = 0;
+        self.last_transition = [0; 4];
         self.atom_memo.fill([0; 2]);
         self.refresh_frozen();
         let t = next_threshold_cheap(after, self.base_end(), self.arena.limit(), cheap);

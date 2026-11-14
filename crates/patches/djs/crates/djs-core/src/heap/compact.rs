@@ -211,6 +211,7 @@ impl Heap {
         self.regexp_shape = 0;
         self.rest_shape = 0;
         self.iter_result_shape = 0;
+        self.last_transition = [0; 4];
         self.atom_memo.fill([0; 2]);
         for o in collections {
             self.collection_rehash(Obj(o));

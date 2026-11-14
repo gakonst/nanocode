@@ -208,6 +208,7 @@ pub struct Heap {
     pub(crate) regexp_shape: u32,
     pub(crate) rest_shape: u32,
     pub(crate) iter_result_shape: u32,
+    pub(crate) last_transition: [u32; 4],
     pub(crate) error_ctor_slot: u32,
     pub(crate) stack_limit_slot: u32,
     pub(crate) frame_scratch: alloc::vec::Vec<(crate::value::Obj, u32, bool)>,
@@ -365,6 +366,7 @@ impl Heap {
             regexp_shape: 0,
             rest_shape: 0,
             iter_result_shape: 0,
+            last_transition: [0; 4],
             error_ctor_slot: 0,
             stack_limit_slot: 0,
             frame_scratch: Default::default(),
@@ -512,6 +514,7 @@ impl Heap {
         if self.arena.len() == end && start <= end {
             self.arena.truncate(start);
             self.atom_memo.fill([0; 2]);
+            self.last_transition = [0; 4];
             // A full collection between the two runs made the record old: the old region
             // must not end past the arena.
             for f in [Roots::OLD_END, Roots::BASE_END] {

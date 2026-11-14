@@ -153,6 +153,9 @@ impl Heap {
         key: Atom,
         flags: u32,
     ) -> Result<Option<u32>, HeapError> {
+        if self.last_transition[..3] == [s, key.id(), flags] {
+            return Ok(Some(self.last_transition[3]));
+        }
         let count = self.shape_count(s);
         let tr = self.arena().get(s, Shape::TRANSITIONS).0;
         let len = if tr == 0 {
@@ -161,7 +164,10 @@ impl Heap {
             self.arena().get(tr, RefArray::LEN)
         };
         let lo = match self.transition_search(s, key, flags) {
-            Ok(c) => return Ok(Some(c)),
+            Ok(c) => {
+                self.last_transition = [s, key.id(), flags, c];
+                return Ok(Some(c));
+            }
             Err(lo) => lo,
         };
         let shapes = self.arena().get(0, Roots::SHAPES);
@@ -224,6 +230,7 @@ impl Heap {
         a.set(new_tr, RefArray::LEN, len + 1);
         a.set(s, Shape::TRANSITIONS, Ref(new_tr));
         a.set(0, Roots::SHAPES, shapes + 1);
+        self.last_transition = [s, key.id(), flags, c];
         Ok(Some(c))
     }
 

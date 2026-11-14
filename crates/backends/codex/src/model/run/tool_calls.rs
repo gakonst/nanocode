@@ -615,14 +615,9 @@ async fn execute_code_call(
     context: ToolContext<'_>,
     observer: &mut dyn CodeModeObserver,
     tool_span: &nanocode_trace::Span,
-    recover: bool,
+    recovered: Option<Option<CodeModeExecution>>,
 ) -> Result<Option<CodeModeExecution>> {
-    if recover {
-        let recovered = tools
-            .recover_code(context)
-            .instrument(tool_span.clone())
-            .await
-            .unwrap_or(None);
+    if let Some(recovered) = recovered {
         for nested in recovered
             .iter()
             .flat_map(|execution| &execution.nested_calls)
@@ -1269,7 +1264,29 @@ impl ModelRun {
                 metadata: execution.metadata,
             });
         }
-        let owned_context = if recover {
+        let context = ToolContext::new(
+            model.as_str(),
+            session_id,
+            &call.call_id,
+            &[],
+            DEFAULT_TOOL_OUTPUT_TOKENS,
+        )
+        .with_instruction_revision(instruction_revision)
+        .with_host_context(host_context)
+        .with_turn_id(Some(turn_id));
+        let recovered = if recover {
+            match tools
+                .recover_code(context)
+                .instrument(tool_span.clone())
+                .await
+            {
+                Err(error) if error.is_unsent() => None,
+                found => Some(found.unwrap_or(None)),
+            }
+        } else {
+            None
+        };
+        let owned_context = if recovered.is_some() {
             None
         } else {
             owned_code_context(
@@ -1282,16 +1299,6 @@ impl ModelRun {
                 instruction_revision,
             )?
         };
-        let context = ToolContext::new(
-            model.as_str(),
-            session_id,
-            &call.call_id,
-            &[],
-            DEFAULT_TOOL_OUTPUT_TOKENS,
-        )
-        .with_instruction_revision(instruction_revision)
-        .with_host_context(host_context)
-        .with_turn_id(Some(turn_id));
         let mut observer = NestedToolEventObserver {
             events,
             tool_call_indices,
@@ -1307,7 +1314,7 @@ impl ModelRun {
             context,
             &mut observer,
             tool_span,
-            recover,
+            recovered,
         )
         .await?
         else {

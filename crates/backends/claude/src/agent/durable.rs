@@ -878,9 +878,14 @@ impl State {
                 self.recover_tool(id, name, input, handler, events, (cursor, cancel))
                     .await?
             }
-            _ => None,
+            _ => Recovered::Unknown,
         };
-        let interrupted = interrupted && recovered.is_none();
+        let undispatched = matches!(recovered, Recovered::NotDispatched);
+        let recovered = match recovered {
+            Recovered::Reply(block) => Some(block),
+            Recovered::NotDispatched | Recovered::Unknown => None,
+        };
+        let interrupted = interrupted && recovered.is_none() && !undispatched;
         let checked = handler
             .filter(|_| crate::upstream::tool_definition(name).is_some())
             .and_then(|_| {
@@ -931,7 +936,11 @@ impl State {
                 )),
                 true,
             )
-        } else if self.code_only && cursor.recovered_code_index == Some(index) && name == "exec" {
+        } else if !undispatched
+            && self.code_only
+            && cursor.recovered_code_index == Some(index)
+            && name == "exec"
+        {
             ContentBlock::tool_result_content(id, ToolResultContent::Text(
                 "Code Mode admission was lost during recovery; prior effects may have outcome unknown. No code was executed in this attempt. Reconcile those effects before using a fresh cell from a new model request.".into()
             ), true)

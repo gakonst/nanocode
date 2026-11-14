@@ -226,6 +226,15 @@ type CodeQuiet = Arc<dyn Fn() -> bool + Send + Sync>;
 type CodeTurnCleanup = Arc<dyn Fn(ClaudeToolProgress) -> BackendFuture<()> + Send + Sync>;
 type NestedToolLookup = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 type ToolRecovery = Arc<dyn Fn(&str, ClaudeToolInvocation) -> ToolResultFuture + Send + Sync>;
+
+pub(crate) const NOT_DISPATCHED: &str =
+    "the hand never received this operation; it was not dispatched";
+
+pub(crate) enum Recovered {
+    NotDispatched,
+    Reply(ContentBlock),
+    Unknown,
+}
 pub(crate) type Steer = Arc<dyn Fn(String) -> BackendFuture<bool> + Send + Sync>;
 type AgentBound = Arc<dyn Fn(&Agent, &Steer) + Send + Sync>;
 
@@ -6874,15 +6883,15 @@ impl State {
         handler: &Handler,
         events: &AgentEventPublisher,
         control: (&Cursor, &Cancellation),
-    ) -> Result<Option<ContentBlock>> {
+    ) -> Result<Recovered> {
         let (cursor, cancel) = control;
         let Some(recovery) = &self.recovery else {
-            return Ok(None);
+            return Ok(Recovered::Unknown);
         };
         let invocation = self.invocation(id, events, cursor);
         let reply = nanocode_sync::select! {
             reply = recovery(name, invocation) => reply,
-            () = cancel.cancelled() => return Ok(None),
+            () = cancel.cancelled() => return Ok(Recovered::Unknown),
         };
         match reply {
             Ok(reply) => self
@@ -6895,8 +6904,9 @@ impl State {
                     (cursor, cancel, Some(reply)),
                 )
                 .await
-                .map(Some),
-            Err(_) => Ok(None),
+                .map(Recovered::Reply),
+            Err(message) if message == NOT_DISPATCHED => Ok(Recovered::NotDispatched),
+            Err(_) => Ok(Recovered::Unknown),
         }
     }
 

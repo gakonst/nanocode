@@ -327,6 +327,7 @@ impl Call {
             return match runtime.recover_code(context).await {
                 Ok(Some(execution)) => Ok(code_reply(execution, &invocation.call_id)),
                 Ok(None) => Err("not recovered".into()),
+                Err(error) if error.is_unsent() => Err(crate::agent::NOT_DISPATCHED.into()),
                 Err(error) => Err(error.to_string()),
             };
         }

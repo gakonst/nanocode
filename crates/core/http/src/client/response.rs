@@ -3,13 +3,14 @@ use std::{collections::VecDeque, fmt, pin::Pin, sync::Arc, time::Duration};
 use bytes::Bytes;
 use futures_util::{FutureExt, Stream, StreamExt, stream::BoxStream};
 use http::{HeaderMap, StatusCode, Version, header::CONTENT_LENGTH};
+use nanocode_platform::{Instant, now};
 use nanocode_url::Url;
 use serde::de::DeserializeOwned;
-use tokio::time::{Instant, timeout_at};
 
 use super::{
     Error, Result,
     pool::{Key, Pool},
+    timeout_at,
 };
 use crate::wire::{BodyReader, WireError};
 
@@ -36,7 +37,7 @@ impl Incoming {
     }
 
     fn read_deadline(&self) -> Option<Instant> {
-        let read = self.read_timeout.map(|timeout| Instant::now() + timeout);
+        let read = self.read_timeout.map(|timeout| now() + timeout);
         match (self.deadline, read) {
             (Some(deadline), Some(read)) => Some(deadline.min(read)),
             (deadline, read) => deadline.or(read),

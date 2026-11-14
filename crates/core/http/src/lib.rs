@@ -19,8 +19,8 @@ pub mod wire;
 
 #[cfg(not(target_family = "wasm"))]
 pub use client::{
-    Body, Client, ClientBuilder, Error, IntoUrl, Pending, Request, RequestBuilder, Response,
-    ResponseStream, Result, blocking, redirect,
+    Body, Client, ClientBuilder, Connect, Connecting, Error, IntoUrl, Pending, Request,
+    RequestBuilder, Response, ResponseStream, Result, blocking, redirect,
 };
 #[cfg(not(target_family = "wasm"))]
 pub use coding::*;

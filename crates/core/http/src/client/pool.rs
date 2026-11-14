@@ -7,8 +7,9 @@ use std::{
 };
 
 use futures_util::task::noop_waker_ref;
+use nanocode_platform::{Instant, now};
 use nanocode_sync::{Atom, Slot};
-use tokio::{io::ReadBuf, time::Instant};
+use tokio::io::ReadBuf;
 
 use crate::wire::Connection;
 
@@ -48,7 +49,7 @@ impl Pool {
 
     pub(crate) fn checkout(&self, key: &Key) -> Option<Connection> {
         loop {
-            let now = Instant::now();
+            let now = now();
             let found = self.idle.update(|idle| {
                 let list = idle.get_mut(key)?;
                 list.retain(|entry| self.fresh(entry, now));
@@ -73,7 +74,7 @@ impl Pool {
         }
         let entry = Idle {
             connection: Arc::new(Slot::new(Some(connection))),
-            since: Instant::now(),
+            since: now(),
         };
         self.idle.update(|idle| {
             let list = idle.entry(key.clone()).or_default();

@@ -17,8 +17,8 @@ use http::{
         REFERER, TRANSFER_ENCODING, USER_AGENT,
     },
 };
+use nanocode_platform::{Instant, now, timeout};
 use nanocode_url::Url;
-use tokio::time::{Instant, timeout, timeout_at};
 
 pub use body::{Body, BoxError, ChunkStream};
 pub use error::{Error, Result, TimedOut};
@@ -34,6 +34,19 @@ use crate::{
 };
 
 pub type Pending = Pin<Box<dyn Future<Output = Result<Response>> + Send>>;
+
+pub type Connecting = Pin<Box<dyn Future<Output = std::io::Result<wire::Io>> + Send>>;
+
+pub trait Connect: Send + Sync + 'static {
+    fn connect(&self, host: &str, port: u16, secure: bool) -> Connecting;
+}
+
+async fn timeout_at<F: Future>(
+    deadline: Instant,
+    future: F,
+) -> std::result::Result<F::Output, nanocode_platform::Elapsed> {
+    timeout(deadline.saturating_duration_since(now()), future).await
+}
 
 const IDLE_TIMEOUT: Duration = Duration::from_secs(90);
 const ATTEMPTS_MAX: usize = 2;
@@ -64,6 +77,7 @@ struct Inner {
     proxies: bool,
     https_only: bool,
     resolved: Vec<(String, Vec<SocketAddr>)>,
+    connector: Option<Arc<dyn Connect>>,
     pool: Arc<Pool>,
 }
 
@@ -80,6 +94,7 @@ pub struct ClientBuilder {
     resolved: Vec<(String, Vec<SocketAddr>)>,
     idle_per_host_max: usize,
     idle_timeout: Option<Duration>,
+    connector: Option<Arc<dyn Connect>>,
     error: Option<Error>,
 }
 
@@ -105,6 +120,7 @@ impl ClientBuilder {
             resolved: Vec::new(),
             idle_per_host_max: usize::MAX,
             idle_timeout: Some(IDLE_TIMEOUT),
+            connector: None,
             error: None,
         }
     }
@@ -124,6 +140,7 @@ impl ClientBuilder {
                 proxies: self.proxies,
                 https_only: self.https_only,
                 resolved: self.resolved,
+                connector: self.connector,
                 pool: Arc::new(Pool::new(self.idle_per_host_max, self.idle_timeout)),
             }),
         })
@@ -192,6 +209,11 @@ impl ClientBuilder {
 
     pub fn pool_idle_timeout<D: Into<Option<Duration>>>(mut self, timeout: D) -> Self {
         self.idle_timeout = timeout.into();
+        self
+    }
+
+    pub fn connector(mut self, connector: impl Connect) -> Self {
+        self.connector = Some(Arc::new(connector));
         self
     }
 
@@ -330,7 +352,7 @@ impl Client {
         }
         let deadline = timeout
             .or(self.inner.timeout)
-            .map(|timeout| Instant::now() + timeout);
+            .map(|timeout| now() + timeout);
         let started = url.clone();
         let outgoing = Outgoing {
             started: started.clone(),
@@ -544,15 +566,19 @@ impl Client {
             .headers
             .get(USER_AGENT)
             .and_then(|value| value.to_str().ok());
-        let connecting = connect::stream(
-            &key.host,
-            key.port,
-            key.secure,
-            proxy,
-            &resolved,
-            user_agent,
-            Alpn::Http1,
-        );
+        let connecting: Pin<Box<dyn Future<Output = std::io::Result<wire::Io>> + Send + '_>> =
+            match &self.inner.connector {
+                Some(connector) => connector.connect(&key.host, key.port, key.secure),
+                None => Box::pin(connect::stream(
+                    &key.host,
+                    key.port,
+                    key.secure,
+                    proxy,
+                    &resolved,
+                    user_agent,
+                    Alpn::Http1,
+                )),
+            };
         let stream = match self.inner.connect_timeout {
             Some(limit) => timeout(limit, connecting)
                 .await
@@ -572,7 +598,7 @@ impl Client {
             let read = connection.response_head();
             let head = match self.inner.read_timeout {
                 Some(limit) => {
-                    let limit = Instant::now() + limit;
+                    let limit = now() + limit;
                     let limit = deadline.map_or(limit, |deadline| deadline.min(limit));
                     timeout_at(limit, read).await.map_err(|_| {
                         WireError::Io(std::io::Error::new(std::io::ErrorKind::TimedOut, TimedOut))

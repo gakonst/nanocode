@@ -262,18 +262,17 @@ impl VerifyData {
             return Err(Error::Http(Box::new(response)));
         }
         let headers = response.headers();
-        let equals = |name: &str, expected: &str| {
-            headers
-                .get(name)
-                .and_then(|value| value.to_str().ok())
-                .is_some_and(|value| value.eq_ignore_ascii_case(expected))
-        };
-        if !equals("Upgrade", "websocket") {
+        let text = |name: &str| headers.get(name).and_then(|value| value.to_str().ok());
+        if !text("Upgrade").is_some_and(|value| value.eq_ignore_ascii_case("websocket")) {
             return Err(Error::Protocol(
                 ProtocolError::MissingUpgradeWebSocketHeader,
             ));
         }
-        if !equals("Connection", "Upgrade") {
+        if !text("Connection").is_some_and(|value| {
+            value
+                .split(',')
+                .any(|token| token.trim().eq_ignore_ascii_case("Upgrade"))
+        }) {
             return Err(Error::Protocol(
                 ProtocolError::MissingConnectionUpgradeHeader,
             ));

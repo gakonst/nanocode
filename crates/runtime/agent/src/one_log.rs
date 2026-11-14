@@ -55,6 +55,7 @@ pub struct OneLog {
     dispatched: Atom<BTreeMap<(String, u64), BTreeSet<u64>>>,
     durable_settles: Atom<bool>,
     effects: Atom<Effects>,
+    live: Atom<BTreeSet<(String, u64)>>,
     log: nanocode_turnlog::TurnLog,
     owners: Atom<BTreeMap<String, OwnerToken>>,
     recovering: Atom<BTreeSet<String>>,
@@ -262,6 +263,7 @@ impl OneLog {
             dispatched: Atom::default(),
             durable_settles: Atom::new(false),
             effects: Atom::new(Effects::builtin().merged(policy.effects)),
+            live: Atom::default(),
             log,
             owners: Atom::default(),
             recovering: Atom::new(recovering),
@@ -1215,6 +1217,11 @@ impl CellJournalSink for OneLogJournals {
                 })
                 .map_err(|error| error.to_string())?;
             let cell = (update.session_id.clone(), update.cell_id);
+            if update.finished {
+                log.live.update(|live| live.remove(&cell));
+            } else if fresh {
+                log.live.update(|live| live.insert(cell.clone()));
+            }
             let seq = lease.fold().seq();
             let timed = update
                 .entries
@@ -1293,12 +1300,20 @@ impl CellJournalSink for OneLogJournals {
             .update(|owed| owed.remove(&(session.clone(), cell_id)));
         log.dispatched
             .update(|dispatched| dispatched.remove(&(session.clone(), cell_id)));
+        let unfinished = log
+            .live
+            .update(|live| live.remove(&(session.clone(), cell_id)));
         Box::pin(async move {
-            if let Err(error) = log.log.lease().await.push(Record::Forget {
+            let mut lease = log.log.lease().await;
+            if let Err(error) = lease.push(Record::Forget {
                 cell: cell_id,
                 session,
             }) {
                 nanocode_trace::warn!(%error, "turn log could not forget a cell journal");
+                return;
+            }
+            if unfinished && let Err(error) = lease.commit(Point::Call).await {
+                nanocode_trace::warn!(%error, "turn log could not commit a forgotten cell journal");
             }
         })
     }

@@ -8,7 +8,7 @@ use super::pattern::Binding;
 use super::scan::Follow;
 use super::smap::SiteKind;
 use super::smap_syntax::{NodeKind, Role};
-use crate::bytecode::{CodeBuf, Label, Phase1};
+use crate::bytecode::{CodeBuf, Label, Op, Phase1};
 use crate::heap::Atom;
 use crate::lexer::{Kw, TokenKind};
 
@@ -818,6 +818,22 @@ impl Parser<'_, '_> {
         }
     }
 
+    fn pushed_number(&mut self, pc: u32) -> Option<f64> {
+        let insn = self.code().last_insn().filter(|i| i.pc == pc)?;
+        match insn.op {
+            Op::PushI8 | Op::PushI32 => Some(f64::from(insn.imm_i32(0))),
+            Op::PushConst => {
+                let i = insn.imm(0) as usize;
+                let n = self.f.consts.get(i)?.as_number()?;
+                if i + 1 == self.f.consts.len() {
+                    self.f.consts.pop();
+                }
+                Some(n)
+            }
+            _ => None,
+        }
+    }
+
     fn parse_unary_inner(&mut self) -> PResult<(Expr, bool)> {
         let tok = self.tok;
         // Set by `delete` for its operand: an optional chain ends in a delete.
@@ -898,8 +914,15 @@ impl Parser<'_, '_> {
             TokenKind::Plus | TokenKind::Minus | TokenKind::Tilde | TokenKind::Bang => {
                 self.next()?;
                 let operand = self.tok.start;
+                let literal = (tok.kind == TokenKind::Minus && self.tok.kind == TokenKind::Number)
+                    .then(|| self.code().pos());
                 self.parse_unary()?;
                 self.syn_operand(false, operand);
+                if let Some(n) = literal.and_then(|pc| self.pushed_number(pc)) {
+                    self.truncate_last();
+                    self.emit_number(-n);
+                    return Ok((Expr::Value, true));
+                }
                 self.mark(tok.start);
                 match tok.kind {
                     TokenKind::Plus => self.code().plus(),

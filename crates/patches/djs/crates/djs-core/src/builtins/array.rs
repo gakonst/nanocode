@@ -198,14 +198,13 @@ fn comparator_of(heap: &Heap, t: u32) -> Option<(Comparator, Option<Atom>, bool)
         let swapped = pair(receiver, operand(step + 1)?)?;
         return Some((Comparator::Locale(method), key, swapped));
     }
-    let b = 2 * step + 5;
-    if n != 4 * step + 11 {
+    let b = 2 * step + 4;
+    if n != 4 * step + 10 || ins.get(2 * step + 2).copied().flatten()?.imm_i32(0) != -1 {
         return None;
     }
     let shape = [
-        (2 * step + 2, Op::Push1),
-        (2 * step + 3, Op::Neg),
-        (2 * step + 4, Op::Return),
+        (2 * step + 2, Op::PushI8),
+        (2 * step + 3, Op::Return),
         (b + 2 * step + 2, Op::Push1),
         (b + 2 * step + 3, Op::Return),
         (b + 2 * step + 4, Op::Push0),

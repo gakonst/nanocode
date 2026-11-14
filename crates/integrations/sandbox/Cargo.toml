@@ -21,14 +21,15 @@ http.workspace = true
 nanocode-http.workspace = true
 nanocode-sync.workspace = true
 nanocode-x509.workspace = true
-ring.workspace = true
-rustls = { workspace = true, features = ["ring", "std", "tls12"] }
+graviola.workspace = true
+rustls = { workspace = true, features = ["std", "tls12"] }
+rustls-graviola.workspace = true
 rustls-platform-verifier = "0.7.0"
 libc.workspace = true
 nanocode-sys.workspace = true
 serde.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "net", "process", "rt", "sync", "time"] }
-tokio-rustls = { workspace = true, features = ["ring", "tls12"] }
+tokio-rustls = { workspace = true, features = ["tls12"] }
 tracing.workspace = true
 nanocode-platform.workspace = true
 

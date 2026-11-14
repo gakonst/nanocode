@@ -151,8 +151,9 @@ nanocode-code-mode-engine = { version = "0.7.0", path = "crates/runtime/code-mod
 nanocode-tools-macros = { version = "0.7.0", path = "crates/core/tools-macros" }
 proc-macro2 = "1.0.106"
 quote = "1.0.46"
-ring = { version = "0.17.14", default-features = false, features = ["alloc"] }
+graviola = "0.4.1"
 rustls = { version = "0.23.45", default-features = false, features = ["std"] }
+rustls-graviola = "0.4.0"
 djs-embed = { path = "crates/patches/djs/crates/djs-embed" }
 psh-engine = { path = "crates/patches/psh/crates/psh-engine" }
 psh-utils = { path = "crates/patches/psh/crates/psh-utils" }
@@ -181,6 +182,7 @@ rustpython-vm = { version = "=0.6.0", default-features = false, features = ["com
 
 [patch.crates-io]
 rustls-platform-verifier = { path = "crates/patches/rustls-platform-verifier" }
+rustls-webpki = { path = "crates/patches/rustls-webpki" }
 pymath = { path = "crates/patches/pymath" }
 rustpython-codegen = { path = "crates/patches/rustpython-codegen" }
 rustpython-common = { path = "crates/patches/rustpython-common" }

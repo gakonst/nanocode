@@ -1,9 +1,10 @@
 use std::net::IpAddr;
 use std::str::FromStr;
 
+use graviola::hashing::Sha256;
+use graviola::key_agreement::p256::StaticPrivateKey;
+use graviola::signing::ecdsa::{P256, SigningKey};
 use nanocode_tempo::sha256;
-use ring::rand::SystemRandom;
-use ring::signature::{ECDSA_P256_SHA256_ASN1_SIGNING, EcdsaKeyPair, KeyPair as _};
 
 use std::fmt;
 
@@ -34,6 +35,9 @@ const POSITIVE_SIGN_LIMIT: u8 = 0x80;
 const SERIAL_BYTES: usize = 20;
 const SERIAL_SIGN_MASK: u8 = 0x7f;
 const KEY_IDENTIFIER_BYTES: usize = 20;
+const P256_PKCS8_BYTES: usize = 138;
+const P256_SCALAR_BYTES: usize = 32;
+const UNCOMPRESSED_POINT_PREFIX_BYTES: usize = 1;
 const NO_UNUSED_BITS: u8 = 0;
 
 const CERTIFICATE_VERSION_3: u8 = 2;
@@ -196,23 +200,29 @@ impl From<nanocode_tempo::Error> for CertificateFault {
     }
 }
 
+impl From<graviola::Error> for CertificateFault {
+    fn from(error: graviola::Error) -> Self {
+        Self(error.to_string())
+    }
+}
+
 pub(crate) struct KeyPair {
-    key: EcdsaKeyPair,
+    key: SigningKey<P256>,
     pkcs8: Vec<u8>,
-    random: SystemRandom,
+    public_key: [u8; UNCOMPRESSED_POINT_PREFIX_BYTES + 2 * P256_SCALAR_BYTES],
 }
 
 impl KeyPair {
     pub(crate) fn generate() -> Result<Self, CertificateFault> {
-        let random = SystemRandom::new();
-        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &random)
-            .map_err(|error| CertificateFault(error.to_string()))?;
-        let key = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, pkcs8.as_ref(), &random)
-            .map_err(|error| CertificateFault(error.to_string()))?;
+        let key = SigningKey::<P256> {
+            private_key: StaticPrivateKey::new_random()?,
+        };
+        let mut pkcs8 = [0; P256_PKCS8_BYTES];
+        let pkcs8 = key.to_pkcs8_der(&mut pkcs8)?.to_vec();
         Ok(Self {
+            public_key: key.private_key.public_key_uncompressed(),
             key,
-            pkcs8: pkcs8.as_ref().to_vec(),
-            random,
+            pkcs8,
         })
     }
 
@@ -225,21 +235,25 @@ impl KeyPair {
     }
 
     fn subject_public_key_info(&self) -> Vec<u8> {
-        sequence(&[&Self::algorithm(), &bit_string(NO_UNUSED_BITS, self.key.public_key().as_ref())])
+        sequence(&[
+            &Self::algorithm(),
+            &bit_string(NO_UNUSED_BITS, &self.public_key),
+        ])
     }
 
     fn serial(&self) -> Vec<u8> {
-        let mut serial = sha256(self.key.public_key().as_ref())[..SERIAL_BYTES].to_vec();
+        let mut serial = sha256(self.public_key)[..SERIAL_BYTES].to_vec();
         serial[0] &= SERIAL_SIGN_MASK;
         unsigned_integer(&serial)
     }
 
     fn sign(&self, message: &[u8]) -> Result<Vec<u8>, CertificateFault> {
-        let signature = self
+        let mut fixed = [0; 2 * P256_SCALAR_BYTES];
+        let (r, s) = self
             .key
-            .sign(&self.random, message)
-            .map_err(|error| CertificateFault(error.to_string()))?;
-        Ok(signature.as_ref().to_vec())
+            .sign::<Sha256>(&[message], &mut fixed)?
+            .split_at(P256_SCALAR_BYTES);
+        Ok(sequence(&[&unsigned_integer(r), &unsigned_integer(s)]))
     }
 }
 

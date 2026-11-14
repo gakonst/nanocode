@@ -70,7 +70,7 @@ impl Error for BadCa {
 }
 
 fn provider() -> Arc<CryptoProvider> {
-    Arc::new(rustls::crypto::ring::default_provider())
+    Arc::new(rustls_graviola::default_provider())
 }
 
 fn other(error: impl Into<Box<dyn Error + Send + Sync>>) -> io::Error {

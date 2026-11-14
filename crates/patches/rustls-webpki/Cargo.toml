@@ -1,0 +1,30 @@
+[package]
+edition = "2021"
+rust-version = "1.71"
+name = "rustls-webpki"
+version = "0.103.16"
+description = "Web PKI X.509 Certificate Verification."
+license = "ISC"
+repository = "https://github.com/rustls/webpki"
+publish = false
+
+[features]
+alloc = ["pki-types/alloc"]
+default = ["std"]
+std = ["alloc", "pki-types/std"]
+
+[lib]
+name = "webpki"
+path = "src/lib.rs"
+test = false
+doctest = false
+bench = false
+
+[dependencies]
+pki-types = { package = "rustls-pki-types", version = "1.12", default-features = false }
+untrusted = "0.9"
+
+[lints.rust.unexpected_cfgs]
+level = "warn"
+priority = 0
+check-cfg = ["cfg(webpki_docsrs)"]

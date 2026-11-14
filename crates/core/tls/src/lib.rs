@@ -177,10 +177,6 @@ pub fn peer_discarded_record(error: &(dyn std::error::Error + 'static)) -> bool 
 
 pub fn install_default_rustls_crypto_provider() {
     if rustls::crypto::CryptoProvider::get_default().is_none() {
-        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-        let provider = rustls_graviola::default_provider();
-        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
-        let provider = rustls::crypto::ring::default_provider();
-        drop(provider.install_default());
+        drop(rustls_graviola::default_provider().install_default());
     }
 }

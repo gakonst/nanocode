@@ -1,9 +1,13 @@
-use nanocode_x509::{self as x509, GeneralName, Moment, key_usage, oid};
-use ring::{
-    digest,
-    rand::SystemRandom,
-    signature::{self, EcdsaKeyPair, Ed25519KeyPair, KeyPair as _, RsaKeyPair},
+use graviola::{
+    hashing::{Hash as _, Sha256, Sha384},
+    key_agreement::p256::StaticPrivateKey,
+    signing::{
+        ecdsa::{P256, P384, SigningKey},
+        eddsa::Ed25519SigningKey,
+        rsa,
+    },
 };
+use nanocode_x509::{self as x509, GeneralName, Moment, key_usage, oid};
 use std::{io, net::IpAddr, str::FromStr, time::SystemTime};
 
 const KEY_IDENTIFIER_BYTES: usize = 20;
@@ -14,6 +18,8 @@ const CERTIFICATE_LABEL: &str = "CERTIFICATE";
 const NOT_BEFORE_YEAR: i64 = 1975;
 const NOT_AFTER_YEAR: i64 = 4096;
 const AUTHORITY_PATH_LENGTH: u8 = 0;
+const P256_PKCS8_BYTES: usize = 138;
+const UNCOMPRESSED_POINT_PREFIX_BYTES: usize = 1;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum DnType {
@@ -68,14 +74,16 @@ impl ExtendedKeyUsagePurpose {
 }
 
 enum Signing {
-    Ecdsa(EcdsaKeyPair),
-    Ed25519(Ed25519KeyPair),
-    Rsa(RsaKeyPair),
+    P256(SigningKey<P256>),
+    P384(SigningKey<P384>),
+    Ed25519(Ed25519SigningKey),
+    Rsa(rsa::SigningKey),
 }
 
 pub struct KeyPair {
     signing: Signing,
     pkcs8: Vec<u8>,
+    public_key: Vec<u8>,
     public_key_info: Vec<u8>,
     signature_algorithm: Vec<u8>,
 }
@@ -84,12 +92,19 @@ fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
 
+fn ec_algorithm(curve: &[u64]) -> Vec<u8> {
+    x509::algorithm(oid::EC_PUBLIC_KEY, Some(&x509::object_identifier(curve)))
+}
+
 impl KeyPair {
     pub fn generate() -> io::Result<Self> {
-        let algorithm = &signature::ECDSA_P256_SHA256_ASN1_SIGNING;
-        let document = EcdsaKeyPair::generate_pkcs8(algorithm, &SystemRandom::new())
-            .map_err(|_| io::Error::other("generating a P-256 key failed"))?;
-        Self::from_pkcs8(document.as_ref())
+        let failed = |_| io::Error::other("generating a P-256 key failed");
+        let key = SigningKey::<P256> {
+            private_key: StaticPrivateKey::new_random().map_err(failed)?,
+        };
+        let mut document = [0; P256_PKCS8_BYTES];
+        let pkcs8 = key.to_pkcs8_der(&mut document).map_err(failed)?.to_vec();
+        Ok(Self::p256(key, pkcs8))
     }
 
     pub fn from_pem(pem: &str) -> io::Result<Self> {
@@ -101,49 +116,82 @@ impl KeyPair {
     }
 
     pub fn from_pkcs8(pkcs8: &[u8]) -> io::Result<Self> {
-        let random = SystemRandom::new();
-        let ec = |curve: &[u64]| {
-            x509::algorithm(oid::EC_PUBLIC_KEY, Some(&x509::object_identifier(curve)))
-        };
-        let (signing, key_algorithm, signature_algorithm) =
-            if let Ok(key) = Ed25519KeyPair::from_pkcs8_maybe_unchecked(pkcs8) {
-                let algorithm = x509::algorithm(oid::ED25519, None);
-                (Signing::Ed25519(key), algorithm.clone(), algorithm)
-            } else if let Ok(key) =
-                EcdsaKeyPair::from_pkcs8(&signature::ECDSA_P256_SHA256_ASN1_SIGNING, pkcs8, &random)
-            {
-                let signature = x509::algorithm(oid::ECDSA_WITH_SHA256, None);
-                (Signing::Ecdsa(key), ec(oid::PRIME256V1), signature)
-            } else if let Ok(key) =
-                EcdsaKeyPair::from_pkcs8(&signature::ECDSA_P384_SHA384_ASN1_SIGNING, pkcs8, &random)
-            {
-                let signature = x509::algorithm(oid::ECDSA_WITH_SHA384, None);
-                (Signing::Ecdsa(key), ec(oid::SECP384R1), signature)
-            } else if let Ok(key) = RsaKeyPair::from_pkcs8(pkcs8) {
-                let null = x509::null();
-                let key_algorithm = x509::algorithm(oid::RSA_ENCRYPTION, Some(&null));
-                let signature = x509::algorithm(oid::SHA256_WITH_RSA_ENCRYPTION, Some(&null));
-                (Signing::Rsa(key), key_algorithm, signature)
-            } else {
-                return Err(invalid(
-                    "the key is not an Ed25519, ECDSA P-256, ECDSA P-384 or RSA key",
-                ));
-            };
-        let mut key = Self {
-            signing,
-            pkcs8: pkcs8.to_vec(),
-            public_key_info: Vec::new(),
-            signature_algorithm,
-        };
-        key.public_key_info = x509::subject_public_key_info(&key_algorithm, key.public_key());
-        Ok(key)
+        if let Ok(key) = Ed25519SigningKey::from_pkcs8_der(pkcs8) {
+            let algorithm = x509::algorithm(oid::ED25519, None);
+            let public_key = key.public_key().as_bytes().to_vec();
+            let signing = Signing::Ed25519(key);
+            Ok(Self::assemble(
+                signing,
+                pkcs8.to_vec(),
+                public_key,
+                &algorithm,
+                algorithm.clone(),
+            ))
+        } else if let Ok(key) = SigningKey::<P256>::from_pkcs8_der(pkcs8) {
+            Ok(Self::p256(key, pkcs8.to_vec()))
+        } else if let Ok(key) = SigningKey::<P384>::from_pkcs8_der(pkcs8) {
+            let public_key = key.private_key.public_key_uncompressed().to_vec();
+            let signature = x509::algorithm(oid::ECDSA_WITH_SHA384, None);
+            let key_algorithm = ec_algorithm(oid::SECP384R1);
+            let signing = Signing::P384(key);
+            Ok(Self::assemble(
+                signing,
+                pkcs8.to_vec(),
+                public_key,
+                &key_algorithm,
+                signature,
+            ))
+        } else if let Ok(key) = rsa::SigningKey::from_pkcs8_der(pkcs8) {
+            let mut encoded = vec![0; pkcs8.len()];
+            let public_key = key
+                .public_key()
+                .to_pkcs1_der(&mut encoded)
+                .map_err(|_| invalid("the RSA public key does not encode"))?
+                .to_vec();
+            let null = x509::null();
+            let key_algorithm = x509::algorithm(oid::RSA_ENCRYPTION, Some(&null));
+            let signature = x509::algorithm(oid::SHA256_WITH_RSA_ENCRYPTION, Some(&null));
+            let signing = Signing::Rsa(key);
+            Ok(Self::assemble(
+                signing,
+                pkcs8.to_vec(),
+                public_key,
+                &key_algorithm,
+                signature,
+            ))
+        } else {
+            Err(invalid(
+                "the key is not an Ed25519, ECDSA P-256, ECDSA P-384 or RSA key",
+            ))
+        }
     }
 
-    fn public_key(&self) -> &[u8] {
-        match &self.signing {
-            Signing::Ecdsa(key) => key.public_key().as_ref(),
-            Signing::Ed25519(key) => key.public_key().as_ref(),
-            Signing::Rsa(key) => key.public_key().as_ref(),
+    fn p256(key: SigningKey<P256>, pkcs8: Vec<u8>) -> Self {
+        let public_key = key.private_key.public_key_uncompressed().to_vec();
+        let signature = x509::algorithm(oid::ECDSA_WITH_SHA256, None);
+        let key_algorithm = ec_algorithm(oid::PRIME256V1);
+        Self::assemble(
+            Signing::P256(key),
+            pkcs8,
+            public_key,
+            &key_algorithm,
+            signature,
+        )
+    }
+
+    fn assemble(
+        signing: Signing,
+        pkcs8: Vec<u8>,
+        public_key: Vec<u8>,
+        key_algorithm: &[u8],
+        signature_algorithm: Vec<u8>,
+    ) -> Self {
+        Self {
+            signing,
+            pkcs8,
+            public_key_info: x509::subject_public_key_info(key_algorithm, &public_key),
+            public_key,
+            signature_algorithm,
         }
     }
 
@@ -152,39 +200,43 @@ impl KeyPair {
     }
 
     fn key_identifier(&self) -> Vec<u8> {
-        digest::digest(&digest::SHA256, &self.public_key_info).as_ref()[..KEY_IDENTIFIER_BYTES]
-            .to_vec()
+        Sha256::hash(&self.public_key_info).as_ref()[..KEY_IDENTIFIER_BYTES].to_vec()
     }
 
     fn serial(&self) -> Vec<u8> {
-        let mut serial =
-            digest::digest(&digest::SHA256, self.public_key()).as_ref()[..SERIAL_BYTES].to_vec();
+        let mut serial = Sha256::hash(&self.public_key).as_ref()[..SERIAL_BYTES].to_vec();
         serial[0] &= SERIAL_SIGN_MASK;
         serial
     }
 
     fn sign(&self, message: &[u8]) -> io::Result<Vec<u8>> {
         let failed = |_| io::Error::other("signing a certificate failed");
+        let point = self.public_key.len() - UNCOMPRESSED_POINT_PREFIX_BYTES;
         match &self.signing {
-            Signing::Ecdsa(key) => Ok(key
-                .sign(&SystemRandom::new(), message)
-                .map_err(failed)?
-                .as_ref()
-                .to_vec()),
-            Signing::Ed25519(key) => Ok(key.sign(message).as_ref().to_vec()),
+            Signing::P256(key) => {
+                let mut fixed = vec![0; point];
+                key.sign::<Sha256>(&[message], &mut fixed).map_err(failed)?;
+                Ok(ecdsa_signature(&fixed))
+            }
+            Signing::P384(key) => {
+                let mut fixed = vec![0; point];
+                key.sign::<Sha384>(&[message], &mut fixed).map_err(failed)?;
+                Ok(ecdsa_signature(&fixed))
+            }
+            Signing::Ed25519(key) => Ok(key.sign(message).to_vec()),
             Signing::Rsa(key) => {
-                let mut signed = vec![0; key.public().modulus_len()];
-                key.sign(
-                    &signature::RSA_PKCS1_SHA256,
-                    &SystemRandom::new(),
-                    message,
-                    &mut signed,
-                )
-                .map_err(failed)?;
+                let mut signed = vec![0; key.modulus_len_bytes()];
+                key.sign_pkcs1_sha256(&mut signed, message)
+                    .map_err(failed)?;
                 Ok(signed)
             }
         }
     }
+}
+
+fn ecdsa_signature(fixed: &[u8]) -> Vec<u8> {
+    let (r, s) = fixed.split_at(fixed.len() / 2);
+    x509::sequence(&[&x509::unsigned_integer(r), &x509::unsigned_integer(s)])
 }
 
 pub struct Issuer {

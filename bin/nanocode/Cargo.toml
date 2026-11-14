@@ -42,7 +42,7 @@ nanocode-tempo.workspace = true
 nanocode-tui = { path = "../../crates/tui", version = "0.7.0" }
 serde_json = { workspace = true, features = ["preserve_order"] }
 nanocode-platform.workspace = true
-ring.workspace = true
+graviola.workspace = true
 serde.workspace = true
 tokio = { workspace = true, features = ["macros", "process", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-rustls = { workspace = true, features = ["tls12"] }

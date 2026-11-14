@@ -1,0 +1,119 @@
+# extracted from thirdparty/wycheproof/testvectors_v1/primality_test.json
+# test 251: Mersenne prime (127 bit)
+7fffffffffffffffffffffffffffffff
+# test 252: Mersenne prime (521 bit)
+01ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+# test 253: Mersenne prime (607 bit)
+7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+# test 254: Mersenne prime (1279 bit)
+7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+# test 255: Mersenne prime (2203 bit)
+07ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+# test 256: Factorial prime (26 bit)
+02611501
+# test 257: Factorial prime (376 bit)
+00f17a60a5d627ded85b6a9a397c2ba63bb27910ccf7e3135d4d1ae8c9f5cc1e4bf01ea704abb2000000000000000001
+# test 258: Factorial prime (633 bit)
+01e764f3171d1e44a5f0c50c6537730168041cd93fa34898140da93d3df2939adecf61802daa63eaf08428d72148d63f267f22bd24cd411b7f25984b057bda5c11510000000000000000000000000001
+# test 259: Factorial prime (902 bit)
+3a7c596683f12898e64bf1355bb9bc85f01d91307e568d01afdc9cf0b3fa9e464b140d899d9bf62a0c61c2bf0a8bca1de36f6d36a5be4aa212681896def96f583c8a7cfe362b4e823bd244f813e575391a029df7012e738d3e2e8e0181ea40000000000000000000000000000000000001
+# test 260: Factorial prime (2207 bit)
+72b20ce22e5616f923901a946b02b2ad0417882d9172d88c1940fec763b0cdf02ca5862cfa70e47fb8fd10615bf61187cd564a017355802212a526453e1fb9791014f070d77f8ff4dd54a6d1d58969293734e0b6bc22f3ceea788aa33be35eed4bdc1c8ceb94084399d98e13e69a2b9fa6c5583836a15798ba1a10edd81160a15662cdf587df6b816c570f9b11a466d1b4c328180f614e964f3a5ec61c3f2b759b21687a122f9faefc86fe69a3efd14829639596eb7f2de6eab6b444d06233d34d0651e6fed17db4d0025e58db7cad8824c3e93ed24df588a0a4530be2676e995f870172b9e765ec2886bce140000000000000000000000000000000000000000000000000000000000000000000000000000001
+# test 261: Factorial prime (2878 bit)
+2c47a7947e4ef970e990c8b4a793b5f7d49b9af95a12b9f08475e1cf58f31046fd224c3ef20a736d7cae39a2f989d934c2aa644483aa6e348bd41c34a6819d7c08fdbd93a7f7c24a4756bb7dd97516287e161af87e56735c06d61918cb2fd4ae9dc1c7f2cbb5749934626af5f4db5bde6b748072c004110d45f6db0fe51c4889ff053bb2a24f83bbb80798b94e5d7a189599d85792807626de78a61a7468eab70a2c4dda6200e0c8328408e0327897220bbe009cf8bbbb23fa1cb5fbd3713f7172f8186d059d0b97c2ef5b096c558ec61f66e81116be44f2940f4c93b67d7cd3564c266540fbf0bb95cc3c52c9dbc71aa6a424457131aec3285e6ba46e828e635f3455e30b6db3e4680ba04c580fb569145f6371a0d352f40321751cd26623e92a6c5c9e83eb655338c9077826148e23c3705b8f11b15a00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001
+# test 262: Factorial prime (149 bit)
+1774015499125eee9c3c5e4275fe37ffffffff
+# test 263: Factorial prime (486 bit)
+22d4fb39eb23880b4674bcffd06a18547ee73e7e77f1fb29c0dbfa66ed52cb8b22bbe0ed9b2a2b779c9037d7b412a389bec5ffffffffffffffffffffff
+# test 264: Factorial prime (990 bit)
+371196ced90a51b120fd9171fa388fe8c2e634f9ee10f4bcddddfd269ebda2f3eed661eaab3cfbe6914395a73735701d7d65e278f76842b02d1f8f5d941d652067ead60bf9bb537ae7e13404711ee80b35bbf5936641be34d53d4b3bbd025bed4be7fa44113cfea3ffffffffffffffffffffffffffffffffffffffff
+# test 265: Factorial prime (2241 bit)
+0120dd73742e20e30f56d82ace2d9ff917e66b2c92024a1444490511d41a39685a9901187f206b5a248b9e52d82f15820801be21beb73ff9e0c8150c69334f02fe9593493b55d48229601857a3ca4449a444d2c0566936deadacd46310d04480265834fe9b5e733357b0c73a0d1e23d85e401e8c3b60571045a6bfb1a19f4940140736098dac2d705dc1339370f1ac19252b931c450bb260800bb40aa404dc54199b7251abcb50d26fc9de82de037c3b9926a2958bd6a1d8690805c0681f5cb5d90b1447cb7e5d81c436b913d743372be382e3bb2d1cd7185948136957af2496888060c7b7ea519b173d5f190c27c70f3dffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+# test 266: Factor of Mersenne number (123 bit)
+07c97d9108c2ad4329db02eb8f166349
+# test 267: Factor of Mersenne number (17 bit)
+010001
+# test 268: Factor of Mersenne number (23 bit)
+663d81
+# test 269: Factor of Mersenne number (40 bit)
+00b161194487
+# test 270: Factor of Mersenne number (60 bit)
+08112264cd9bb77f
+# test 271: Factor of Mersenne number (84 bit)
+0b73493decfd9b68318ef9
+# test 272: Factor of Mersenne number (46 bit)
+3d30f19cd101
+# test 273: Factor of Mersenne number (93 bit)
+126cf51772d253cba3f5a7cf
+# test 274: Factor of Mersenne number (56 bit)
+00d3eafc3af14601
+# test 275: Factor of Mersenne number (73 bit)
+013540775b48cc32ba01
+# test 276: Factor of Mersenne number (206 bit)
+3a294c585a8f5c7073e36ee3637cab2586d049baa0ba2c911801
+# test 277: Factor of Mersenne number (242 bit)
+03f1cb0fdf0fbef0f3747f239f5a8983e72b455488b792c8e29308f8c78e7f
+# test 278: Factor of Mersenne number (302 bit)
+37a5f7f30fd2d1f46cd794e8337106ccebced1189c1f5b6b3c525b64b6c36768785f7912013f
+# test 279: edge case for Montgomery reduction (32 bit)
+00c4ec4ec5
+# test 280: edge case for Montgomery reduction (32 bit)
+00c18f9c19
+# test 281: edge case for Montgomery reduction (32 bit)
+00a08ad8f3
+# test 282: edge case for Montgomery reduction (32 bit)
+00fcfcfcfd
+# test 283: edge case for Montgomery reduction (32 bit)
+00c71c71c7
+# test 284: edge case for Montgomery reduction (30 bit)
+3d70a3d7
+# test 285: edge case for Montgomery reduction (30 bit)
+3ef368eb
+# test 286: edge case for Montgomery reduction (31 bit)
+69d0369d
+# test 287: edge case for Montgomery reduction (63 bit)
+51b3bea3677d46cf
+# test 288: edge case for Montgomery reduction (63 bit)
+7e3f1f8fc7e3f1f9
+# test 289: edge case for Montgomery reduction (63 bit)
+43fa36f5e02e4851
+# test 290: edge case for Montgomery reduction (62 bit)
+3454dca410f8ed9d
+# test 291: edge case for Montgomery reduction (64 bit)
+00c5b3f5dc83cd4e93
+# test 292: edge case for Montgomery reduction (63 bit)
+593f69b02593f69b
+# test 293: edge case for Montgomery reduction (64 bit)
+008f6ec07432d63dbb
+# test 294: edge case for Montgomery reduction (61 bit)
+101767dce434a9b1
+# test 295: edge case for Montgomery reduction (128 bit)
+00fafafafafafafafafafafafafafafafb
+# test 296: edge case for Montgomery reduction (124 bit)
+0c934ff1a0c934ff1a0c934ff1a0c935
+# test 297: edge case for Montgomery reduction (128 bit)
+00d2f87ebfcaa1c5a0f02806abc74be1fb
+# test 298: edge case for Montgomery reduction (127 bit)
+7880d53da3d15a842a343316c494d305
+# test 299: edge case for Montgomery reduction (127 bit)
+6a850096a850096a850096a850096a85
+# test 300: edge case for Montgomery reduction (128 bit)
+0098dbdea62334302c77d10fbfc4b593eb
+# test 301: edge case for Montgomery reduction (128 bit)
+00df0041ff7c0107fdf0041ff7c0107fdf
+# test 302: edge case for Montgomery reduction (256 bit)
+00af8af8af8af8af8af8af8af8af8af8af8af8af8af8af8af8af8af8af8af8af8b
+# test 303: edge case for Montgomery reduction (255 bit)
+7f26fe4dfc9bf937f26fe4dfc9bf937f26fe4dfc9bf937f26fe4dfc9bf937f27
+# test 304: edge case for Montgomery reduction (256 bit)
+009b8f4f9e02732385830fec66e3d3e7809cc8e160c3fb19b8f4f9e02732385831
+# test 305: edge case for Montgomery reduction (255 bit)
+64a9a50bc0a383524478973fdf4c22bf1b14f339bd92a6942f028e0d4911e25d
+# test 306: edge case for Montgomery reduction (255 bit)
+7f95438b41e0500d578e97c3f5fe550e2d078140355e3a5f0fd7f95438b41e05
+# test 307: edge case for Montgomery reduction (255 bit)
+5f1bbd6c9500cae5d85f1bbd6c9500cae5d85f1bbd6c9500cae5d85f1bbd6c95
+# test 308: edge case for Montgomery reduction (256 bit)
+00967300c9a633fcd967300c9a633fcd967300c9a633fcd967300c9a633fcd9673
+# test 309: edge case for Montgomery reduction (256 bit)
+00a305942530f7f11f9cd2c027abb32354eb8b77a1c8368c165094c3dfc47e734b

@@ -1,0 +1,33 @@
+[package]
+edition = "2024"
+rust-version = "1.89"
+name = "graviola"
+version = "0.4.1"
+autolib = false
+autobins = false
+autoexamples = false
+autotests = false
+autobenches = false
+description = "graviola is a modern, fast cryptography library"
+license = "Apache-2.0 OR ISC OR MIT-0"
+repository = "https://github.com/ctz/graviola/"
+publish = false
+
+[features]
+default = []
+
+[lib]
+name = "graviola"
+path = "src/lib.rs"
+test = false
+doctest = false
+bench = false
+
+[dependencies]
+cfg-if = "1"
+getrandom = "0.3"
+
+[lints.rust.unexpected_cfgs]
+level = "warn"
+priority = 0
+check-cfg = ["cfg(coverage_nightly)", 'cfg(feature, values("__ctgrind"))']

@@ -50,6 +50,20 @@ impl Symbol {
         }
     }
 
+    fn same(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Unset, Self::Unset) => true,
+            (
+                Self::Inline { bytes, length },
+                Self::Inline {
+                    bytes: other_bytes,
+                    length: other_length,
+                },
+            ) => length == other_length && bytes == other_bytes,
+            _ => self.bytes() == other.bytes(),
+        }
+    }
+
     fn as_str(&self) -> &str {
         match self {
             Self::Unset => BLANK,
@@ -133,7 +147,7 @@ impl Default for Cell {
 
 impl PartialEq for Cell {
     fn eq(&self, other: &Self) -> bool {
-        self.symbol.bytes() == other.symbol.bytes()
+        self.symbol.same(&other.symbol)
             && self.fg == other.fg
             && self.bg == other.bg
             && self.modifier == other.modifier

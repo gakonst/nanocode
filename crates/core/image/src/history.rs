@@ -30,7 +30,7 @@ impl std::fmt::Debug for ImageHistory {
 impl ImageWindow {
     pub const CLAUDE: Self = Self::images(100);
     pub const CLAUDE_LONG_CONTEXT: Self = Self::images(600);
-    pub const CODEX: Self = Self::images(8);
+    pub const CODEX: Self = Self::images(500);
     pub const WORKERS_AI: Self = Self::images(8);
     pub const GATEWAY: Self = Self {
         images: None,

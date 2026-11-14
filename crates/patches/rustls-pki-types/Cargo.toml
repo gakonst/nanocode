@@ -1,0 +1,31 @@
+[package]
+edition = "2021"
+rust-version = "1.60"
+name = "rustls-pki-types"
+version = "1.15.0"
+autolib = false
+autobins = false
+autoexamples = false
+autotests = false
+autobenches = false
+description = "Shared types for the rustls PKI ecosystem"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/rustls/pki-types"
+publish = false
+
+[features]
+alloc = []
+default = ["alloc"]
+std = ["alloc"]
+
+[lib]
+name = "rustls_pki_types"
+path = "src/lib.rs"
+test = false
+doctest = false
+bench = false
+
+[lints.rust.unexpected_cfgs]
+level = "warn"
+priority = 0
+check-cfg = ["cfg(rustls_pki_types_docsrs)", 'cfg(feature, values("web"))']

@@ -783,12 +783,6 @@ impl CodeModeRuntime {
         observer: &mut dyn CodeModeObserver,
     ) -> Option<CodeModeExecution> {
         let started_at = nanocode_platform::now();
-        let preempt = Preemption {
-            signal: self.preempt.subscribe(),
-            turn: self.current_turn.load(Ordering::Acquire),
-            seen: self.preempt_consumed.load(Ordering::Acquire),
-            consumed: Arc::clone(&self.preempt_consumed),
-        };
         self.adopt(Arc::clone(&tools), &context).await;
         let call_id = context.call_id.as_str();
         let live = self.cells.read(|registry| {
@@ -851,7 +845,7 @@ impl CodeModeRuntime {
             &cell,
             observation,
             started_at,
-            ObservationMode::YieldAfter(yield_after, yield_after, preempt),
+            ObservationMode::YieldAfter(yield_after, yield_after, None),
             record.max_output_tokens,
             Some(call_id),
             observer,
@@ -1193,7 +1187,7 @@ impl CodeModeRuntime {
             &cell,
             observation,
             started_at,
-            ObservationMode::YieldAfter(yield_time, quiet_until, preempt),
+            ObservationMode::YieldAfter(yield_time, quiet_until, Some(preempt)),
             output_token_budget,
             Some(call_id),
             observer,
@@ -1701,7 +1695,7 @@ impl Preemption {
 
 enum ObservationMode {
     Started(Duration, Preemption),
-    YieldAfter(Duration, Duration, Preemption),
+    YieldAfter(Duration, Duration, Option<Preemption>),
     Terminate,
 }
 
@@ -1820,7 +1814,7 @@ async fn observe_updates(
             (Some(yield_after), None, false, Some(preempt), true)
         }
         ObservationMode::YieldAfter(yield_after, quiet_until, preempt) => {
-            (Some(yield_after), Some(quiet_until), false, Some(preempt), false)
+            (Some(yield_after), Some(quiet_until), false, preempt, false)
         }
         ObservationMode::Terminate => (None, None, true, None, false),
     };

@@ -78,7 +78,11 @@ impl Tool for ClaudeFileTool {
                     .await
                 {
                     Ok(output) => output,
-                    Err(error) => return Ok(ToolOutput::error(error)),
+                    Err(error) => {
+                        return Ok(ToolOutput::error(format!(
+                            "<tool_use_error>{error}</tool_use_error>"
+                        )));
+                    }
                 };
                 let result = match output.content {
                     ToolContent::Text(text) if output.is_error => ToolOutput::error(text),

@@ -11,11 +11,11 @@ use std::{
 use crate::tools::{
     BashExecution, BashExecutor, BashRequest, BashResult, ClaudeBash, host::HostTool, text_files,
 };
-use nanocode_sys::base64::STANDARD;
 use futures_util::future::{AbortHandle, abortable};
 use nanocode_agent_core::input::ImageDetail;
 use nanocode_process_contracts::{FileHost, ForegroundCommand, ForegroundExecutor};
 use nanocode_sync::{Atom, Signal};
+use nanocode_sys::base64::STANDARD;
 use nanocode_tool_host::{
     Tool, ToolContext, ToolDefinition, ToolInput, ToolOutput, ToolResult, Tools, ToolsBuildError,
     contract::ToolOutputContent, embedded::HostFuture,
@@ -111,7 +111,9 @@ impl HostFileTool {
                 }
                 let content = self.existing(&path).await?;
                 text_files::read(file_path, content.len() as u64, input, budget, || {
-                    Ok(content.lines().map(|line| Ok(line.to_owned())))
+                    Ok(content
+                        .split('\n')
+                        .map(|line| Ok(line.trim_end_matches('\r').to_owned())))
                 })
             }
             "Write" => {
@@ -119,17 +121,21 @@ impl HostFileTool {
                     .get("content")
                     .and_then(Value::as_str)
                     .ok_or("missing or invalid content")?;
+                let existed = self.existing(&path).await.is_ok();
                 self.files.write(&path, content).await?;
-                Ok(format!("Wrote {}", path.display()))
+                Ok(crate::tools::text_files::written(
+                    &path.display().to_string(),
+                    existed,
+                ))
             }
             _ => {
                 let edit = text_files::Edit::parse(input)?;
                 let content = self.existing(&path).await?;
-                let (updated, count) = edit.apply(&content)?;
+                let (updated, _) = edit.apply(&content)?;
                 self.files.write(&path, &updated).await?;
-                Ok(format!(
-                    "Edited {} ({count} replacement(s))",
-                    path.display()
+                Ok(crate::tools::text_files::edited(
+                    &path.display().to_string(),
+                    edit.replace_all(),
                 ))
             }
         }

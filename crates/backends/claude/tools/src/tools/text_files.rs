@@ -253,13 +253,29 @@ impl<'a> Edit<'a> {
         })
     }
 
+    #[must_use]
+    pub const fn replace_all(&self) -> bool {
+        self.replace_all
+    }
+
     pub fn apply(&self, content: &str) -> Result<(String, usize), String> {
+        if self.old == self.new {
+            return Err(
+                "No changes to make: old_string and new_string are exactly the same.".into(),
+            );
+        }
         let count = content.matches(self.old).count();
         if count == 0 {
-            return Err("old_string not found".into());
+            return Err(format!(
+                "String to replace not found in file.\nString: {}",
+                self.old
+            ));
         }
         if count != 1 && !self.replace_all {
-            return Err(format!("old_string occurs {count} times; set replace_all"));
+            return Err(format!(
+                "Found {count} matches of the string to replace, but replace_all is false. To replace all occurrences, set replace_all to true. To replace only one occurrence, please provide more context to uniquely identify the instance.\nString: {}",
+                self.old
+            ));
         }
         let updated = if self.replace_all {
             content.replace(self.old, self.new)
@@ -267,5 +283,28 @@ impl<'a> Edit<'a> {
             content.replacen(self.old, self.new, 1)
         };
         Ok((updated, count))
+    }
+}
+
+const FILE_STATE: &str =
+    " (file state is current in your context \u{2014} no need to Read it back)";
+
+#[must_use]
+pub fn edited(shown: &str, replace_all: bool) -> String {
+    if replace_all {
+        format!(
+            "The file {shown} has been updated. All occurrences were successfully replaced.{FILE_STATE}"
+        )
+    } else {
+        format!("The file {shown} has been updated successfully.{FILE_STATE}")
+    }
+}
+
+#[must_use]
+pub fn written(shown: &str, existed: bool) -> String {
+    if existed {
+        format!("The file {shown} has been updated successfully.{FILE_STATE}")
+    } else {
+        format!("File created successfully at: {shown}{FILE_STATE}")
     }
 }

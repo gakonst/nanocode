@@ -2,7 +2,7 @@ use crate::tools::{SessionEnvironment, ToolContent, ToolOutput, media::MediaRead
 use serde_json::Value;
 use std::{
     fs,
-    io::{BufRead as _, BufReader, Write as _},
+    io::{BufRead as _, BufReader, Read as _, Seek as _, SeekFrom, Write as _},
     path::{Component, Path, PathBuf},
 };
 
@@ -10,7 +10,6 @@ use std::{
 pub struct ClaudeWorkspaceFiles {
     root: PathBuf,
     base: PathBuf,
-    relative_paths: bool,
     confined: bool,
     media: MediaReadOptions,
     read_token_budget: usize,
@@ -25,7 +24,6 @@ impl ClaudeWorkspaceFiles {
         }
         Ok(Self {
             base: root.clone(),
-            relative_paths: true,
             confined: false,
             root,
             media: MediaReadOptions::default(),
@@ -46,7 +44,6 @@ impl ClaudeWorkspaceFiles {
         Ok(Self {
             root,
             base,
-            relative_paths: false,
             confined: false,
             media: MediaReadOptions::default(),
             read_token_budget: usize::MAX,
@@ -61,7 +58,6 @@ impl ClaudeWorkspaceFiles {
         Ok(Self {
             root: base.clone(),
             base,
-            relative_paths: false,
             confined: true,
             media: MediaReadOptions::default(),
             read_token_budget: usize::MAX,
@@ -108,14 +104,6 @@ impl ClaudeWorkspaceFiles {
                 parent.display(),
                 self.root.display()
             ))
-        }
-    }
-
-    fn shown(&self, relative: &Path) -> String {
-        if self.relative_paths {
-            relative.display().to_string()
-        } else {
-            self.root.join(relative).display().to_string()
         }
     }
 
@@ -247,10 +235,18 @@ impl ClaudeWorkspaceFiles {
         let (_, path) = self.file(file_path)?;
         let size = fs::metadata(&path).map_err(|e| format!("read: {e}"))?.len();
         super::text_files::read(file_path, size, input, self.read_token_budget, || {
-            let file = fs::File::open(&path).map_err(|e| format!("read: {e}"))?;
+            let mut file = fs::File::open(&path).map_err(|e| format!("read: {e}"))?;
+            let mut last = [0u8];
+            let trailing = size > 0
+                && file.seek(SeekFrom::End(-1)).is_ok()
+                && file.read_exact(&mut last).is_ok()
+                && last[0] == b'\n';
+            file.seek(SeekFrom::Start(0))
+                .map_err(|e| format!("read: {e}"))?;
             Ok(BufReader::new(file)
                 .lines()
-                .map(|line| line.map_err(|e| format!("read: {e}"))))
+                .map(|line| line.map_err(|e| format!("read: {e}")))
+                .chain(trailing.then(|| Ok(String::new()))))
         })
     }
 
@@ -293,8 +289,10 @@ impl ClaudeWorkspaceFiles {
     fn write(&self, input: &Value) -> Result<String, String> {
         let content = Self::field(input, "content")?;
         let (rel, path) = self.write_target(Self::field(input, "file_path")?)?;
+        let existed = path.exists();
         atomic_write(&path, content)?;
-        Ok(format!("Wrote {}", self.shown(&rel)))
+        let shown = self.root.join(&rel).display().to_string();
+        Ok(super::text_files::written(&shown, existed))
     }
 
     fn edit(&self, input: &Value) -> Result<String, String> {
@@ -302,16 +300,16 @@ impl ClaudeWorkspaceFiles {
         let edit = super::text_files::Edit::parse(input)?;
         let (rel, existing) = self.file(text)?;
         let content = Self::read_text(&existing)?;
-        let (updated, count) = edit.apply(&content)?;
+        let (updated, _) = edit.apply(&content)?;
         let (_, path) = self.write_target(text)?;
 
         if Self::read_text(&path)? != content {
             return Err("file changed during edit".into());
         }
         atomic_write(&path, &updated)?;
-        Ok(format!(
-            "Edited {} ({count} replacement(s))",
-            self.shown(&rel)
+        Ok(super::text_files::edited(
+            &self.root.join(&rel).display().to_string(),
+            edit.replace_all(),
         ))
     }
 }

@@ -21,6 +21,7 @@ futures-util.workspace = true
 http.workspace = true
 nanocode = { path = "../../crates/nanocode", default-features = false, features = ["local-cells"] }
 nanocode-agent-core.workspace = true
+nanocode-code-mode.workspace = true
 nanocode-compression.workspace = true
 nanocode-digest.workspace = true
 nanocode-durability-core.workspace = true

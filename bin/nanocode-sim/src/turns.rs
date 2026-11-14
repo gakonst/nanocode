@@ -4,6 +4,7 @@ use std::{
 };
 
 use crate::{
+    cells::{self, CellStats},
     disk::Disk,
     faults::Profile,
     onelog::{
@@ -61,11 +62,12 @@ pub enum TurnMutation {
     RecoverySkipsClientless,
     RetireSkipped,
     SealSkipped,
+    SnapshotRowsIgnored,
     TickNotAtomic,
 }
 
 impl TurnMutation {
-    const ALL: [Self; 9] = [
+    const ALL: [Self; 10] = [
         Self::None,
         Self::DurableSeqBeforeCommit,
         Self::FinishBeforeRow,
@@ -74,6 +76,7 @@ impl TurnMutation {
         Self::RecoverySkipsClientless,
         Self::RetireSkipped,
         Self::SealSkipped,
+        Self::SnapshotRowsIgnored,
         Self::TickNotAtomic,
     ];
 
@@ -93,6 +96,7 @@ impl TurnMutation {
             Self::RecoverySkipsClientless => "recovery_skips_clientless",
             Self::RetireSkipped => "retire_skipped",
             Self::SealSkipped => "seal_skipped",
+            Self::SnapshotRowsIgnored => "snapshot_rows_ignored",
             Self::TickNotAtomic => "tick_not_atomic",
         }
     }
@@ -104,6 +108,10 @@ impl TurnMutation {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Invariant {
+    CellExternalOnce,
+    CellLost,
+    CellModelOnce,
+    CellRows,
     ExternalOnce,
     FinishOnce,
     IdempotentKnown,
@@ -116,6 +124,10 @@ pub enum Invariant {
 impl Invariant {
     pub const fn name(self) -> &'static str {
         match self {
+            Self::CellExternalOnce => "cell_external_once",
+            Self::CellLost => "cell_lost",
+            Self::CellModelOnce => "cell_model_once",
+            Self::CellRows => "cell_rows",
             Self::ExternalOnce => "external_once",
             Self::FinishOnce => "finish_once",
             Self::IdempotentKnown => "idempotent_known",
@@ -133,6 +145,7 @@ pub struct TurnOptions {
     pub long: Option<u64>,
     pub retain: Option<usize>,
     pub snapshot_ratio: usize,
+    pub snapshot_rows: Option<usize>,
     pub mutation: TurnMutation,
     pub policy: PolicyKind,
     pub row_limit: Option<usize>,
@@ -149,6 +162,7 @@ pub struct TurnStats {
     pub cancelled: u64,
     pub capped: u64,
     pub capped_clean: u64,
+    pub cells: CellStats,
     pub lost: u64,
     pub rows_admission: u64,
     pub rows_call: u64,
@@ -195,6 +209,7 @@ impl TurnStats {
         self.cancelled += other.cancelled;
         self.capped += other.capped;
         self.capped_clean += other.capped_clean;
+        self.cells.add(&other.cells);
         self.lost += other.lost;
         self.rows_admission += other.rows_admission;
         self.rows_call += other.rows_call;
@@ -257,7 +272,7 @@ impl TurnStats {
             format!("{}.{:02}", hundredths / 100, hundredths % 100)
         };
         format!(
-            "rows/turn={} (A={} C={} T={} R={} F={} S={} L={} P={} X={}) appended/turn={} brief_rows/turn={} model_calls/turn={} replayed/turn={} unknown_completed={} capped={} capped_clean={} lost={}",
+            "rows/turn={} (A={} C={} T={} R={} F={} S={} L={} P={} X={}) appended/turn={} brief_rows/turn={} model_calls/turn={} replayed/turn={} unknown_completed={} capped={} capped_clean={} lost={} {}",
             per_turn(self.rows()),
             per_turn(self.rows_admission),
             per_turn(self.rows_call),
@@ -275,7 +290,8 @@ impl TurnStats {
             self.unknown_completed,
             self.capped,
             self.capped_clean,
-            self.lost
+            self.lost,
+            self.cells.summary()
         )
     }
 }
@@ -1101,18 +1117,28 @@ impl Sim {
                 self.options.protections,
                 self.options.mutation != TurnMutation::SealSkipped,
             )),
-            PolicyKind::Turnlog => Box::new(TurnLogPolicy::new(
-                Arc::clone(&self.disk),
-                self.options.protections,
-                self.options.row_limit,
-                self.options.snapshot_ratio,
-                if self.options.mutation == TurnMutation::RetireSkipped {
-                    None
-                } else {
-                    self.options.retain
-                },
-                self.options.retain,
-            )),
+            PolicyKind::Turnlog => Box::new(
+                TurnLogPolicy::new(
+                    Arc::clone(&self.disk),
+                    self.options.protections,
+                    self.options.row_limit,
+                    self.options.snapshot_ratio,
+                    if self.options.mutation == TurnMutation::RetireSkipped {
+                        None
+                    } else {
+                        self.options.retain
+                    },
+                    self.options.retain,
+                )
+                .snapshot_rows(
+                    if self.options.mutation == TurnMutation::SnapshotRowsIgnored {
+                        None
+                    } else {
+                        self.options.snapshot_rows
+                    },
+                    self.options.snapshot_rows,
+                ),
+            ),
         };
         let mut object = Object {
             incarnation,
@@ -2153,13 +2179,22 @@ pub fn simulate(seed: u64, options: TurnOptions) -> TurnOutcome {
         options.mutation.name()
     ));
     sim.run();
-    TurnOutcome {
+    let mut outcome = TurnOutcome {
         digest: sim.digest,
         lines: sim.lines,
         shape,
         stats: sim.stats,
         wrong: sim.oracle.wrong,
+    };
+    if options.policy == PolicyKind::Turnlog && outcome.wrong.is_none() {
+        let cells = cells::run(seed, options);
+        outcome.digest = fnv(outcome.digest, &cells.digest.to_le_bytes());
+        outcome.lines += cells.lines;
+        outcome.shape = format!("{} {}", outcome.shape, cells.shape);
+        outcome.stats.cells = cells.stats;
+        outcome.wrong = cells.wrong;
     }
+    outcome
 }
 
 pub fn run_seed(seed: u64, options: TurnOptions) -> TurnOutcome {

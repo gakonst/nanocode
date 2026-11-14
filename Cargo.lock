@@ -916,6 +916,7 @@ dependencies = [
  "http",
  "nanocode",
  "nanocode-agent-core",
+ "nanocode-code-mode",
  "nanocode-compression",
  "nanocode-digest",
  "nanocode-durability",

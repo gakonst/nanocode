@@ -133,6 +133,7 @@ struct Writer {
     stats: Stats,
     stream: Option<Stream>,
     tail: usize,
+    tail_rows: usize,
     tried: Option<(usize, usize)>,
 }
 
@@ -141,6 +142,7 @@ pub struct TurnLog {
     limit: Option<usize>,
     ratio: usize,
     retain: Option<usize>,
+    rows: Option<usize>,
     scope: Arc<str>,
     writer: Owned<Writer>,
 }
@@ -150,6 +152,7 @@ pub struct Lease<'a> {
     limit: Option<usize>,
     ratio: usize,
     retain: Option<usize>,
+    rows: Option<usize>,
     scope: &'a str,
     writer: Held<'a, Writer>,
 }
@@ -162,6 +165,11 @@ impl TurnLog {
         let scope = scope.into();
         let stored = host.load(&scope).await?;
         let next = stored.last().map_or(1, |(seq, _)| seq + 1);
+        let tail_rows = stored
+            .iter()
+            .rev()
+            .take_while(|(_, body)| !body.starts_with(SNAPSHOT))
+            .count();
         let mut fold = Fold::default();
         let mut history = History::default();
         let (mut snapshot, mut tail) = (0, 0);
@@ -201,6 +209,7 @@ impl TurnLog {
             limit: None,
             ratio: 2,
             retain: None,
+            rows: None,
             scope,
             writer: Owned::new(Writer {
                 buffer: Vec::new(),
@@ -217,6 +226,7 @@ impl TurnLog {
                 },
                 stream: None,
                 tail,
+                tail_rows,
                 tried: None,
             }),
         })
@@ -231,6 +241,12 @@ impl TurnLog {
     #[must_use]
     pub const fn retain_finished(mut self, keep: Option<usize>) -> Self {
         self.retain = keep;
+        self
+    }
+
+    #[must_use]
+    pub const fn snapshot_rows(mut self, rows: Option<usize>) -> Self {
+        self.rows = rows;
         self
     }
 
@@ -251,6 +267,7 @@ impl TurnLog {
             limit: self.limit,
             ratio: self.ratio,
             retain: self.retain,
+            rows: self.rows,
             scope: &self.scope,
             writer: self.writer.acquire().await,
         }
@@ -391,7 +408,8 @@ impl Lease<'_> {
             writer.fold.start_segment(seq);
         }
         let mut snapshot = None;
-        if writer.tail + body.len() >= writer.check {
+        let due = self.rows.is_some_and(|rows| writer.tail_rows >= rows);
+        if due || writer.tail + body.len() >= writer.check {
             for turn in &recovered {
                 writer.fold.recovered_at(turn, seq);
             }
@@ -401,7 +419,7 @@ impl Lease<'_> {
             let encoded = encoded?;
             writer.state = encoded.len();
             let state = codec::pack(SNAPSHOT, encoded.as_bytes(), &[])?;
-            if writer.snapshot + writer.tail + body.len() > self.ratio * state.len() {
+            if due || writer.snapshot + writer.tail + body.len() > self.ratio * state.len() {
                 snapshot = Some((state, encoded));
             } else {
                 let packed = state.len();
@@ -474,6 +492,7 @@ impl Lease<'_> {
                 writer.snapshot = bytes;
                 writer.check = bytes;
                 writer.tail = 0;
+                writer.tail_rows = stored.len() - 1;
                 writer.tried = None;
                 writer.stats.snapshots += 1;
                 writer.stats.snapshot_bytes += state.len() as u64;
@@ -489,6 +508,7 @@ impl Lease<'_> {
                 }
                 writer.history.extend(plain.as_bytes());
                 writer.tail += bytes;
+                writer.tail_rows += stored.len();
                 writer.stats.row_bytes += bytes as u64;
             }
         }

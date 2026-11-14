@@ -1,4 +1,5 @@
 mod agents;
+mod cells;
 mod disk;
 mod executor;
 mod faults;
@@ -96,6 +97,7 @@ fn parse_args(args: &[String]) -> Option<Args> {
         long: None,
         retain: None,
         snapshot_ratio: 2,
+        snapshot_rows: None,
         mutation: TurnMutation::None,
         policy: PolicyKind::Reference,
         row_limit: None,
@@ -116,6 +118,7 @@ fn parse_args(args: &[String]) -> Option<Args> {
             "--row-limit" => turns.row_limit = Some(rest.next()?.parse().ok()?),
             "--long" => turns.long = Some(rest.next()?.parse().ok()?),
             "--snapshot-ratio" => turns.snapshot_ratio = rest.next()?.parse().ok()?,
+            "--snapshot-rows" => turns.snapshot_rows = Some(rest.next()?.parse().ok()?),
             "--retain" => turns.retain = Some(rest.next()?.parse().ok()?),
             "--without" => turns.protections = turns.protections.without(rest.next()?)?,
             "--live-seqs" => turns.protections.live_seqs = LiveSeqs::parse(rest.next()?)?,
@@ -208,6 +211,9 @@ fn replay(seed: u64, args: &Args) -> String {
         }
         if args.turns.snapshot_ratio != 2 {
             command.push_str(&format!(" --snapshot-ratio {}", args.turns.snapshot_ratio));
+        }
+        if let Some(rows) = args.turns.snapshot_rows {
+            command.push_str(&format!(" --snapshot-rows {rows}"));
         }
         if let Some(keep) = args.turns.retain {
             command.push_str(&format!(" --retain {keep}"));

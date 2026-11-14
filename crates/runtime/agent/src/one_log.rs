@@ -46,6 +46,7 @@ pub struct Policy {
     pub restarts: u64,
     pub retain_finished: Option<usize>,
     pub snapshot_ratio: usize,
+    pub snapshot_rows: Option<usize>,
 }
 
 pub struct OneLog {
@@ -242,7 +243,8 @@ impl OneLog {
             .await?
             .retain_finished(policy.retain_finished)
             .row_limit(policy.max_row_bytes)
-            .snapshot_ratio(policy.snapshot_ratio);
+            .snapshot_ratio(policy.snapshot_ratio)
+            .snapshot_rows(policy.snapshot_rows);
         let recovering = log
             .read(|fold| {
                 fold.turns()
@@ -301,8 +303,13 @@ impl OneLog {
         Arc::clone(self) as Arc<dyn EffectGate>
     }
 
+    #[must_use]
+    pub fn sink(self: &Arc<Self>) -> Arc<dyn CellJournalSink> {
+        Arc::new(OneLogJournals(Arc::clone(self)))
+    }
+
     pub async fn journals(self: &Arc<Self>) -> Result<CellJournals, StoreError> {
-        let journals = CellJournals::with_sink(Arc::new(OneLogJournals(Arc::clone(self))));
+        let journals = CellJournals::with_sink(self.sink());
         for (session_id, cells) in self.cells(None).await? {
             journals.restore(&session_id, cells, None, HashMap::new());
         }
@@ -470,6 +477,11 @@ impl OneLog {
             status: state.as_str(),
             fields,
         })?;
+        let mut finished = lease
+            .fold()
+            .turn(request_id)
+            .cloned()
+            .ok_or_else(|| invalid(format!("finishing turn {request_id} is missing")))?;
         let last = lease.next_event();
         let at = now();
         lease.push(Record::Event {
@@ -486,15 +498,17 @@ impl OneLog {
             },
             turn: request_id.to_owned(),
         })?;
+        finished.phase = Phase::Finished {
+            last,
+            outcome,
+            result: body.clone(),
+        };
         lease.commit(Point::Finish).await?;
         self.recovering.update(|turns| turns.remove(request_id));
-        let record = record_of(
-            lease
-                .fold()
-                .turn(request_id)
-                .ok_or_else(|| invalid(format!("finished turn {request_id} is missing")))?,
-        )?;
-        Ok((record, logged(last, Some(request_id), at, body)))
+        Ok((
+            record_of(&finished)?,
+            logged(last, Some(request_id), at, body),
+        ))
     }
 
     pub async fn start(&self, request_id: &str) -> Result<Option<Started>, StoreError> {
@@ -952,8 +966,19 @@ impl OneLog {
         let mut events = Vec::new();
         let mut bytes = 0;
         let mut has_more = false;
+        let start = match request_id {
+            Some(id) => {
+                self.log
+                    .read(|fold| {
+                        fold.turn(id)
+                            .map_or(after, |turn| after.max(turn.first.saturating_sub(1)))
+                    })
+                    .await
+            }
+            None => after,
+        };
         self.log
-            .history(after, |event| {
+            .history(start, |event| {
                 if request_id.is_some_and(|id| event.turn.as_deref() != Some(id)) {
                     return true;
                 }

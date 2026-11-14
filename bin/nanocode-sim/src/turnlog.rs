@@ -76,6 +76,8 @@ pub fn text(value: &RawValue) -> String {
 }
 
 pub struct TurnLogPolicy {
+    bound: Option<usize>,
+    disk: Arc<Disk>,
     host: Arc<dyn LogHost>,
     limit: Option<usize>,
     logs: BTreeMap<String, TurnLog>,
@@ -84,6 +86,7 @@ pub struct TurnLogPolicy {
     restarting: BTreeMap<String, String>,
     retain: Option<usize>,
     retention: Option<usize>,
+    rows: Option<usize>,
     unsealed: BTreeSet<String>,
 }
 
@@ -97,6 +100,8 @@ impl TurnLogPolicy {
         retention: Option<usize>,
     ) -> Self {
         Self {
+            bound: None,
+            disk: Arc::clone(&disk),
             host: Arc::new(SimHost(disk)),
             limit,
             logs: BTreeMap::new(),
@@ -105,8 +110,15 @@ impl TurnLogPolicy {
             restarting: BTreeMap::new(),
             retain,
             retention,
+            rows: None,
             unsealed: BTreeSet::new(),
         }
+    }
+
+    pub const fn snapshot_rows(mut self, rows: Option<usize>, bound: Option<usize>) -> Self {
+        self.rows = rows;
+        self.bound = bound;
+        self
     }
 
     fn log(&mut self, scope: &str) -> &TurnLog {
@@ -114,7 +126,8 @@ impl TurnLogPolicy {
             let log = refused(ready(TurnLog::open(Arc::clone(&self.host), scope)))
                 .retain_finished(self.retain)
                 .row_limit(self.limit)
-                .snapshot_ratio(self.ratio);
+                .snapshot_ratio(self.ratio)
+                .snapshot_rows(self.rows);
             self.logs.insert(scope.to_owned(), log);
         }
         &self.logs[scope]
@@ -280,7 +293,8 @@ impl TurnDurability for TurnLogPolicy {
         let log = refused(ready(TurnLog::open(Arc::clone(&self.host), scope)))
             .retain_finished(self.retain)
             .row_limit(self.limit)
-            .snapshot_ratio(self.ratio);
+            .snapshot_ratio(self.ratio)
+            .snapshot_rows(self.rows);
         let state = ready(log.read(|fold| {
             fold.checkpoint(scope)
                 .map_or_else(ScopeState::default, |checkpoint| {
@@ -343,10 +357,23 @@ impl TurnDurability for TurnLogPolicy {
         drop(lease);
         self.unsealed.remove(scope);
         let after = ready(log.stats());
+        let parts = after.parts - before.parts;
+        if let Some(bound) = self.bound {
+            let loaded = self.disk.with(|rows| {
+                let reads = rows.reads;
+                let loaded = rows.tload(scope).len();
+                rows.reads = reads;
+                loaded
+            });
+            assert!(
+                loaded as u64 <= bound as u64 + parts + 1,
+                "a cold open of {scope} reads {loaded} rows past a snapshot row bound of {bound}"
+            );
+        }
         Some(Appended {
             events: Vec::new(),
             kind,
-            parts: after.parts - before.parts,
+            parts,
             seq,
             snapshot: after.snapshots > before.snapshots,
         })

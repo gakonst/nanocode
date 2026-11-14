@@ -351,6 +351,7 @@ impl Sessions {
 
     fn files(&self) -> Result<Vec<(String, Metadata, PathBuf)>, StoreError> {
         let mut files = Vec::new();
+        let mut seen = HashSet::new();
         for entry in fs::read_dir(&self.directory).map_err(backend)? {
             let entry = entry.map_err(backend)?;
             let Some(key) = entry.file_name().to_str().and_then(key_of) else {
@@ -361,7 +362,7 @@ impl Sessions {
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
                 Err(error) => return Err(backend(error)),
             };
-            if metadata.is_file() && !files.iter().any(|(listed, _, _)| *listed == key) {
+            if metadata.is_file() && seen.insert(key.clone()) {
                 files.push((key, metadata, entry.path()));
             }
         }

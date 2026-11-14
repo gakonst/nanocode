@@ -621,6 +621,10 @@ impl CodeModeRuntime {
         };
     }
 
+    pub const fn set_exec_yield(&mut self, after: Duration) {
+        self.yields.exec = after;
+    }
+
     #[must_use]
     pub fn with_journals(mut self, journals: CellJournals) -> Self {
         self.journals = Some(journals);
@@ -999,7 +1003,7 @@ impl CodeModeRuntime {
                     stored: stored.clone(),
                     started_at_ms: Some(replay::wall_ms()),
                     prelude: self.prelude.is_some(),
-                    yield_time_ms: source.yield_time_ms.unwrap_or(millis(self.yields.wait)),
+                    yield_time_ms: source.yield_time_ms.unwrap_or(millis(self.yields.exec)),
                     max_output_tokens: Some(output_token_budget),
                     journal: nanocode_code_mode_engine::SharedJournal::new(),
                     status: nanocode_sync::Atom::new(CellStatus {

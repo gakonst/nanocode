@@ -43,6 +43,10 @@ pub use nanocode_tools::tool;
 #[doc(hidden)]
 pub use nanocode_tools::__private;
 
+/// codex-cli's `DEFAULT_CODE_MODE_EXEC_YIELD_TIME_MS` (core/src/config/mod.rs): an `exec`
+/// cell without `yield_time_ms` first yields after 30 s, while `wait` keeps 10 s.
+const CODE_MODE_EXEC_YIELD: std::time::Duration = std::time::Duration::from_secs(30);
+
 pub fn tool_runtime(
     workspace: impl AsRef<std::path::Path>,
     config: &crate::client::tower::ResponsesServiceConfig,
@@ -51,7 +55,8 @@ pub fn tool_runtime(
     let workspace = workspace.as_ref();
     let tools = tools
         .clone()
-        .with_code_mode_policy(code_mode_policy::standard_tool_policy());
+        .with_code_mode_policy(code_mode_policy::standard_tool_policy())
+        .with_exec_yield(CODE_MODE_EXEC_YIELD);
     if tools.has_code_mode_host() {
         return nanocode_tool_host::runtime::ToolRuntime::new_with_tools(
             workspace,

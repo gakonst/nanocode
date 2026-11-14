@@ -222,6 +222,7 @@ pub struct Tools {
     #[cfg(not(target_family = "wasm"))]
     pub(crate) cell_guard: Option<nanocode_code_mode::code_mode::CellGuard>,
     pub(crate) cell_yield: Option<std::time::Duration>,
+    pub(crate) exec_yield: Option<std::time::Duration>,
     #[cfg(not(target_family = "wasm"))]
     pub(super) deferred_tools_guidance_enabled: bool,
 
@@ -292,6 +293,7 @@ impl Default for Tools {
             #[cfg(not(target_family = "wasm"))]
             cell_guard: None,
             cell_yield: None,
+            exec_yield: None,
             #[cfg(not(target_family = "wasm"))]
             deferred_tools_guidance_enabled: false,
 
@@ -440,6 +442,24 @@ impl Tools {
     #[must_use]
     pub const fn cell_yield(&self) -> Option<std::time::Duration> {
         self.cell_yield
+    }
+
+    /// When an `exec` cell that gives no `yield_time_ms` first yields: `cell_yield`
+    /// when set, else the harness's `with_exec_yield` default. `wait` keeps `cell_yield`
+    /// or the Code Mode default.
+    #[must_use]
+    pub const fn exec_yield(&self) -> Option<std::time::Duration> {
+        match self.cell_yield {
+            Some(after) => Some(after),
+            None => self.exec_yield,
+        }
+    }
+
+    /// A harness's default first yield for `exec` cells, below an explicit `cell_yield`.
+    #[must_use]
+    pub const fn with_exec_yield(mut self, after: std::time::Duration) -> Self {
+        self.exec_yield = Some(after);
+        self
     }
 
     #[must_use]

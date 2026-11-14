@@ -447,6 +447,7 @@ struct NativeToolRuntime {
     text_pins: Option<Arc<dyn crate::TextPins>>,
     layout: crate::code_mode_description::ExecLayout,
     cell_yield: Option<std::time::Duration>,
+    exec_yield: Option<std::time::Duration>,
 }
 
 #[doc(hidden)]
@@ -510,6 +511,7 @@ impl NativeToolRuntime {
             text_pins: None,
             layout: crate::code_mode_description::ExecLayout::default(),
             cell_yield: None,
+            exec_yield: None,
         }
     }
 
@@ -584,6 +586,10 @@ impl NativeToolRuntime {
             self.code_mode.set_default_yield(after);
             self.cell_yield = Some(after);
         }
+        if let Some(after) = tools.exec_yield() {
+            self.code_mode.set_exec_yield(after);
+            self.exec_yield = Some(after);
+        }
         registry.hand_calls = tools
             .hand_calls
             .clone()
@@ -653,7 +659,7 @@ impl NativeToolRuntime {
         ) {
             let tools = self.callbacks(hand.host.as_ref(), &context.session_id);
             let source = self
-                .cell_yield
+                .exec_yield
                 .map_or(std::borrow::Cow::Borrowed(source), |after| {
                     code_mode::source_yielding(source, after)
                 });
@@ -721,13 +727,14 @@ impl NativeToolRuntime {
             false,
             &self.layout,
         );
-        let mut native = match self.cell_yield {
-            Some(after) => vec![
-                code_mode::exec_spec_yielding(exec, after),
-                code_mode::wait_spec_yielding(after),
-            ],
-            None => vec![exec, code_mode::wait_spec()],
-        };
+        let mut native = vec![
+            match self.exec_yield {
+                Some(after) => code_mode::exec_spec_yielding(exec, after),
+                None => exec,
+            },
+            self.cell_yield
+                .map_or_else(code_mode::wait_spec, code_mode::wait_spec_yielding),
+        ];
         if let Some(pins) = &self.text_pins {
             crate::pins::pin_code_mode(
                 pins.as_ref(),

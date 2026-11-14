@@ -69,6 +69,11 @@ default_table='
 1 canary_websocket_hold_eof canary --scenario websocket --mutation hold_eof
 1 canary_http_server_corrupt_response_byte canary --scenario http_server --mutation corrupt_response_byte
 1 canary_http_server_drop_request_byte canary --scenario http_server --mutation drop_request_byte
+8 alloc pass --scenario alloc
+2 alloc_twice pass --scenario alloc --twice
+1 canary_alloc_overstate_size canary --scenario alloc --mutation overstate_size
+1 canary_alloc_forget_free canary --scenario alloc --mutation forget_free
+1 canary_alloc_scribble canary --scenario alloc --mutation scribble
 '
 default_known='
 '

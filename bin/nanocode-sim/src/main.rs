@@ -1,4 +1,6 @@
 mod agents;
+#[cfg(unix)]
+mod alloc;
 mod cells;
 mod disk;
 mod executor;
@@ -50,6 +52,7 @@ enum Scenario {
     Runtime,
     Websocket,
     HttpServer,
+    Alloc,
 }
 
 struct Args {
@@ -61,14 +64,17 @@ struct Args {
     whole: WholeOptions,
     websocket: WebSocketMutation,
     http_server: HttpServerMutation,
+    #[cfg(unix)]
+    alloc: alloc::AllocMutation,
 }
 
 type Caught = BTreeMap<Invariant, (u64, u64, (u64, u64))>;
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: nanocode-sim --tidy | (--seed S | --seeds A..B) [--scenario store|agents|turns|runtime|websocket|http_server] [--ops N] [--twice] [--mutation {}] [--records content|slots] [--verbose]\n       turns: [--mutation {}] [--without {}]... [--live-seqs temporary|floor|gap|reuse] [--calm] [--policy reference|turnlog] [--row-limit BYTES] [--long TURNS] [--snapshot-ratio K] [--snapshot-rows N] [--retain TURNS] [--state-bytes N]\n       runtime: [--store memory|kv] [--calm] [--wire transport|http] [--mutation {}]\n       websocket: [--mutation {}]
-       http_server: [--mutation {}]",
+        "usage: nanocode-sim --tidy | (--seed S | --seeds A..B) [--scenario store|agents|turns|runtime|websocket|http_server|alloc] [--ops N] [--twice] [--mutation {}] [--records content|slots] [--verbose]\n       turns: [--mutation {}] [--without {}]... [--live-seqs temporary|floor|gap|reuse] [--calm] [--policy reference|turnlog] [--row-limit BYTES] [--long TURNS] [--snapshot-ratio K] [--snapshot-rows N] [--retain TURNS] [--state-bytes N]\n       runtime: [--store memory|kv] [--calm] [--wire transport|http] [--mutation {}]\n       websocket: [--mutation {}]
+       http_server: [--mutation {}]
+       alloc: [--mutation overstate_size|forget_free|scribble]",
         Mutation::names(),
         TurnMutation::names(),
         onelog::PROTECTIONS.join("|"),
@@ -114,6 +120,8 @@ fn parse_args(args: &[String]) -> Option<Args> {
     let mut whole = WholeOptions::default();
     let mut websocket = WebSocketMutation::None;
     let mut http_server = HttpServerMutation::None;
+    #[cfg(unix)]
+    let mut alloc = alloc::AllocMutation::None;
     let mut rest = args.iter();
     while let Some(flag) = rest.next() {
         match flag.as_str() {
@@ -141,6 +149,8 @@ fn parse_args(args: &[String]) -> Option<Args> {
                     "runtime" => Scenario::Runtime,
                     "websocket" => Scenario::Websocket,
                     "http_server" => Scenario::HttpServer,
+                    #[cfg(unix)]
+                    "alloc" => Scenario::Alloc,
                     _ => return None,
                 };
             }
@@ -162,6 +172,10 @@ fn parse_args(args: &[String]) -> Option<Args> {
         (Scenario::Runtime, Some(name)) => whole.mutation = WireMutation::parse(name)?,
         (Scenario::Websocket, Some(name)) => websocket = WebSocketMutation::parse(name)?,
         (Scenario::HttpServer, Some(name)) => http_server = HttpServerMutation::parse(name)?,
+        #[cfg(unix)]
+        (Scenario::Alloc, Some(name)) => alloc = alloc::AllocMutation::parse(name)?,
+        #[cfg(not(unix))]
+        (Scenario::Alloc, Some(_)) => return None,
         (Scenario::Agents, Some(_)) => return None,
     }
     turns.verbose = options.verbose;
@@ -176,6 +190,8 @@ fn parse_args(args: &[String]) -> Option<Args> {
         whole,
         websocket,
         http_server,
+        #[cfg(unix)]
+        alloc,
     })
 }
 
@@ -189,6 +205,10 @@ fn replay(seed: u64, args: &Args) -> String {
     }
     if args.scenario == Scenario::Agents {
         return format!("nanocode-sim --scenario agents --seed {seed}");
+    }
+    #[cfg(unix)]
+    if args.scenario == Scenario::Alloc {
+        return alloc::replay(seed, options.ops, args.alloc);
     }
     if args.scenario == Scenario::Runtime {
         let mut command = format!("nanocode-sim --scenario runtime --seed {seed}");
@@ -413,6 +433,16 @@ fn report_turns(
     ExitCode::FAILURE
 }
 
+#[cfg(unix)]
+fn alloc_experiment(args: &Args) -> bool {
+    args.scenario == Scenario::Alloc && args.alloc != alloc::AllocMutation::None
+}
+
+#[cfg(not(unix))]
+const fn alloc_experiment(_args: &Args) -> bool {
+    false
+}
+
 fn tidy() -> ExitCode {
     match tidy::check(&tidy::workspace_root()) {
         Ok(problems) if problems.is_empty() => {
@@ -451,7 +481,8 @@ fn main() -> ExitCode {
             || args.turns.protections != Protections::ALL))
         || (args.scenario == Scenario::Runtime && args.whole.mutation != WireMutation::None)
         || (args.scenario == Scenario::Websocket && args.websocket != WebSocketMutation::None)
-        || (args.scenario == Scenario::HttpServer && args.http_server != HttpServerMutation::None);
+        || (args.scenario == Scenario::HttpServer && args.http_server != HttpServerMutation::None)
+        || alloc_experiment(&args);
     let (mut passed, mut failed) = (0_u64, 0_u64);
     let mut totals = Stats::default();
     let mut agent_totals = AgentStats::default();
@@ -459,6 +490,8 @@ fn main() -> ExitCode {
     let mut whole_totals = WholeStats::default();
     let mut websocket_totals = WebSocketStats::default();
     let mut http_server_totals = HttpServerStats::default();
+    #[cfg(unix)]
+    let mut alloc_totals = alloc::AllocStats::default();
     let mut caught = Caught::new();
     for seed in args.seeds.clone() {
         let verdict = match args.scenario {
@@ -480,6 +513,17 @@ fn main() -> ExitCode {
                 args.options.verbose,
                 &mut http_server_totals,
             ),
+            #[cfg(unix)]
+            Scenario::Alloc => alloc::judge(
+                seed,
+                args.options.ops,
+                args.alloc,
+                args.twice,
+                args.options.verbose,
+                &mut alloc_totals,
+            ),
+            #[cfg(not(unix))]
+            Scenario::Alloc => unreachable!("the alloc scenario parses only on unix"),
         };
         let Some(message) = verdict else {
             passed += 1;
@@ -512,6 +556,10 @@ fn main() -> ExitCode {
             args.http_server,
             &http_server_totals,
         );
+    }
+    #[cfg(unix)]
+    if args.scenario == Scenario::Alloc {
+        return alloc::report(&args.seeds, passed, failed, args.twice, args.alloc, &alloc_totals);
     }
     if args.scenario == Scenario::Turns {
         return report_turns(&args, passed, failed, &turn_totals, &caught);

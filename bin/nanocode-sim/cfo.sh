@@ -52,6 +52,8 @@ default_table='
 2 egress_twice pass --scenario egress --twice
 8 mpp pass --scenario mpp
 2 mpp_twice pass --scenario mpp --twice
+8 sync pass --scenario sync
+2 sync_twice pass --scenario sync --twice
 1 canary_cas_ignores_expected canary --scenario store --mutation cas_ignores_expected
 1 canary_record_insert_drops canary --scenario store --mutation record_insert_drops
 1 canary_power_loss_drops_acked canary --scenario store --mutation power_loss_drops_acked
@@ -83,6 +85,14 @@ default_table='
 1 canary_egress_corrupt_tunnel_byte canary --scenario egress --mutation corrupt_tunnel_byte
 1 canary_mpp_drop_abandon canary --scenario mpp --mutation drop_abandon
 1 canary_mpp_receipt_on_refusal canary --scenario mpp --mutation receipt_on_refusal
+1 canary_sync_skip_notify canary --scenario sync --mutation skip_notify
+1 canary_sync_leak_permit canary --scenario sync --mutation leak_permit
+1 canary_sync_reverse_queue canary --scenario sync --mutation reverse_queue
+1 canary_sync_resend canary --scenario sync --mutation resend
+1 canary_sync_shrink_capacity canary --scenario sync --mutation shrink_capacity
+1 canary_sync_watch_rewind canary --scenario sync --mutation watch_rewind
+1 canary_sync_broadcast_extra canary --scenario sync --mutation broadcast_extra
+1 canary_sync_ring_off_by_one canary --scenario sync --mutation ring_off_by_one
 '
 default_known='
 '

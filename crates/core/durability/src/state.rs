@@ -570,6 +570,7 @@ pub struct JournalState {
     sealed: SealedReceipts,
     unloaded: u64,
     staged: Vec<StoreRecord>,
+    sealing: Vec<OperationState>,
     inline_steers: bool,
 }
 
@@ -668,6 +669,9 @@ impl JournalState {
             .drain(..)
             .filter(|record| !known(&record.key))
             .collect();
+        for mut operation in std::mem::take(&mut self.sealing) {
+            operation.stage_unless(&mut records, known);
+        }
         for operation in self.operations.values_mut() {
             operation.stage_unless(&mut records, known);
         }
@@ -785,7 +789,8 @@ impl JournalState {
         for chunk in sealed.chunks(RECEIPT_LEAF) {
             for operation_id in chunk {
                 if let Some(operation) = self.operations.get_mut(operation_id) {
-                    operation.stage_unless(&mut self.staged, &|_| false);
+                    self.sealing.push((**operation).clone());
+                    operation.stage_unless(&mut Vec::new(), &|_| true);
                 }
             }
             let page = EncodedPayload::encode(&LeafPage {
@@ -1056,6 +1061,7 @@ impl JournalState {
             unloaded: sealed.count,
             sealed,
             staged: Vec::new(),
+            sealing: Vec::new(),
             inline_steers: false,
         };
         for (operation_id, operation) in &state.operations {

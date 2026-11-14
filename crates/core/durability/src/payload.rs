@@ -409,9 +409,12 @@ impl EncodedPayload {
                 Arc::new(Layout::of(content))
             }
             None => {
+                let mut value = String::with_capacity(1 + content.len());
+                value.push('=');
+                value.push_str(content);
                 records.push(crate::StoreRecord {
                     key: self.key().to_owned(),
-                    value: format!("={content}"),
+                    value,
                 });
                 return;
             }

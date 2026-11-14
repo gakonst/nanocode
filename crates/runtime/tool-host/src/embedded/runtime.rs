@@ -548,12 +548,11 @@ impl EmbeddedToolRuntime {
         context: ToolContext<'_>,
     ) -> Result<Option<CodeModeExecution>, CodeModeHostError> {
         match &self.host {
-            Some(host) => {
-                if host.tool_mode() == EmbeddedToolMode::CodeOnly {
-                    host.adopt(context, self.cell_tools()).await;
-                }
-                host.recover(context).await
+            Some(host) if host.tool_mode() == EmbeddedToolMode::CodeOnly => {
+                host.recover_with_local_tools(context, self.cell_tools())
+                    .await
             }
+            Some(host) => host.recover(context).await,
             None => Ok(None),
         }
     }

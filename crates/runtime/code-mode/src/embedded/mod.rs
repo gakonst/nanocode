@@ -267,6 +267,17 @@ pub trait CodeModeHost: Send + Sync + 'static {
         Box::pin(async {})
     }
 
+    fn recover_with_local_tools<'a>(
+        &'a self,
+        context: ToolContext<'a>,
+        tools: Vec<std::sync::Arc<dyn crate::Tool>>,
+    ) -> HostFuture<'a, Result<Option<CodeModeExecution>, CodeModeHostError>> {
+        Box::pin(async move {
+            self.adopt(context, tools).await;
+            self.recover(context).await
+        })
+    }
+
     fn route_hands(&self, _name: &str, _hands: std::sync::Arc<dyn HandCalls>) {}
 
     fn describe(&self) -> Option<crate::remote::HandDescription> {
@@ -436,6 +447,13 @@ impl<T: CodeModeHost + ?Sized> CodeModeHost for std::sync::Arc<T> {
         tools: Vec<std::sync::Arc<dyn crate::Tool>>,
     ) -> HostFuture<'a, ()> {
         (**self).adopt(context, tools)
+    }
+    fn recover_with_local_tools<'a>(
+        &'a self,
+        context: ToolContext<'a>,
+        tools: Vec<std::sync::Arc<dyn crate::Tool>>,
+    ) -> HostFuture<'a, Result<Option<CodeModeExecution>, CodeModeHostError>> {
+        (**self).recover_with_local_tools(context, tools)
     }
     fn route_hands(&self, name: &str, hands: std::sync::Arc<dyn HandCalls>) {
         (**self).route_hands(name, hands);

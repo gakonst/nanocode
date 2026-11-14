@@ -624,6 +624,7 @@ impl CodeModeExecutors {
                 state.selections.remove(session_id);
             }
         });
+        self.changed.notify_waiters();
     }
 
     pub fn select_prompt_hand(&self, session_id: &str, sender: Option<&str>) {
@@ -658,6 +659,7 @@ impl CodeModeExecutors {
                 }
             }
         });
+        self.changed.notify_waiters();
     }
 
     #[must_use]
@@ -1018,7 +1020,7 @@ impl CodeModeHost for CodeModeExecutors {
             if let Placement::Hand(HandRoute {
                 name,
                 host: Some(host),
-            }) = self.placement(context.session_id())
+            }) = self.ready_placement(context.session_id()).await
             {
                 routes.push((name, host));
             }
@@ -1058,6 +1060,18 @@ impl CodeModeHost for CodeModeExecutors {
             for host in hosts {
                 host.adopt(context, tools.clone()).await;
             }
+        })
+    }
+
+    fn recover_with_local_tools<'a>(
+        &'a self,
+        context: ToolContext<'a>,
+        tools: Vec<Arc<dyn Tool>>,
+    ) -> HostFuture<'a, Result<Option<CodeModeExecution>, CodeModeHostError>> {
+        Box::pin(async move {
+            self.ready_placement(context.session_id()).await;
+            self.adopt(context, tools).await;
+            self.recover(context).await
         })
     }
 

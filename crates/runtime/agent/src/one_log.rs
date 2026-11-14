@@ -416,8 +416,9 @@ impl OneLog {
             seq: first,
             turn: Some(id.to_owned()),
         })?;
-        if durable {
-            lease.commit(Point::Admission).await?;
+        if durable && let Err(error) = lease.commit(Point::Admission).await {
+            lease.unadmit(id, first);
+            return Err(error);
         }
         let record = record_of(
             lease

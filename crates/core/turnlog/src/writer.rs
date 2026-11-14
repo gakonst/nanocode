@@ -432,6 +432,16 @@ impl Lease<'_> {
         Ok(())
     }
 
+    pub fn unadmit(&mut self, turn: &str, seq: u64) {
+        let writer = &mut *self.writer;
+        writer.buffer.retain(|record| match record {
+            Record::Admitted { turn: admitted, .. } => admitted != turn,
+            Record::Event { seq: event, .. } => *event != seq,
+            _ => true,
+        });
+        writer.fold.unadmit(turn, seq);
+    }
+
     #[must_use]
     pub fn floor_pending(&self) -> bool {
         self.writer.floor.is_some()

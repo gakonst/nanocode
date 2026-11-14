@@ -918,6 +918,7 @@ impl CodeModeExecutors {
         let places = self.wait_route(session_id);
         let remaining = places.len();
         let mut failure = self.unselected();
+        let mut lost = None;
         let mut missing = None;
         for (index, place) in places.into_iter().enumerate() {
             let Some(name) = place else {
@@ -934,17 +935,25 @@ impl CodeModeExecutors {
                 .wait_with_updates(input, context, &mut *observer as &mut dyn CodeModeObserver)
                 .await
             {
-                Ok(execution) if Self::missing_cell(&execution) && index + 1 < remaining => {
-                    missing = Some(execution);
+                Ok(execution)
+                    if Self::missing_cell(&execution)
+                        && (lost.is_some() || index + 1 < remaining) =>
+                {
+                    missing.get_or_insert(execution);
                 }
                 Ok(execution) => {
                     self.record(session_id, Some(&name), &execution);
                     return Ok(execution);
                 }
-                Err(error) => failure = error,
+                Err(error) => {
+                    lost.get_or_insert(error);
+                }
             }
         }
-        Ok(missing.unwrap_or_else(|| Self::failed(&failure)))
+        Ok(match lost {
+            Some(error) => Self::failed(&error),
+            None => missing.unwrap_or_else(|| Self::failed(&failure)),
+        })
     }
 }
 

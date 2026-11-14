@@ -280,6 +280,13 @@ impl Fold {
             .collect();
     }
 
+    pub(crate) fn unadmit(&mut self, id: &str, seq: u64) {
+        self.drop_turns(|turn| turn.id == id);
+        if let Some(position) = self.events.iter().rposition(|event| event.seq == seq) {
+            self.hot_bytes -= self.events.remove(position).event.get().len();
+        }
+    }
+
     pub(crate) fn retire(&mut self, keep: usize) -> usize {
         let mut finished = self
             .turns

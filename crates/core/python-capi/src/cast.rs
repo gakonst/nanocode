@@ -1,13 +1,13 @@
-use std::{collections::HashMap, ffi::c_int, mem::transmute_copy};
+use std::{ffi::c_int, mem::transmute_copy};
 
 use crate::module::arity_tables;
 
 thread_local! {
-    static PARAMS: HashMap<usize, usize> = collect();
+    static PARAMS: crate::address::AddressMap<usize> = collect();
 }
 
-fn collect() -> HashMap<usize, usize> {
-    let mut params = HashMap::new();
+fn collect() -> crate::address::AddressMap<usize> {
+    let mut params = crate::address::map();
     for table in arity_tables() {
         let mut at = table;
         loop {

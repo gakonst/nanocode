@@ -1,6 +1,5 @@
 use std::{
     cell::RefCell,
-    collections::HashMap,
     ffi::{CStr, c_char, c_int, c_long, c_longlong, c_ulong, c_ulonglong, c_void},
     mem::{offset_of, size_of},
     ptr::{null, null_mut},
@@ -1943,7 +1942,7 @@ pub extern "C" fn PyDict_Merge(pointer: *mut Object, other: *mut Object, replace
 }
 
 thread_local! {
-    static SNAPSHOTS: RefCell<HashMap<usize, Vec<(PyObjectRef, PyObjectRef)>>> = RefCell::new(HashMap::new());
+    static SNAPSHOTS: RefCell<crate::address::AddressMap<Vec<(PyObjectRef, PyObjectRef)>>> = const { RefCell::new(crate::address::map()) };
 }
 
 #[unsafe(no_mangle)]
@@ -3163,7 +3162,7 @@ pub extern "C" fn PyCapsule_IsValid(pointer: *mut Object, capsule_name: *const c
 }
 
 thread_local! {
-    static FUNCTIONS: RefCell<HashMap<usize, (usize, usize)>> = RefCell::new(HashMap::new());
+    static FUNCTIONS: RefCell<crate::address::AddressMap<(usize, usize)>> = const { RefCell::new(crate::address::map()) };
 }
 
 #[unsafe(no_mangle)]

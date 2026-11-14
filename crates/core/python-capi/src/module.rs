@@ -1,6 +1,5 @@
 use std::{
     cell::RefCell,
-    collections::HashMap,
     ffi::{c_char, c_int, c_void},
     ptr::null_mut,
 };
@@ -25,8 +24,8 @@ pub struct Extension {
 include!(concat!(env!("OUT_DIR"), "/extensions.rs"));
 
 thread_local! {
-    static MODULES: RefCell<HashMap<usize, usize>> = RefCell::new(HashMap::new());
-    static STATES: RefCell<HashMap<usize, usize>> = RefCell::new(HashMap::new());
+    static MODULES: RefCell<crate::address::AddressMap<usize>> = const { RefCell::new(crate::address::map()) };
+    static STATES: RefCell<crate::address::AddressMap<usize>> = const { RefCell::new(crate::address::map()) };
     static CONTEXT: std::cell::Cell<Option<&'static str>> = const { std::cell::Cell::new(None) };
 }
 

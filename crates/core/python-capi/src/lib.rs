@@ -7,6 +7,7 @@
 )]
 
 mod abi;
+mod address;
 pub mod api;
 mod bridge;
 mod buffer;

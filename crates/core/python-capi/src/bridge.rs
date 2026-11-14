@@ -1,6 +1,5 @@
 use std::{
     cell::{Cell, RefCell, UnsafeCell},
-    collections::{HashMap, HashSet},
     ffi::{CStr, CString, c_char, c_int, c_ulong},
     mem::{offset_of, size_of},
     ptr::{NonNull, addr_of, null, null_mut},
@@ -258,10 +257,10 @@ thread_local! {
     static DEPTH: Cell<usize> = const { Cell::new(0) };
     static READY: Cell<bool> = const { Cell::new(false) };
     static ERROR: RefCell<Option<PyBaseExceptionRef>> = const { RefCell::new(None) };
-    static PROXIES: RefCell<HashMap<usize, usize>> = RefCell::new(HashMap::new());
-    static STATIC_TYPES: RefCell<HashMap<usize, PyTypeRef>> = RefCell::new(HashMap::new());
-    static C_TYPES: RefCell<HashMap<usize, usize>> = RefCell::new(HashMap::new());
-    static PROXY_TYPES: RefCell<HashSet<usize>> = RefCell::new(HashSet::new());
+    static PROXIES: RefCell<crate::address::AddressMap<usize>> = const { RefCell::new(crate::address::map()) };
+    static STATIC_TYPES: RefCell<crate::address::AddressMap<PyTypeRef>> = const { RefCell::new(crate::address::map()) };
+    static C_TYPES: RefCell<crate::address::AddressMap<usize>> = const { RefCell::new(crate::address::map()) };
+    static PROXY_TYPES: RefCell<crate::address::AddressSet> = const { RefCell::new(crate::address::set()) };
     static QUEUE: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
 }
 

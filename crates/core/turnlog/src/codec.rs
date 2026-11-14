@@ -11,6 +11,10 @@ const DEFAULT_LEVEL: i32 = -1;
 const STREAM_LEVEL: i32 = 7;
 const DEFAULT_MEM_LEVEL: i32 = 8;
 const FINAL_EMPTY_BLOCK: [u8; 2] = [0x03, 0x00];
+const EMPTY_STORED_BLOCK: [u8; 5] = [0x00, 0x00, 0x00, 0xff, 0xff];
+const BASE64_GROUP: usize = 3;
+const BASE64_CHARS: usize = 4;
+pub(crate) const SEAL: usize = (FINAL_EMPTY_BLOCK.len() * BASE64_CHARS).div_ceil(BASE64_GROUP);
 
 pub(crate) const ARCHIVE: char = 'a';
 pub(crate) const RECORDS: char = 'r';
@@ -121,9 +125,18 @@ impl Stream {
                 return Err(failed("compression", "no progress"));
             }
         }
+        while !compressed.len().is_multiple_of(BASE64_GROUP) {
+            compressed.extend_from_slice(&EMPTY_STORED_BLOCK);
+        }
         compressed.extend_from_slice(&FINAL_EMPTY_BLOCK);
         Ok(encode(tag, &compressed))
     }
+}
+
+pub(crate) fn extensible(body: &str) -> bool {
+    body.starts_with(RECORDS)
+        && body.len() > 1 + SEAL
+        && (body.len() - 1 - SEAL).is_multiple_of(BASE64_CHARS)
 }
 
 pub(crate) fn unpack(text: &str, dictionary: &[u8]) -> Result<Vec<u8>, StoreError> {

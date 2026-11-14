@@ -66,11 +66,12 @@ pub enum TurnMutation {
     SealSkipped,
     SnapshotKept,
     SnapshotRowsIgnored,
+    TailRowsAppended,
     TickNotAtomic,
 }
 
 impl TurnMutation {
-    const ALL: [Self; 13] = [
+    const ALL: [Self; 14] = [
         Self::None,
         Self::AckBufferedAdmission,
         Self::ArchiveDropsEvents,
@@ -83,6 +84,7 @@ impl TurnMutation {
         Self::SealSkipped,
         Self::SnapshotKept,
         Self::SnapshotRowsIgnored,
+        Self::TailRowsAppended,
         Self::TickNotAtomic,
     ];
 
@@ -106,6 +108,7 @@ impl TurnMutation {
             Self::SealSkipped => "seal_skipped",
             Self::SnapshotKept => "snapshot_kept",
             Self::SnapshotRowsIgnored => "snapshot_rows_ignored",
+            Self::TailRowsAppended => "tail_rows_appended",
             Self::TickNotAtomic => "tick_not_atomic",
         }
     }
@@ -1200,6 +1203,7 @@ impl Sim {
                     self.options.state_bytes,
                     self.options.mutation == TurnMutation::SnapshotKept,
                     self.options.mutation == TurnMutation::ArchiveDropsEvents,
+                    self.options.mutation != TurnMutation::TailRowsAppended,
                 )
                 .single_snapshot(self.options.reopen_row_limit.is_none()),
             ),
@@ -1584,22 +1588,7 @@ impl Sim {
             self.drop_tick(tick, "commit failed");
             return false;
         }
-        self.apply(&tick, &appends, &staged, &tappends);
-        self.disk.with(|rows| {
-            for (scope, archived, dropped) in &compactions {
-                let mut stored = rows
-                    .committed(scope)
-                    .into_iter()
-                    .collect::<BTreeMap<_, _>>();
-                crate::disk::compact(&mut stored, archived, dropped);
-                rows.tlog.retain(|(owner, _), _| owner != scope);
-                rows.tlog.extend(
-                    stored
-                        .into_iter()
-                        .map(|(seq, body)| ((scope.clone(), seq), body)),
-                );
-            }
-        });
+        self.apply(&tick, &appends, &staged, &tappends, &compactions);
         let after = if self.rng.crash.chance(self.shape.crash_after_ppm) {
             Some("crash after commit")
         } else if self.rng.faults.chance(self.profile.after_ppm) {
@@ -1624,7 +1613,7 @@ impl Sim {
                 files: tick.files.clone(),
                 ..Tick::default()
             };
-            self.apply(&partial, &[], &[], &[]);
+            self.apply(&partial, &[], &[], &[], &[]);
         }
         self.release(tick.outputs, false);
         self.down(cause);
@@ -1636,6 +1625,7 @@ impl Sim {
         appends: &[(u64, String, String)],
         staged: &[(String, u64, String)],
         tappends: &[(String, u64, String)],
+        compactions: &[crate::disk::Compacted],
     ) {
         let rows: Vec<String> = appends
             .iter()
@@ -1651,6 +1641,19 @@ impl Sim {
             }
             for (scope, seq, body) in tappends {
                 rows.tlog.insert((scope.clone(), *seq), body.clone());
+            }
+            for (scope, archived, dropped) in compactions {
+                let mut stored = rows
+                    .committed(scope)
+                    .into_iter()
+                    .collect::<BTreeMap<_, _>>();
+                crate::disk::compact(&mut stored, archived, dropped);
+                rows.tlog.retain(|(owner, _), _| owner != scope);
+                rows.tlog.extend(
+                    stored
+                        .into_iter()
+                        .map(|(seq, body)| ((scope.clone(), seq), body)),
+                );
             }
         });
         let fresh: BTreeSet<(String, u64)> = tappends

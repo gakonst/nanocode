@@ -10,7 +10,7 @@ use std::{
 use nanocode::{
     backend::Prompt,
     session_host::{Submission, TurnState},
-    turnlog::{LogHost, OneLog, OneLogStore, Policy},
+    turnlog::{Extension, LogHost, OneLog, OneLogStore, Policy},
 };
 use nanocode_code_mode::code_mode::{
     CELL_JOURNAL_VERSION, CellJournal, CellJournalHeader, CellJournalSink, CellJournalUpdate,
@@ -55,7 +55,8 @@ impl Kind {
         let admission = if buffered { 0 } else { 1 };
         match self {
             Self::Sync | Self::ReadOnly => 1 + admission,
-            Self::Timer | Self::External => 2 + admission,
+            Self::Timer => 2 + admission,
+            Self::External => 3 + admission,
         }
     }
 
@@ -235,6 +236,48 @@ impl LogHost for CellHost {
                 Ok(())
             }
         })
+    }
+
+    fn extend<'a>(
+        &'a self,
+        _scope: &'a str,
+        extension: Extension<'a>,
+    ) -> Option<StoreFuture<'a, Result<(), StoreError>>> {
+        let refused = self.dead() || self.armed.swap(false, Ordering::SeqCst);
+        if refused {
+            self.kill();
+            return Some(Box::pin(async {
+                Err(StoreError::Backend(
+                    "the simulated host died before this row landed".to_owned(),
+                ))
+            }));
+        }
+        let taken = self.rows.update(|stored| {
+            if stored.contains_key(&extension.seq) {
+                return true;
+            }
+            let Some(body) = stored.remove(&extension.row) else {
+                return true;
+            };
+            let kept = body.len().checked_sub(extension.cut).unwrap_or_else(|| {
+                panic!("turn log row {} is shorter than its seal", extension.row)
+            });
+            stored.insert(
+                extension.seq,
+                format!("{}{}", &body[..kept], extension.tail),
+            );
+            false
+        });
+        if !taken {
+            self.appends.fetch_add(1, Ordering::SeqCst);
+        }
+        Some(Box::pin(async move {
+            if taken {
+                Err(StoreError::Fenced)
+            } else {
+                Ok(())
+            }
+        }))
     }
 }
 
@@ -446,6 +489,7 @@ impl Cells {
                 restarts: RESTART_CAP,
                 retain_finished: self.options.retain,
                 snapshot_ratio: self.options.snapshot_ratio,
+                snapshot_rows: self.options.snapshot_rows,
                 ..Policy::default()
             };
             let host: Arc<dyn LogHost> = Arc::clone(&self.host) as Arc<dyn LogHost>;

@@ -1,11 +1,11 @@
-use std::sync::Arc;
+use std::{borrow::Cow, sync::Arc};
 
 use nanocode_durability_core::StoreError;
 use nanocode_sync::{Held, Owned};
 
 use crate::{
-    Compaction, Event, Fold, LogHost, Record,
-    codec::{self, ARCHIVE, BOUNDARY, History, PART, RECORDS, SNAPSHOT, Stream, WINDOW},
+    Compaction, Event, Extension, Fold, LogHost, Record,
+    codec::{self, ARCHIVE, BOUNDARY, History, PART, RECORDS, SEAL, SNAPSHOT, Stream, WINDOW},
 };
 
 pub const EVENT_GAP: u64 = 1 << 14;
@@ -181,6 +181,11 @@ impl Previous {
     }
 }
 
+struct TailRow {
+    bytes: usize,
+    seq: u64,
+}
+
 struct Writer {
     buffer: Vec<Record>,
     check: usize,
@@ -194,6 +199,7 @@ struct Writer {
     stats: Stats,
     stream: Option<Stream>,
     tail: usize,
+    tail_row: Option<TailRow>,
     tail_rows: usize,
     tried: Option<(usize, usize)>,
 }
@@ -226,11 +232,33 @@ impl TurnLog {
         let scope = scope.into();
         let stored = host.load(&scope).await?;
         let next = stored.last().map_or(1, |(seq, _)| seq + 1);
-        let tail_rows = stored
-            .iter()
-            .rev()
-            .take_while(|(_, body)| !body.starts_with(SNAPSHOT))
-            .count();
+        let tail_rows = usize::try_from(
+            match stored
+                .iter()
+                .rposition(|(_, body)| body.starts_with(SNAPSHOT))
+            {
+                Some(index) => next - 1 - stored[index].0,
+                None => stored.first().map_or(0, |(first, _)| next - first),
+            },
+        )
+        .map_err(|error| StoreError::Backend(format!("turn log tail row count: {error}")))?;
+        let decoded = rows(&stored)?;
+        let tail_row = match (stored.last(), decoded.last()) {
+            (Some((seq, body)), Some(row))
+                if row.seq == *seq
+                    && codec::extensible(body)
+                    && !row
+                        .records()?
+                        .iter()
+                        .any(|record| matches!(record, Record::Recovery { .. })) =>
+            {
+                Some(TailRow {
+                    bytes: body.len(),
+                    seq: *seq,
+                })
+            }
+            _ => None,
+        };
         let mut fold = Fold::default();
         let mut history = History::default();
         let (mut snapshot, mut tail) = (0, 0);
@@ -238,7 +266,7 @@ impl TurnLog {
         if let Some((first, _)) = stored.first() {
             fold.start_segment(*first);
         }
-        for row in rows(&stored)? {
+        for row in decoded {
             if row.snapshot {
                 fold = Fold::default();
                 fold.start_segment(row.seq);
@@ -299,6 +327,7 @@ impl TurnLog {
                 },
                 stream: None,
                 tail,
+                tail_row,
                 tail_rows,
                 tried: None,
             }),
@@ -472,7 +501,15 @@ impl Lease<'_> {
             Some(stream) => stream,
             None => Stream::new(writer.history.bytes())?,
         };
-        let body = stream.pack(RECORDS, &plain)?;
+        let framed = if self.rows.is_some() && recovered.is_empty() && writer.tail_row.is_some() {
+            let mut framed = Vec::with_capacity(plain.len() + 1);
+            framed.push(b'\n');
+            framed.extend_from_slice(&plain);
+            Cow::Owned(framed)
+        } else {
+            Cow::Borrowed(plain.as_slice())
+        };
+        let body = stream.pack(RECORDS, &framed)?;
         let keep = writer
             .buffer
             .iter()
@@ -541,8 +578,35 @@ impl Lease<'_> {
                 .map(|rows| (rows, previous.seq, previous.parts)),
             _ => None,
         };
-        match &archived {
-            Some((rows, from, parts)) => {
+        let extension = match (&snapshot, &boundary, &writer.tail_row) {
+            (None, None, Some(tail))
+                if self.rows.is_some()
+                    && recovered.is_empty()
+                    && stored.len() == 1
+                    && self
+                        .limit
+                        .is_none_or(|limit| tail.bytes - SEAL + body.len() - 1 <= limit) =>
+            {
+                Some((
+                    Extension {
+                        cut: SEAL,
+                        row: tail.seq,
+                        seq,
+                        tail: &body[1..],
+                    },
+                    tail.bytes - SEAL + body.len() - 1,
+                ))
+            }
+            _ => None,
+        };
+        let (extending, extended) = match extension {
+            Some((extension, merged)) => (self.host.extend(self.scope, extension), Some(merged)),
+            None => (None, None),
+        };
+        let extended = extending.is_some().then_some(extended).flatten();
+        match (extending, &archived) {
+            (Some(extending), _) => extending.await?,
+            (None, Some((rows, from, parts))) => {
                 self.host
                     .append_compacting(
                         self.scope,
@@ -554,9 +618,21 @@ impl Lease<'_> {
                     )
                     .await?;
             }
-            None => self.host.append(self.scope, &stored).await?,
+            (None, None) => self.host.append(self.scope, &stored).await?,
         }
+        let added = if extended.is_some() {
+            body.len() - 1 - SEAL
+        } else {
+            bytes
+        };
         let writer = &mut *self.writer;
+        writer.tail_row = match (extended, &snapshot, &boundary) {
+            (Some(merged), _, _) => Some(TailRow { bytes: merged, seq }),
+            (None, None, None) if recovered.is_empty() && stored.len() == 1 => {
+                Some(TailRow { bytes, seq })
+            }
+            _ => None,
+        };
         writer.next = seq + stored.len() as u64;
         writer.fold.committed(seq);
         for turn in &recovered {
@@ -598,10 +674,12 @@ impl Lease<'_> {
                 if boundary.is_none() {
                     writer.stream = Some(stream);
                 }
-                writer.history.extend(&plain);
-                writer.tail += bytes;
+                writer
+                    .history
+                    .extend(if boundary.is_some() { &plain } else { &framed });
+                writer.tail += added;
                 writer.tail_rows += stored.len();
-                writer.stats.row_bytes += bytes as u64;
+                writer.stats.row_bytes += added as u64;
             }
         }
         match point {

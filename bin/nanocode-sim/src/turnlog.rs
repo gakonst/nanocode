@@ -9,7 +9,7 @@ use nanocode_durability_core::{StoreError, StoreFuture};
 use nanocode_sync::FutureExt;
 use nanocode_sys::base64::STANDARD_NO_PAD;
 use nanocode_turnlog::{
-    Compaction, EffectClass, LogHost, Outcome as LogOutcome, Phase, Point as LogPoint,
+    Compaction, EffectClass, Extension, LogHost, Outcome as LogOutcome, Phase, Point as LogPoint,
     Record as LogRecord, Status as LogStatus, TurnLog,
 };
 use serde_json::value::{RawValue, to_raw_value};
@@ -23,9 +23,11 @@ use crate::{
 };
 
 const WINDOW: usize = 1 << 15;
+const SEAL: usize = 3;
 
 pub struct SimHost {
     disk: Arc<Disk>,
+    extending: bool,
     kept: bool,
     limit: Option<usize>,
     short: bool,
@@ -81,6 +83,7 @@ impl SimHost {
     pub const fn new(disk: Arc<Disk>) -> Self {
         Self {
             disk,
+            extending: false,
             kept: false,
             limit: None,
             short: false,
@@ -201,6 +204,55 @@ impl LogHost for SimHost {
             }
         })
     }
+
+    fn extend<'a>(
+        &'a self,
+        scope: &'a str,
+        extension: Extension<'a>,
+    ) -> Option<StoreFuture<'a, Result<(), StoreError>>> {
+        if !self.extending {
+            return None;
+        }
+        let extended = self.disk.with(|disk| {
+            let Some((_, body)) = disk
+                .view(scope)
+                .into_iter()
+                .find(|(seq, _)| *seq == extension.row)
+            else {
+                return false;
+            };
+            let kept = body.len().checked_sub(extension.cut).unwrap_or_else(|| {
+                panic!("turn log row {} is shorter than its seal", extension.row)
+            });
+            let moved = [(
+                extension.seq,
+                format!("{}{}", &body[..kept], extension.tail),
+            )];
+            let inserted = disk.insert(scope, &moved);
+            if inserted {
+                disk.tcompactions.push((
+                    scope.to_owned(),
+                    Vec::new(),
+                    extension.row..extension.row + 1,
+                ));
+            }
+            inserted
+        });
+        Some(Box::pin(async move {
+            if extended {
+                Ok(())
+            } else {
+                Err(StoreError::Fenced)
+            }
+        }))
+    }
+}
+
+fn recovers(plain: &str) -> bool {
+    nanocode_turnlog::decode(plain)
+        .unwrap_or_else(|error| panic!("a turn log row does not decode: {error}"))
+        .iter()
+        .any(|record| matches!(record, LogRecord::Recovery { .. }))
 }
 
 pub fn padding(scope: &str, bytes: usize) -> String {
@@ -266,6 +318,7 @@ impl TurnLogPolicy {
             disk: Arc::clone(&disk),
             host: Arc::new(SimHost {
                 disk,
+                extending: true,
                 kept: false,
                 limit,
                 short: false,
@@ -284,10 +337,17 @@ impl TurnLogPolicy {
         }
     }
 
-    pub fn state_bytes(mut self, bytes: Option<usize>, kept: bool, short: bool) -> Self {
+    pub fn state_bytes(
+        mut self,
+        bytes: Option<usize>,
+        kept: bool,
+        short: bool,
+        extending: bool,
+    ) -> Self {
         self.state = bytes;
         self.host = Arc::new(SimHost {
             disk: Arc::clone(&self.disk),
+            extending,
             kept,
             limit: self.limit,
             short,
@@ -534,7 +594,39 @@ impl TurnDurability for TurnLogPolicy {
             revision: revision + 1,
             state: scope.to_owned(),
         }));
+        let viewed = self.rows.map(|_| self.disk.with(|rows| rows.view(scope)));
         let seq = refused(ready(lease.commit(log_point)));
+        if let Some(viewed) = viewed {
+            let stored = self.disk.with(|rows| rows.view(scope));
+            if let ([.., (row, previous)], [.., (_, written)]) =
+                (viewed.as_slice(), stored.as_slice())
+                && stored.len() == viewed.len() + 1
+                && written.starts_with('r')
+                && previous.starts_with('r')
+                && (previous.len() - 1 - SEAL).is_multiple_of(4)
+                && self
+                    .limit
+                    .is_none_or(|limit| previous.len() - SEAL + written.len() - 1 <= limit)
+            {
+                let start = stored
+                    .iter()
+                    .rposition(|(_, body)| body.starts_with('s'))
+                    .unwrap_or(0);
+                let decoded = nanocode_turnlog::rows(&stored[start..])
+                    .unwrap_or_else(|error| panic!("a turn log row does not decode: {error}"));
+                let plain = |seq: u64| {
+                    decoded
+                        .iter()
+                        .find(|stored| stored.seq == seq)
+                        .map(|stored| stored.plain.clone())
+                        .unwrap_or_default()
+                };
+                assert!(
+                    recovers(&plain(*row)) || recovers(&plain(seq)),
+                    "{scope} commit {seq} wrote a new row after row {row}, which it could extend"
+                );
+            }
+        }
         if let Some(keep) = self.retention {
             let finished = lease
                 .fold()
@@ -547,7 +639,40 @@ impl TurnDurability for TurnLogPolicy {
                 "{finished} finished turns stay in the fold past a retention of {keep}"
             );
         }
+        let attempts = |fold: &nanocode_turnlog::Fold| {
+            (
+                fold.recovering(),
+                fold.turns()
+                    .iter()
+                    .filter(|turn| !matches!(turn.phase, Phase::Finished { .. }))
+                    .map(|turn| (turn.id.clone(), fold.next_attempt(&turn.id)))
+                    .collect::<Vec<_>>(),
+            )
+        };
+        let live = self.rows.map(|_| attempts(lease.fold()));
         drop(lease);
+        if let Some(live) = live {
+            let reads = self.disk.with(|rows| rows.reads);
+            let reopened = refused(ready(TurnLog::open(Arc::clone(&self.host), scope)));
+            self.disk.with(|rows| rows.reads = reads);
+            let loaded = ready(reopened.read(|fold| {
+                (
+                    fold.recovering(),
+                    live.1
+                        .iter()
+                        .map(|(id, _)| (id.clone(), fold.next_attempt(id)))
+                        .collect::<Vec<_>>(),
+                )
+            }));
+            assert!(
+                (loaded.0, &loaded.1) == (live.0, &live.1),
+                "{scope} reloads recovering {} and attempts {:?} after commit {seq}, but its writer holds {} and {:?}",
+                loaded.0,
+                loaded.1,
+                live.0,
+                live.1
+            );
+        }
         self.unsealed.remove(scope);
         let after = ready(log.stats());
         let parts = after.parts - before.parts;

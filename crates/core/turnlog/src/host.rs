@@ -8,6 +8,13 @@ pub struct Compaction<'a> {
     pub dropped: Range<u64>,
 }
 
+pub struct Extension<'a> {
+    pub cut: usize,
+    pub row: u64,
+    pub seq: u64,
+    pub tail: &'a str,
+}
+
 pub trait LogHost: Send + Sync {
     fn scan<'a>(
         &'a self,
@@ -34,6 +41,14 @@ pub trait LogHost: Send + Sync {
         _compaction: Compaction<'a>,
     ) -> StoreFuture<'a, Result<(), StoreError>> {
         self.append(scope, rows)
+    }
+
+    fn extend<'a>(
+        &'a self,
+        _scope: &'a str,
+        _extension: Extension<'a>,
+    ) -> Option<StoreFuture<'a, Result<(), StoreError>>> {
+        None
     }
 }
 
@@ -62,6 +77,10 @@ const APPEND: Dialects = [
 const ARCHIVE: Dialects = [
     "UPDATE nanocode_log SET body = ?3 WHERE scope = ?1 AND seq = CAST(?2 AS INTEGER)",
     "UPDATE nanocode_log SET body = $3::text WHERE scope = $1::text AND seq = CAST($2::text AS BIGINT)",
+];
+const EXTEND: Dialects = [
+    "UPDATE nanocode_log SET seq = CAST(?3 AS INTEGER), body = substr(body, 1, length(body) - CAST(?4 AS INTEGER)) || ?5 WHERE scope = ?1 AND seq = CAST(?2 AS INTEGER) RETURNING CAST(seq AS TEXT)",
+    "UPDATE nanocode_log SET seq = CAST($3::text AS BIGINT), body = substr(body, 1, length(body) - CAST($4::text AS INTEGER)) || $5::text WHERE scope = $1::text AND seq = CAST($2::text AS BIGINT) RETURNING CAST(seq AS TEXT)",
 ];
 const DROP: Dialects = [
     "DELETE FROM nanocode_log WHERE scope = ?1 AND seq >= CAST(?2 AS INTEGER) AND seq < CAST(?3 AS INTEGER)",
@@ -205,6 +224,32 @@ impl<H: Sql + Send + Sync + ?Sized> LogHost for SqlLog<H> {
                 .map(drop)
         })
     }
+
+    fn extend<'a>(
+        &'a self,
+        scope: &'a str,
+        extension: Extension<'a>,
+    ) -> Option<StoreFuture<'a, Result<(), StoreError>>> {
+        Some(Box::pin(async move {
+            let (row, seq, cut) = (
+                extension.row.to_string(),
+                extension.seq.to_string(),
+                extension.cut.to_string(),
+            );
+            let statements = [SqlStatement {
+                sql: self.pick(&EXTEND),
+                params: vec![scope, &row, &seq, &cut, extension.tail],
+            }];
+            let rows = self
+                .host
+                .transaction("turn_log_extend", &statements)
+                .await?;
+            match rows.first() {
+                Some(moved) if !moved.is_empty() => Ok(()),
+                _ => Err(StoreError::Fenced),
+            }
+        }))
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -329,5 +374,36 @@ impl LogHost for MemoryLog {
             Ok(())
         });
         Box::pin(async move { result })
+    }
+
+    fn extend<'a>(
+        &'a self,
+        scope: &'a str,
+        extension: Extension<'a>,
+    ) -> Option<StoreFuture<'a, Result<(), StoreError>>> {
+        let scope = Arc::<str>::from(scope);
+        let result = self.memory.update(|memory| {
+            let moved = (Arc::clone(&scope), extension.seq);
+            if memory.rows.contains_key(&moved) {
+                return Err(StoreError::Fenced);
+            }
+            let row = (Arc::clone(&scope), extension.row);
+            let Some(body) = memory.rows.get(&row) else {
+                return Err(StoreError::Fenced);
+            };
+            let Some(kept) = body.len().checked_sub(extension.cut) else {
+                return Err(StoreError::Backend(format!(
+                    "turn log row {} is shorter than its {}-byte seal",
+                    extension.row, extension.cut
+                )));
+            };
+            let body = format!("{}{}", &body[..kept], extension.tail);
+            memory.rows.remove(&row);
+            memory.writes.rows += 1;
+            memory.writes.bytes += body.len() as u64;
+            memory.rows.insert(moved, Arc::from(body));
+            Ok(())
+        });
+        Some(Box::pin(async move { result }))
     }
 }

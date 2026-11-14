@@ -372,6 +372,7 @@ struct Outgoing {
     flushing: Arc<AtomicBool>,
     resumed: Arc<AtomicBool>,
     lost: Arc<AtomicBool>,
+    epoch: Arc<AtomicU64>,
 }
 
 impl Outgoing {
@@ -383,9 +384,11 @@ impl Outgoing {
             flushing: Arc::default(),
             resumed: Arc::default(),
             lost: Arc::default(),
+            epoch: Arc::default(),
         }
     }
     fn connect(&self, wire: mpsc::UnboundedSender<String>) {
+        self.epoch.fetch_add(1, Ordering::SeqCst);
         self.resumed.store(false, Ordering::SeqCst);
         self.wire.set(Some(wire));
     }
@@ -477,6 +480,9 @@ impl Outgoing {
         frame
             .encode(limit)
             .or_else(|issue| fit_images(frame, limit).ok_or(issue))
+    }
+    fn epoch(&self) -> u64 {
+        self.epoch.load(Ordering::SeqCst)
     }
     fn connected(&self) -> bool {
         self.wire.get().is_some()
@@ -797,6 +803,7 @@ struct Observer {
 impl CodeModeObserver for Observer {
     fn update(&mut self, update: CodeModeUpdate<'_>) {
         self.catalog.touch(update_call_id(&update));
+        self.calls.rebase(self.outgoing.epoch());
         let id = self.id;
         let sent = self.outgoing.send_or(
             &Frame::Update {
@@ -825,6 +832,7 @@ struct DetachedObserver {
 impl CodeModeObserver for DetachedObserver {
     fn update(&mut self, update: CodeModeUpdate<'_>) {
         self.catalog.touch(&self.origin_call_id);
+        self.calls.rebase(self.outgoing.epoch());
         let frame = |update| Frame::DetachedUpdate {
             session_id: self.session_id.clone(),
             origin_call_id: self.origin_call_id.clone(),
@@ -2593,6 +2601,7 @@ async fn run(
             result.map(|value| {
                 *status = Some(status_line(&value));
                 *full = resumable.then(|| SentCalls::new(compact).encode(&value));
+                observer.calls.rebase(outgoing.epoch());
                 Some(observer.calls.execution(value))
             })
         }
@@ -2607,6 +2616,7 @@ async fn run(
             }
             *status = Some(status_line(&execution));
             *full = resumable.then(|| SentCalls::new(compact).encode(&execution));
+            observer.calls.rebase(outgoing.epoch());
             Ok(Some(observer.calls.execution(execution)))
         }
         RemoteOperation::Call {

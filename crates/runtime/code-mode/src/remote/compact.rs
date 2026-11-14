@@ -280,6 +280,7 @@ pub struct SentCalls {
     asks: Option<Arc<Answers>>,
     started: HashSet<String>,
     completed: HashSet<String>,
+    epoch: u64,
 }
 
 impl SentCalls {
@@ -338,6 +339,14 @@ impl SentCalls {
             CodeModeUpdate::Notification(notification) => {
                 json!({"notification":{"call_id":notification.call_id,"text":notification.text}})
             }
+        }
+    }
+
+    pub fn rebase(&mut self, epoch: u64) {
+        if self.epoch != epoch {
+            self.epoch = epoch;
+            self.started.clear();
+            self.completed.clear();
         }
     }
 

@@ -119,11 +119,7 @@ async fn own<A: Authority>(
     let mut tick = interval_at(Instant::now() + reporting.every, reporting.every);
     tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
     loop {
-        tokio::select! {
-            count = counts.recv() => match count {
-                Some(count) => add(&reporting, &mut held, count),
-                None => return,
-            },
+        nanocode_sync::select! {
             _ = tick.tick() => {
                 let lost = lost.swap(0, Ordering::Relaxed);
                 if lost > 0 {
@@ -131,6 +127,10 @@ async fn own<A: Authority>(
                 }
                 report(&*authority, &reporting, &mut held, &mut pending).await;
             }
+            count = counts.recv() => match count {
+                Some(count) => add(&reporting, &mut held, count),
+                None => return,
+            },
         }
     }
 }

@@ -272,8 +272,7 @@ async fn exec(config: Config, prompt: Option<String>) -> Result<()> {
                 streamed |= write_event(&mut out, &event)?;
             }
             out.flush()?;
-            tokio::select! {
-                biased;
+            nanocode_sync::select! {
                 Some(event) = events.recv() => streamed |= write_event(&mut out, &event)?,
                 result = &mut result => break result?,
             }

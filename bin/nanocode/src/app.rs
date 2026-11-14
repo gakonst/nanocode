@@ -780,8 +780,7 @@ impl App {
                 scheduler.request_at(at);
             }
             let deadline = scheduler.deadline().map(tokio::time::Instant::from_std);
-            tokio::select! {
-                biased;
+            nanocode_sync::select! {
                 event = input.next() => {
                     match event {
                         Some(Ok(event)) => {

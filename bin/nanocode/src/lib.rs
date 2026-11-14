@@ -765,7 +765,7 @@ async fn hand(args: HandArgs) -> Result<()> {
         other => eprintln!("hand: {other:?}"),
     });
     tokio::pin!(run);
-    tokio::select! {
+    nanocode_sync::select! {
         result = &mut run => {
             let left = leave_reader();
             result?;

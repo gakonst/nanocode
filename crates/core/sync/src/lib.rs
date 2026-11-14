@@ -11,6 +11,8 @@ mod map;
 mod ordered;
 #[cfg(not(target_family = "wasm"))]
 mod reentry;
+#[doc(hidden)]
+pub mod select;
 #[cfg(not(target_family = "wasm"))]
 mod session;
 mod shared;

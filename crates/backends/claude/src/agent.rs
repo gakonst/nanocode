@@ -3815,8 +3815,7 @@ async fn defer_turn(
                 break Err((cancellation.interruption(automatic), false));
             }
 
-            let admission = tokio::select! {
-                biased;
+            let admission = nanocode_sync::select! {
                 () = cancellation.cancelled() => break Err((cancellation.interruption(automatic), false)),
                 admission = state.admission.enter() => admission,
             };
@@ -3856,8 +3855,7 @@ async fn defer_turn(
                     let blocked = error.execution_policy_disposition()
                         == Some(nanocode_agent_core::ExecutionPolicyDisposition::Retry);
                     if blocked && state.local_blocker(order) {
-                        tokio::select! {
-                            biased;
+                        nanocode_sync::select! {
                             () = cancellation.cancelled() => {}
                             () = retired.as_mut() => {}
                         }
@@ -5466,8 +5464,7 @@ impl State {
                     None => client.stream_prepared(&wire).await,
                 }
             };
-            let opened = tokio::select! {
-                biased;
+            let opened = nanocode_sync::select! {
                 () = cancel.cancelled() => {
                     telemetry::cancel_attempt(&attempt_span);
                     return Err(ResponseFailure { error: NanocodeError::TurnCancelled, recovery });
@@ -5501,8 +5498,7 @@ impl State {
                     let mut tool_blocks: HashMap<usize, (String, String)> = HashMap::new();
                     loop {
                         let receive_started = nanocode_platform::now();
-                        let mut next = tokio::select! {
-                            biased;
+                        let mut next = nanocode_sync::select! {
                             () = &mut cancelled => {
                                 telemetry::cancel_attempt(&attempt_span);
                                 return Err(ResponseFailure { error: NanocodeError::TurnCancelled, recovery });
@@ -5842,8 +5838,7 @@ impl State {
             }
             waited += delay;
 
-            tokio::select! {
-                biased;
+            nanocode_sync::select! {
                 () = cancel.cancelled() => {}
                 () = sleep(delay) => {}
             }
@@ -5860,8 +5855,7 @@ impl State {
             cancel.cancel();
         }
         let mut conversation = if self.policy.is_none() {
-            tokio::select! {
-                biased;
+            nanocode_sync::select! {
                 () = cancel.cancelled() => return Err(NanocodeError::TurnCancelled),
                 conversation = self.conversation.acquire() => conversation,
             }
@@ -5994,8 +5988,7 @@ impl State {
             let settled = cleanup(ClaudeToolProgress(sender));
             tokio::pin!(settled);
             loop {
-                tokio::select! {
-                    biased;
+                nanocode_sync::select! {
                     Some(update) = updates.recv() => live.publish(update),
                     () = &mut settled => break,
                 }
@@ -6706,8 +6699,7 @@ impl State {
             return Ok(None);
         };
         let invocation = self.invocation(id, events, cursor);
-        let reply = tokio::select! {
-            biased;
+        let reply = nanocode_sync::select! {
             reply = recovery(name, invocation) => reply,
             () = cancel.cancelled() => return Ok(None),
         };
@@ -6781,8 +6773,7 @@ impl State {
             invocation.progress = Some(ClaudeToolProgress(sender));
             let mut call = handler(input.clone(), invocation);
             let outcome = loop {
-                tokio::select! {
-                    biased;
+                nanocode_sync::select! {
                     Some(update) = updates.recv() => live.publish(update),
                     outcome = &mut call => break Some(outcome),
                     () = cancel.cancelled() => {
@@ -6816,8 +6807,7 @@ impl State {
                         }
                     };
                     loop {
-                        tokio::select! {
-                            biased;
+                        nanocode_sync::select! {
                             Some(update) = updates.recv() => {
                                 stopped_unknown |= update.outcome_unknown();
                                 collect(&update);
@@ -6984,8 +6974,7 @@ impl State {
             instruction_revision: cursor.instruction_revision,
             event,
         };
-        tokio::select! {
-            biased;
+        nanocode_sync::select! {
             result = crate::hooks::run_lifecycle_hooks(&self.tool_hooks, &invocation, self.policy.as_deref()) => result,
             () = cancel.cancelled() => Err(NanocodeError::TurnCancelled),
         }

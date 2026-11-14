@@ -19,8 +19,7 @@ pub async fn prompt(
     let mut result = std::pin::pin!(agent.prompt(request).await?.result());
     let mut printer = Printer::default();
     let result = loop {
-        tokio::select! {
-            biased;
+        nanocode_sync::select! {
             Some(event) = events.recv() => printer.event(&event)?,
             result = &mut result => break result?,
         }

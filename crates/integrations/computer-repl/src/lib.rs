@@ -818,8 +818,7 @@ async fn run_session(
             let output = output(value).map_err(Failure::Unknown)?;
             Ok::<_, Failure>((process, output))
         };
-        let outcome = tokio::select! {
-            biased;
+        let outcome = nanocode_sync::select! {
             () = response.closed() => {
                 turns.clear();
                 interrupted = !config.restart_after_failure;

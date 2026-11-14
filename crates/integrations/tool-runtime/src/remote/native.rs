@@ -206,8 +206,7 @@ async fn read_live<S: Stream<Item = Result<Message, nanocode_websocket::Error>> 
     liveness: &Liveness,
     watchdog: std::pin::Pin<&mut impl std::future::Future<Output = ()>>,
 ) -> Result<Option<String>, CodeModeHostError> {
-    tokio::select! {
-        biased;
+    nanocode_sync::select! {
         text = read_text(socket, liveness) => text,
         () = watchdog => Err(error(UNRESPONSIVE)),
     }
@@ -576,7 +575,15 @@ fn writer<S: Sink<Message, Error = nanocode_websocket::Error> + Unpin + Send + '
         let mut heartbeat = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
         heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
-            tokio::select! {
+            nanocode_sync::select! {
+                _ = heartbeat.tick() => {
+                    let started_us = liveness.elapsed_us();
+                    tokio::time::timeout(policy.request_timeout, sink.send(Message::Ping(Default::default())))
+                        .await
+                        .map_err(|_| error("remote write deadline elapsed"))?
+                        .map_err(error)?;
+                    liveness.probe_sent(started_us);
+                }
                 frame = rx.recv() => match frame {
                     Some(frame) => {
                         let mut frames = vec![frame];
@@ -598,14 +605,6 @@ fn writer<S: Sink<Message, Error = nanocode_websocket::Error> + Unpin + Send + '
                         return Ok(());
                     }
                 },
-                _ = heartbeat.tick() => {
-                    let started_us = liveness.elapsed_us();
-                    tokio::time::timeout(policy.request_timeout, sink.send(Message::Ping(Default::default())))
-                        .await
-                        .map_err(|_| error("remote write deadline elapsed"))?
-                        .map_err(error)?;
-                    liveness.probe_sent(started_us);
-                }
             }
         }
     });
@@ -853,8 +852,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + 'static> RemoteLink for SocketLi
             let Some(task) = writer.as_mut() else {
                 return Err(error(LOCAL_CLOSED));
             };
-            let received = tokio::select! {
-                biased;
+            let received = nanocode_sync::select! {
                 () = self.stopped.wait() => Received::Stopped,
                 result = &mut task.0 => Received::Written(result),
                 frame = read(socket, &self.liveness) => Received::Frame(frame),
@@ -1303,7 +1301,7 @@ async fn serve_link<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     let mut open = true;
     let result = async {
         loop {
-            tokio::select! {
+            nanocode_sync::select! {
                 result = &mut writer.0 => return result.map_err(error)?.map(|()| false),
                 () = liveness.heard.wait(), if heard.is_some() => {
                     if role == Role::Standby {

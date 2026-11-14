@@ -390,8 +390,7 @@ async fn initialize_and_run(
     closed_tx: watch::Sender<Option<Result<(), AttachmentError>>>,
 ) {
     let prepare_started = std::time::Instant::now();
-    let runtime = tokio::select! {
-        biased;
+    let runtime = nanocode_sync::select! {
         command = command_rx.recv() => {
             debug_assert!(matches!(command, Some(driver::Command::Detach) | None));
             let _ = status_tx.send(AttachmentStatus::Disconnected);
@@ -529,7 +528,7 @@ impl Attachment {
                 AttachmentStatus::Fenced => return self.closed().await,
                 _ => {}
             }
-            tokio::select! {
+            nanocode_sync::select! {
                 changed = status.changed() => if changed.is_err() { return self.closed().await },
                 result = self.closed() => return result,
             }

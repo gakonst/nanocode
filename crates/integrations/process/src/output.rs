@@ -110,9 +110,9 @@ pub(super) async fn drain<P: AsyncRead + Ready + Unpin + Send + 'static>(
     let open = pipe.open();
     let mut buffer = [0_u8; READ_BUFFER_LENGTH];
     loop {
-        let read = tokio::select! {
-            read = pipe.read(&mut buffer) => read,
+        let read = nanocode_sync::select! {
             () = exited.wait() => break,
+            read = pipe.read(&mut buffer) => read,
         };
         match read {
             Ok(0) => return,

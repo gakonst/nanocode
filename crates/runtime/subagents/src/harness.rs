@@ -488,8 +488,7 @@ impl Harness {
     async fn next_event(&mut self) -> HarnessEvent {
         let Some(active) = self.active.as_mut() else {
             if self.pending_deferred.is_empty() && self.pending_urgent.is_empty() {
-                return tokio::select! {
-                    biased;
+                return nanocode_sync::select! {
                     command = self.commands.recv() => HarnessEvent::Command(command),
                     urgent = self.urgent.recv() => HarnessEvent::Urgent(urgent),
                     deferred = self.deferred.recv() => HarnessEvent::Deferred(deferred),
@@ -498,8 +497,7 @@ impl Harness {
             let waiting = self
                 .waiting
                 .get_or_insert_with(|| self.capacity.acquire(Waiter::Resident));
-            return tokio::select! {
-                biased;
+            return nanocode_sync::select! {
                 command = self.commands.recv() => HarnessEvent::Command(command),
                 urgent = self.urgent.recv() => HarnessEvent::Urgent(urgent),
                 deferred = self.deferred.recv() => HarnessEvent::Deferred(deferred),
@@ -518,8 +516,7 @@ impl Harness {
                 None => std::future::pending().await,
             }
         };
-        tokio::select! {
-            biased;
+        nanocode_sync::select! {
             command = self.commands.recv() => HarnessEvent::Command(command),
             urgent = self.urgent.recv() => HarnessEvent::Urgent(urgent),
 

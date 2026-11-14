@@ -293,7 +293,7 @@ impl Runner {
                 tokio::pin!(exchanged, serving);
                 let mut served = false;
                 loop {
-                    tokio::select! {
+                    nanocode_sync::select! {
                         ran = &mut exchanged => break ran,
                         failure = &mut serving, if !served => {
                             served = true;
@@ -428,7 +428,7 @@ async fn exchange(
         };
         drop(stdin);
         let exited = timeout(within, async {
-            tokio::select! {
+            nanocode_sync::select! {
                 status = child.wait() => Some(status),
                 () = overflow.wait() => None,
             }
@@ -436,7 +436,7 @@ async fn exchange(
         .await;
         (wrote, exited)
     };
-    tokio::select! {
+    nanocode_sync::select! {
         ran = ran => Ok(ran),
         stop = watch => Err(stop),
     }

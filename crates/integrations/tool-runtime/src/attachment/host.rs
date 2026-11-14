@@ -260,7 +260,7 @@ impl RemoteRunner {
             let mut failure = self.inner.failure.subscribe();
             let timeout_ms = self.inner.state.read(|state| state.call_timeout_ms);
             let wait = async {
-                tokio::select! {
+                nanocode_sync::select! {
                     result = catalog.wait_for(Option::is_some) => result.map_err(|_| AttachmentError::Closed)?.clone().ok_or(AttachmentError::Closed),
                     result = failure.wait_for(Option::is_some) => Err(result.map_err(|_| AttachmentError::Closed)?.clone().unwrap_or(AttachmentError::Closed)),
                 }
@@ -368,7 +368,7 @@ impl RemoteRunner {
         }
         let mut draining = false;
         loop {
-            tokio::select! {
+            nanocode_sync::select! {
                 command = outbound.recv(), if !draining => {
                     let Some(command) = command else { return Ok(()) };
                     let frame = match command {
@@ -1078,7 +1078,8 @@ impl RunnerHost {
 async fn accept_runners(listener: TcpListener, runners: Runners) {
     let mut connections = tokio::task::JoinSet::new();
     loop {
-        tokio::select! {
+        nanocode_sync::select! {
+            Some(_) = connections.join_next(), if !connections.is_empty() => {}
             accepted = listener.accept() => match accepted {
                 Ok((stream, _)) => {
                     nanocode_platform::spawn_joined(&mut connections, serve_socket(stream, Arc::clone(&runners)));
@@ -1087,7 +1088,6 @@ async fn accept_runners(listener: TcpListener, runners: Runners) {
                     nanocode_trace::warn!(target: "nanocode_code_mode::attachment", %error, "runner host accept failed");
                 }
             },
-            Some(_) = connections.join_next(), if !connections.is_empty() => {}
         }
     }
 }

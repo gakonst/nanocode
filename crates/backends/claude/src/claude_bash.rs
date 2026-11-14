@@ -557,8 +557,7 @@ impl Jobs {
                 outcome
             };
             tokio::pin!(finished);
-            let outcome = tokio::select! {
-                biased;
+            let outcome = nanocode_sync::select! {
                 outcome = &mut finished => outcome,
                 () = stall(&job, &binding) => finished.await,
             };
@@ -763,7 +762,7 @@ impl BashExecutor for LocalBash {
                         Err(_) => std::future::pending().await,
                     }
                 };
-                let result = tokio::select! {
+                let result = nanocode_sync::select! {
                     result = run(
                         executor.as_ref(),
                         &workspace,

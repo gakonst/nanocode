@@ -1502,17 +1502,17 @@ async fn due(sleep: &mut Option<HostFuture<'static, ()>>) {
 async fn drive(mut state: State, mut inbox: mpsc::UnboundedReceiver<Event>) {
     loop {
         state.publish();
-        tokio::select! {
-            event = inbox.recv() => match event {
-                Some(event) => state.event(event).await,
-                None => break,
-            },
+        nanocode_sync::select! {
             Some(done) = state.results.recv() => {
                 if let Err(issue) = state.deliver(done) {
                     nanocode_trace::error!(%issue, "remote reply could not be encoded");
                 }
             },
             () = due(&mut state.work_due) => state.publish_work(),
+            event = inbox.recv() => match event {
+                Some(event) => state.event(event).await,
+                None => break,
+            },
         }
     }
     state.reset().await;
@@ -2487,7 +2487,7 @@ async fn run(
             context,
             ..
         } => {
-            tokio::select! {
+            nanocode_sync::select! {
                 output = session.call(&name, input, context.owned()) => encode_output(output, compact, output_prefix).and_then(|value| {
                     if resumable && value.get("output_prefix").is_some() {
                         *full = Some(output_to_wire(output_from_wire(value.clone())?, compact)?);

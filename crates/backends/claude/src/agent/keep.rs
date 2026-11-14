@@ -192,8 +192,7 @@ async fn keep_cache(state: Weak<State>, changed: Arc<Notify>) {
             },
             _ => return,
         };
-        tokio::select! {
-            biased;
+        nanocode_sync::select! {
             () = &mut notified => continue,
             () = sleep(wait) => {}
         }

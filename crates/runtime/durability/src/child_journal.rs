@@ -388,8 +388,7 @@ async fn write_journal(
     mut writes: mpsc::UnboundedReceiver<Write>,
 ) {
     loop {
-        tokio::select! {
-            biased;
+        nanocode_sync::select! {
             result = settled(&mut fenced.inflight), if !fenced.inflight.is_empty() => {
                 fenced.settled(result);
             }

@@ -494,7 +494,7 @@ where
             }
             continue;
         }
-        tokio::select! {
+        nanocode_sync::select! {
             result = attempts.next() => match result {
                 Some(Ok(stream)) => return Ok(stream),
                 Some(Err(error)) => last_error = Some(error),

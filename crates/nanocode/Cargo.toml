@@ -37,7 +37,8 @@ nanocode-store-jsonl.workspace = true
 [target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
 serde_json.workspace = true
 nanocode-home.workspace = true
-tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+nanocode-sync.workspace = true
+tokio = { workspace = true, features = ["fs", "io-util", "net", "rt-multi-thread", "signal", "sync", "time"] }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 libc.workspace = true

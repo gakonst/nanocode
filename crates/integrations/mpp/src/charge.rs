@@ -374,7 +374,7 @@ async fn find_machine_route(
         chain_id: Some(chain_id),
         ..TempoTransactionRequest::default()
     };
-    let (balance, simulation) = tokio::join!(
+    let (balance, simulation) = nanocode_sync::join!(
         tx::balance_of(rpc, token, account),
         tx::eth_call_pending(rpc, &request)
     );

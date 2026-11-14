@@ -23,7 +23,7 @@ nanocode-sync.workspace = true
 nanocode-tempo.workspace = true
 serde.workspace = true
 serde_json = { workspace = true, features = ["preserve_order"] }
-tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "sync", "time"] }
+tokio = { workspace = true, features = ["io-util", "net", "rt", "sync", "time"] }
 tokio-rustls = { workspace = true, features = ["tls12"] }
 nanocode-trace.workspace = true
 

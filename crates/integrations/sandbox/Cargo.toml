@@ -28,7 +28,7 @@ rustls-platform-verifier = "0.7.0"
 libc.workspace = true
 nanocode-sys.workspace = true
 serde.workspace = true
-tokio = { workspace = true, features = ["io-util", "macros", "net", "process", "rt", "sync", "time"] }
+tokio = { workspace = true, features = ["io-util", "net", "process", "rt", "sync", "time"] }
 tokio-rustls = { workspace = true, features = ["tls12"] }
 nanocode-trace.workspace = true
 nanocode-platform.workspace = true

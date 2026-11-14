@@ -294,7 +294,7 @@ impl SocketPump {
         let completion = Arc::clone(&stopped);
         let task = nanocode_platform::spawn_task(async move {
             loop {
-                tokio::select! {
+                nanocode_sync::select! {
                     command = command_receiver.recv() => {
                         let Some(command) = command else {
                             break;

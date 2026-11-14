@@ -28,7 +28,7 @@ nanocode-process.workspace = true
 futures-util.workspace = true
 http.workspace = true
 nanocode-tls.workspace = true
-tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "rt", "signal", "sync", "time"] }
+tokio = { workspace = true, features = ["fs", "io-util", "net", "rt", "signal", "sync", "time"] }
 tokio-rustls.workspace = true
 nanocode-websocket.workspace = true
 nanocode-url.workspace = true

@@ -774,8 +774,7 @@ impl AgentDriver {
                             if !intake.is_open() {
                                 break execution.as_mut().await;
                             }
-                            tokio::select! {
-                                biased;
+                            nanocode_sync::select! {
                                 outcome = &mut execution => break outcome,
                                 command = self.commands.recv() => {
                                     let mut reopen = false;
@@ -1401,8 +1400,7 @@ impl AgentDriver {
                 if !intake.is_open() {
                     break execution.as_mut().await;
                 }
-                tokio::select! {
-                    biased;
+                nanocode_sync::select! {
                     changed = fork_snapshot_rx.changed(), if fork_snapshots_open => {
                         if changed.is_err() {
                             fork_snapshots_open = false;

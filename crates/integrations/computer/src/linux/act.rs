@@ -121,7 +121,7 @@ pub async fn press(
             )),
         };
     }
-    let (interfaces, role) = tokio::join!(interfaces(bus, element), role(bus, element));
+    let (interfaces, role) = nanocode_sync::join!(interfaces(bus, element), role(bus, element));
     if !grab && role == Some(Role::COMBO_BOX) {
         let names: Vec<String> = options(bus, element)
             .await
@@ -274,7 +274,7 @@ async fn choose(
 }
 
 pub async fn set_value(bus: &Bus, element: &Element, wanted: &str) -> Result<String, String> {
-    let (interfaces, role) = tokio::join!(interfaces(bus, element), role(bus, element));
+    let (interfaces, role) = nanocode_sync::join!(interfaces(bus, element), role(bus, element));
     if role == Some(Role::COMBO_BOX) && !interfaces.contains(Interfaces::EDITABLE_TEXT) {
         return choose(bus, element, interfaces, wanted).await;
     }
@@ -311,7 +311,7 @@ pub async fn set_value(bus: &Bus, element: &Element, wanted: &str) -> Result<Str
 }
 
 pub async fn value(bus: &Bus, element: &Element) -> Option<String> {
-    let (interfaces, role) = tokio::join!(interfaces(bus, element), role(bus, element));
+    let (interfaces, role) = nanocode_sync::join!(interfaces(bus, element), role(bus, element));
     if role == Some(Role::PASSWORD_TEXT) || !interfaces.contains(Interfaces::TEXT) {
         return None;
     }
@@ -354,7 +354,7 @@ pub async fn type_text(bus: &Bus, element: &Element, typed: &str) -> Result<bool
         return Ok(false);
     }
     let text = proxy(bus, element).ok_or(GONE)?;
-    let (selections, caret, count) = tokio::join!(
+    let (selections, caret, count) = nanocode_sync::join!(
         timed(text.call::<i32>(TEXT, "GetNSelections", &[])),
         timed(text.get::<i32>(TEXT, "CaretOffset")),
         timed(text.get::<i32>(TEXT, "CharacterCount")),
@@ -446,7 +446,7 @@ pub async fn scroll(
             continue;
         }
         let value = proxy(bus, &bar).ok_or(GONE)?;
-        let (current, minimum, maximum) = tokio::join!(
+        let (current, minimum, maximum) = nanocode_sync::join!(
             timed(value.get::<f64>(VALUE, "CurrentValue")),
             timed(value.get::<f64>(VALUE, "MinimumValue")),
             timed(value.get::<f64>(VALUE, "MaximumValue")),

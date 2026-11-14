@@ -162,7 +162,7 @@ a second signal during multi-session shutdown aborts the remaining sessions.
         }
 
         async fn recv(&mut self) -> Result<&'static str> {
-            tokio::select! {
+            nanocode_sync::select! {
                 _ = self.interrupt.recv() => Ok("SIGINT"),
                 _ = self.terminate.recv() => Ok("SIGTERM"),
             }
@@ -240,7 +240,7 @@ a second signal during multi-session shutdown aborts the remaining sessions.
                 listener.local_addr()?,
                 workspace.display()
             );
-            tokio::select! {
+            nanocode_sync::select! {
                 result = serve_accept(&listener, &token, &workspace, tools, args.policy) => result?,
                 result = shutdown.recv() => { result?; },
             }
@@ -251,7 +251,7 @@ a second signal during multi-session shutdown aborts the remaining sessions.
                 target.endpoint(),
                 workspace.display()
             );
-            tokio::select! {
+            nanocode_sync::select! {
                 result = serve_connect(target, &workspace, tools, args.policy) => result?,
                 result = shutdown.recv() => { result?; },
             }
@@ -318,7 +318,7 @@ a second signal during multi-session shutdown aborts the remaining sessions.
         let mut next = 0u64;
         let mut exhausted = false;
         let reason = loop {
-            tokio::select! {
+            nanocode_sync::select! {
                 reason = shutdown.recv() => break reason?,
                 Some(joined) = sessions.join_next(), if !sessions.is_empty() => {
                     report(joined);
@@ -355,7 +355,7 @@ a second signal during multi-session shutdown aborts the remaining sessions.
         );
         stop.send_replace(true);
         loop {
-            tokio::select! {
+            nanocode_sync::select! {
                 joined = sessions.join_next() => match joined {
                     Some(joined) => report(joined),
                     None => return Ok(()),
@@ -384,7 +384,7 @@ a second signal during multi-session shutdown aborts the remaining sessions.
             );
             tokio::pin!(serve);
             let mut bridge = Box::pin(bridge(brain, upstream));
-            let bridged = tokio::select! {
+            let bridged = nanocode_sync::select! {
                 result = &mut serve => {
                     let _ = tokio::time::timeout(self.policy.request_timeout, bridge).await;
                     return result.map_err(Into::into);

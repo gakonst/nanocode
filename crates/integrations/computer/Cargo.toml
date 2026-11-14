@@ -20,7 +20,7 @@ nanocode-sync.workspace = true
 nanocode-sys.workspace = true
 nanocode-tool-contracts.workspace = true
 serde_json.workspace = true
-tokio = { workspace = true, features = ["io-std", "io-util", "macros", "process", "rt", "sync", "time"] }
+tokio = { workspace = true, features = ["io-std", "io-util", "process", "rt", "sync", "time"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 libc.workspace = true

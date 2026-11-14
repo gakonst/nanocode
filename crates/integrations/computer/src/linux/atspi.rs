@@ -557,7 +557,7 @@ async fn summary(accessible: &Object<'_>) -> (Option<String>, Option<Option<Stri
         let count = all.get("ChildCount").and_then(Value::i32);
         return (text("Name"), Some(text("Description")), count);
     }
-    let (name, count) = tokio::join!(
+    let (name, count) = nanocode_sync::join!(
         timed(accessible.get::<String>(ACCESSIBLE, "Name")),
         timed(accessible.get::<i32>(ACCESSIBLE, "ChildCount"))
     );
@@ -566,7 +566,7 @@ async fn summary(accessible: &Object<'_>) -> (Option<String>, Option<Option<Stri
 
 pub async fn info(bus: &Bus, element: &Element, deep: bool) -> Option<Info> {
     let accessible = proxy(bus, element)?;
-    let (role, states, interfaces, (name, described, count)) = tokio::join!(
+    let (role, states, interfaces, (name, described, count)) = nanocode_sync::join!(
         timed(accessible.call::<u32>(ACCESSIBLE, "GetRole", &[])),
         timed(accessible.call::<States>(ACCESSIBLE, "GetState", &[])),
         timed(accessible.call::<Interfaces>(ACCESSIBLE, "GetInterfaces", &[])),
@@ -593,7 +593,7 @@ pub async fn info(bus: &Bus, element: &Element, deep: bool) -> Option<Info> {
         return Some(info);
     }
     let unnamed = info.name.is_none() && interfaces.contains(Interfaces::ACTION);
-    let (actionable, value, children, description) = tokio::join!(
+    let (actionable, value, children, description) = nanocode_sync::join!(
         async {
             if !interfaces.contains(Interfaces::ACTION) {
                 return false;
@@ -790,7 +790,7 @@ pub async fn registered(
                         timed(accessible.get::<String>(ACCESSIBLE, "Name")).await
                     };
                     let (pid, name, activation) =
-                        tokio::join!(pid, name, activation(bus, &element));
+                        nanocode_sync::join!(pid, name, activation(bus, &element));
                     (pid, name.unwrap_or_default(), activation)
                 }
             };
@@ -815,7 +815,7 @@ async fn activation(bus: &Bus, app: &Element) -> Duration {
     let Some(application) = proxy(bus, app) else {
         return Duration::ZERO;
     };
-    let (toolkit, version) = tokio::join!(
+    let (toolkit, version) = nanocode_sync::join!(
         timed(application.get::<String>(APPLICATION, "ToolkitName")),
         timed(application.get::<String>(APPLICATION, "Version"))
     );
@@ -834,7 +834,7 @@ pub async fn windows(bus: &Bus, app: &Element) -> Option<Vec<(Element, Role, Sta
     }
     let found: Vec<Option<(Element, Role, States)>> = stream::iter(children)
         .map(|element| async move {
-            let (role, states) = tokio::join!(role(bus, &element), states(bus, &element));
+            let (role, states) = nanocode_sync::join!(role(bus, &element), states(bus, &element));
             let role = role.filter(|role| WINDOWS.contains(role))?;
             Some((element, role, states.unwrap_or_default()))
         })

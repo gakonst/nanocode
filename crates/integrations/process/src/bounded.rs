@@ -62,7 +62,7 @@ pub async fn bounded(
             }
             io::Result::Ok((kept, cut))
         };
-        let ((), read) = tokio::join!(write, read);
+        let ((), read) = nanocode_sync::join!(write, read);
         let status = child.wait().await?;
         let (stdout, cut) = read?;
         io::Result::Ok(Bounded {

@@ -29,7 +29,7 @@ nanocode-home = { workspace = true  }
 nanocode-url.workspace = true
 futures-util.workspace = true
 nanocode-code-mode = { path = "../../runtime/code-mode", version = "0.7.0"   }
-tokio = { workspace = true, features = ["macros", "sync", "time"] }
+tokio = { workspace = true, features = ["sync", "time"] }
 http.workspace = true
 serde.workspace = true
 serde_json.workspace = true

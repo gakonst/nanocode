@@ -99,8 +99,7 @@ impl ModelRun {
                 self.compaction_effort(&session.conversation.reasoning),
             );
             tokio::pin!(compaction);
-            tokio::select! {
-                biased;
+            nanocode_sync::select! {
                 _ = &mut *cancel => None,
                 outcome = &mut compaction => Some(outcome),
             }
@@ -436,8 +435,7 @@ impl ModelRun {
                 },
             );
             tokio::pin!(compaction);
-            tokio::select! {
-                biased;
+            nanocode_sync::select! {
                 _ = &mut *cancel => None,
                 outcome = &mut compaction => Some(outcome?),
             }
@@ -645,8 +643,7 @@ impl ModelRun {
                 let warmup = {
                     let warmup = self.perform_warmup(&session.factory, request_effort);
                     tokio::pin!(warmup);
-                    tokio::select! {
-                        biased;
+                    nanocode_sync::select! {
                         _ = &mut *cancel => None,
                         outcome = &mut warmup => Some(outcome),
                     }
@@ -708,8 +705,7 @@ impl ModelRun {
                 fork_snapshots,
             );
             tokio::pin!(task);
-            tokio::select! {
-                biased;
+            nanocode_sync::select! {
                 _ = &mut *cancel => None,
                 outcome = &mut task => Some(outcome),
             }
@@ -1049,8 +1045,7 @@ impl ModelRun {
                 );
                 tokio::pin!(tools);
                 loop {
-                    tokio::select! {
-                        biased;
+                    nanocode_sync::select! {
                         outcome = &mut tools => { outcome?; break; }
                         changed = preempt.changed(), if instant_tool_steering => {
                             if changed.is_err() { break tools.await?; }

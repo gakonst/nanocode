@@ -33,11 +33,11 @@ nanocode-trace.workspace = true
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 nanocode-code-mode-engine.workspace = true
-tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
+tokio = { workspace = true, features = ["rt", "sync", "time"] }
 
 [target.'cfg(target_family = "wasm")'.dependencies]
 nanocode-code-mode-engine = { workspace = true, optional = true }
-tokio = { workspace = true, features = ["macros", "sync"] }
+tokio = { workspace = true, features = ["sync"] }
 
 [features]
 local-cells = ["dep:nanocode-code-mode-engine"]

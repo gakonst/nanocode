@@ -1767,8 +1767,7 @@ async fn relay_cell_updates(
     mut sink: Box<dyn CodeModeObserver>,
 ) {
     loop {
-        let update = tokio::select! {
-            biased;
+        let update = nanocode_sync::select! {
             () = stop.notified() => break,
             update = observation.updates.recv() => update,
         };
@@ -1911,8 +1910,7 @@ async fn observe_updates(
         } else if preempted {
             observation.updates.recv().await
         } else {
-            tokio::select! {
-            biased;
+            nanocode_sync::select! {
             () = async {
                 match preempt.as_mut() {
                     Some(preemption) => loop {
@@ -2628,8 +2626,7 @@ impl EmbeddedHost {
             held = self.hold_cell(cell_id, record.as_deref());
         }
         loop {
-            tokio::select! {
-                biased;
+            nanocode_sync::select! {
                 changed = async {
                     match hold.as_mut() {
                         Some(receiver) => receiver.changed().await.is_ok(),
@@ -3017,8 +3014,7 @@ async fn run_cell_actor(
         )
         .await
     };
-    let selected = tokio::select! {
-        biased;
+    let selected = nanocode_sync::select! {
         _ = &mut terminate => {
             None
         }

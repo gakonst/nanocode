@@ -666,8 +666,7 @@ impl Driver {
                 };
                 self.handle_release(release);
             }
-            let command = tokio::select! {
-                biased;
+            let command = nanocode_sync::select! {
                 command = self.commands.recv() => command,
                 Some(release) = self.releases.recv() => {
                     self.handle_release(release);
@@ -4107,8 +4106,7 @@ impl DurableOwner {
         if *completed.borrow() {
             return Ok(());
         }
-        tokio::select! {
-            biased;
+        nanocode_sync::select! {
             changed = completed.changed() => changed.map_err(|_| Error::DriverStopped),
             () = self.commands.closed() => {
                 self.release.finish();

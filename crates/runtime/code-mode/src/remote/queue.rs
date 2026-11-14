@@ -312,7 +312,7 @@ pub async fn serve_queue<Q: CommandQueue>(
         } else {
             Either::Right(std::future::pending())
         };
-        tokio::select! {
+        nanocode_sync::select! {
             reason = &mut driver => break Ok(reason.unwrap_or_else(|issue| issue.to_string())),
             error = &mut failed => break Err(error),
             woken = wakeup => match woken {

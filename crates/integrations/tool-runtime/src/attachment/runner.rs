@@ -46,7 +46,7 @@ pub fn run_runner_with_tools(
                     .attach(AttachmentTarget::new(endpoint, config.token)?)
                     .metadata(metadata)
                     .start()?;
-                tokio::select! {
+                nanocode_sync::select! {
                     result = attachment.closed() => result,
                     _ = async { while let Some(event) = events.recv().await { log_event(&event); } } => attachment.closed().await,
                     signal = tokio::signal::ctrl_c() => { signal.map_err(|error| AttachmentError::Transport(error.to_string().into()))?; attachment.detach().await },
@@ -83,7 +83,7 @@ pub fn run_runner_with_tools(
                     status,
                     closed,
                 ));
-                tokio::select! {
+                nanocode_sync::select! {
                     _ = &mut running => {},
                     _ = async { while let Some(event) = event_rx.recv().await { log_event(&event); } } => {},
                     signal = tokio::signal::ctrl_c() => {

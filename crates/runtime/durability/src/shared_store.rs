@@ -427,8 +427,7 @@ async fn drive_grouped<S: StateStore>(
         {
             break;
         }
-        tokio::select! {
-            biased;
+        nanocode_sync::select! {
             Some(completed) = completions.recv(), if operations + groups > 0 => {
                 if completed.is_empty() {
                     assert!(operations > 0, "a finished operation was counted as running");
@@ -526,8 +525,7 @@ async fn drive_concurrently<S: StateStore>(
         held: std::collections::BTreeMap::new(),
     };
     loop {
-        let request = tokio::select! {
-            biased;
+        let request = nanocode_sync::select! {
             Some(completed) = driver.finished.1.recv(), if driver.in_flight > 0 => {
                 driver.completed(completed);
                 continue;

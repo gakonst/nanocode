@@ -222,8 +222,7 @@ async fn turn_result(turn: &mut Option<Running>) -> nanocode_agent::Result<TurnR
 impl Tui {
     async fn run(&mut self) -> Result<()> {
         loop {
-            let step = tokio::select! {
-                biased;
+            let step = nanocode_sync::select! {
                 Some(event) = self.keys.recv() => self.keys_batch(event?).await?,
                 Some(event) = next_event(&mut self.session) => {
                     self.show(&event)?;

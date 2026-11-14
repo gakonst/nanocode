@@ -152,7 +152,7 @@ impl ProcessChild {
                     tokio::time::sleep(REAP_POLL_INTERVAL).await;
                     true
                 };
-                tokio::select! {
+                nanocode_sync::select! {
                     command = received.recv(), if listening => match command {
                         Some(command) => command.apply(&mut guard),
                         None => listening = false,
@@ -187,7 +187,7 @@ impl ProcessChild {
         let wait = nanocode_platform::spawn_task(async move {
             let mut listening = true;
             let result = loop {
-                tokio::select! {
+                nanocode_sync::select! {
                     command = received.recv(), if listening => match command {
                         Some(command) => command.apply(&mut guard),
                         None => listening = false,

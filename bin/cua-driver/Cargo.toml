@@ -18,7 +18,7 @@ bench = false
 
 [target.'cfg(target_os = "macos")'.dependencies]
 nanocode-computer = { path = "../../crates/integrations/computer", version = "0.7.0" }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["rt-multi-thread"] }
 
 [lints]
 workspace = true

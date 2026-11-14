@@ -806,8 +806,7 @@ impl NoticeOutcome {
                     }
                     let settled = agent.requests_settled();
                     drop(agent);
-                    tokio::select! {
-                        biased;
+                    nanocode_sync::select! {
                         outcome = &mut steered => return outcome.unwrap_or(Self::Stopped),
                         () = settled => {}
                     }
@@ -830,8 +829,7 @@ impl NoticeOutcome {
     ) {
         let mut watched = BTreeMap::<String, (SteerWatch, Option<String>)>::new();
         loop {
-            let event = tokio::select! {
-                biased;
+            let event = nanocode_sync::select! {
                 steer = steers.recv() => match steer {
                     Some(steer) => {
                         watched.insert(steer.request_id.clone(), (steer, None));
@@ -1401,8 +1399,7 @@ async fn journal_writer(
                     None => std::future::pending().await,
                 }
             };
-            tokio::select! {
-                biased;
+            nanocode_sync::select! {
                 fill = taken => {
                     slot = None;
                     let filled = match (fill, registry.upgrade()) {

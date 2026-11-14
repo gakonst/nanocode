@@ -21,8 +21,7 @@ impl IdleTimer {
             .get_or_insert_with(|| Box::pin(tokio::time::sleep_until(deadline)));
         let mut read = std::pin::pin!(read);
         loop {
-            tokio::select! {
-                biased;
+            nanocode_sync::select! {
                 value = &mut read => return Some(value),
                 () = sleep.as_mut() => {
                     if tokio::time::Instant::now() >= deadline {

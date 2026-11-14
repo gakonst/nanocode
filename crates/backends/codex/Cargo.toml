@@ -34,14 +34,14 @@ nanocode-types.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 nanocode-digest.workspace = true
-tokio = { workspace = true, features = ["macros", "sync", "time"] }
+tokio = { workspace = true, features = ["sync", "time"] }
 nanocode-trace.workspace = true
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 nanocode-http.workspace = true
 nanocode-process.workspace = true
 nanocode-tls.workspace = true
-tokio = { workspace = true, features = ["fs", "io-util", "macros", "rt", "sync", "time"] }
+tokio = { workspace = true, features = ["fs", "io-util", "rt", "sync", "time"] }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

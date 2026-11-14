@@ -20,7 +20,6 @@ const SIMULATED: &[&str] = &[
 const BYPASSES_HOST: &str = "bypasses nanocode-platform's host";
 const WAKE_ORDER: &str = "yields its futures in the order they were woken, which tokio's watch and HashMap iteration draw at random; use nanocode_sync::InOrder";
 const JOIN_ORDER: &str = "polls in the order its futures were woken (join_all does past 30 futures, through FuturesOrdered); use nanocode_sync::join_in_order or try_join_in_order";
-const UNBIASED: &str = "draws its first branch from tokio's thread RNG; start it with biased;";
 
 const BANNED: &[(&str, &str)] = &[
     ("SystemTime::now", BYPASSES_HOST),
@@ -35,9 +34,6 @@ const BANNED: &[(&str, &str)] = &[
     ("FuturesOrdered", JOIN_ORDER),
     ("join_all", JOIN_ORDER),
 ];
-
-const SELECT: &str = "select!";
-const BIASED: &str = "biased;";
 
 const TOKIO_GROUP: &str = "use tokio::{";
 
@@ -54,12 +50,6 @@ const ALLOWED: &[Allowed] = &[
         call: "Instant::now",
         uses: 3,
         why: "Claude Code's Bash tool watches a real shell process for silence on Tokio's clock; the simulator registers no Bash tool",
-    },
-    Allowed {
-        path: "crates/backends/claude/src/claude_bash.rs",
-        call: "select!",
-        uses: 1,
-        why: "Claude Code's Bash tool races a real process's exit against its output; the simulator registers no Bash tool",
     },
     Allowed {
         path: "crates/backends/claude/src/claude_bash.rs",
@@ -306,7 +296,8 @@ fn problem(call: &str) -> &'static str {
     BANNED
         .iter()
         .find(|(banned, _)| *banned == call)
-        .map_or(UNBIASED, |(_, problem)| problem)
+        .map(|(_, problem)| *problem)
+        .expect("every reported call is banned")
 }
 
 pub fn check(root: &Path) -> std::io::Result<Vec<String>> {
@@ -323,21 +314,8 @@ pub fn check(root: &Path) -> std::io::Result<Vec<String>> {
                 .into_owned();
             let text = std::fs::read_to_string(&file)?;
             let mut group = Group::default();
-            let mut opened = None;
             for (number, line) in text.lines().enumerate() {
-                let mut calls: Vec<(&'static str, usize)> = found(line, &mut group)
-                    .into_iter()
-                    .map(|call| (call, number))
-                    .collect();
-                if let Some(select) = opened.take()
-                    && !line.trim_start().starts_with(BIASED)
-                {
-                    calls.push((SELECT, select));
-                }
-                if line.contains(SELECT) && line.trim_end().ends_with('{') {
-                    opened = Some(number);
-                }
-                for (call, at) in calls {
+                for call in found(line, &mut group) {
                     let allowed = ALLOWED
                         .iter()
                         .position(|allowed| allowed.path == relative && allowed.call == call);
@@ -345,7 +323,7 @@ pub fn check(root: &Path) -> std::io::Result<Vec<String>> {
                         Some(index) => used[index] += 1,
                         None => problems.push(format!(
                             "{relative}:{}: {call} {}",
-                            at + 1,
+                            number + 1,
                             problem(call)
                         )),
                     }

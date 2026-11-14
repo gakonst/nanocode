@@ -615,7 +615,7 @@ async fn own(stream: UnixStream, mut commands: mpsc::Receiver<Command>) {
     };
     let mut incoming = Incoming::default();
     loop {
-        let done = tokio::select! {
+        let done = nanocode_sync::select! {
             command = commands.recv() => match command {
                 Some(command) => owner.command(command).await,
                 None => break,

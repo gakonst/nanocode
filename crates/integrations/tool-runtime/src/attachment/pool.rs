@@ -1279,7 +1279,7 @@ fn monitor(
             let Some(pool) = pool.upgrade() else { return };
             if status != RunnerStatus::Disconnected || remote.tools_snapshot().is_some() { pool.update(&name, status, &identity); }
             drop(pool);
-            tokio::select! { result = connected.changed() => if result.is_err() { return }, result = failure.changed() => if result.is_err() { return } }
+            nanocode_sync::select! { result = connected.changed() => if result.is_err() { return }, result = failure.changed() => if result.is_err() { return } }
         }
     }).abort_handle()
 }
@@ -1447,8 +1447,9 @@ async fn accept(
 ) {
     let mut connections = JoinSet::new();
     loop {
-        tokio::select! {
+        nanocode_sync::select! {
             _ = cancel.wait() => { connections.shutdown().await; return },
+            Some(_) = connections.join_next(), if !connections.is_empty() => {}
             accepted = listener.accept() => match accepted {
                 Ok((socket, _)) => {
                     let pool = pool.clone(); let token = token.clone(); let endpoint = endpoint.clone(); let workspace = workspace.clone();
@@ -1461,7 +1462,6 @@ async fn accept(
                 },
                 Err(error) => { nanocode_trace::warn!(target: "nanocode_code_mode::attachment", %error, "runner listener accept failed"); return }
             },
-            Some(_) = connections.join_next(), if !connections.is_empty() => {}
         }
     }
 }
@@ -1643,7 +1643,7 @@ async fn incoming(
             return Err(error);
         }
     };
-    let (result, cancelled) = tokio::select! { biased; _ = cancel.wait() => (Ok(()), true), result = remote.serve_catalog(first, &mut frames) => (result, false) };
+    let (result, cancelled) = nanocode_sync::select! { _ = cancel.wait() => (Ok(()), true), result = remote.serve_catalog(first, &mut frames) => (result, false) };
     if cancelled {
         let _ = frames
             .get_mut()

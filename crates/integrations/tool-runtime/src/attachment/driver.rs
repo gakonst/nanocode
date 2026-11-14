@@ -97,12 +97,12 @@ pub(crate) async fn run(
         };
         let connect_started = Instant::now();
         let connected = if let Some(listener) = &config.listener {
-            tokio::select! {
+            nanocode_sync::select! {
                 _ = commands.recv() => break Ok(()),
                 accepted = accept_runner(listener, &config.authorization, &events) => Ok(accepted),
             }
         } else {
-            tokio::select! {
+            nanocode_sync::select! {
                 command = commands.recv() => match command { Some(Command::Detach) | None => break Ok(()) },
                 connected = tokio::time::timeout(Duration::from_secs(5), async {
                     let connector = tls_connector(&request).await?;
@@ -419,7 +419,7 @@ fn retry_after(headers: &http::HeaderMap) -> Option<Duration> {
 }
 
 async fn wait_backoff(commands: &mut mpsc::Receiver<Command>, delay: Duration) -> bool {
-    tokio::select! {
+    nanocode_sync::select! {
         _ = tokio::time::sleep(delay) => false,
         command = commands.recv() => matches!(command, Some(Command::Detach) | None),
     }
@@ -989,7 +989,7 @@ where
         if matches!(drain, Drain::Acknowledged) && journal.is_empty() {
             break ConnectionEnd::Detached;
         }
-        tokio::select! {
+        nanocode_sync::select! {
             command = commands.recv(), if matches!(drain, Drain::Attached) => {
                 match command { Some(Command::Detach) | None => {} }
                 if let Err(error) = send(&mut socket, &RunnerFrame::Drain {}).await {
@@ -1223,7 +1223,7 @@ async fn next_handshake_frame<S>(
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
-    tokio::select! {
+    nanocode_sync::select! {
         command = commands.recv() => match command { Some(Command::Detach) | None => Err(ConnectionEnd::Detached) },
         frame = tokio::time::timeout(HANDSHAKE_TIMEOUT, next_frame(socket)) => match frame {
             Ok(frame) => frame,

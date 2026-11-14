@@ -209,13 +209,13 @@ async fn next_message(
     flights: &mut Flights,
 ) -> Option<Message> {
     loop {
-        tokio::select! {
-            message = outgoing.next() => return message,
+        nanocode_sync::select! {
             Some(landed) = tasks.join_next(), if !tasks.is_empty() => {
                 if let Ok(Some(id)) = landed {
                     flights.remove(&id);
                 }
             }
+            message = outgoing.next() => return message,
         }
     }
 }

@@ -1,8 +1,21 @@
 use std::process::ExitCode;
 
 #[cfg(target_os = "macos")]
-#[tokio::main]
-async fn main() -> ExitCode {
+fn main() -> ExitCode {
+    match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime.block_on(run()),
+        Err(error) => {
+            eprintln!("nanocode-cua-driver: could not start its runtime: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+async fn run() -> ExitCode {
     let report = |permissions: nanocode_computer::embedded::Permissions| {
         let state = |granted| if granted { "granted" } else { "not granted" };
         println!(

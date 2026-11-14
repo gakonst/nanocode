@@ -894,8 +894,7 @@ impl State {
             self.call_tool(id, name, input, handler, events, (cursor, cancel, None))
                 .await?
         } else if let Some(handler) = handler {
-            tokio::select! {
-                biased;
+            nanocode_sync::select! {
                 result = self.call_tool(id, name, input, handler, events, (cursor, cancel, None)) => result?,
                 () = cancel.cancelled() => unknown(),
             }

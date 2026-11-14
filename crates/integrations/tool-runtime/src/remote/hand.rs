@@ -326,7 +326,7 @@ impl Hand {
                         let dialing = dial_staged(&target, &headers, policy);
                         tokio::pin!(dialing);
                         let dialed = loop {
-                            tokio::select! {
+                            nanocode_sync::select! {
                                 dialed = &mut dialing => break dialed,
                                 served = left(&mut leaving) => {
                                     leaving = None;
@@ -348,7 +348,7 @@ impl Hand {
                                 let mut link =
                                     Serving::spawn(socket, &core, policy, meter.clone(), role);
                                 let ended = loop {
-                                    tokio::select! {
+                                    nanocode_sync::select! {
                                         served = ended(&mut link.task) => break Phase::Ended(served),
                                         Some(note) = link.notes.recv() => match note {
                                             Note::Heard => {
@@ -471,9 +471,18 @@ impl Hand {
                     events(HandEvent::Listening {
                         endpoint: format!("ws://{}/", listener.local_addr().map_err(error)?),
                     });
-                    let mut connections = tokio::task::JoinSet::new();
+                    let mut connections: tokio::task::JoinSet<Result<(), CodeModeHostError>> =
+                        tokio::task::JoinSet::new();
                     loop {
-                        tokio::select! {
+                        nanocode_sync::select! {
+                            Some(finished) = connections.join_next(), if !connections.is_empty() => {
+                                let reason = match finished {
+                                    Ok(Ok(())) => "the brain closed the connection".into(),
+                                    Ok(Err(issue)) => issue.to_string(),
+                                    Err(issue) => issue.to_string(),
+                                };
+                                events(HandEvent::Disconnected { reason });
+                            }
                             accepted = listener.accept() => match accepted {
                                 Ok((stream, peer)) => {
                                     events(HandEvent::BrainConnected { peer });
@@ -489,14 +498,6 @@ impl Hand {
                                 }
                                 Err(issue) => events(HandEvent::Disconnected { reason: issue.to_string() }),
                             },
-                            Some(finished) = connections.join_next(), if !connections.is_empty() => {
-                                let reason = match finished {
-                                    Ok(Ok(())) => "the brain closed the connection".into(),
-                                    Ok(Err(issue)) => issue.to_string(),
-                                    Err(issue) => issue.to_string(),
-                                };
-                                events(HandEvent::Disconnected { reason });
-                            }
                         }
                     }
                 }

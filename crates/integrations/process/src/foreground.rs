@@ -116,9 +116,9 @@ async fn collect<O: Pipe, E: Pipe>(
 ) -> std::io::Result<ForegroundOutput> {
     let exit_code = {
         let read =
-            async { tokio::try_join!(stdout.read(output, secrets), stderr.read(output, secrets)) };
+            async { nanocode_sync::try_join!(stdout.read(output, secrets), stderr.read(output, secrets)) };
         tokio::pin!(read);
-        tokio::select! {
+        nanocode_sync::select! {
             status = child.wait() => status?,
             ended = &mut read => {
                 ended?;

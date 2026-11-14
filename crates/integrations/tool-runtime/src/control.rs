@@ -57,12 +57,12 @@ where
             active -= 1;
             continue;
         }
-        let accepted = tokio::select! {
-            accepted = listener.accept() => accepted,
+        let accepted = nanocode_sync::select! {
             Some(()) = ends.recv() => {
                 active -= 1;
                 continue;
             }
+            accepted = listener.accept() => accepted,
         };
         match accepted {
             Ok((stream, _)) => {

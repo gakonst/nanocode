@@ -150,6 +150,16 @@ nanocode wins every Claude p50, by 0.7 to 1.4 s on turn 1 and 30 to 500 ms on la
 
 The 120 diag requests show where the slow samples spend their time. Every `/v1/messages` request goes out on a pooled connection 3 to 13 ms after Enter, with no new connection, stale checkout, retry or head error, and reads 12,957 to 14,013 prompt-cache tokens. The slowest samples wait between the request write and the response head, outside the origin: the head arrives 510 to 541 ms p50 (2,313 ms at worst) later than the `x-originResponse` server timing, which stays at 73 to 575 ms. On turn 1 the reply word arrives in two parts: the first chunk holds message_start and the first text token, and the rest follows in one burst 90 to 250 ms later, so turn 1 is drawn at the end of the stream (228 ms p50 and 867 ms at worst after the first text token). On turns 2 and 3 the word is in the first chunk (3 ms). A raw Python stream through the same proxy shows the same burst, and TCP_QUICKACK on the client socket does not remove it (burst gap p50 141 ms without and 175 ms with, 12 interleaved requests each), so it is the provider's stream cadence, not a delayed-ACK stall. Neither cause is in the client, and Claude Code goes through the same path. Two lanes of the same code differ by 918 ms at turn 2 p99 (2,166 against 1,248), so one sample of 40 decides a p99 cell here.
 
+The same run on claude-sonnet-5-5 (40 sessions of 3 turns per lane, interleaved, p50 / p99 ms):
+
+| turn | nanocode base | nanocode diag | Claude Code |
+|---|---|---|---|
+| 1 | 787 / 1,126 | 819 / 1,142 | 2,160 / 2,426 |
+| 2 | 852 / 1,563 | 816 / 1,364 | 1,421 / 2,634 |
+| 3 | 831 / 1,495 | 811 / 1,217 | 1,343 / 1,887 |
+
+nanocode wins every sonnet cell, p50 by 0.5 to 1.4 s and p99 by 0.4 to 1.3 s. The 120 diag requests again reuse a pooled connection with no retry, and every reply is 10 output tokens with no thinking block. The slowest diag sample (1,038 ms) spends 891 ms between the write and the head against an origin time of 141 ms.
+
 Rerun on nanocode master 00c215b02 against Codex CLI 0.166.0, dev-georgios, 2026-11-14 06:10 to 06:24 UTC, 20 sessions x 3 turns, interleaved, Enter to first token drawn, p50 / p99 ms for turns 1, 2 and 3 (one to two nanocode samples per model missed the reply word and are left out):
 
 | model | nanocode 00c215b02 | Codex CLI 0.166.0 |

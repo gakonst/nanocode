@@ -9,6 +9,7 @@ pub mod security;
 mod atomic;
 pub mod base64;
 pub mod crc32;
+mod decimal;
 pub mod lz4;
 #[cfg(target_os = "macos")]
 pub mod core_foundation;
@@ -34,6 +35,7 @@ pub mod trust_settings;
 pub mod webp;
 
 pub use atomic::{AtomicArc, AtomicBox, AtomicStatic};
+pub use decimal::DecimalText;
 pub use inline::{InlineVec, OwnedItems, new_arc_with};
 #[cfg(any(unix, windows))]
 pub use random::fill_random;

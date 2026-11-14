@@ -1,0 +1,22 @@
+[package]
+name = "itoa"
+version = "1.0.18"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Integer to decimal text into a stack buffer, the itoa API nanocode's dependencies call"
+autotests = false
+autobenches = false
+
+[dependencies]
+nanocode-sys.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+test = false
+doctest = false
+bench = false

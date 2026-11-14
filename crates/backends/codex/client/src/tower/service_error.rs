@@ -189,7 +189,8 @@ impl From<ResponsesError> for ResponsesServiceError {
         let phase = match error {
             ResponsesError::UnexpectedEnd
             | ResponsesError::Closed { .. }
-            | ResponsesError::Receive { .. } => FailurePhase::Receive,
+            | ResponsesError::Receive { .. }
+            | ResponsesError::ReceiveTimeout { .. } => FailurePhase::Receive,
             ResponsesError::HttpRequest { .. } | ResponsesError::InvalidSseUtf8 { .. } => {
                 FailurePhase::Receive
             }

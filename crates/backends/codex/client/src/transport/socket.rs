@@ -23,6 +23,7 @@ use crate::client::{
     transport::{
         SendOutcome,
         deflate::{self, InflateStream},
+        idle::STREAM_IDLE_TIMEOUT,
     },
 };
 use crate::client::{monotonic_now_ns, transport::wire::turn_state_from_event};
@@ -225,10 +226,11 @@ impl ResponsesSocket {
 
     pub(crate) async fn next_text(&mut self) -> Result<ReceivedText, ResponsesError> {
         loop {
-            let received = self
-                .pump
-                .next()
+            let received = timeout(STREAM_IDLE_TIMEOUT, self.pump.next())
                 .await
+                .map_err(|_| ResponsesError::ReceiveTimeout {
+                    seconds: STREAM_IDLE_TIMEOUT.as_secs(),
+                })?
                 .ok_or(ResponsesError::UnexpectedEnd)?;
             if let Some(text) = self.received_text(received)? {
                 return Ok(text);

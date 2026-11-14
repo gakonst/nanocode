@@ -1,15 +1,11 @@
 use std::{future::Future, time::Duration};
 
-#[cfg(not(target_family = "wasm"))]
+pub(crate) const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
+
 #[derive(Default)]
 pub(crate) struct IdleTimer(Option<nanocode_platform::Sleep>);
 
-#[cfg(target_family = "wasm")]
-#[derive(Default)]
-pub(crate) struct IdleTimer;
-
 impl IdleTimer {
-    #[cfg(not(target_family = "wasm"))]
     pub(crate) async fn within<T>(
         &mut self,
         timeout: Duration,
@@ -25,20 +21,12 @@ impl IdleTimer {
                 value = &mut read => return Some(value),
                 () = &mut *sleep => {
                     if nanocode_platform::now() >= deadline {
+                        self.0 = None;
                         return None;
                     }
                     sleep.reset(deadline);
                 }
             }
         }
-    }
-
-    #[cfg(target_family = "wasm")]
-    pub(crate) async fn within<T>(
-        &mut self,
-        _timeout: Duration,
-        read: impl Future<Output = T>,
-    ) -> Option<T> {
-        Some(read.await)
     }
 }

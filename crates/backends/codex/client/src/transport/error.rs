@@ -65,6 +65,10 @@ pub enum ResponsesError {
         reconnectable: bool,
     },
 
+    ReceiveTimeout {
+        seconds: u64,
+    },
+
     InvalidJson(serde_json::Error),
 
     UnexpectedBinary,
@@ -176,6 +180,10 @@ impl std::fmt::Display for ResponsesError {
                 formatter,
                 "failed to receive a Responses WebSocket frame: {detail}"
             ),
+            Self::ReceiveTimeout { seconds } => write!(
+                formatter,
+                "the Responses WebSocket sent no frame for {seconds} seconds; the stream stalled"
+            ),
             Self::InvalidJson(..) => {
                 formatter.write_str("Responses WebSocket event was not valid JSON")
             }
@@ -270,6 +278,7 @@ impl ResponsesError {
                 reconnectable: true,
                 ..
             } => ("receive_transport", None),
+            Self::ReceiveTimeout { .. } => ("receive_timeout", None),
             Self::Api { event, retry_after } => (retryable_api_error(event)?.0, *retry_after),
 
             Self::HttpRequest { detail, .. } if invalid_provider_stream(detail) => return None,
@@ -350,6 +359,7 @@ impl ResponsesError {
             Self::SendTimeout { .. } => "send_timeout",
             Self::UnexpectedEnd => "premature_close",
             Self::Receive { .. } => "receive",
+            Self::ReceiveTimeout { .. } => "receive_timeout",
             Self::InvalidJson(_) => "invalid_json",
             Self::UnexpectedBinary => "unexpected_binary",
             Self::EncodeRequest(_) => "encode_request",
@@ -626,6 +636,7 @@ impl ResponsesError {
             Self::HostUnavailable
             | Self::HandshakeTimeout { .. }
             | Self::SendTimeout { .. }
+            | Self::ReceiveTimeout { .. }
             | Self::UnexpectedEnd
             | Self::InvalidJson(_)
             | Self::UnexpectedBinary

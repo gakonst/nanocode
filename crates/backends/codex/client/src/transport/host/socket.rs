@@ -1,7 +1,11 @@
 use crate::client::{OpenAiAuthSnapshot, ResponsesError, monotonic_now_ns};
 
 use super::{HostConnectRequest, HostConnection, HostError, HostMessage, HostTransport};
-use crate::client::transport::{EncodedRequest, SendOutcome, wire::turn_state_from_event};
+use crate::client::transport::{
+    EncodedRequest, SendOutcome,
+    idle::{IdleTimer, STREAM_IDLE_TIMEOUT},
+    wire::turn_state_from_event,
+};
 
 pub(crate) use crate::client::transport::wire::decode_event;
 
@@ -15,6 +19,7 @@ pub(crate) struct ConnectionMetadata {
 
 pub(crate) struct ResponsesSocket {
     connection: Box<dyn HostConnection>,
+    idle: IdleTimer,
     turn_state: Option<String>,
 }
 
@@ -73,6 +78,7 @@ impl ResponsesSocket {
         Ok((
             Self {
                 connection,
+                idle: IdleTimer::default(),
                 turn_state: metadata.turn_state.clone(),
             },
             metadata,
@@ -104,7 +110,14 @@ impl ResponsesSocket {
     }
 
     pub(crate) async fn next_text(&mut self) -> Result<ReceivedText, ResponsesError> {
-        match self.connection.next().await.map_err(|error| {
+        let received = self
+            .idle
+            .within(STREAM_IDLE_TIMEOUT, self.connection.next())
+            .await
+            .ok_or(ResponsesError::ReceiveTimeout {
+                seconds: STREAM_IDLE_TIMEOUT.as_secs(),
+            })?;
+        match received.map_err(|error| {
             let reconnectable = error.is_reconnectable();
             ResponsesError::Receive {
                 reconnectable,

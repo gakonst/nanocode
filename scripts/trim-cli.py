@@ -63,8 +63,10 @@ for s in shdrs:
         s[4] -= cut
 if shoff >= lo + cut:
     shoff -= cut
+if phoff >= lo + cut:
+    phoff -= cut
 del data[lo:lo + cut]
-struct.pack_into("<Q", data, 0x28, shoff)
+struct.pack_into("<QQ", data, 0x20, phoff, shoff)
 for i, p in enumerate(phdrs):
     struct.pack_into(PHDR, data, phoff + i * phentsize, *p)
 for i, s in enumerate(shdrs):

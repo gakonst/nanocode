@@ -1414,6 +1414,7 @@ impl RemoteTransport for RemoteClient {
                     }
                     None => ReceivedCalls::default(),
                 };
+                let mut undelivered = None;
                 while let Some(frame) = replies.recv().await {
                     match frame {
                         Frame::Reply {
@@ -1438,8 +1439,11 @@ impl RemoteTransport for RemoteClient {
                                 })?;
                         }
                         Frame::Reply { result, .. } => {
+                            let result = result.map_err(replied)?;
+                            if let Some(issue) = undelivered {
+                                return Err(issue);
+                            }
                             return result
-                                .map_err(replied)?
                                 .map(|mut value| {
                                     received.execution(&mut value)?;
                                     serde_json::from_value::<CodeModeExecution>(value)
@@ -1448,7 +1452,12 @@ impl RemoteTransport for RemoteClient {
                                 .transpose();
                         }
                         Frame::Update { update, .. } => {
-                            received.deliver(observer.as_deref_mut(), update)?;
+                            if undelivered.is_none()
+                                && let Err(issue) =
+                                    received.deliver(observer.as_deref_mut(), update)
+                            {
+                                undelivered = Some(issue);
+                            }
                         }
                         _ => return Err(error("unexpected operation reply")),
                     }

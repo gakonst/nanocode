@@ -3,6 +3,7 @@
 use crate::{Button, state::shown_units};
 use nanocode_sys::base64::STANDARD;
 use nanocode_sys::core_foundation::{Object, Reference, RunLoop, RunOutcome, TypeId};
+use nanocode_sys::libc;
 use std::{
     ffi::c_void,
     hash::{Hash, Hasher},

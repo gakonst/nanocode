@@ -1,6 +1,7 @@
 //! File system changes, the rest of `stat`, user and group names and the local time
 //! zone for the Unix host (D1150).
 
+use nanocode_sys::libc;
 use std::ffi::{CStr, CString};
 use std::io;
 use std::os::unix::ffi::OsStringExt;

@@ -1,5 +1,4 @@
-use std::{ffi::CStr, io, mem, ptr, slice};
-use windows_sys::Win32::{
+use crate::windows_sys::Win32::{
     Foundation::{CRYPT_E_NOT_FOUND, S_OK},
     Security::Cryptography::{
         CERT_CONTEXT, CERT_STORE_PROV_SYSTEM_W, CERT_SYSTEM_STORE_CURRENT_USER_ID,
@@ -8,6 +7,7 @@ use windows_sys::Win32::{
         CertVerifyTimeValidity, HCERTSTORE,
     },
 };
+use std::{ffi::CStr, io, mem, ptr, slice};
 
 const ROOT_STORE: &str = "ROOT";
 const TIME_VALID: i32 = 0;

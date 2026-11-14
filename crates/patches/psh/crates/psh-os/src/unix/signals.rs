@@ -8,6 +8,7 @@
 //! A signal ignored when psh started stays ignored and gets no handler, as in bash.
 //! The API takes and gives the engine's (Linux) signal numbers (D1283).
 
+use nanocode_sys::libc;
 use std::io::{self, Read};
 use std::os::fd::{AsRawFd, IntoRawFd};
 use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};

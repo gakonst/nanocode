@@ -4,6 +4,10 @@ use crate::{
     confine,
     egress::{Allowlist, Egress, Limits, Secret, Tls, tailnet_host},
 };
+use nanocode_executor::JoinHandle;
+use nanocode_executor::process::{Child, Command};
+use nanocode_executor::{UnixStream, net::unix::Pipe};
+use nanocode_io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _};
 use nanocode_platform::{Elapsed, timeout};
 use nanocode_sync::Signal;
 use nanocode_sync::future::BoxFuture;
@@ -17,12 +21,6 @@ use std::{
     process::{ExitStatus, Stdio},
     sync::Arc,
     time::Duration,
-};
-use tokio::{
-    io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _},
-    net::{UnixStream, unix::pipe},
-    process::{Child, Command},
-    task::JoinHandle,
 };
 
 const PIPE: usize = 64 * 1024;
@@ -183,7 +181,7 @@ impl Runner {
                     input,
                 } = confine::channel()?;
                 stream.set_nonblocking(true)?;
-                let input = pipe::Sender::from_owned_fd(OwnedFd::from(input))?;
+                let input = Pipe::from_owned_fd(OwnedFd::from(input))?;
                 Some((UnixStream::from_std(stream)?, host, program, input))
             }
             None => None,
@@ -346,7 +344,7 @@ struct Cleanup {
 impl Cleanup {
     fn kill(&mut self) {
         if let Some(group) = self.group.take() {
-            nanocode_platform::unix::signal_group(group, libc::SIGKILL).ok();
+            nanocode_platform::unix::signal_group(group, nanocode_sys::libc::SIGKILL).ok();
         }
     }
 }
@@ -472,7 +470,7 @@ where
 {
     nanocode_platform::spawn_task(async move {
         let mut bytes = Vec::new();
-        let pipe = pipe.ok_or_else(|| missing("no pipe"))?;
+        let mut pipe = pipe.ok_or_else(|| missing("no pipe"))?;
         let limit = u64::try_from(most)
             .map_err(io::Error::other)?
             .saturating_add(1);

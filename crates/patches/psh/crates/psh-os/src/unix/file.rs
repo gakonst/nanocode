@@ -2,6 +2,7 @@
 //! terminals as pollable [`HostFile`]s that never block the engine thread on something
 //! another part of the engine has to do first (see [`super::ready`]).
 
+use nanocode_sys::libc;
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd, OwnedFd, RawFd};

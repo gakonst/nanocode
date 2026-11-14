@@ -133,7 +133,7 @@ pub fn install<E: Display>(
             .write(true)
             .create_new(true)
             .mode(0o700)
-            .custom_flags(libc::O_NOFOLLOW)
+            .custom_flags(nanocode_sys::libc::O_NOFOLLOW)
             .open(&temporary)
             .map_err(InstallError::Write)?;
         let mut hashing = Hashing {

@@ -1,0 +1,22 @@
+[package]
+name = "nanocode-windows-sys"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "nanocode-sys's Win32 declarations under the windows-sys crate's name, for vendored crates written against windows-sys"
+autotests = false
+autobenches = false
+
+[target.'cfg(windows)'.dependencies]
+nanocode-sys.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+test = false
+doctest = false
+bench = false

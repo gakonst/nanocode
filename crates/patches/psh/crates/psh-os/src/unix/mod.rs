@@ -18,6 +18,7 @@ pub mod signals;
 pub mod signum;
 mod spawn;
 
+use nanocode_sys::libc;
 use std::ffi::{CString, OsStr, OsString};
 use std::io;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};

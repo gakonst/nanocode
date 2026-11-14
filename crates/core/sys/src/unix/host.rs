@@ -1,3 +1,4 @@
+use crate::libc;
 use std::{
     ffi::{CStr, CString, OsString},
     fs::File,

@@ -11,11 +11,13 @@ use std::{
     time::Duration,
 };
 
+use nanocode_executor::JoinHandle;
+use nanocode_executor::process::{ChildStderr, ChildStdout, Command};
 use nanocode_sync::{mpsc, oneshot};
-use tokio::process::{ChildStderr, ChildStdout, Command};
-use tokio::task::JoinHandle;
 
 use nanocode_process_contracts::{MIN_REDACTED_SECRET_BYTES, REDACTED, Redactor};
+#[cfg(unix)]
+use nanocode_sys::libc;
 
 use super::selection::Shell;
 
@@ -115,7 +117,9 @@ impl ProcessChild {
             let mut listening = true;
             #[cfg(unix)]
             let mut exited = if io_driver_available {
-                match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::child()) {
+                match nanocode_executor::signal::unix::signal(
+                    nanocode_executor::signal::unix::SignalKind::child(),
+                ) {
                     Ok(signal) => Some(signal),
                     Err(error) => {
                         nanocode_trace::warn!(%error, "shell exit notifications unavailable; using polling");

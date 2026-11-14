@@ -18,6 +18,7 @@
 //!
 //! The recipe follows oh-my-pi's `pi-shell/src/sys/ready.rs` (MIT, see NOTICE).
 
+use nanocode_sys::libc;
 use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd, RawFd};
 use std::sync::{LazyLock, Mutex};

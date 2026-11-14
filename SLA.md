@@ -105,6 +105,39 @@ The deployed Worker, 2026-11-14, from gak-9, a new session per round, 12 rounds 
 
 A new session's extra second before response headers is the Durable Object starting (836 to 905 ms p50 against 42 to 47 warm), not session work: the object answers 59 to 65 ms after its `fetch` starts. The rest of the cold first delta is the first provider request from the new object, 0.5 to 0.8 s above a warm one at p50. Workers KV reads of the MCP listings now use `cacheTtl` (durable-cloudflare ae0aa1b). On version a9e3d78f the client drew a reply over 0.99 of the provider's own window on Claude (1.06 to 1.09 at p99, 571 to 637 characters/s) and 0.79 to 0.82 on Responses (the provider's window there includes events after the last text), so the Worker draws at the provider's rate.
 
+2026-11-14, the full live matrix: 20 sessions of 3 turns per model and client, every prompt unique (the run's id in each), lanes interleaved, Enter to the first token drawn, p50 / p99 ms with n = 20 per cell unless noted (p99 of 20 is the slowest sample). GPT models from dev-georgios (ChatGPT login, Codex CLI 0.166.0, under `flock ~/sla/live.lock`, load 100 to 160 from other jobs); Codex CLI accepts all four on this login. Claude models from the hosted Hand (API key, Claude Code 2.1.318, TLS-terminating egress proxy). **Bold** marks a cell nanocode does not win.
+
+| model | turn | nanocode | Codex CLI 0.166.0 |
+|---|---|---|---|
+| gpt-6-luna (e4779d26f) | 1 | 994 / 2,132 (n 19) | 1,474 / 2,893 |
+| | 2 | 1,113 / **2,833** | 1,257 / 2,008 |
+| | 3 | 936 / 1,734 | 1,199 / 1,991 |
+| gpt-6.1-sol (9a9e5d038) | 1 | 1,795 / 3,352 | 2,486 / 10,622 |
+| | 2 | 1,660 / 2,677 | 1,949 / 3,092 |
+| | 3 | **1,798 / 3,398** | 1,705 / 2,870 |
+| gpt-6-astra (9a9e5d038) | 1 | 1,524 / 6,822 | 2,439 / 7,063 |
+| | 2 | 1,800 / 5,007 | 1,874 / 5,244 |
+| | 3 | 1,631 / 3,667 | 1,680 / 4,128 |
+| gpt-6.1-terra (9a9e5d038) | 1 | 1,283 / 3,823 | 1,808 / 4,560 |
+| | 2 | 1,258 / 2,682 | 1,621 / 3,217 |
+| | 3 | 1,175 / 2,165 (n 19) | 1,367 / 3,292 |
+
+The two n = 19 cells each lost one sample to the model answering a different word, not to the client. Gaps where nanocode loses: gpt-6-luna turn 2 p99 +825 ms; gpt-6.1-sol turn 3 p50 +93 ms and p99 +528 ms. nanocode wins every gpt-6-astra and gpt-6.1-terra cell, and every turn-1 cell, by 480 to 910 ms at p50.
+
+| model | turn | nanocode e4779d26f | Claude Code | nanocode 9a9e5d038 | Claude Code |
+|---|---|---|---|---|---|
+| claude-haiku-5-5 | 1 | 768 / **2,696** | 1,768 / 2,053 | 814 / **2,362** | 1,651 / 2,266 |
+| | 2 | 695 / 1,657 | 1,146 / 1,659 | 732 / **2,334** | 1,049 / 1,991 |
+| | 3 | 658 / 1,285 | 997 / 1,545 | 710 / 1,298 | 1,006 / 1,990 |
+| claude-sonnet-5-5 | 1 | 695 / 1,345 | 1,968 / 2,300 | 1,356 / 1,543 | 2,068 / 2,503 |
+| | 2 | 741 / 1,464 | 1,338 / 1,890 | 1,338 / **2,296** | 1,382 / 1,723 |
+| | 3 | 775 / 1,480 | 1,314 / 1,636 | 1,356 / **1,693** | 1,386 / 1,651 |
+| claude-opus-5-5 | 1 | 1,442 / 2,590 | 2,372 / 4,169 | 1,154 / 2,234 | 2,574 / 4,067 |
+| | 2 | 1,243 / 1,749 | 1,666 / 6,645 | 1,155 / 1,791 | 1,649 / 3,981 |
+| | 3 | 1,354 / **1,834** | 1,518 / 1,721 | 1,152 / **1,859** | 1,532 / 1,799 |
+
+nanocode wins every Claude p50, by 0.7 to 1.4 s on turn 1 and 30 to 500 ms on later turns. It loses these p99 cells: haiku turn 1 +643 and +96 ms, haiku turn 2 +343 ms (9a9e5d038; e4779d26f wins it by 2 ms), sonnet turn 2 +573 ms, sonnet turn 3 +42 ms, opus turn 3 +113 and +60 ms. Each lost p99 is one slow sample out of 20 while Claude Code's slowest is lower in that cell; the nanocode outliers are 1.6 to 2.7 s against medians of 0.7 to 1.4 s. nanocode's sonnet median moved from 0.7 s to 1.35 s between the two runs (about 04:10 and 05:05 UTC) while Claude Code's did not; an interleaved A/B of the two builds in the later window (12 sessions each) gives e4779d26f 1,376 / 1,343 / 1,334 ms and 9a9e5d038 1,287 / 1,300 / 1,317 ms (p50, turns 1 to 3), so the move is the provider's time for nanocode's sonnet requests in that window, not the build. Request bodies of both builds are byte-identical in length (37,509 bytes) with the same adaptive thinking, high effort and betas.
+
 ## Not measured yet
 
 - A new Worker session's Durable Object start (836 to 905 ms p50 before its `fetch` runs): how much is placement for a new name and how much is the isolate and module start, and whether a client warm before the first turn hides it. Tool calls and Code Mode cells on Workers.

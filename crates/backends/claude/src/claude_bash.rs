@@ -41,6 +41,8 @@ const ERROR_CHARS: usize = 10_000;
 const ERROR_CHARS_SLACK: usize = 1_024;
 const UPSTREAM_TIMEOUT: &str = "max 600000 for a foreground command.";
 const NESTED_TIMEOUT: &str = " A call from an exec cell without `timeout` waits the maximum instead, because the cell yields on its own clock; a command that reaches its `timeout` moves to the background and keeps running, and a `timeout` above the maximum counts as the maximum.";
+const UPSTREAM_BACKGROUND: &str = "No `&` needed.";
+const NESTED_BACKGROUND: &str = " From an exec cell, the end of such a command, or of one moved to the background at its `timeout`, makes the exec or wait call that is waiting return at once, even one whose script sleeps on a timer. A command you put in the background yourself with `&` or `nohup` is not followed: nothing reports its end, so waiting for it is a guess.";
 
 type Outcome = Result<BashResult, String>;
 
@@ -1133,10 +1135,19 @@ impl Tool for BashTool {
             .as_str()
             .and_then(|description| description.split_once(UPSTREAM_TIMEOUT))
             .expect("upstream Bash timeout sentence");
-        let nested = if self.code_mode { NESTED_TIMEOUT } else { "" };
+        let (between, after) = after
+            .split_once(UPSTREAM_BACKGROUND)
+            .expect("upstream Bash background sentence");
+        let (timeout, background) = if self.code_mode {
+            (NESTED_TIMEOUT, NESTED_BACKGROUND)
+        } else {
+            ("", "")
+        };
         ToolDefinition::function(
             "Bash",
-            format!("{before}{UPSTREAM_TIMEOUT}{nested}{after}"),
+            format!(
+                "{before}{UPSTREAM_TIMEOUT}{timeout}{between}{UPSTREAM_BACKGROUND}{background}{after}"
+            ),
             schema["input_schema"].clone(),
         )
         .with_output_schema(super::claude_output::schema("Bash"))

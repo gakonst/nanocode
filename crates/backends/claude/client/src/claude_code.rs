@@ -493,13 +493,26 @@ impl ClaudeClient {
     }
 }
 
+impl ClaudeClient {
+    pub fn subscription_or_key(api_key: &str) -> Result<Self, ClaudeAuthUnavailable> {
+        let http = Self::http_client();
+        let login = Arc::new(crate::ClaudeAuthOrKey::new(signed_in(&http), Some(api_key))?);
+        Ok(Self::subscription(http, login))
+    }
+}
+
+fn signed_in(http: &nanocode_http::Client) -> Arc<crate::home::HomeFirst> {
+    let claude_code = Arc::new(RefreshingClaudeAuth::new(
+        Arc::new(ClaudeCodeLogin { http: http.clone() }),
+        REFRESH_MARGIN,
+    ));
+    Arc::new(crate::home::HomeFirst::new(claude_code))
+}
+
 impl Default for ClaudeClient {
     fn default() -> Self {
         let http = Self::http_client();
-        let claude_code = Arc::new(RefreshingClaudeAuth::new(
-            Arc::new(ClaudeCodeLogin { http: http.clone() }),
-            REFRESH_MARGIN,
-        ));
-        Self::subscription(http, Arc::new(crate::home::HomeFirst::new(claude_code)))
+        let login = signed_in(&http);
+        Self::subscription(http, login)
     }
 }

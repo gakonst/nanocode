@@ -317,7 +317,7 @@ impl ClaudeAuthProvider for HomeFirst {
             }
             self.fallback.headers().await.map_err(|error| {
                 ClaudeAuthUnavailable::new(format!(
-                    "{}; sign in with /login claude",
+                    "{}; sign in with /login claude or set ANTHROPIC_API_KEY",
                     error.reason()
                 ))
             })

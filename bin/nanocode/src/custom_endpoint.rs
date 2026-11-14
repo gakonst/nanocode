@@ -69,8 +69,11 @@ pub fn apply(clients: ModelClients) -> Result<ModelClients, String> {
 }
 
 fn anthropic(clients: ModelClients) -> Result<ModelClients, String> {
-    let Some(base) = env(ANTHROPIC_BASE_URL).filter(|_| !clients.supplies_claude()) else {
+    if clients.supplies_claude() {
         return Ok(clients);
+    }
+    let Some(base) = env(ANTHROPIC_BASE_URL) else {
+        return behind_login(clients);
     };
     let Some((name, credential, value)) = ANTHROPIC_CREDENTIALS
         .iter()
@@ -103,6 +106,21 @@ fn anthropic(clients: ModelClients) -> Result<ModelClients, String> {
             }))
         }
     }
+}
+
+fn behind_login(clients: ModelClients) -> Result<ModelClients, String> {
+    let Some((name, key)) = ANTHROPIC_CREDENTIALS
+        .iter()
+        .filter(|(_, credential)| matches!(credential, AnthropicCredential::ApiKey))
+        .find_map(|(name, _)| env(name).map(|key| (*name, key)))
+    else {
+        return Ok(clients);
+    };
+    http::header::HeaderValue::from_str(&key).map_err(|error| format!("{name}: {error}"))?;
+    Ok(clients.claude(move || {
+        nanocode::claude::ClaudeClient::subscription_or_key(&key)
+            .expect("the Anthropic API key was checked when the clients were built")
+    }))
 }
 
 fn fetch_models(url: &str, key: Option<&str>) -> Result<Vec<(String, Option<u64>)>, String> {

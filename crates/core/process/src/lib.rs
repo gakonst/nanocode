@@ -300,6 +300,36 @@ pub fn redact_and_limit_in(
 
     let original_token_count = output.len().saturating_add(3) / BYTES_PER_TOKEN;
     let total_lines = output.lines().count();
+    let truncated = format!(
+        "Warning: truncated output (original token count: {original_token_count})\nTotal output lines: {total_lines}\n\n{}",
+        cut_middle(&output, limit, unit),
+    );
+    (truncated, true)
+}
+
+pub fn limit_omitted_in(
+    output: String,
+    limit: usize,
+    unit: OutputUnit,
+    marker: &str,
+    original_token_count: usize,
+) -> (String, bool) {
+    if output.len() <= limit {
+        return (output, false);
+    }
+    let kept = cut_middle(&output, limit, unit);
+    let notice = if kept.contains(marker) {
+        String::new()
+    } else {
+        format!("{marker}\n")
+    };
+    let truncated = format!(
+        "Warning: truncated output (original token count: {original_token_count})\n{notice}\n{kept}"
+    );
+    (truncated, true)
+}
+
+fn cut_middle(output: &str, limit: usize, unit: OutputUnit) -> String {
     let left_budget = limit / 2;
     let right_budget = limit.saturating_sub(left_budget);
     let prefix_end = output.floor_char_boundary(left_budget);
@@ -313,12 +343,11 @@ pub fn redact_and_limit_in(
         ),
         OutputUnit::Chars => format!("{} chars", output[prefix_end..suffix_start].chars().count()),
     };
-    let truncated = format!(
-        "Warning: truncated output (original token count: {original_token_count})\nTotal output lines: {total_lines}\n\n{}…{removed} truncated…{}",
+    format!(
+        "{}…{removed} truncated…{}",
         &output[..prefix_end],
         &output[suffix_start..],
-    );
-    (truncated, true)
+    )
 }
 
 pub const REDACTED: &str = "[REDACTED]";

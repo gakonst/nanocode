@@ -891,8 +891,14 @@ impl SessionState {
         let mut raw = String::from_utf8_lossy(&captured.with_omission_marker()).into_owned();
         self.secrets.text(&mut raw);
         let limit = output::effective_token_limit(max_output_tokens);
-        let (output, _) = output::redact_and_limit_in(raw, &[], limit, output_unit);
-        Ok((output, Some(captured.total_bytes.saturating_add(3) / 4)))
+        let original_token_count = captured.total_bytes.saturating_add(3) / 4;
+        let (output, _) = match captured.omission_marker() {
+            Some(marker) => {
+                output::limit_omitted_in(raw, limit, output_unit, &marker, original_token_count)
+            }
+            None => output::redact_and_limit_in(raw, &[], limit, output_unit),
+        };
+        Ok((output, Some(original_token_count)))
     }
 }
 
@@ -1001,9 +1007,12 @@ impl CapturedChunk {
             .saturating_add(tail_cut);
     }
 
+    fn omission_marker(&self) -> Option<String> {
+        (self.omitted_bytes > 0).then(|| format!("... {} bytes omitted ...", self.omitted_bytes))
+    }
+
     fn with_omission_marker(&self) -> Vec<u8> {
-        let marker = (self.omitted_bytes > 0)
-            .then(|| format!("... {} bytes omitted ...", self.omitted_bytes));
+        let marker = self.omission_marker();
         let marker_length = marker.as_ref().map_or(0, |marker| marker.len() + 2);
         let mut output = Vec::with_capacity(
             self.head

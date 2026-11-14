@@ -95,9 +95,10 @@ impl RunnerAgents {
         });
         let mut startup = Vec::new();
         for runner in runners {
-            if let Err(error) = self.pool.keep_connected(runner) {
-                startup.push(tokio::sync::watch::channel(Some(Err(error))).1);
-            }
+            startup.push(match self.pool.keep_connected(runner) {
+                Ok(started) => started,
+                Err(error) => tokio::sync::watch::channel(Some(Err(error))).1,
+            });
         }
         for server in servers {
             let pool = self.pool.clone();

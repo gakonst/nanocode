@@ -279,6 +279,7 @@ struct Prepared {
     thinking: Thinking,
     tier: ServiceTier,
     home: PathBuf,
+    runner_events: tokio::sync::mpsc::UnboundedReceiver<nanocode::RunnerEvent>,
 }
 
 async fn prepare(
@@ -398,11 +399,22 @@ async fn prepare(
         nanocode_trace::info_span!(target: "nanocode", "nc.host.build"),
     )
     .await?;
-    nanocode_trace::Instrument::instrument(
+    let mut runner_events = host.runtime.runner_events();
+    let initialized = nanocode_trace::Instrument::instrument(
         host.runtime.initialize_runners(),
         nanocode_trace::info_span!(target: "nanocode", "nc.runners.initialize"),
     )
-    .await?;
+    .await;
+    if let Err(error) = initialized {
+        let mut failures = Vec::new();
+        while let Ok(event) = runner_events.try_recv() {
+            failures.extend(runner_failure(&event));
+        }
+        return Err(match failures.is_empty() {
+            true => error.into(),
+            false => failures.join("; ").into(),
+        });
+    }
     for server in host.runtime.runner_servers() {
         notify(&host::listener_notice(&server));
     }
@@ -416,7 +428,15 @@ async fn prepare(
         thinking,
         tier,
         home,
+        runner_events,
     })
+}
+
+fn runner_failure(event: &nanocode::RunnerEvent) -> Option<String> {
+    match event {
+        nanocode::RunnerEvent::Failed { name, error } => Some(format!("runner {name}: {error}")),
+        nanocode::RunnerEvent::StatusChanged { .. } => None,
+    }
 }
 
 const fn family(harness: HarnessArg) -> nanocode::HarnessFamily {
@@ -499,6 +519,7 @@ async fn interactive(mut args: SessionArgs, clients: ModelClients) -> Result<()>
             tier_override: args.tier.as_deref().map(host::parse_tier).transpose()?,
             reload,
             reload_path: args.reload_state,
+            runner_events: prepared.runner_events,
         },
         terminal,
     )
@@ -537,6 +558,14 @@ async fn exec(args: SessionArgs, clients: ModelClients) -> Result<()> {
         true,
     )
     .await?;
+    let mut runner_events = prepared.runner_events;
+    nanocode_platform::spawn_task(async move {
+        while let Some(event) = runner_events.recv().await {
+            if let Some(failure) = runner_failure(&event) {
+                eprintln!("nanocode: {failure}");
+            }
+        }
+    });
     let host = prepared.host;
     let resume = match (&args.resume, args.continue_last) {
         (Some(id), _) if !id.is_empty() => Some(id.clone()),

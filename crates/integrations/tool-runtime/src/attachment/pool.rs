@@ -532,14 +532,15 @@ impl RunnerPool {
             .await
             .map(|(name, host)| (name.to_string(), host.describe()))
     }
-    pub fn keep_connected(&self, config: Runner) -> Result<(), AttachmentError> {
+    pub fn keep_connected(&self, config: Runner) -> Result<Started, AttachmentError> {
         config.validate()?;
         if config.mode == RemoteMode::Replace {
             self.inner.code_mode.await_replacement(true);
         }
         nanocode_platform::Handle::try_current().map_err(error)?;
-        nanocode_platform::spawn_task(supervise(Arc::downgrade(&self.inner), config));
-        Ok(())
+        let (receipt, started) = watch::channel(None);
+        nanocode_platform::spawn_task(supervise(Arc::downgrade(&self.inner), config, receipt));
+        Ok(started)
     }
     pub fn connect<'call>(
         &'call self,
@@ -1088,9 +1089,20 @@ fn validate_registration(
     }
     Ok(())
 }
-async fn supervise(pool: Weak<PoolInner>, config: Runner) {
+pub type Started = watch::Receiver<Option<Result<(), AttachmentError>>>;
+
+async fn supervise(
+    pool: Weak<PoolInner>,
+    config: Runner,
+    receipt: watch::Sender<Option<Result<(), AttachmentError>>>,
+) {
     let mut backoff = super::INITIAL_TRANSPORT_BACKOFF;
     let mut reported = false;
+    let started = |outcome| {
+        if receipt.borrow().is_none() {
+            receipt.send_replace(Some(outcome));
+        }
+    };
     loop {
         let Some(inner) = pool.upgrade() else {
             return;
@@ -1101,6 +1113,7 @@ async fn supervise(pool: Weak<PoolInner>, config: Runner) {
         };
         match pool_handle.connect_detected(config.clone()).await {
             Ok(handle) => {
+                started(Ok(()));
                 backoff = super::INITIAL_TRANSPORT_BACKOFF;
                 reported = false;
                 let HandleKind::CodeMode { .. } = handle.kind else {
@@ -1139,11 +1152,16 @@ async fn supervise(pool: Weak<PoolInner>, config: Runner) {
                     pool_handle.report_failure(config.name.clone(), failure.to_string());
                     reported = true;
                 }
+                started(Ok(()));
                 drop(pool_handle);
                 nanocode_platform::sleep(super::reconnect_delay(&mut backoff)).await;
             }
             Err(failure) => {
                 pool_handle.report_failure(config.name.clone(), failure.to_string());
+                if config.mode == RemoteMode::Replace {
+                    pool_handle.inner.code_mode.await_replacement(false);
+                }
+                started(Err(failure));
                 return;
             }
         }

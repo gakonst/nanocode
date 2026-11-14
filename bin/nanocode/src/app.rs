@@ -252,6 +252,7 @@ pub struct Launch {
     pub tier_override: Option<ServiceTier>,
     pub reload: Option<reload::State>,
     pub reload_path: Option<PathBuf>,
+    pub runner_events: tokio::sync::mpsc::UnboundedReceiver<RunnerEvent>,
 }
 
 pub struct App {
@@ -409,7 +410,7 @@ pub async fn run(launch: Launch, mut terminal: TerminalSession) -> Result<()> {
     if let Some(link) = &app.host.config.tab {
         app.notice(NoticeLevel::Info, crate::host::tab_notice(link));
     }
-    forward_runners(&app.host.runtime, app.tx.clone());
+    forward_runners(launch.runner_events, app.tx.clone());
     if let Some(notices) = app.host.config.clients.notifying() {
         forward_notices(notices, app.tx.clone());
     }
@@ -650,8 +651,10 @@ fn runner_info(info: &RunnerInfo) -> String {
     )
 }
 
-fn forward_runners(runtime: &nanocode::Nanocode, tx: UnboundedSender<AppEvent>) {
-    let mut events = runtime.runner_events();
+fn forward_runners(
+    mut events: tokio::sync::mpsc::UnboundedReceiver<RunnerEvent>,
+    tx: UnboundedSender<AppEvent>,
+) {
     nanocode_platform::spawn_task(async move {
         while let Some(event) = events.recv().await {
             let (level, message) = match event {

@@ -1,11 +1,8 @@
-//! Deserialize JSON data to a Rust data structure.
-
 use crate::error::{Error, ErrorCode, Result};
 use crate::number::Number;
 use crate::read::{self, Fused, Reference};
 use alloc::string::String;
 use alloc::vec::Vec;
-#[cfg(feature = "float_roundtrip")]
 use core::iter;
 use core::iter::FusedIterator;
 use core::marker::PhantomData;
@@ -14,95 +11,55 @@ use core::str::{self, FromStr};
 use serde::de::{self, Expected, Unexpected};
 use serde::forward_to_deserialize_any;
 
-#[cfg(feature = "arbitrary_precision")]
-use crate::number::NumberDeserializer;
-
-#[cfg(feature = "float_roundtrip")]
 const F64_EXACT_SIGNIFICAND_MAX: u64 = 1 << f64::MANTISSA_DIGITS;
-#[cfg(feature = "float_roundtrip")]
 const F32_EXACT_SIGNIFICAND_MAX: u64 = 1 << f32::MANTISSA_DIGITS;
-#[cfg(feature = "float_roundtrip")]
 const F64_EXACT_POW10: [f64; 23] = [
     1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10, 1e11, 1e12, 1e13, 1e14, 1e15, 1e16,
     1e17, 1e18, 1e19, 1e20, 1e21, 1e22,
 ];
-#[cfg(feature = "float_roundtrip")]
 const F32_EXACT_POW10: [f32; 11] = [1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10];
 
 pub use crate::read::{Read, SliceRead, StrRead};
 
-#[cfg(feature = "std")]
-#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub use crate::read::IoRead;
 
-//////////////////////////////////////////////////////////////////////////////
-
-/// A structure that deserializes JSON into Rust values.
 pub struct Deserializer<R> {
     read: R,
     scratch: Vec<u8>,
     remaining_depth: u8,
-    #[cfg(feature = "float_roundtrip")]
     single_precision: bool,
-    #[cfg(feature = "unbounded_depth")]
-    disable_recursion_limit: bool,
 }
 
 impl<'de, R> Deserializer<R>
 where
     R: read::Read<'de>,
 {
-    /// Create a JSON deserializer from one of the possible serde_json input
-    /// sources.
-    ///
-    /// When reading from a source against which short reads are not efficient, such
-    /// as a [`File`], you will want to apply your own buffering because serde_json
-    /// will not buffer the input. See [`std::io::BufReader`].
-    ///
-    /// Typically it is more convenient to use one of these methods instead:
-    ///
-    ///   - Deserializer::from_str
-    ///   - Deserializer::from_slice
-    ///   - Deserializer::from_reader
-    ///
-    /// [`File`]: std::fs::File
     pub fn new(read: R) -> Self {
         Deserializer {
             read,
             scratch: Vec::new(),
             remaining_depth: 128,
-            #[cfg(feature = "float_roundtrip")]
             single_precision: false,
-            #[cfg(feature = "unbounded_depth")]
-            disable_recursion_limit: false,
         }
     }
 }
 
-#[cfg(feature = "std")]
 impl<R> Deserializer<read::IoRead<R>>
 where
     R: crate::io::Read,
 {
-    /// Creates a JSON deserializer from an `io::Read`.
-    ///
-    /// Reader-based deserializers do not support deserializing borrowed types
-    /// like `&str`, since the `std::io::Read` trait has no non-copying methods
-    /// -- everything it does involves copying bytes out of the data source.
     pub fn from_reader(reader: R) -> Self {
         Deserializer::new(read::IoRead::new(reader))
     }
 }
 
 impl<'a> Deserializer<read::SliceRead<'a>> {
-    /// Creates a JSON deserializer from a `&[u8]`.
     pub fn from_slice(bytes: &'a [u8]) -> Self {
         Deserializer::new(read::SliceRead::new(bytes))
     }
 }
 
 impl<'a> Deserializer<read::StrRead<'a>> {
-    /// Creates a JSON deserializer from a `&str`.
     pub fn from_str(s: &'a str) -> Self {
         Deserializer::new(read::StrRead::new(s))
     }
@@ -120,8 +77,6 @@ pub(crate) enum ParserNumber {
     F64(f64),
     U64(u64),
     I64(i64),
-    #[cfg(feature = "arbitrary_precision")]
-    String(String),
 }
 
 impl ParserNumber {
@@ -133,8 +88,6 @@ impl ParserNumber {
             ParserNumber::F64(x) => visitor.visit_f64(x),
             ParserNumber::U64(x) => visitor.visit_u64(x),
             ParserNumber::I64(x) => visitor.visit_i64(x),
-            #[cfg(feature = "arbitrary_precision")]
-            ParserNumber::String(x) => visitor.visit_map(NumberDeserializer { number: x.into() }),
         }
     }
 
@@ -143,16 +96,11 @@ impl ParserNumber {
             ParserNumber::F64(x) => de::Error::invalid_type(Unexpected::Float(x), exp),
             ParserNumber::U64(x) => de::Error::invalid_type(Unexpected::Unsigned(x), exp),
             ParserNumber::I64(x) => de::Error::invalid_type(Unexpected::Signed(x), exp),
-            #[cfg(feature = "arbitrary_precision")]
-            ParserNumber::String(_) => de::Error::invalid_type(Unexpected::Other("number"), exp),
         }
     }
 }
 
 impl<'de, R: Read<'de>> Deserializer<R> {
-    /// The `Deserializer::end` method should be called after a value has been fully deserialized.
-    /// This allows the `Deserializer` to validate that the input stream is at the end or that it
-    /// only has trailing whitespace.
     pub fn end(&mut self) -> Result<()> {
         match tri!(self.parse_whitespace()) {
             Some(_) => Err(self.peek_error(ErrorCode::TrailingCharacters)),
@@ -160,13 +108,10 @@ impl<'de, R: Read<'de>> Deserializer<R> {
         }
     }
 
-    /// Turn a JSON deserializer into an iterator over values of type T.
     pub fn into_iter<T>(self) -> StreamDeserializer<'de, R, T>
     where
         T: de::Deserialize<'de>,
     {
-        // This cannot be an implementation of std::iter::IntoIterator because
-        // we need the caller to choose what T is.
         let offset = self.read.byte_offset();
         StreamDeserializer {
             de: self,
@@ -175,55 +120,6 @@ impl<'de, R: Read<'de>> Deserializer<R> {
             output: PhantomData,
             lifetime: PhantomData,
         }
-    }
-
-    /// Parse arbitrarily deep JSON structures without any consideration for
-    /// overflowing the stack.
-    ///
-    /// You will want to provide some other way to protect against stack
-    /// overflows, such as by wrapping your Deserializer in the dynamically
-    /// growing stack adapter provided by the serde_stacker crate. Additionally
-    /// you will need to be careful around other recursive operations on the
-    /// parsed result which may overflow the stack after deserialization has
-    /// completed, including, but not limited to, Display and Debug and Drop
-    /// impls.
-    ///
-    /// *This method is only available if serde_json is built with the
-    /// `"unbounded_depth"` feature.*
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use serde::Deserialize;
-    /// use serde_json::Value;
-    ///
-    /// fn main() {
-    ///     let mut json = String::new();
-    ///     for _ in 0..10000 {
-    ///         json = format!("[{}]", json);
-    ///     }
-    ///
-    ///     let mut deserializer = serde_json::Deserializer::from_str(&json);
-    ///     deserializer.disable_recursion_limit();
-    ///     let deserializer = serde_stacker::Deserializer::new(&mut deserializer);
-    ///     let value = Value::deserialize(deserializer).unwrap();
-    ///
-    ///     carefully_drop_nested_arrays(value);
-    /// }
-    ///
-    /// fn carefully_drop_nested_arrays(value: Value) {
-    ///     let mut stack = vec![value];
-    ///     while let Some(value) = stack.pop() {
-    ///         if let Value::Array(array) = value {
-    ///             stack.extend(array);
-    ///         }
-    ///     }
-    /// }
-    /// ```
-    #[cfg(feature = "unbounded_depth")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "unbounded_depth")))]
-    pub fn disable_recursion_limit(&mut self) {
-        self.disable_recursion_limit = true;
     }
 
     pub(crate) fn peek(&mut self) -> Result<Option<u8>> {
@@ -246,22 +142,18 @@ impl<'de, R: Read<'de>> Deserializer<R> {
         Ok(tri!(self.next_char()).unwrap_or(b'\x00'))
     }
 
-    /// Error caused by a byte from next_char().
     #[cold]
     fn error(&self, reason: ErrorCode) -> Error {
         let position = self.read.position();
         Error::syntax(reason, position.line, position.column)
     }
 
-    /// Error caused by a byte from peek().
     #[cold]
     fn peek_error(&self, reason: ErrorCode) -> Error {
         let position = self.read.peek_position();
         Error::syntax(reason, position.line, position.column)
     }
 
-    /// Returns the first non-whitespace byte without consuming it, or `None` if
-    /// EOF is encountered.
     fn parse_whitespace(&mut self) -> Result<Option<u8>> {
         loop {
             match tri!(self.peek()) {
@@ -352,7 +244,6 @@ impl<'de, R: Read<'de>> Deserializer<R> {
         }
     }
 
-    #[cfg(feature = "float_roundtrip")]
     pub(crate) fn do_deserialize_f32<'any, V>(&mut self, visitor: V) -> Result<V::Value>
     where
         V: de::Visitor<'any>,
@@ -429,7 +320,6 @@ impl<'de, R: Read<'de>> Deserializer<R> {
         match tri!(self.next_char_or_null()) {
             b'0' => {
                 buf.push('0');
-                // There can be only one leading '0'.
                 match tri!(self.peek_or_null()) {
                     b'0'..=b'9' => Err(self.peek_error(ErrorCode::InvalidNumber)),
                     _ => Ok(()),
@@ -479,7 +369,6 @@ impl<'de, R: Read<'de>> Deserializer<R> {
 
         match next {
             b'0' => {
-                // There can be only one leading '0'.
                 match tri!(self.peek_or_null()) {
                     b'0'..=b'9' => Err(self.peek_error(ErrorCode::InvalidNumber)),
                     _ => self.parse_number(positive, 0),
@@ -493,10 +382,6 @@ impl<'de, R: Read<'de>> Deserializer<R> {
                         c @ b'0'..=b'9' => {
                             let digit = (c - b'0') as u64;
 
-                            // We need to be careful with overflow. If we can,
-                            // try to keep the number as a `u64` until we grow
-                            // too large. At that point, switch to parsing the
-                            // value as a `f64`.
                             if overflow!(significand * 10 + digit, u64::MAX) {
                                 return Ok(ParserNumber::F64(tri!(
                                     self.parse_long_integer(positive, significand),
@@ -526,7 +411,6 @@ impl<'de, R: Read<'de>> Deserializer<R> {
                 } else {
                     let neg = (significand as i64).wrapping_neg();
 
-                    // Convert into a float if we underflow, or on `-0`.
                     if neg >= 0 {
                         ParserNumber::F64(-(significand as f64))
                     } else {
@@ -559,7 +443,6 @@ impl<'de, R: Read<'de>> Deserializer<R> {
             exponent_after_decimal_point -= 1;
         }
 
-        // Error if there is not at least one digit after the decimal point.
         if exponent_after_decimal_point == 0 {
             match tri!(self.peek()) {
                 Some(_) => return Err(self.peek_error(ErrorCode::InvalidNumber)),
@@ -601,7 +484,6 @@ impl<'de, R: Read<'de>> Deserializer<R> {
             }
         };
 
-        // Make sure a digit follows the exponent place.
         let mut exp = match next {
             c @ b'0'..=b'9' => (c - b'0') as i32,
             _ => {
@@ -630,7 +512,6 @@ impl<'de, R: Read<'de>> Deserializer<R> {
         self.f64_from_parts(positive, significand, final_exp)
     }
 
-    #[cfg(feature = "float_roundtrip")]
     fn f64_from_parts(&mut self, positive: bool, significand: u64, exponent: i32) -> Result<f64> {
         if let Some(f) = self.exact_from_parts(significand, exponent) {
             return Ok(if positive { f } else { -f });
@@ -644,7 +525,6 @@ impl<'de, R: Read<'de>> Deserializer<R> {
         self.f64_from_scratch(positive)
     }
 
-    #[cfg(feature = "float_roundtrip")]
     fn exact_from_parts(&self, significand: u64, exponent: i32) -> Option<f64> {
         if self.single_precision {
             if significand > F32_EXACT_SIGNIFICAND_MAX || exponent.unsigned_abs() as usize >= F32_EXACT_POW10.len() {
@@ -663,7 +543,6 @@ impl<'de, R: Read<'de>> Deserializer<R> {
         }
     }
 
-    #[cfg(feature = "float_roundtrip")]
     fn f64_from_scratch(&mut self, positive: bool) -> Result<f64> {
         let text = str::from_utf8(&self.scratch).unwrap_or_default();
         let f = if self.single_precision {
@@ -677,58 +556,9 @@ impl<'de, R: Read<'de>> Deserializer<R> {
         }
     }
 
-    #[cfg(not(feature = "float_roundtrip"))]
-    fn f64_from_parts(
-        &mut self,
-        positive: bool,
-        significand: u64,
-        mut exponent: i32,
-    ) -> Result<f64> {
-        let mut f = significand as f64;
-        loop {
-            match POW10.get(exponent.wrapping_abs() as usize) {
-                Some(&pow) => {
-                    if exponent >= 0 {
-                        f *= pow;
-                        if f.is_infinite() {
-                            return Err(self.error(ErrorCode::NumberOutOfRange));
-                        }
-                    } else {
-                        f /= pow;
-                    }
-                    break;
-                }
-                None => {
-                    if f == 0.0 {
-                        break;
-                    }
-                    if exponent >= 0 {
-                        return Err(self.error(ErrorCode::NumberOutOfRange));
-                    }
-                    f /= 1e308;
-                    exponent += 308;
-                }
-            }
-        }
-        Ok(if positive { f } else { -f })
-    }
-
-    #[cfg(feature = "float_roundtrip")]
     #[cold]
     #[inline(never)]
     fn parse_long_integer(&mut self, positive: bool, partial_significand: u64) -> Result<f64> {
-        // To deserialize floats we'll first push the integer and fraction
-        // parts, both as byte strings, into the scratch buffer and then feed
-        // both slices to lexical's parser. For example if the input is
-        // `12.34e5` we'll push b"1234" into scratch and then pass b"12" and
-        // b"34" to lexical. `integer_end` will be used to track where to split
-        // the scratch buffer.
-        //
-        // Note that lexical expects the integer part to contain *no* leading
-        // zeroes and the fraction part to contain *no* trailing zeroes. The
-        // first requirement is already handled by the integer parsing logic.
-        // The second requirement will be enforced just before passing the
-        // slices to lexical in f64_long_from_parts.
         self.scratch.clear();
         self.scratch
             .extend_from_slice(itoa::Buffer::new().format(partial_significand).as_bytes());
@@ -753,33 +583,6 @@ impl<'de, R: Read<'de>> Deserializer<R> {
         }
     }
 
-    #[cfg(not(feature = "float_roundtrip"))]
-    #[cold]
-    #[inline(never)]
-    fn parse_long_integer(&mut self, positive: bool, significand: u64) -> Result<f64> {
-        let mut exponent = 0;
-        loop {
-            match tri!(self.peek_or_null()) {
-                b'0'..=b'9' => {
-                    self.eat_char();
-                    // This could overflow... if your integer is gigabytes long.
-                    // Ignore that possibility.
-                    exponent += 1;
-                }
-                b'.' => {
-                    return self.parse_decimal(positive, significand, exponent);
-                }
-                b'e' | b'E' => {
-                    return self.parse_exponent(positive, significand, exponent);
-                }
-                _ => {
-                    return self.f64_from_parts(positive, significand, exponent);
-                }
-            }
-        }
-    }
-
-    #[cfg(feature = "float_roundtrip")]
     #[cold]
     fn parse_long_decimal(&mut self, positive: bool, integer_end: usize) -> Result<f64> {
         let mut at_least_one_digit = integer_end < self.scratch.len();
@@ -802,7 +605,6 @@ impl<'de, R: Read<'de>> Deserializer<R> {
         }
     }
 
-    #[cfg(feature = "float_roundtrip")]
     fn parse_long_exponent(&mut self, positive: bool, integer_end: usize) -> Result<f64> {
         self.eat_char();
 
@@ -825,7 +627,6 @@ impl<'de, R: Read<'de>> Deserializer<R> {
             }
         };
 
-        // Make sure a digit follows the exponent place.
         let mut exp = match next {
             c @ b'0'..=b'9' => (c - b'0') as i32,
             _ => {
@@ -850,9 +651,6 @@ impl<'de, R: Read<'de>> Deserializer<R> {
         self.f64_long_from_parts(positive, integer_end, final_exp)
     }
 
-    // This cold code should not be inlined into the middle of the hot
-    // decimal-parsing loop above.
-    #[cfg(feature = "float_roundtrip")]
     #[cold]
     #[inline(never)]
     fn parse_decimal_overflow(
@@ -873,29 +671,6 @@ impl<'de, R: Read<'de>> Deserializer<R> {
         self.parse_long_decimal(positive, integer_end)
     }
 
-    #[cfg(not(feature = "float_roundtrip"))]
-    #[cold]
-    #[inline(never)]
-    fn parse_decimal_overflow(
-        &mut self,
-        positive: bool,
-        significand: u64,
-        exponent: i32,
-    ) -> Result<f64> {
-        // The next multiply/add would overflow, so just ignore all further
-        // digits.
-        while let b'0'..=b'9' = tri!(self.peek_or_null()) {
-            self.eat_char();
-        }
-
-        match tri!(self.peek_or_null()) {
-            b'e' | b'E' => self.parse_exponent(positive, significand, exponent),
-            _ => self.f64_from_parts(positive, significand, exponent),
-        }
-    }
-
-    // This cold code should not be inlined into the middle of the hot
-    // exponent-parsing loop above.
     #[cold]
     #[inline(never)]
     fn parse_exponent_overflow(
@@ -904,7 +679,6 @@ impl<'de, R: Read<'de>> Deserializer<R> {
         zero_significand: bool,
         positive_exp: bool,
     ) -> Result<f64> {
-        // Error instead of +/- infinity.
         if !zero_significand && positive_exp {
             return Err(self.error(ErrorCode::NumberOutOfRange));
         }
@@ -915,7 +689,6 @@ impl<'de, R: Read<'de>> Deserializer<R> {
         Ok(if positive { 0.0 } else { -0.0 })
     }
 
-    #[cfg(feature = "float_roundtrip")]
     fn f64_long_from_parts(
         &mut self,
         positive: bool,
@@ -959,142 +732,12 @@ impl<'de, R: Read<'de>> Deserializer<R> {
 
         match value {
             Ok(value) => Ok(value),
-            // The de::Error impl creates errors with unknown line and column.
-            // Fill in the position here by looking at the current index in the
-            // input. There is no way to tell whether this should call `error`
-            // or `peek_error` so pick the one that seems correct more often.
-            // Worst case, the position is off by one character.
             Err(err) => Err(self.fix_position(err)),
         }
     }
 
-    #[cfg(not(feature = "arbitrary_precision"))]
     fn parse_any_number(&mut self, positive: bool) -> Result<ParserNumber> {
         self.parse_integer(positive)
-    }
-
-    #[cfg(feature = "arbitrary_precision")]
-    fn parse_any_number(&mut self, positive: bool) -> Result<ParserNumber> {
-        let mut buf = String::with_capacity(16);
-        if !positive {
-            buf.push('-');
-        }
-        tri!(self.scan_integer(&mut buf));
-        if positive {
-            if let Ok(unsigned) = buf.parse() {
-                return Ok(ParserNumber::U64(unsigned));
-            }
-        } else {
-            if let Ok(signed) = buf.parse() {
-                return Ok(ParserNumber::I64(signed));
-            }
-        }
-        Ok(ParserNumber::String(buf))
-    }
-
-    #[cfg(feature = "arbitrary_precision")]
-    fn scan_or_eof(&mut self, buf: &mut String) -> Result<u8> {
-        match tri!(self.next_char()) {
-            Some(b) => {
-                buf.push(b as char);
-                Ok(b)
-            }
-            None => Err(self.error(ErrorCode::EofWhileParsingValue)),
-        }
-    }
-
-    #[cfg(feature = "arbitrary_precision")]
-    fn scan_integer(&mut self, buf: &mut String) -> Result<()> {
-        match tri!(self.scan_or_eof(buf)) {
-            b'0' => {
-                // There can be only one leading '0'.
-                match tri!(self.peek_or_null()) {
-                    b'0'..=b'9' => Err(self.peek_error(ErrorCode::InvalidNumber)),
-                    _ => self.scan_number(buf),
-                }
-            }
-            b'1'..=b'9' => loop {
-                match tri!(self.peek_or_null()) {
-                    c @ b'0'..=b'9' => {
-                        self.eat_char();
-                        buf.push(c as char);
-                    }
-                    _ => {
-                        return self.scan_number(buf);
-                    }
-                }
-            },
-            _ => Err(self.error(ErrorCode::InvalidNumber)),
-        }
-    }
-
-    #[cfg(feature = "arbitrary_precision")]
-    fn scan_number(&mut self, buf: &mut String) -> Result<()> {
-        match tri!(self.peek_or_null()) {
-            b'.' => self.scan_decimal(buf),
-            b'e' | b'E' => self.scan_exponent(buf),
-            _ => Ok(()),
-        }
-    }
-
-    #[cfg(feature = "arbitrary_precision")]
-    fn scan_decimal(&mut self, buf: &mut String) -> Result<()> {
-        self.eat_char();
-        buf.push('.');
-
-        let mut at_least_one_digit = false;
-        while let c @ b'0'..=b'9' = tri!(self.peek_or_null()) {
-            self.eat_char();
-            buf.push(c as char);
-            at_least_one_digit = true;
-        }
-
-        if !at_least_one_digit {
-            match tri!(self.peek()) {
-                Some(_) => return Err(self.peek_error(ErrorCode::InvalidNumber)),
-                None => return Err(self.peek_error(ErrorCode::EofWhileParsingValue)),
-            }
-        }
-
-        match tri!(self.peek_or_null()) {
-            b'e' | b'E' => self.scan_exponent(buf),
-            _ => Ok(()),
-        }
-    }
-
-    #[cfg(feature = "arbitrary_precision")]
-    fn scan_exponent(&mut self, buf: &mut String) -> Result<()> {
-        self.eat_char();
-        buf.push('e');
-
-        match tri!(self.peek_or_null()) {
-            b'+' => {
-                self.eat_char();
-                buf.push('+');
-            }
-            b'-' => {
-                self.eat_char();
-                buf.push('-');
-            }
-            _ => {
-                buf.push('+');
-            }
-        }
-
-        // Make sure a digit follows the exponent place.
-        match tri!(self.scan_or_eof(buf)) {
-            b'0'..=b'9' => {}
-            _ => {
-                return Err(self.error(ErrorCode::InvalidNumber));
-            }
-        }
-
-        while let c @ b'0'..=b'9' = tri!(self.peek_or_null()) {
-            self.eat_char();
-            buf.push(c as char);
-        }
-
-        Ok(())
     }
 
     fn parse_object_colon(&mut self) -> Result<()> {
@@ -1256,7 +899,6 @@ impl<'de, R: Read<'de>> Deserializer<R> {
     fn ignore_integer(&mut self) -> Result<()> {
         match tri!(self.next_char_or_null()) {
             b'0' => {
-                // There can be only one leading '0'.
                 if let b'0'..=b'9' = tri!(self.peek_or_null()) {
                     return Err(self.peek_error(ErrorCode::InvalidNumber));
                 }
@@ -1305,7 +947,6 @@ impl<'de, R: Read<'de>> Deserializer<R> {
             _ => {}
         }
 
-        // Make sure a digit follows the exponent place.
         match tri!(self.next_char_or_null()) {
             b'0'..=b'9' => {}
             _ => {
@@ -1320,7 +961,6 @@ impl<'de, R: Read<'de>> Deserializer<R> {
         Ok(())
     }
 
-    #[cfg(feature = "raw_value")]
     fn deserialize_raw_value<V>(&mut self, visitor: V) -> Result<V::Value>
     where
         V: de::Visitor<'de>,
@@ -1342,41 +982,6 @@ impl FromStr for Number {
     }
 }
 
-#[cfg(not(feature = "float_roundtrip"))]
-static POW10: [f64; 309] = [
-    1e000, 1e001, 1e002, 1e003, 1e004, 1e005, 1e006, 1e007, 1e008, 1e009, //
-    1e010, 1e011, 1e012, 1e013, 1e014, 1e015, 1e016, 1e017, 1e018, 1e019, //
-    1e020, 1e021, 1e022, 1e023, 1e024, 1e025, 1e026, 1e027, 1e028, 1e029, //
-    1e030, 1e031, 1e032, 1e033, 1e034, 1e035, 1e036, 1e037, 1e038, 1e039, //
-    1e040, 1e041, 1e042, 1e043, 1e044, 1e045, 1e046, 1e047, 1e048, 1e049, //
-    1e050, 1e051, 1e052, 1e053, 1e054, 1e055, 1e056, 1e057, 1e058, 1e059, //
-    1e060, 1e061, 1e062, 1e063, 1e064, 1e065, 1e066, 1e067, 1e068, 1e069, //
-    1e070, 1e071, 1e072, 1e073, 1e074, 1e075, 1e076, 1e077, 1e078, 1e079, //
-    1e080, 1e081, 1e082, 1e083, 1e084, 1e085, 1e086, 1e087, 1e088, 1e089, //
-    1e090, 1e091, 1e092, 1e093, 1e094, 1e095, 1e096, 1e097, 1e098, 1e099, //
-    1e100, 1e101, 1e102, 1e103, 1e104, 1e105, 1e106, 1e107, 1e108, 1e109, //
-    1e110, 1e111, 1e112, 1e113, 1e114, 1e115, 1e116, 1e117, 1e118, 1e119, //
-    1e120, 1e121, 1e122, 1e123, 1e124, 1e125, 1e126, 1e127, 1e128, 1e129, //
-    1e130, 1e131, 1e132, 1e133, 1e134, 1e135, 1e136, 1e137, 1e138, 1e139, //
-    1e140, 1e141, 1e142, 1e143, 1e144, 1e145, 1e146, 1e147, 1e148, 1e149, //
-    1e150, 1e151, 1e152, 1e153, 1e154, 1e155, 1e156, 1e157, 1e158, 1e159, //
-    1e160, 1e161, 1e162, 1e163, 1e164, 1e165, 1e166, 1e167, 1e168, 1e169, //
-    1e170, 1e171, 1e172, 1e173, 1e174, 1e175, 1e176, 1e177, 1e178, 1e179, //
-    1e180, 1e181, 1e182, 1e183, 1e184, 1e185, 1e186, 1e187, 1e188, 1e189, //
-    1e190, 1e191, 1e192, 1e193, 1e194, 1e195, 1e196, 1e197, 1e198, 1e199, //
-    1e200, 1e201, 1e202, 1e203, 1e204, 1e205, 1e206, 1e207, 1e208, 1e209, //
-    1e210, 1e211, 1e212, 1e213, 1e214, 1e215, 1e216, 1e217, 1e218, 1e219, //
-    1e220, 1e221, 1e222, 1e223, 1e224, 1e225, 1e226, 1e227, 1e228, 1e229, //
-    1e230, 1e231, 1e232, 1e233, 1e234, 1e235, 1e236, 1e237, 1e238, 1e239, //
-    1e240, 1e241, 1e242, 1e243, 1e244, 1e245, 1e246, 1e247, 1e248, 1e249, //
-    1e250, 1e251, 1e252, 1e253, 1e254, 1e255, 1e256, 1e257, 1e258, 1e259, //
-    1e260, 1e261, 1e262, 1e263, 1e264, 1e265, 1e266, 1e267, 1e268, 1e269, //
-    1e270, 1e271, 1e272, 1e273, 1e274, 1e275, 1e276, 1e277, 1e278, 1e279, //
-    1e280, 1e281, 1e282, 1e283, 1e284, 1e285, 1e286, 1e287, 1e288, 1e289, //
-    1e290, 1e291, 1e292, 1e293, 1e294, 1e295, 1e296, 1e297, 1e298, 1e299, //
-    1e300, 1e301, 1e302, 1e303, 1e304, 1e305, 1e306, 1e307, 1e308,
-];
-
 macro_rules! deserialize_number {
     ($method:ident) => {
         deserialize_number!($method, deserialize_number);
@@ -1392,19 +997,9 @@ macro_rules! deserialize_number {
     };
 }
 
-#[cfg(not(feature = "unbounded_depth"))]
 macro_rules! if_checking_recursion_limit {
     ($($body:tt)*) => {
         $($body)*
-    };
-}
-
-#[cfg(feature = "unbounded_depth")]
-macro_rules! if_checking_recursion_limit {
-    ($this:ident $($body:tt)*) => {
-        if !$this.disable_recursion_limit {
-            $this $($body)*
-        }
     };
 }
 
@@ -1496,11 +1091,6 @@ impl<'de, R: Read<'de>> de::Deserializer<'de> for &mut Deserializer<R> {
 
         match value {
             Ok(value) => Ok(value),
-            // The de::Error impl creates errors with unknown line and column.
-            // Fill in the position here by looking at the current index in the
-            // input. There is no way to tell whether this should call `error`
-            // or `peek_error` so pick the one that seems correct more often.
-            // Worst case, the position is off by one character.
             Err(err) => Err(self.fix_position(err)),
         }
     }
@@ -1544,11 +1134,8 @@ impl<'de, R: Read<'de>> de::Deserializer<'de> for &mut Deserializer<R> {
     deserialize_number!(deserialize_u16);
     deserialize_number!(deserialize_u32);
     deserialize_number!(deserialize_u64);
-    #[cfg(not(feature = "float_roundtrip"))]
-    deserialize_number!(deserialize_f32);
     deserialize_number!(deserialize_f64);
 
-    #[cfg(feature = "float_roundtrip")]
     deserialize_number!(deserialize_f32, do_deserialize_f32);
     deserialize_number!(deserialize_i128, do_deserialize_i128);
     deserialize_number!(deserialize_u128, do_deserialize_u128);
@@ -1596,79 +1183,6 @@ impl<'de, R: Read<'de>> de::Deserializer<'de> for &mut Deserializer<R> {
         self.deserialize_str(visitor)
     }
 
-    /// Parses a JSON string as bytes. Note that this function does not check
-    /// whether the bytes represent a valid UTF-8 string.
-    ///
-    /// The relevant part of the JSON specification is Section 8.2 of [RFC
-    /// 7159]:
-    ///
-    /// > When all the strings represented in a JSON text are composed entirely
-    /// > of Unicode characters (however escaped), then that JSON text is
-    /// > interoperable in the sense that all software implementations that
-    /// > parse it will agree on the contents of names and of string values in
-    /// > objects and arrays.
-    /// >
-    /// > However, the ABNF in this specification allows member names and string
-    /// > values to contain bit sequences that cannot encode Unicode characters;
-    /// > for example, "\uDEAD" (a single unpaired UTF-16 surrogate). Instances
-    /// > of this have been observed, for example, when a library truncates a
-    /// > UTF-16 string without checking whether the truncation split a
-    /// > surrogate pair.  The behavior of software that receives JSON texts
-    /// > containing such values is unpredictable; for example, implementations
-    /// > might return different values for the length of a string value or even
-    /// > suffer fatal runtime exceptions.
-    ///
-    /// [RFC 7159]: https://tools.ietf.org/html/rfc7159
-    ///
-    /// The behavior of serde_json is specified to fail on non-UTF-8 strings
-    /// when deserializing into Rust UTF-8 string types such as String, and
-    /// succeed with the bytes representing the [WTF-8] encoding of code points
-    /// when deserializing using this method.
-    ///
-    /// [WTF-8]: https://simonsapin.github.io/wtf-8
-    ///
-    /// Escape sequences are processed as usual, and for `\uXXXX` escapes it is
-    /// still checked if the hex number represents a valid Unicode code point.
-    ///
-    /// # Examples
-    ///
-    /// You can use this to parse JSON strings containing invalid UTF-8 bytes,
-    /// or unpaired surrogates.
-    ///
-    /// ```
-    /// use serde_bytes::ByteBuf;
-    ///
-    /// fn look_at_bytes() -> Result<(), serde_json::Error> {
-    ///     let json_data = b"\"some bytes: \xe5\x00\xe5\"";
-    ///     let bytes: ByteBuf = serde_json::from_slice(json_data)?;
-    ///
-    ///     assert_eq!(b'\xe5', bytes[12]);
-    ///     assert_eq!(b'\0', bytes[13]);
-    ///     assert_eq!(b'\xe5', bytes[14]);
-    ///
-    ///     Ok(())
-    /// }
-    /// #
-    /// # look_at_bytes().unwrap();
-    /// ```
-    ///
-    /// Backslash escape sequences like `\n` are still interpreted and required
-    /// to be valid. `\u` escape sequences are required to represent a valid
-    /// Unicode code point or lone surrogate.
-    ///
-    /// ```
-    /// use serde_bytes::ByteBuf;
-    ///
-    /// fn look_at_bytes() -> Result<(), serde_json::Error> {
-    ///     let json_data = b"\"lone surrogate: \\uD801\"";
-    ///     let bytes: ByteBuf = serde_json::from_slice(json_data)?;
-    ///     let expected = b"lone surrogate: \xED\xA0\x81";
-    ///     assert_eq!(expected, bytes.as_slice());
-    ///     Ok(())
-    /// }
-    /// #
-    /// # look_at_bytes();
-    /// ```
     fn deserialize_bytes<V>(self, visitor: V) -> Result<V::Value>
     where
         V: de::Visitor<'de>,
@@ -1707,7 +1221,6 @@ impl<'de, R: Read<'de>> de::Deserializer<'de> for &mut Deserializer<R> {
         self.deserialize_bytes(visitor)
     }
 
-    /// Parses a `null` as a None, and any other values as a `Some(...)`.
     #[inline]
     fn deserialize_option<V>(self, visitor: V) -> Result<V::Value>
     where
@@ -1756,13 +1269,11 @@ impl<'de, R: Read<'de>> de::Deserializer<'de> for &mut Deserializer<R> {
         self.deserialize_unit(visitor)
     }
 
-    /// Parses a newtype struct as the underlying value.
     #[inline]
     fn deserialize_newtype_struct<V>(self, name: &str, visitor: V) -> Result<V::Value>
     where
         V: de::Visitor<'de>,
     {
-        #[cfg(feature = "raw_value")]
         {
             if name == crate::raw::TOKEN {
                 return self.deserialize_raw_value(visitor);
@@ -1904,8 +1415,6 @@ impl<'de, R: Read<'de>> de::Deserializer<'de> for &mut Deserializer<R> {
         }
     }
 
-    /// Parses an enum as an object like `{"$KEY":$VALUE}`, where $VALUE is either a straight
-    /// value, a `[..]`, or a `{..}`.
     #[inline]
     fn deserialize_enum<V>(
         self,
@@ -2197,8 +1706,6 @@ impl<'de, 'a, R: Read<'de> + 'a> de::VariantAccess<'de> for UnitVariantAccess<'a
     }
 }
 
-/// Only deserialize from this after peeking a '"' byte! Otherwise it may
-/// deserialize invalid JSON successfully.
 struct MapKey<'a, R: 'a> {
     de: &'a mut Deserializer<R>,
 }
@@ -2273,9 +1780,6 @@ where
     deserialize_numeric_key!(deserialize_u32);
     deserialize_numeric_key!(deserialize_u64);
     deserialize_numeric_key!(deserialize_u128, deserialize_u128);
-    #[cfg(not(feature = "float_roundtrip"))]
-    deserialize_numeric_key!(deserialize_f32);
-    #[cfg(feature = "float_roundtrip")]
     deserialize_numeric_key!(deserialize_f32, deserialize_f32);
     deserialize_numeric_key!(deserialize_f64);
 
@@ -2319,7 +1823,6 @@ where
     where
         V: de::Visitor<'de>,
     {
-        // Map keys cannot be null.
         visitor.visit_some(self)
     }
 
@@ -2328,7 +1831,6 @@ where
     where
         V: de::Visitor<'de>,
     {
-        #[cfg(feature = "raw_value")]
         {
             if name == crate::raw::TOKEN {
                 return self.de.deserialize_raw_value(visitor);
@@ -2374,29 +1876,6 @@ where
     }
 }
 
-//////////////////////////////////////////////////////////////////////////////
-
-/// Iterator that deserializes a stream into multiple JSON values.
-///
-/// A stream deserializer can be created from any JSON deserializer using the
-/// `Deserializer::into_iter` method.
-///
-/// The data can consist of any JSON value. Values need to be a self-delineating value e.g.
-/// arrays, objects, or strings, or be followed by whitespace or a self-delineating value.
-///
-/// ```
-/// use serde_json::{Deserializer, Value};
-///
-/// fn main() {
-///     let data = "{\"k\": 3}1\"cool\"\"stuff\" 3{}  [0, 1, 2]";
-///
-///     let stream = Deserializer::from_str(data).into_iter::<Value>();
-///
-///     for value in stream {
-///         println!("{}", value.unwrap());
-///     }
-/// }
-/// ```
 pub struct StreamDeserializer<'de, R, T> {
     de: Deserializer<R>,
     offset: usize,
@@ -2410,14 +1889,6 @@ where
     R: read::Read<'de>,
     T: de::Deserialize<'de>,
 {
-    /// Create a JSON stream deserializer from one of the possible serde_json
-    /// input sources.
-    ///
-    /// Typically it is more convenient to use one of these methods instead:
-    ///
-    ///   - Deserializer::from_str(...).into_iter()
-    ///   - Deserializer::from_slice(...).into_iter()
-    ///   - Deserializer::from_reader(...).into_iter()
     pub fn new(read: R) -> Self {
         let offset = read.byte_offset();
         StreamDeserializer {
@@ -2429,37 +1900,6 @@ where
         }
     }
 
-    /// Returns the number of bytes so far deserialized into a successful `T`.
-    ///
-    /// If a stream deserializer returns an EOF error, new data can be joined to
-    /// `old_data[stream.byte_offset()..]` to try again.
-    ///
-    /// ```
-    /// let data = b"[0] [1] [";
-    ///
-    /// let de = serde_json::Deserializer::from_slice(data);
-    /// let mut stream = de.into_iter::<Vec<i32>>();
-    /// assert_eq!(0, stream.byte_offset());
-    ///
-    /// println!("{:?}", stream.next()); // [0]
-    /// assert_eq!(3, stream.byte_offset());
-    ///
-    /// println!("{:?}", stream.next()); // [1]
-    /// assert_eq!(7, stream.byte_offset());
-    ///
-    /// println!("{:?}", stream.next()); // error
-    /// assert_eq!(8, stream.byte_offset());
-    ///
-    /// // If err.is_eof(), can join the remaining data to new data and continue.
-    /// let remaining = &data[stream.byte_offset()..];
-    /// ```
-    ///
-    /// *Note:* In the future this method may be changed to return the number of
-    /// bytes so far deserialized into a successful T *or* syntactically valid
-    /// JSON skipped over due to a type error. See [serde-rs/json#70] for an
-    /// example illustrating this.
-    ///
-    /// [serde-rs/json#70]: https://github.com/serde-rs/json/issues/70
     pub fn byte_offset(&self) -> usize {
         self.offset
     }
@@ -2492,18 +1932,12 @@ where
             return None;
         }
 
-        // skip whitespaces, if any
-        // this helps with trailing whitespaces, since whitespaces between
-        // values are handled for us.
         match self.de.parse_whitespace() {
             Ok(None) => {
                 self.offset = self.de.read.byte_offset();
                 None
             }
             Ok(Some(b)) => {
-                // If the value does not have a clear way to show the end of the value
-                // (like numbers, null, true etc.) we have to look for whitespace or
-                // the beginning of a self-delineated value.
                 let self_delineated_value = match b {
                     b'[' | b'"' | b'{' => true,
                     _ => false,
@@ -2541,8 +1975,6 @@ where
 {
 }
 
-//////////////////////////////////////////////////////////////////////////////
-
 fn from_trait<'de, R, T>(read: R) -> Result<T>
 where
     R: Read<'de>,
@@ -2551,115 +1983,10 @@ where
     let mut de = Deserializer::new(read);
     let value = tri!(de::Deserialize::deserialize(&mut de));
 
-    // Make sure the whole stream has been consumed.
     tri!(de.end());
     Ok(value)
 }
 
-/// Deserialize an instance of type `T` from an I/O stream of JSON.
-///
-/// The content of the I/O stream is deserialized directly from the stream
-/// without being buffered in memory by serde_json.
-///
-/// When reading from a source against which short reads are not efficient, such
-/// as a [`File`], you will want to apply your own buffering because serde_json
-/// will not buffer the input. See [`std::io::BufReader`].
-///
-/// It is expected that the input stream ends after the deserialized object.
-/// If the stream does not end, such as in the case of a persistent socket connection,
-/// this function will not return. It is possible instead to deserialize from a prefix of an input
-/// stream without looking for EOF by managing your own [`Deserializer`].
-///
-/// Note that counter to intuition, this function is usually slower than
-/// reading a file completely into memory and then applying [`from_str`]
-/// or [`from_slice`] on it. See [issue #160].
-///
-/// [`File`]: std::fs::File
-/// [issue #160]: https://github.com/serde-rs/json/issues/160
-///
-/// # Example
-///
-/// Reading the contents of a file.
-///
-/// ```
-/// use serde::Deserialize;
-///
-/// use std::error::Error;
-/// use std::fs::File;
-/// use std::io::BufReader;
-/// use std::path::Path;
-///
-/// #[derive(Deserialize, Debug)]
-/// struct User {
-///     fingerprint: String,
-///     location: String,
-/// }
-///
-/// fn read_user_from_file<P: AsRef<Path>>(path: P) -> Result<User, Box<dyn Error>> {
-///     // Open the file in read-only mode with buffer.
-///     let file = File::open(path)?;
-///     let reader = BufReader::new(file);
-///
-///     // Read the JSON contents of the file as an instance of `User`.
-///     let u = serde_json::from_reader(reader)?;
-///
-///     // Return the `User`.
-///     Ok(u)
-/// }
-///
-/// fn main() {
-/// # }
-/// # fn fake_main() {
-///     let u = read_user_from_file("test.json").unwrap();
-///     println!("{:#?}", u);
-/// }
-/// ```
-///
-/// Reading from a persistent socket connection.
-///
-/// ```
-/// use serde::Deserialize;
-///
-/// use std::error::Error;
-/// use std::io::BufReader;
-/// use std::net::{TcpListener, TcpStream};
-///
-/// #[derive(Deserialize, Debug)]
-/// struct User {
-///     fingerprint: String,
-///     location: String,
-/// }
-///
-/// fn read_user_from_stream(stream: &mut BufReader<TcpStream>) -> Result<User, Box<dyn Error>> {
-///     let mut de = serde_json::Deserializer::from_reader(stream);
-///     let u = User::deserialize(&mut de)?;
-///
-///     Ok(u)
-/// }
-///
-/// fn main() {
-/// # }
-/// # fn fake_main() {
-///     let listener = TcpListener::bind("127.0.0.1:4000").unwrap();
-///
-///     for tcp_stream in listener.incoming() {
-///         let mut buffered = BufReader::new(tcp_stream.unwrap());
-///         println!("{:#?}", read_user_from_stream(&mut buffered));
-///     }
-/// }
-/// ```
-///
-/// # Errors
-///
-/// This conversion can fail if the structure of the input does not match the
-/// structure expected by `T`, for example if `T` is a struct type but the input
-/// contains something other than a JSON map. It can also fail if the structure
-/// is correct but `T`'s implementation of `Deserialize` decides that something
-/// is wrong with the data, for example required struct fields are missing from
-/// the JSON map or some number is too big to fit in the expected primitive
-/// type.
-#[cfg(feature = "std")]
-#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub fn from_reader<R, T>(rdr: R) -> Result<T>
 where
     R: crate::io::Read,
@@ -2668,41 +1995,6 @@ where
     from_trait(read::IoRead::new(rdr))
 }
 
-/// Deserialize an instance of type `T` from bytes of JSON text.
-///
-/// # Example
-///
-/// ```
-/// use serde::Deserialize;
-///
-/// #[derive(Deserialize, Debug)]
-/// struct User {
-///     fingerprint: String,
-///     location: String,
-/// }
-///
-/// fn main() {
-///     // The type of `j` is `&[u8]`
-///     let j = b"
-///         {
-///             \"fingerprint\": \"0xF9BA143B95FF6D82\",
-///             \"location\": \"Menlo Park, CA\"
-///         }";
-///
-///     let u: User = serde_json::from_slice(j).unwrap();
-///     println!("{:#?}", u);
-/// }
-/// ```
-///
-/// # Errors
-///
-/// This conversion can fail if the structure of the input does not match the
-/// structure expected by `T`, for example if `T` is a struct type but the input
-/// contains something other than a JSON map. It can also fail if the structure
-/// is correct but `T`'s implementation of `Deserialize` decides that something
-/// is wrong with the data, for example required struct fields are missing from
-/// the JSON map or some number is too big to fit in the expected primitive
-/// type.
 pub fn from_slice<'a, T>(v: &'a [u8]) -> Result<T>
 where
     T: de::Deserialize<'a>,
@@ -2710,41 +2002,6 @@ where
     from_trait(read::SliceRead::new(v))
 }
 
-/// Deserialize an instance of type `T` from a string of JSON text.
-///
-/// # Example
-///
-/// ```
-/// use serde::Deserialize;
-///
-/// #[derive(Deserialize, Debug)]
-/// struct User {
-///     fingerprint: String,
-///     location: String,
-/// }
-///
-/// fn main() {
-///     // The type of `j` is `&str`
-///     let j = "
-///         {
-///             \"fingerprint\": \"0xF9BA143B95FF6D82\",
-///             \"location\": \"Menlo Park, CA\"
-///         }";
-///
-///     let u: User = serde_json::from_str(j).unwrap();
-///     println!("{:#?}", u);
-/// }
-/// ```
-///
-/// # Errors
-///
-/// This conversion can fail if the structure of the input does not match the
-/// structure expected by `T`, for example if `T` is a struct type but the input
-/// contains something other than a JSON map. It can also fail if the structure
-/// is correct but `T`'s implementation of `Deserialize` decides that something
-/// is wrong with the data, for example required struct fields are missing from
-/// the JSON map or some number is too big to fit in the expected primitive
-/// type.
 pub fn from_str<'a, T>(s: &'a str) -> Result<T>
 where
     T: de::Deserialize<'a>,

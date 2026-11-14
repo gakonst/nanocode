@@ -5,113 +5,58 @@ use core::mem;
 use core::ops::Deref;
 use core::str;
 
-#[cfg(feature = "std")]
 use crate::io;
-#[cfg(feature = "std")]
 use crate::iter::LineColIterator;
 
-#[cfg(feature = "raw_value")]
 use crate::raw::BorrowedRawDeserializer;
-#[cfg(all(feature = "raw_value", feature = "std"))]
 use crate::raw::OwnedRawDeserializer;
-#[cfg(all(feature = "raw_value", feature = "std"))]
 use alloc::string::String;
-#[cfg(feature = "raw_value")]
 use serde::de::Visitor;
 
-/// Trait used by the deserializer for iterating over input. This is manually
-/// "specialized" for iterating over `&[u8]`. Once feature(specialization) is
-/// stable we can use actual specialization.
-///
-/// This trait is sealed and cannot be implemented for types outside of
-/// `serde_json`.
 pub trait Read<'de>: private::Sealed {
     #[doc(hidden)]
     fn next(&mut self) -> Result<Option<u8>>;
     #[doc(hidden)]
     fn peek(&mut self) -> Result<Option<u8>>;
 
-    /// Only valid after a call to peek(). Discards the peeked byte.
     #[doc(hidden)]
     fn discard(&mut self);
 
-    /// Position of the most recent call to next().
-    ///
-    /// The most recent call was probably next() and not peek(), but this method
-    /// should try to return a sensible result if the most recent call was
-    /// actually peek() because we don't always know.
-    ///
-    /// Only called in case of an error, so performance is not important.
     #[doc(hidden)]
     fn position(&self) -> Position;
 
-    /// Position of the most recent call to peek().
-    ///
-    /// The most recent call was probably peek() and not next(), but this method
-    /// should try to return a sensible result if the most recent call was
-    /// actually next() because we don't always know.
-    ///
-    /// Only called in case of an error, so performance is not important.
     #[doc(hidden)]
     fn peek_position(&self) -> Position;
 
-    /// Offset from the beginning of the input to the next byte that would be
-    /// returned by next() or peek().
     #[doc(hidden)]
     fn byte_offset(&self) -> usize;
 
-    /// Assumes the previous byte was a quotation mark. Parses a JSON-escaped
-    /// string until the next quotation mark using the given scratch space if
-    /// necessary. The scratch space is initially empty.
     #[doc(hidden)]
     fn parse_str<'s>(&'s mut self, scratch: &'s mut Vec<u8>) -> Result<Reference<'de, 's, str>>;
 
-    /// Assumes the previous byte was a quotation mark. Parses a JSON-escaped
-    /// string until the next quotation mark using the given scratch space if
-    /// necessary. The scratch space is initially empty.
-    ///
-    /// This function returns the raw bytes in the string with escape sequences
-    /// expanded but without performing unicode validation.
     #[doc(hidden)]
     fn parse_str_raw<'s>(
         &'s mut self,
         scratch: &'s mut Vec<u8>,
     ) -> Result<Reference<'de, 's, [u8]>>;
 
-    /// Assumes the previous byte was a quotation mark. Parses a JSON-escaped
-    /// string until the next quotation mark but discards the data.
     #[doc(hidden)]
     fn ignore_str(&mut self) -> Result<()>;
 
-    /// Assumes the previous byte was a hex escape sequence ('\u') in a string.
-    /// Parses next hexadecimal sequence.
     #[doc(hidden)]
     fn decode_hex_escape(&mut self) -> Result<u16>;
 
-    /// Switch raw buffering mode on.
-    ///
-    /// This is used when deserializing `RawValue`.
-    #[cfg(feature = "raw_value")]
     #[doc(hidden)]
     fn begin_raw_buffering(&mut self);
 
-    /// Switch raw buffering mode off and provides the raw buffered data to the
-    /// given visitor.
-    #[cfg(feature = "raw_value")]
     #[doc(hidden)]
     fn end_raw_buffering<V>(&mut self, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'de>;
 
-    /// Whether StreamDeserializer::next needs to check the failed flag. True
-    /// for IoRead, false for StrRead and SliceRead which can track failure by
-    /// truncating their input slice to avoid the extra check on every next
-    /// call.
     #[doc(hidden)]
     const should_early_return_if_failed: bool;
 
-    /// Mark a persistent failure of StreamDeserializer, either by setting the
-    /// flag or by truncating the input data.
     #[doc(hidden)]
     fn set_failed(&mut self, failed: &mut bool);
 }
@@ -143,74 +88,45 @@ where
     }
 }
 
-/// JSON input source that reads from a std::io input stream.
-#[cfg(feature = "std")]
-#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub struct IoRead<R>
 where
     R: io::Read,
 {
     iter: LineColIterator<io::Bytes<R>>,
-    /// Temporary storage of peeked byte.
     ch: Option<u8>,
-    #[cfg(feature = "raw_value")]
     raw_buffer: Option<Vec<u8>>,
 }
 
-/// JSON input source that reads from a slice of bytes.
-//
-// This is more efficient than other iterators because peek() can be read-only
-// and we can compute line/col position only if an error happens.
 pub struct SliceRead<'a> {
     slice: &'a [u8],
-    /// Index of the *next* byte that will be returned by next() or peek().
     index: usize,
-    #[cfg(feature = "raw_value")]
     raw_buffering_start_index: usize,
 }
 
-/// JSON input source that reads from a UTF-8 string.
-//
-// Able to elide UTF-8 checks by assuming that the input is valid UTF-8.
 pub struct StrRead<'a> {
     delegate: SliceRead<'a>,
-    #[cfg(feature = "raw_value")]
     data: &'a str,
 }
 
-// Prevent users from implementing the Read trait.
 mod private {
     pub trait Sealed {}
 }
 
-//////////////////////////////////////////////////////////////////////////////
-
-#[cfg(feature = "std")]
 impl<R> IoRead<R>
 where
     R: io::Read,
 {
-    /// Create a JSON input source to read from a std::io input stream.
-    ///
-    /// When reading from a source against which short reads are not efficient, such
-    /// as a [`File`], you will want to apply your own buffering because serde_json
-    /// will not buffer the input. See [`std::io::BufReader`].
-    ///
-    /// [`File`]: std::fs::File
     pub fn new(reader: R) -> Self {
         IoRead {
             iter: LineColIterator::new(reader.bytes()),
             ch: None,
-            #[cfg(feature = "raw_value")]
             raw_buffer: None,
         }
     }
 }
 
-#[cfg(feature = "std")]
 impl<R> private::Sealed for IoRead<R> where R: io::Read {}
 
-#[cfg(feature = "std")]
 impl<R> IoRead<R>
 where
     R: io::Read,
@@ -249,7 +165,6 @@ where
     }
 }
 
-#[cfg(feature = "std")]
 impl<'de, R> Read<'de> for IoRead<R>
 where
     R: io::Read,
@@ -258,7 +173,6 @@ where
     fn next(&mut self) -> Result<Option<u8>> {
         match self.ch.take() {
             Some(ch) => {
-                #[cfg(feature = "raw_value")]
                 {
                     if let Some(buf) = &mut self.raw_buffer {
                         buf.push(ch);
@@ -269,7 +183,6 @@ where
             None => match self.iter.next() {
                 Some(Err(err)) => Err(Error::io(err)),
                 Some(Ok(ch)) => {
-                    #[cfg(feature = "raw_value")]
                     {
                         if let Some(buf) = &mut self.raw_buffer {
                             buf.push(ch);
@@ -297,13 +210,6 @@ where
         }
     }
 
-    #[cfg(not(feature = "raw_value"))]
-    #[inline]
-    fn discard(&mut self) {
-        self.ch = None;
-    }
-
-    #[cfg(feature = "raw_value")]
     fn discard(&mut self) {
         if let Some(ch) = self.ch.take() {
             if let Some(buf) = &mut self.raw_buffer {
@@ -320,8 +226,6 @@ where
     }
 
     fn peek_position(&self) -> Position {
-        // The LineColIterator updates its position during peek() so it has the
-        // right one here.
         self.position()
     }
 
@@ -376,12 +280,10 @@ where
         }
     }
 
-    #[cfg(feature = "raw_value")]
     fn begin_raw_buffering(&mut self) {
         self.raw_buffer = Some(Vec::new());
     }
 
-    #[cfg(feature = "raw_value")]
     fn end_raw_buffering<V>(&mut self, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'de>,
@@ -405,10 +307,7 @@ where
     }
 }
 
-#[cfg(fast_arithmetic = "64")]
 type Chunk = u64;
-#[cfg(fast_arithmetic = "32")]
-type Chunk = u32;
 
 #[inline(always)]
 fn scan_to_escape<const FORBID_CONTROL_CHARACTERS: bool>(rest: &[u8]) -> core::result::Result<usize, usize> {
@@ -435,15 +334,11 @@ fn scan_to_escape<const FORBID_CONTROL_CHARACTERS: bool>(rest: &[u8]) -> core::r
     Err(offset)
 }
 
-//////////////////////////////////////////////////////////////////////////////
-
 impl<'a> SliceRead<'a> {
-    /// Create a JSON input source to read from a slice of bytes.
     pub fn new(slice: &'a [u8]) -> Self {
         SliceRead {
             slice,
             index: 0,
-            #[cfg(feature = "raw_value")]
             raw_buffering_start_index: 0,
         }
     }
@@ -463,7 +358,6 @@ impl<'a> SliceRead<'a> {
     }
 
     fn skip_to_escape(&mut self, forbid_control_characters: bool) {
-        // Immediately bail-out on empty strings and consecutive escapes (e.g. \u041b\u0435)
         if self.index == self.slice.len()
             || is_escape(self.slice[self.index], forbid_control_characters)
         {
@@ -496,9 +390,6 @@ impl<'a> SliceRead<'a> {
         }
     }
 
-    /// The big optimization here over IoRead is that if the string contains no
-    /// backslash escape sequences, the returned &str is a slice of the raw JSON
-    /// data so we avoid copying into the scratch space.
     fn parse_str_bytes<'s, T, F>(
         &'s mut self,
         scratch: &'s mut Vec<u8>,
@@ -509,7 +400,6 @@ impl<'a> SliceRead<'a> {
         T: ?Sized + 's,
         F: for<'f> FnOnce(&'s Self, &'f [u8]) -> Result<&'f T>,
     {
-        // Index of the first byte not yet copied into the scratch space.
         let mut start = self.index;
 
         loop {
@@ -520,8 +410,6 @@ impl<'a> SliceRead<'a> {
             match self.slice[self.index] {
                 b'"' => {
                     if scratch.is_empty() {
-                        // Fast path: return a slice of the raw JSON without any
-                        // copying.
                         let borrowed = &self.slice[start..self.index];
                         self.index += 1;
                         return result(self, borrowed).map(Reference::Borrowed);
@@ -551,8 +439,6 @@ impl<'a> private::Sealed for SliceRead<'a> {}
 impl<'a> Read<'a> for SliceRead<'a> {
     #[inline]
     fn next(&mut self) -> Result<Option<u8>> {
-        // `Ok(self.slice.get(self.index).map(|ch| { self.index += 1; *ch }))`
-        // is about 10% slower.
         Ok(if self.index < self.slice.len() {
             let ch = self.slice[self.index];
             self.index += 1;
@@ -564,8 +450,6 @@ impl<'a> Read<'a> for SliceRead<'a> {
 
     #[inline]
     fn peek(&mut self) -> Result<Option<u8>> {
-        // `Ok(self.slice.get(self.index).map(|ch| *ch))` is about 10% slower
-        // for some reason.
         Ok(if self.index < self.slice.len() {
             Some(self.slice[self.index])
         } else {
@@ -583,8 +467,6 @@ impl<'a> Read<'a> for SliceRead<'a> {
     }
 
     fn peek_position(&self) -> Position {
-        // Cap it at slice.len() just in case the most recent call was next()
-        // and it returned the last byte.
         self.position_of_index(cmp::min(self.slice.len(), self.index + 1))
     }
 
@@ -642,12 +524,10 @@ impl<'a> Read<'a> for SliceRead<'a> {
         }
     }
 
-    #[cfg(feature = "raw_value")]
     fn begin_raw_buffering(&mut self) {
         self.raw_buffering_start_index = self.index;
     }
 
-    #[cfg(feature = "raw_value")]
     fn end_raw_buffering<V>(&mut self, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'a>,
@@ -671,14 +551,10 @@ impl<'a> Read<'a> for SliceRead<'a> {
     }
 }
 
-//////////////////////////////////////////////////////////////////////////////
-
 impl<'a> StrRead<'a> {
-    /// Create a JSON input source to read from a UTF-8 string.
     pub fn new(s: &'a str) -> Self {
         StrRead {
             delegate: SliceRead::new(s.as_bytes()),
-            #[cfg(feature = "raw_value")]
             data: s,
         }
     }
@@ -716,9 +592,6 @@ impl<'a> Read<'a> for StrRead<'a> {
 
     fn parse_str<'s>(&'s mut self, scratch: &'s mut Vec<u8>) -> Result<Reference<'a, 's, str>> {
         self.delegate.parse_str_bytes(scratch, true, |_, bytes| {
-            // The deserialization input came in as &str with a UTF-8 guarantee,
-            // and the \u-escapes are checked along the way, so don't need to
-            // check here.
             Ok(unsafe { str::from_utf8_unchecked(bytes) })
         })
     }
@@ -738,12 +611,10 @@ impl<'a> Read<'a> for StrRead<'a> {
         self.delegate.decode_hex_escape()
     }
 
-    #[cfg(feature = "raw_value")]
     fn begin_raw_buffering(&mut self) {
         self.delegate.begin_raw_buffering();
     }
 
-    #[cfg(feature = "raw_value")]
     fn end_raw_buffering<V>(&mut self, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'a>,
@@ -762,8 +633,6 @@ impl<'a> Read<'a> for StrRead<'a> {
         self.delegate.set_failed(failed);
     }
 }
-
-//////////////////////////////////////////////////////////////////////////////
 
 impl<'de, R> private::Sealed for &mut R where R: Read<'de> {}
 
@@ -814,12 +683,10 @@ where
         R::decode_hex_escape(self)
     }
 
-    #[cfg(feature = "raw_value")]
     fn begin_raw_buffering(&mut self) {
         R::begin_raw_buffering(self);
     }
 
-    #[cfg(feature = "raw_value")]
     fn end_raw_buffering<V>(&mut self, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'de>,
@@ -834,9 +701,6 @@ where
     }
 }
 
-//////////////////////////////////////////////////////////////////////////////
-
-/// Marker for whether StreamDeserializer can implement FusedIterator.
 pub trait Fused: private::Sealed {}
 impl<'a> Fused for SliceRead<'a> {}
 impl<'a> Fused for StrRead<'a> {}
@@ -877,8 +741,6 @@ fn as_str<'de, 's, R: Read<'de>>(read: &R, slice: &'s [u8]) -> Result<&'s str> {
     str::from_utf8(slice).or_else(|_| error(read, ErrorCode::InvalidUnicodeCodePoint))
 }
 
-/// Parses a JSON escape sequence and appends it into the scratch space. Assumes
-/// the previous byte read was a backslash.
 fn parse_escape<'de, R: Read<'de>>(
     read: &mut R,
     validate: bool,
@@ -902,8 +764,6 @@ fn parse_escape<'de, R: Read<'de>>(
     Ok(())
 }
 
-/// Parses a JSON \u escape and appends it into the scratch space. Assumes `\u`
-/// has just been read.
 #[cold]
 fn parse_unicode_escape<'de, R: Read<'de>>(
     read: &mut R,
@@ -912,24 +772,16 @@ fn parse_unicode_escape<'de, R: Read<'de>>(
 ) -> Result<()> {
     let mut n = tri!(read.decode_hex_escape());
 
-    // Non-BMP characters are encoded as a sequence of two hex escapes,
-    // representing UTF-16 surrogates. If deserializing a utf-8 string the
-    // surrogates are required to be paired, whereas deserializing a byte string
-    // accepts lone surrogates.
     if validate && n >= 0xDC00 && n <= 0xDFFF {
-        // XXX: This is actually a trailing surrogate.
         return error(read, ErrorCode::LoneLeadingSurrogateInHexEscape);
     }
 
     loop {
         if n < 0xD800 || n > 0xDBFF {
-            // Every u16 outside of the surrogate ranges is guaranteed to be a
-            // legal char.
             push_wtf8_codepoint(n as u32, scratch);
             return Ok(());
         }
 
-        // n is a leading surrogate, we now expect a trailing surrogate.
         let n1 = n;
 
         if tri!(peek_or_eof(read)) == b'\\' {
@@ -952,10 +804,6 @@ fn parse_unicode_escape<'de, R: Read<'de>>(
                 error(read, ErrorCode::UnexpectedEndOfHexEscape)
             } else {
                 push_wtf8_codepoint(n1 as u32, scratch);
-                // The \ prior to this byte started an escape sequence, so we
-                // need to parse that now. This recursive call does not blow the
-                // stack on malicious input because the escape is not \u, so it
-                // will be handled by one of the easy nonrecursive cases.
                 parse_escape(read, validate, scratch)
             };
         }
@@ -967,21 +815,16 @@ fn parse_unicode_escape<'de, R: Read<'de>>(
                 return error(read, ErrorCode::LoneLeadingSurrogateInHexEscape);
             }
             push_wtf8_codepoint(n1 as u32, scratch);
-            // If n2 is a leading surrogate, we need to restart.
             n = n2;
             continue;
         }
 
-        // This value is in range U+10000..=U+10FFFF, which is always a valid
-        // codepoint.
         let n = ((((n1 - 0xD800) as u32) << 10) | (n2 - 0xDC00) as u32) + 0x1_0000;
         push_wtf8_codepoint(n, scratch);
         return Ok(());
     }
 }
 
-/// Adds a WTF-8 codepoint to the end of the buffer. This is a more efficient
-/// implementation of String::push. The codepoint may be a surrogate.
 #[inline]
 fn push_wtf8_codepoint(n: u32, scratch: &mut Vec<u8>) {
     if n < 0x80 {
@@ -991,11 +834,6 @@ fn push_wtf8_codepoint(n: u32, scratch: &mut Vec<u8>) {
 
     scratch.reserve(4);
 
-    // SAFETY: After the `reserve` call, `scratch` has at least 4 bytes of
-    // allocated but uninitialized memory after its last initialized byte, which
-    // is where `ptr` points. All reachable match arms write `encoded_len` bytes
-    // to that region and update the length accordingly, and `encoded_len` is
-    // always <= 4.
     unsafe {
         let ptr = scratch.as_mut_ptr().add(scratch.len());
 
@@ -1028,8 +866,6 @@ fn push_wtf8_codepoint(n: u32, scratch: &mut Vec<u8>) {
     }
 }
 
-/// Parses a JSON escape sequence and discards the value. Assumes the previous
-/// byte read was a backslash.
 fn ignore_escape<'de, R>(read: &mut R) -> Result<()>
 where
     R: ?Sized + Read<'de>,
@@ -1039,11 +875,6 @@ where
     match ch {
         b'"' | b'\\' | b'/' | b'b' | b'f' | b'n' | b'r' | b't' => {}
         b'u' => {
-            // At this point we don't care if the codepoint is valid. We just
-            // want to consume it. We don't actually know what is valid or not
-            // at this point, because that depends on if this string will
-            // ultimately be parsed into a string or a byte buffer in the "real"
-            // parse.
 
             tri!(read.decode_hex_escape());
         }
@@ -1088,7 +919,6 @@ fn decode_four_hex_digits(a: u8, b: u8, c: u8, d: u8) -> Option<u16> {
 
     let codepoint = ((a | b) << 8) | c | d;
 
-    // A single sign bit check.
     if codepoint >= 0 {
         Some(codepoint as u16)
     } else {

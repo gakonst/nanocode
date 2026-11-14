@@ -4,7 +4,6 @@ use crate::number::Number;
 use crate::value::Value;
 use alloc::borrow::{Cow, ToOwned};
 use alloc::string::String;
-#[cfg(feature = "raw_value")]
 use alloc::string::ToString;
 use alloc::vec::{self, Vec};
 use core::fmt;
@@ -15,9 +14,6 @@ use serde::de::{
     MapAccess, SeqAccess, Unexpected, VariantAccess, Visitor,
 };
 use serde::forward_to_deserialize_any;
-
-#[cfg(feature = "arbitrary_precision")]
-use crate::number::NumberFromString;
 
 impl<'de> Deserialize<'de> for Value {
     #[inline]
@@ -70,7 +66,6 @@ impl<'de> Deserialize<'de> for Value {
                 Ok(Number::from_f64(value).map_or(Value::Null, Value::Number))
             }
 
-            #[cfg(any(feature = "std", feature = "alloc"))]
             #[inline]
             fn visit_str<E>(self, value: &str) -> Result<Value, E>
             where
@@ -79,7 +74,6 @@ impl<'de> Deserialize<'de> for Value {
                 self.visit_string(String::from(value))
             }
 
-            #[cfg(any(feature = "std", feature = "alloc"))]
             #[inline]
             fn visit_string<E>(self, value: String) -> Result<Value, E> {
                 Ok(Value::String(value))
@@ -117,18 +111,11 @@ impl<'de> Deserialize<'de> for Value {
                 Ok(Value::Array(vec))
             }
 
-            #[cfg(any(feature = "std", feature = "alloc"))]
             fn visit_map<V>(self, mut visitor: V) -> Result<Value, V::Error>
             where
                 V: MapAccess<'de>,
             {
                 match tri!(visitor.next_key_seed(KeyClassifier)) {
-                    #[cfg(feature = "arbitrary_precision")]
-                    Some(KeyClass::Number) => {
-                        let number: NumberFromString = tri!(visitor.next_value());
-                        Ok(Value::Number(number.value))
-                    }
-                    #[cfg(feature = "raw_value")]
                     Some(KeyClass::RawValue) => {
                         let value = tri!(visitor.next_value_seed(crate::raw::BoxedFromString));
                         crate::from_str(value.get()).map_err(de::Error::custom)
@@ -168,7 +155,6 @@ impl FromStr for Map<String, Value> {
 
 macro_rules! deserialize_number {
     ($method:ident) => {
-        #[cfg(not(feature = "arbitrary_precision"))]
         fn $method<V>(self, visitor: V) -> Result<V::Value, Error>
         where
             V: Visitor<'de>,
@@ -179,16 +165,6 @@ macro_rules! deserialize_number {
             }
         }
 
-        #[cfg(feature = "arbitrary_precision")]
-        fn $method<V>(self, visitor: V) -> Result<V::Value, Error>
-        where
-            V: Visitor<'de>,
-        {
-            match self {
-                Value::Number(n) => n.$method(visitor),
-                _ => self.deserialize_any(visitor),
-            }
-        }
     };
 }
 
@@ -250,7 +226,6 @@ impl<'de> serde::Deserializer<'de> for Map<String, Value> {
                 ));
             }
         };
-        // enums are encoded in json as maps with a single key:value pair
         if iter.next().is_some() {
             return Err(serde::de::Error::invalid_value(
                 Unexpected::Map,
@@ -291,10 +266,7 @@ impl<'de> serde::Deserializer<'de> for Value {
             Value::Null => visitor.visit_unit(),
             Value::Bool(v) => visitor.visit_bool(v),
             Value::Number(n) => n.deserialize_any(visitor),
-            #[cfg(any(feature = "std", feature = "alloc"))]
             Value::String(v) => visitor.visit_string(v),
-            #[cfg(not(any(feature = "std", feature = "alloc")))]
-            Value::String(_) => unreachable!(),
             Value::Array(v) => visit_array(v, visitor),
             Value::Object(v) => v.deserialize_any(visitor),
         }
@@ -356,7 +328,6 @@ impl<'de> serde::Deserializer<'de> for Value {
     where
         V: Visitor<'de>,
     {
-        #[cfg(feature = "raw_value")]
         {
             if name == crate::raw::TOKEN {
                 return visitor.visit_map(crate::raw::OwnedRawDeserializer {
@@ -398,7 +369,6 @@ impl<'de> serde::Deserializer<'de> for Value {
         V: Visitor<'de>,
     {
         match self {
-            #[cfg(any(feature = "std", feature = "alloc"))]
             Value::String(v) => visitor.visit_string(v),
             _ => Err(self.invalid_type(&visitor)),
         }
@@ -416,7 +386,6 @@ impl<'de> serde::Deserializer<'de> for Value {
         V: Visitor<'de>,
     {
         match self {
-            #[cfg(any(feature = "std", feature = "alloc"))]
             Value::String(v) => visitor.visit_string(v),
             Value::Array(v) => visit_array(v, visitor),
             _ => Err(self.invalid_type(&visitor)),
@@ -704,7 +673,6 @@ impl<'de> MapAccess<'de> for MapDeserializer {
 
 macro_rules! deserialize_value_ref_number {
     ($method:ident) => {
-        #[cfg(not(feature = "arbitrary_precision"))]
         fn $method<V>(self, visitor: V) -> Result<V::Value, Error>
         where
             V: Visitor<'de>,
@@ -715,16 +683,6 @@ macro_rules! deserialize_value_ref_number {
             }
         }
 
-        #[cfg(feature = "arbitrary_precision")]
-        fn $method<V>(self, visitor: V) -> Result<V::Value, Error>
-        where
-            V: Visitor<'de>,
-        {
-            match self {
-                Value::Number(n) => n.$method(visitor),
-                _ => self.deserialize_any(visitor),
-            }
-        }
     };
 }
 
@@ -786,7 +744,6 @@ impl<'de> serde::Deserializer<'de> for &'de Map<String, Value> {
                 ));
             }
         };
-        // enums are encoded in json as maps with a single key:value pair
         if iter.next().is_some() {
             return Err(serde::de::Error::invalid_value(
                 Unexpected::Map,
@@ -885,7 +842,6 @@ impl<'de> serde::Deserializer<'de> for &'de Value {
     where
         V: Visitor<'de>,
     {
-        #[cfg(feature = "raw_value")]
         {
             if name == crate::raw::TOKEN {
                 return visitor.visit_map(crate::raw::OwnedRawDeserializer {
@@ -1260,11 +1216,8 @@ impl<'de> serde::Deserializer<'de> for MapKeyDeserializer<'de> {
     deserialize_numeric_key!(deserialize_u16);
     deserialize_numeric_key!(deserialize_u32);
     deserialize_numeric_key!(deserialize_u64);
-    #[cfg(not(feature = "float_roundtrip"))]
-    deserialize_numeric_key!(deserialize_f32);
     deserialize_numeric_key!(deserialize_f64);
 
-    #[cfg(feature = "float_roundtrip")]
     deserialize_numeric_key!(deserialize_f32, do_deserialize_f32);
     deserialize_numeric_key!(deserialize_i128, do_deserialize_i128);
     deserialize_numeric_key!(deserialize_u128, do_deserialize_u128);
@@ -1290,7 +1243,6 @@ impl<'de> serde::Deserializer<'de> for MapKeyDeserializer<'de> {
     where
         V: Visitor<'de>,
     {
-        // Map keys cannot be null.
         visitor.visit_some(self)
     }
 
@@ -1330,9 +1282,6 @@ struct KeyClassifier;
 
 enum KeyClass {
     Map(String),
-    #[cfg(feature = "arbitrary_precision")]
-    Number,
-    #[cfg(feature = "raw_value")]
     RawValue,
 }
 
@@ -1359,23 +1308,16 @@ impl<'de> Visitor<'de> for KeyClassifier {
         E: de::Error,
     {
         match s {
-            #[cfg(feature = "arbitrary_precision")]
-            crate::number::TOKEN => Ok(KeyClass::Number),
-            #[cfg(feature = "raw_value")]
             crate::raw::TOKEN => Ok(KeyClass::RawValue),
             _ => Ok(KeyClass::Map(s.to_owned())),
         }
     }
 
-    #[cfg(any(feature = "std", feature = "alloc"))]
     fn visit_string<E>(self, s: String) -> Result<Self::Value, E>
     where
         E: de::Error,
     {
         match s.as_str() {
-            #[cfg(feature = "arbitrary_precision")]
-            crate::number::TOKEN => Ok(KeyClass::Number),
-            #[cfg(feature = "raw_value")]
             crate::raw::TOKEN => Ok(KeyClass::RawValue),
             _ => Ok(KeyClass::Map(s)),
         }
@@ -1423,10 +1365,7 @@ impl<'de> de::Deserializer<'de> for BorrowedCowStrDeserializer<'de> {
     {
         match self.value {
             Cow::Borrowed(string) => visitor.visit_borrowed_str(string),
-            #[cfg(any(feature = "std", feature = "alloc"))]
             Cow::Owned(string) => visitor.visit_string(string),
-            #[cfg(not(any(feature = "std", feature = "alloc")))]
-            Cow::Owned(_) => unreachable!(),
         }
     }
 

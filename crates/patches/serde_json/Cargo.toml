@@ -3,21 +3,17 @@ edition = "2021"
 rust-version = "1.71"
 name = "serde_json"
 version = "1.0.150"
-build = "build.rs"
 description = "A JSON serialization file format"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/serde-rs/json"
 publish = false
 
 [features]
-alloc = ["serde_core/alloc"]
-arbitrary_precision = []
 default = ["std"]
 float_roundtrip = []
 preserve_order = ["indexmap", "std"]
 raw_value = []
 std = ["serde_core/std"]
-unbounded_depth = []
 
 [lib]
 name = "serde_json"

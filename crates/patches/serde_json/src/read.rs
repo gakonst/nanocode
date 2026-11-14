@@ -405,6 +405,36 @@ where
     }
 }
 
+#[cfg(fast_arithmetic = "64")]
+type Chunk = u64;
+#[cfg(fast_arithmetic = "32")]
+type Chunk = u32;
+
+#[inline(always)]
+fn scan_to_escape<const FORBID_CONTROL_CHARACTERS: bool>(rest: &[u8]) -> core::result::Result<usize, usize> {
+    const STEP: usize = mem::size_of::<Chunk>();
+    const ONE_BYTES: Chunk = Chunk::MAX / 255;
+
+    let mut offset = 0;
+    for chunk in rest.chunks_exact(STEP) {
+        let chars = Chunk::from_le_bytes(chunk.try_into().unwrap());
+        let chars_quote = chars ^ (ONE_BYTES * Chunk::from(b'"'));
+        let contains_quote = chars_quote.wrapping_sub(ONE_BYTES) & !chars_quote;
+        let chars_backslash = chars ^ (ONE_BYTES * Chunk::from(b'\\'));
+        let contains_backslash = chars_backslash.wrapping_sub(ONE_BYTES) & !chars_backslash;
+        let mut found = contains_quote | contains_backslash;
+        if FORBID_CONTROL_CHARACTERS {
+            found |= chars.wrapping_sub(ONE_BYTES * 0x20) & !chars;
+        }
+        let masked = found & (ONE_BYTES << 7);
+        if masked != 0 {
+            return Ok(offset + masked.trailing_zeros() as usize / 8);
+        }
+        offset += STEP;
+    }
+    Err(offset)
+}
+
 //////////////////////////////////////////////////////////////////////////////
 
 impl<'a> SliceRead<'a> {
@@ -419,12 +449,15 @@ impl<'a> SliceRead<'a> {
     }
 
     fn position_of_index(&self, i: usize) -> Position {
-        let start_of_line = match memchr::memrchr(b'\n', &self.slice[..i]) {
+        let start_of_line = match self.slice[..i].iter().rposition(|&byte| byte == b'\n') {
             Some(position) => position + 1,
             None => 0,
         };
         Position {
-            line: 1 + memchr::memchr_iter(b'\n', &self.slice[..start_of_line]).count(),
+            line: 1 + self.slice[..start_of_line]
+                .iter()
+                .filter(|&&byte| byte == b'\n')
+                .count(),
             column: i - start_of_line,
         }
     }
@@ -439,51 +472,26 @@ impl<'a> SliceRead<'a> {
         self.index += 1;
 
         let rest = &self.slice[self.index..];
-
-        if !forbid_control_characters {
-            self.index += memchr::memchr2(b'"', b'\\', rest).unwrap_or(rest.len());
-            return;
-        }
-
-        // We wish to find the first byte in range 0x00..=0x1F or " or \. Ideally, we'd use
-        // something akin to memchr3, but the memchr crate does not support this at the moment.
-        // Therefore, we use a variation on Mycroft's algorithm [1] to provide performance better
-        // than a naive loop. It runs faster than equivalent two-pass memchr2+SWAR code on
-        // benchmarks and it's cross-platform, so probably the right fit.
-        // [1]: https://groups.google.com/forum/#!original/comp.lang.c/2HtQXvg7iKc/xOJeipH6KLMJ
-
-        #[cfg(fast_arithmetic = "64")]
-        type Chunk = u64;
-        #[cfg(fast_arithmetic = "32")]
-        type Chunk = u32;
-
-        const STEP: usize = mem::size_of::<Chunk>();
-        const ONE_BYTES: Chunk = Chunk::MAX / 255; // 0x0101...01
-
-        for chunk in rest.chunks_exact(STEP) {
-            let chars = Chunk::from_le_bytes(chunk.try_into().unwrap());
-            let contains_ctrl = chars.wrapping_sub(ONE_BYTES * 0x20) & !chars;
-            let chars_quote = chars ^ (ONE_BYTES * Chunk::from(b'"'));
-            let contains_quote = chars_quote.wrapping_sub(ONE_BYTES) & !chars_quote;
-            let chars_backslash = chars ^ (ONE_BYTES * Chunk::from(b'\\'));
-            let contains_backslash = chars_backslash.wrapping_sub(ONE_BYTES) & !chars_backslash;
-            let masked = (contains_ctrl | contains_quote | contains_backslash) & (ONE_BYTES << 7);
-            if masked != 0 {
-                // SAFETY: chunk is in-bounds for slice
-                self.index = unsafe { chunk.as_ptr().offset_from(self.slice.as_ptr()) } as usize
-                    + masked.trailing_zeros() as usize / 8;
-                return;
+        let scanned = if forbid_control_characters {
+            scan_to_escape::<true>(rest)
+        } else {
+            scan_to_escape::<false>(rest)
+        };
+        match scanned {
+            Ok(offset) => self.index += offset,
+            Err(offset) => {
+                self.index += offset;
+                self.skip_to_escape_slow(forbid_control_characters);
             }
         }
-
-        self.index += rest.len() / STEP * STEP;
-        self.skip_to_escape_slow();
     }
 
     #[cold]
     #[inline(never)]
-    fn skip_to_escape_slow(&mut self) {
-        while self.index < self.slice.len() && !is_escape(self.slice[self.index], true) {
+    fn skip_to_escape_slow(&mut self, forbid_control_characters: bool) {
+        while self.index < self.slice.len()
+            && !is_escape(self.slice[self.index], forbid_control_characters)
+        {
             self.index += 1;
         }
     }

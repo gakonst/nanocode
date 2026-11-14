@@ -16,7 +16,7 @@ default = ["std"]
 float_roundtrip = []
 preserve_order = ["indexmap", "std"]
 raw_value = []
-std = ["memchr/std", "serde_core/std"]
+std = ["serde_core/std"]
 unbounded_depth = []
 
 [lib]
@@ -32,10 +32,6 @@ optional = true
 
 [dependencies.itoa]
 version = "1.0"
-
-[dependencies.memchr]
-version = "2"
-default-features = false
 
 [dependencies.serde_core]
 version = "1.0.220"

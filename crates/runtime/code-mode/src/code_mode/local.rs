@@ -8,7 +8,7 @@ use std::{
 
 use nanocode_sync::Atom;
 use nanocode_sync::FutureExt;
-use serde_json::{Value, json};
+use serde_json::{Value, json, value::RawValue};
 
 use super::{
     CellJournals, CodeModeExecution, CodeModeObserver, CodeModeRuntime, IgnoreCodeModeUpdates,
@@ -30,9 +30,12 @@ pub struct LocalCells {
     hands: Atom<Option<Hands>>,
     journals: Option<CellJournals>,
     default_yield: Option<std::time::Duration>,
+    stored: Atom<HashMap<Arc<str>, Stored>>,
 }
 
 type Hands = (Arc<str>, Arc<dyn HandCalls>);
+
+type Stored = Arc<Atom<HashMap<String, Arc<RawValue>>>>;
 
 struct LocalSession {
     runtime: CodeModeRuntime,
@@ -81,10 +84,14 @@ impl LocalCells {
         if let Some(session) = self.existing(session_id) {
             return session;
         }
+        let stored = self
+            .stored
+            .update(|stored| Arc::clone(stored.entry(Arc::from(session_id)).or_default()));
         self.sessions.update(|sessions| {
             Arc::clone(sessions.entry(Arc::from(session_id)).or_insert_with(|| {
                 let turn = Arc::new(AtomicU64::new(0));
-                let runtime = CodeModeRuntime::new_with_turn(Arc::clone(&turn));
+                let runtime = CodeModeRuntime::new_with_turn(Arc::clone(&turn))
+                    .with_stored(Arc::clone(&stored));
                 let runtime = match &self.prelude {
                     Some(prelude) => runtime.with_prelude(Arc::clone(prelude)),
                     None => runtime,
@@ -99,6 +106,16 @@ impl LocalCells {
                 Arc::new(LocalSession { runtime, turn })
             }))
         })
+    }
+
+    fn release_stored(&self, session_id: &str) {
+        self.stored.update(|stored| {
+            if stored.get(session_id).is_some_and(|values| {
+                Arc::strong_count(values) == 1 && values.read(HashMap::is_empty)
+            }) {
+                stored.remove(session_id);
+            }
+        });
     }
 
     fn existing(&self, session_id: &str) -> Option<Arc<LocalSession>> {
@@ -453,6 +470,7 @@ impl CodeModeHost for LocalCells {
             if let Some(session) = session {
                 let _ = session.runtime.control().terminate_all(None).await;
             }
+            self.release_stored(session_id);
             Ok(())
         })
     }
@@ -471,6 +489,7 @@ impl CodeModeHost for LocalCells {
                     .terminate_all(Some(observer))
                     .await;
             }
+            self.release_stored(session_id);
             Ok(())
         })
     }

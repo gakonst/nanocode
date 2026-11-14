@@ -630,6 +630,11 @@ impl CodeModeRuntime {
         self
     }
 
+    fn with_stored(mut self, stored: Arc<Atom<HashMap<String, Arc<RawValue>>>>) -> Self {
+        self.stored = stored;
+        self
+    }
+
     pub fn set_journals(&mut self, journals: CellJournals) {
         self.journals = Some(journals);
     }

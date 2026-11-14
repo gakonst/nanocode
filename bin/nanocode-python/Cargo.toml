@@ -17,7 +17,7 @@ test = false
 bench = false
 
 [target.'cfg(unix)'.dependencies]
-mimalloc = { workspace = true, features = ["no_thp"] }
+nanocode-sys.workspace = true
 nanocode-python.workspace = true
 
 [lints]

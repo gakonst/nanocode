@@ -9,16 +9,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 
 [[package]]
-name = "cc"
-version = "1.2.67"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e17dd265a7d0f31ef544e1b20e03add05d3b45b491b633b10d67145d2acc1a38"
-dependencies = [
- "find-msvc-tools",
- "shlex",
-]
-
-[[package]]
 name = "djs-core"
 version = "0.0.0"
 dependencies = [
@@ -58,12 +48,6 @@ dependencies = [
  "libc",
  "windows-sys",
 ]
-
-[[package]]
-name = "find-msvc-tools"
-version = "0.1.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
 
 [[package]]
 name = "graviola"
@@ -106,28 +90,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a"
 
 [[package]]
-name = "libmimalloc-sys"
-version = "0.1.49"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6a45a52f43e1c16f667ccfe4dd8c85b7f7c204fd5e3bf46c5b0db9a5c3c0b8e9"
-dependencies = [
- "cc",
-]
-
-[[package]]
 name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
-
-[[package]]
-name = "mimalloc"
-version = "0.1.52"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2d4139bb28d14ad1facf21d5eb8825051b326e172d216b39f6d31df53cc97862"
-dependencies = [
- "libmimalloc-sys",
-]
 
 [[package]]
 name = "mio"
@@ -407,7 +373,6 @@ name = "nanocode-cli"
 version = "0.7.0"
 dependencies = [
  "http",
- "mimalloc",
  "nanocode",
  "nanocode-agent-host",
  "nanocode-arguments",
@@ -423,6 +388,7 @@ dependencies = [
  "nanocode-psh-embedded",
  "nanocode-store-jsonl",
  "nanocode-sync",
+ "nanocode-sys",
  "nanocode-tempo",
  "nanocode-trace",
  "nanocode-tui",
@@ -801,8 +767,8 @@ dependencies = [
 name = "nanocode-python-cli"
 version = "0.7.0"
 dependencies = [
- "mimalloc",
  "nanocode-python",
+ "nanocode-sys",
 ]
 
 [[package]]
@@ -1550,10 +1516,6 @@ dependencies = [
  "nanocode-sys",
  "serde_core",
 ]
-
-[[package]]
-name = "shlex"
-version = "2.0.1"
 
 [[package]]
 name = "signal-hook-registry"

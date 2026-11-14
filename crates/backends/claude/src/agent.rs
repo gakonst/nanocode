@@ -1732,6 +1732,12 @@ impl ClaudeBuilder {
         restored
             .developer_notices
             .extend(std::mem::take(&mut self.initial_developer_notices));
+        let stopped = stopped_background_notices(
+            &session_id,
+            &restored.conversation.messages,
+            &restored.developer_notices,
+        );
+        restored.developer_notices.extend(stopped);
         let kept_prefix = restored
             .context
             .as_ref()
@@ -2581,6 +2587,62 @@ const COMPACT_TOOLS_CLOSE: &str = "</tools-used-before-summary>";
 const COMPACT_RESUME: &str = "Continue the conversation from where it left off without asking the user any further questions. Resume directly \u{2014} do not acknowledge the summary, do not recap what was happening, do not preface with \"I'll continue\" or similar. Pick up the last task as if the break never happened.";
 const COMPACT_KEPT: &str = "The messages after this summary are the most recent messages from before compaction, kept verbatim. The summary was written without seeing them, so something it says has not happened yet may already have happened in them.";
 const INTERRUPTED_BY_USER: &str = "[Request interrupted by user]";
+
+const BACKGROUND_STARTED: [&str; 2] = ["running in background with ID: ", "moved to the background (ID: "];
+const BACKGROUND_NOTICE_PREFIX: &str = "background-stopped-";
+
+fn stopped_background_notices(
+    session_id: &str,
+    messages: &[HistoryMessage],
+    queued: &[(String, String)],
+) -> Vec<(String, String)> {
+    let local = format!("{session_id}-bash-");
+    let texts = messages
+        .iter()
+        .flat_map(|message| message.content.iter())
+        .filter_map(|block| serde_json::to_string(block).ok())
+        .collect::<Vec<_>>();
+    let mut started = Vec::new();
+    for text in &texts {
+        for marker in BACKGROUND_STARTED {
+            for (at, _) in text.match_indices(marker) {
+                let rest = &text[at + marker.len()..];
+                let end = rest
+                    .find(|character: char| {
+                        !(character.is_ascii_alphanumeric() || character == '-' || character == '_')
+                    })
+                    .unwrap_or(rest.len());
+                let id = &rest[..end];
+                if id.starts_with(&local) && !started.contains(&id) {
+                    started.push(id);
+                }
+            }
+        }
+    }
+    started
+        .into_iter()
+        .filter(|id| {
+            let settled = [
+                format!("<task-id>{id}</task-id>"),
+                format!("stopped task: {id} "),
+                format!("Task {id} is not running"),
+            ];
+            !texts
+                .iter()
+                .any(|text| settled.iter().any(|marker| text.contains(marker.as_str())))
+        })
+        .map(|id| (format!("{BACKGROUND_NOTICE_PREFIX}{id}"), id))
+        .filter(|(notice, _)| !queued.iter().any(|(queued, _)| queued == notice))
+        .map(|(notice, id)| {
+            (
+                notice,
+                format!(
+                    "<task-notification>\n<task-id>{id}</task-id>\n<status>killed</status>\n<summary>Background command {id} was still running when the nanocode process that started it ended, so its completion was never reported and never will be. It was most likely stopped then; its outcome is unknown.</summary>\n</task-notification>\nRead its output file and check its effects before you rely on it or run it again."
+                ),
+            )
+        })
+        .collect()
+}
 
 fn compact_summary(raw: &str) -> String {
     let mut text = raw.to_owned();

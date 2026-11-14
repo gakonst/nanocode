@@ -614,12 +614,15 @@ impl ExecutionState {
             }
             STORE => {
                 let key = text(call, 0)?;
-                let value = RawValue::from_string(text(call, 1)?).map_err(|error| {
-                    Throw::type_error(format!(
-                        "Unable to store {}: {error}",
-                        Value::from(key.as_str())
-                    ))
-                })?;
+                let encoded = text(call, 1)?;
+                let value = serde_json::from_str::<Value>(&encoded)
+                    .and_then(|_| RawValue::from_string(encoded))
+                    .map_err(|error| {
+                        Throw::type_error(format!(
+                            "Unable to store {}: {error}",
+                            Value::from(key.as_str())
+                        ))
+                    })?;
                 self.written.insert(key, Arc::from(value));
                 Ok(Reply::Nothing)
             }

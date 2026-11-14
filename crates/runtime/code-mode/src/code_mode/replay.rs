@@ -73,7 +73,7 @@ pub struct CellJournalHeader {
     pub origin_call_id: String,
     pub script: String,
     pub tools: Arc<[Value]>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "stored_values")]
     pub stored: BTreeMap<String, Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub started_at_ms: Option<u64>,
@@ -798,6 +798,19 @@ pub(super) fn unknown_outcome() -> Value {
         "code": "CODE_MODE_CALL_INTERRUPTED",
         "outcome": "unknown",
     })
+}
+
+fn stored_values<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<BTreeMap<String, Value>, D::Error> {
+    BTreeMap::<String, Box<RawValue>>::deserialize(deserializer)?
+        .into_iter()
+        .map(|(key, value)| {
+            serde_json::from_str(value.get())
+                .map(|value| (key, value))
+                .map_err(serde::de::Error::custom)
+        })
+        .collect()
 }
 
 pub(super) fn divergence_text(fallback: Option<&str>, cell_id: u64, reason: &str) -> String {

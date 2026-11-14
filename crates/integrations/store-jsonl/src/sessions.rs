@@ -106,6 +106,9 @@ fn clear_temporaries(directory: &Path) -> std::io::Result<()> {
         let Some(name) = name.to_str() else {
             continue;
         };
+        if archive::unarchived(name).unwrap_or(name).ends_with(EXTENSION) {
+            continue;
+        }
         let abandoned = [".compact-", ".migrate-", COPY].into_iter().any(|marker| {
             name.split_once(marker)
                 .and_then(|(_, rest)| rest.split_once('-'))
@@ -366,7 +369,7 @@ impl Sessions {
                 files.push((key, metadata, entry.path()));
             }
         }
-        files.sort_by_key(|(_, metadata, _)| Reverse(created(metadata)));
+        files.sort_by_cached_key(|(_, metadata, _)| Reverse(created(metadata)));
         Ok(files)
     }
 

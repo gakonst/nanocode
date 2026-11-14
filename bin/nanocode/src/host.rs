@@ -444,6 +444,7 @@ pub struct HostConfig {
     pub cyber_access_program: Option<nanocode::codex::CyberAccessProgram>,
     pub context_window: Option<u64>,
     pub max_output_tokens: Option<u32>,
+    pub codex_direct: bool,
 }
 
 #[derive(Clone)]
@@ -705,13 +706,14 @@ impl Host {
         }
         let hand = std::sync::Arc::new(nanocode_sync::Atom::new(None::<nanocode::HandDescription>));
         let described = std::sync::Arc::clone(&hand);
+        let codex_direct = config.codex_direct;
         let codex = CodexHarness::new(openai)
             .client_for(move |request| match route(request) {
                 Some(Route::Tempo) => tempo_openai.clone(),
                 Some(Route::Boundless) => boundless.clone(),
                 _ => None,
             })
-            .direct_tools_for(|request| !native_model(&request.model))
+            .direct_tools_for(move |request| codex_direct || !native_model(&request.model))
             .direct_subagents(config.subagents == Subagents::AllModels)
             .configure(move |builder| {
                 let window = context_window

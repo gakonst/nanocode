@@ -222,7 +222,7 @@ impl RuntimeBackend for CodexHarness {
                             .as_ref()
                             .map(|subagents| {
                                 let authority = nanocode_agent_config::configuration::DelegationAuthority::Session;
-                                match direct && !remote {
+                                match direct {
                                     true => subagents.direct_tools(handle, authority),
                                     false => subagents.tools(handle, authority),
                                 }
@@ -232,7 +232,7 @@ impl RuntimeBackend for CodexHarness {
                             .chain(shared.iter().cloned()),
                     )?;
                     let builder = selected.into_builder();
-                    let builder = match direct && !remote {
+                    let builder = match direct {
                         true => builder
                             .exposure(nanocode_tool_host::ToolExposure::DirectOnly)
                             .web_search(false)

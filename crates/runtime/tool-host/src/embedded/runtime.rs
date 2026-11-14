@@ -40,6 +40,7 @@ pub struct EmbeddedToolRuntime {
     brief: Arc<[String]>,
     layout: crate::code_mode_description::ExecLayout,
     cell_yield: Option<Duration>,
+    direct: bool,
 }
 
 struct LocalTool {
@@ -76,6 +77,7 @@ impl EmbeddedToolRuntime {
             brief: Arc::from([]),
             layout: crate::code_mode_description::ExecLayout::default(),
             cell_yield: None,
+            direct: false,
         }
     }
 
@@ -97,6 +99,7 @@ impl EmbeddedToolRuntime {
         self.brief = Arc::clone(&tools.brief_code_tools);
         self.layout.clone_from(&tools.code_tools_layout);
         self.cell_yield = tools.cell_yield;
+        self.direct = tools.exposure() == ToolExposure::DirectOnly;
         self.local
             .extend(tools.registered.iter().map(|registered| LocalTool {
                 name: Arc::from(registered.handler.definition().name()),
@@ -144,10 +147,10 @@ impl EmbeddedToolRuntime {
         &self,
         session_id: &str,
     ) -> (Vec<ToolDefinition>, Vec<(String, String)>) {
-        let mode = self
-            .host
-            .as_ref()
-            .map_or(EmbeddedToolMode::Direct, |host| host.tool_mode());
+        let mode = match &self.host {
+            Some(host) if !self.direct => host.tool_mode(),
+            _ => EmbeddedToolMode::Direct,
+        };
         let mut definitions = self.host.as_ref().map_or_else(Vec::new, |host| {
             match host.tool_definitions(session_id) {
                 Ok(definitions) => definitions,
@@ -369,9 +372,11 @@ impl EmbeddedToolRuntime {
 
     #[must_use]
     pub fn is_code_only(&self) -> bool {
-        self.host
-            .as_ref()
-            .is_some_and(|host| host.tool_mode() == EmbeddedToolMode::CodeOnly)
+        !self.direct
+            && self
+                .host
+                .as_ref()
+                .is_some_and(|host| host.tool_mode() == EmbeddedToolMode::CodeOnly)
     }
 
     #[must_use]
@@ -425,11 +430,7 @@ impl EmbeddedToolRuntime {
         input: ToolInput,
         context: ToolContext<'_>,
     ) -> Result<ToolOutput, CodeModeHostError> {
-        if self
-            .host
-            .as_ref()
-            .is_some_and(|host| host.tool_mode() == EmbeddedToolMode::CodeOnly)
-        {
+        if self.is_code_only() {
             return Ok(ToolOutput::error(format!(
                 "tool `{name}` requires Code Mode; no direct handler was invoked in this attempt. If this call was recovered, a previous attempt may have run with an unknown outcome; reconcile its effects before repeating through tools inside exec"
             )));
@@ -451,7 +452,13 @@ impl EmbeddedToolRuntime {
                 "direct embedded tool `{name}` is unavailable"
             )));
         }
-        host.execute_tool(name, input, context).await
+        if !self.direct || host.tool_mode() == EmbeddedToolMode::Direct {
+            return host.execute_tool(name, input, context).await;
+        }
+        match hand_input(name, input) {
+            Ok(input) => host.call(name, input, context).await,
+            Err(output) => Ok(output),
+        }
     }
 
     pub async fn execute_code(
@@ -580,6 +587,17 @@ impl EmbeddedToolRuntime {
             host.adopt(context, self.cell_tools()).await;
         }
         host.wait_with_updates(input, context, observer).await
+    }
+}
+
+pub(crate) fn hand_input(name: &str, input: ToolInput) -> Result<serde_json::Value, ToolOutput> {
+    match input {
+        ToolInput::Function(arguments) => serde_json::from_str(arguments.get()).map_err(|error| {
+            ToolOutput::error(format!(
+                "failed to decode {name} arguments: {error}; nothing was dispatched"
+            ))
+        }),
+        ToolInput::Freeform(input) => Ok(serde_json::Value::String(input)),
     }
 }
 

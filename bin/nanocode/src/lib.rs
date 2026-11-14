@@ -428,6 +428,7 @@ async fn prepare(
             .map(u32::try_from)
             .transpose()
             .map_err(|error| format!("--max-output-tokens: {error}"))?,
+        codex_direct: args.codex_orchestration == Some(cli::CodexOrchestrationArg::Direct),
     };
     let host = nanocode_trace::Instrument::instrument(
         Host::build(config, &model, thinking),

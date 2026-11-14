@@ -598,6 +598,21 @@ impl Arena {
         &mut self.bytes
     }
 
+    #[inline(always)]
+    pub(crate) fn read_values<const N: usize>(&self, off: u32) -> [crate::value::Value; N] {
+        let s = &self.bytes[off as usize..off as usize + N * 8];
+        core::array::from_fn(|i| FieldType::read(s, i * 8))
+    }
+
+    #[inline(always)]
+    pub(crate) fn write_values<const N: usize>(&mut self, off: u32, v: [crate::value::Value; N]) {
+        self.barrier(off, (N * 8) as u32);
+        let s = &mut self.bytes[off as usize..off as usize + N * 8];
+        for (i, x) in v.into_iter().enumerate() {
+            FieldType::write(s, i * 8, x);
+        }
+    }
+
     /// Reads field `f` of the cell (or record) at `base`.
     #[inline(always)]
     pub fn get<T: FieldType>(&self, base: u32, f: Field<T>) -> T {

@@ -824,6 +824,25 @@ impl Heap {
         self.arena().read(Object::SLOTS.at(o.0, i))
     }
 
+    #[inline(always)]
+    pub(crate) fn object_slots<const N: usize>(&self, o: Obj, first: u32) -> [Value; N] {
+        let end = first + N as u32;
+        if end > self.object_slot_count(o) {
+            super::fail::slot_out_of_range(end - 1);
+        }
+        self.arena().read_values(Object::SLOTS.at(o.0, first))
+    }
+
+    #[inline(always)]
+    pub(crate) fn set_object_slots<const N: usize>(&mut self, o: Obj, first: u32, v: [Value; N]) {
+        let end = first + N as u32;
+        if end > self.object_slot_count(o) {
+            super::fail::slot_out_of_range(end - 1);
+        }
+        self.arena_mut()
+            .write_values(Object::SLOTS.at(o.0, first), v)
+    }
+
     pub fn set_object_slot(&mut self, o: Obj, i: u32, v: Value) {
         if i >= self.object_slot_count(o) {
             super::fail::slot_out_of_range(i);

@@ -597,6 +597,7 @@ pub(crate) fn init(heap: &mut Heap) -> Result<(), HeapError> {
 }
 
 /// The JS function installed for intrinsic `id`, or `undefined`.
+#[inline]
 pub(crate) fn installed_intrinsic(heap: &Heap, id: u16) -> Value {
     let t: crate::heap::Ref = heap.arena().get(realm(heap), Realm::INSTALLED);
     if (id as u32) < heap.value_array_len(t.0) {

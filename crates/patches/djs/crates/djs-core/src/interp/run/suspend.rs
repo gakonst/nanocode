@@ -256,12 +256,19 @@ impl Exec<'_> {
         if Continuation::from_flags(flags) != Continuation::GenStep {
             return false;
         }
-        let Some(g) = as_generator(self.heap, self.get(self.lp + self.imm_u16(1)), GENERATOR)
+        let Some(g) = self
+            .get(self.lp + self.imm_u16(1))
+            .as_object()
+            .filter(|&o| self.heap.object_class(o) == ObjectClass::Generator)
         else {
             return false;
         };
+        let [_, saved, _, _, _, kind] = self.heap.object_slots(g, STATE);
+        if kind.as_int() != Some(GENERATOR) {
+            return false;
+        }
         let v = self.pop();
-        if self.suspend_frame(g, SUSPENDED, next).is_err() {
+        if self.suspend_into(g, saved, SUSPENDED, next).is_err() {
             self.push(v);
             return false;
         }
@@ -287,25 +294,52 @@ impl Exec<'_> {
     }
 
     pub(super) fn resume_hit(&mut self, it: Value, f: Value) -> bool {
-        let Some(g) = plain_generator(self.heap, it, f) else {
+        let Some(g) = it
+            .as_object()
+            .filter(|&o| self.heap.object_class(o) == ObjectClass::Generator)
+        else {
             return false;
         };
+        let [state, saved, pc, hp_off, _, kind] = self.heap.object_slots(g, STATE);
+        let (Some(GENERATOR), Some(state @ (START | SUSPENDED)), Some(arr)) =
+            (kind.as_int(), state.as_int(), saved.as_internal())
+        else {
+            return false;
+        };
+        if f != realm::installed_intrinsic(self.heap, GENERATOR_NEXT) {
+            return false;
+        }
+        let pc = pc.as_int().unwrap_or(0) as u32;
+        let hp_off = hp_off.as_int().unwrap_or(0) as u32;
+        let t = self.template_of(
+            self.heap
+                .value_array_get(arr, 0)
+                .as_object()
+                .expect("callee"),
+        );
         let at = self.pc;
-        matches!(
-            self.generator_resume(
-                Value::object(g),
-                Value::UNDEFINED,
-                Value::int(0),
-                at,
-                Continuation::GenStep
-            ),
-            Ok(None)
-        )
+        if self
+            .enter_saved(g, arr, t, pc, hp_off, at, Continuation::GenStep)
+            .is_err()
+        {
+            return false;
+        }
+        if state != START {
+            self.push(Value::UNDEFINED);
+            self.push(Value::FALSE);
+        }
+        self.safepoint();
+        true
     }
 
     fn suspend_frame(&mut self, g: Obj, state: i32, pc: u32) -> Result<(), Fault> {
+        let saved = self.heap.object_slot(g, FRAME);
+        self.suspend_into(g, saved, state, pc)
+    }
+
+    fn suspend_into(&mut self, g: Obj, saved: Value, state: i32, pc: u32) -> Result<(), Fault> {
         let len = self.sp - self.bp;
-        let arr = match self.heap.object_slot(g, FRAME).as_internal() {
+        let arr = match saved.as_internal() {
             Some(a) if self.heap.value_array_capacity(a) >= len => a,
             _ => self.heap.alloc_value_array(len)?,
         };
@@ -316,14 +350,16 @@ impl Exec<'_> {
             .copy_within(src, bytes, ValueArray::VALUES.at(arr, 0));
         self.heap.arena_mut().set(arr, ValueArray::LEN, len);
         self.fuel -= (len / 8) as i64;
-        for (slot, v) in [
-            (STATE, Value::int(state)),
-            (FRAME, Value::internal(arr)),
-            (PC, Value::int(pc as i32)),
-            (HP, Value::int((self.hp - self.bp) as i32)),
-        ] {
-            self.heap.set_object_slot(g, slot, v);
-        }
+        self.heap.set_object_slots(
+            g,
+            STATE,
+            [
+                Value::int(state),
+                Value::internal(arr),
+                Value::int(pc as i32),
+                Value::int((self.hp - self.bp) as i32),
+            ],
+        );
         Ok(())
     }
 
@@ -522,14 +558,16 @@ impl Exec<'_> {
                 const { crate::bytecode::intrinsics::const_id("GeneratorResume") },
             );
         };
-        let state = state_of(self.heap, g);
-        let saved = self.heap.object_slot(g, FRAME).as_internal();
-        let (Some(arr), START | SUSPENDED | AWAITING | SUSPENDED_RAW) = (saved, state) else {
+        let [state, saved, pc, hp_off] = self.heap.object_slots(g, STATE);
+        let state = state.as_int().unwrap_or(COMPLETED);
+        let (Some(arr), START | SUSPENDED | AWAITING | SUSPENDED_RAW) =
+            (saved.as_internal(), state)
+        else {
             return intrinsics::bad_argument(
                 const { crate::bytecode::intrinsics::const_id("GeneratorResume") },
             );
         };
-        let pc = self.heap.object_slot(g, PC).as_int().unwrap_or(0) as u32;
+        let pc = pc.as_int().unwrap_or(0) as u32;
         let f = self
             .heap
             .value_array_get(arr, 0)
@@ -547,7 +585,38 @@ impl Exec<'_> {
                 return Err(Fault::throw(value));
             }
         }
-        let hp_off = self.heap.object_slot(g, HP).as_int().unwrap_or(0) as u32;
+        let hp_off = hp_off.as_int().unwrap_or(0) as u32;
+        self.enter_saved(g, arr, t, pc, hp_off, next, cont)?;
+        match (state, mode) {
+            (START, _) => {}
+            (_, 1) => {
+                let st = self.throw_value(value, pc - 1);
+                if st.is_none() {
+                    self.safepoint();
+                }
+                return Ok(st);
+            }
+            (AWAITING, _) => self.push(value),
+            _ => {
+                self.push(value);
+                self.push(Value::bool(mode == 2));
+            }
+        }
+        self.safepoint();
+        Ok(None)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn enter_saved(
+        &mut self,
+        g: Obj,
+        arr: u32,
+        t: u32,
+        pc: u32,
+        hp_off: u32,
+        next: u32,
+        cont: Continuation,
+    ) -> Result<(), Fault> {
         let len = self.heap.value_array_len(arr);
         let base = self.sp;
         // Room for the frame, its operand stack and the resume values.
@@ -585,22 +654,6 @@ impl Exec<'_> {
         self.sp = base + len;
         self.pc = pc;
         self.enter_template(t);
-        match (state, mode) {
-            (START, _) => {}
-            (_, 1) => {
-                let st = self.throw_value(value, pc - 1);
-                if st.is_none() {
-                    self.safepoint();
-                }
-                return Ok(st);
-            }
-            (AWAITING, _) => self.push(value),
-            _ => {
-                self.push(value);
-                self.push(Value::bool(mode == 2));
-            }
-        }
-        self.safepoint();
-        Ok(None)
+        Ok(())
     }
 }

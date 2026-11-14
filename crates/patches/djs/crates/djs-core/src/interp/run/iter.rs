@@ -256,13 +256,17 @@ impl Exec<'_> {
 
     /// What the next step of `it` with `next` method `f` does, without doing it.
     fn iter_plan(&self, it: Value, f: Value) -> Plan {
+        let Some(o) = it.as_object() else {
+            return Plan::Slow;
+        };
+        if !self.is_class(o, ObjectClass::ArrayIterator) {
+            return Plan::Slow;
+        }
         if let Some(p) = self.array_values_plan(it, f) {
             return p;
         }
-        let Some(it) = it.as_object() else {
-            return Plan::Slow;
-        };
-        if self.heap.object_class(it) != ObjectClass::ArrayIterator || f.as_object().is_none() {
+        let it = o;
+        if f.as_object().is_none() {
             return Plan::Slow;
         }
         let target = self.heap.object_slot(it, 0);

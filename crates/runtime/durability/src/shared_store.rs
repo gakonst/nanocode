@@ -1859,7 +1859,7 @@ fn stopped() -> StoreError {
 }
 
 #[cfg(not(target_family = "wasm"))]
-fn spawn_driver(driver: impl Future<Output = ()> + Send + 'static) -> crate::Result<()> {
+pub(crate) fn spawn_driver(driver: impl Future<Output = ()> + Send + 'static) -> crate::Result<()> {
     if let Some(host) = nanocode_platform::host() {
         host.spawn(Box::pin(driver));
         return Ok(());

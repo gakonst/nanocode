@@ -1,13 +1,14 @@
+#[cfg(target_family = "wasm")]
+use std::future::Future;
 use std::{
     cmp::{Ordering, Reverse},
     collections::{BinaryHeap, HashMap},
-    future::Future,
 };
 
 use tokio::sync::{mpsc, oneshot};
 
 #[cfg(not(target_family = "wasm"))]
-use crate::Error;
+use crate::shared_store::spawn_driver;
 use crate::{
     Committed, EventCursor, EventHit, EventHits, EventOrder, EventPage, EventQuery, EventRange,
     IndexedState, OwnedState, OwnerId, OwnerToken, StateCommit, StateCursor, StatePage, StateQuery,
@@ -662,17 +663,6 @@ impl StateReader for MemoryStore {
 
 fn stopped() -> StoreError {
     StoreError::Backend("in-memory durability store stopped".to_owned())
-}
-
-#[cfg(not(target_family = "wasm"))]
-fn spawn_driver(driver: impl Future<Output = ()> + Send + 'static) -> crate::Result<()> {
-    if let Some(host) = nanocode_platform::host() {
-        host.spawn(Box::pin(driver));
-        return Ok(());
-    }
-    let runtime = tokio::runtime::Handle::try_current().map_err(|_| Error::RuntimeUnavailable)?;
-    drop(nanocode_platform::spawn_on(&runtime, driver));
-    Ok(())
 }
 
 #[cfg(target_family = "wasm")]

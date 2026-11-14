@@ -27,11 +27,10 @@ doctest = false
 bench = false
 
 [dependencies]
+nanocode-sys = { path = "../../core/sys" }
 once_cell = { version = "1.16", default-features = false, features = ["alloc", "race"] }
-subtle = { version = "2.5.0", default-features = false }
 pki-types = { package = "rustls-pki-types", version = "1.12", features = ["alloc"] }
 webpki = { package = "rustls-webpki", version = "0.103.14", default-features = false, features = ["alloc"] }
-zeroize = "1.8"
 
 [lints.rust.unexpected_cfgs]
 level = "warn"

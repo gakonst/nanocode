@@ -3,7 +3,7 @@ use core::fmt;
 use core::marker::PhantomData;
 
 use pki_types::CertificateDer;
-use zeroize::Zeroize;
+use crate::zero::Zeroize;
 
 use crate::error::InvalidMessage;
 use crate::msgs::codec;

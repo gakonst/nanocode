@@ -2,7 +2,7 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::fmt::Debug;
 
-use zeroize::Zeroize;
+use crate::zero::Zeroize;
 
 use crate::Error;
 use crate::msgs::enums::HpkeKem;

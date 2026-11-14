@@ -5,7 +5,7 @@ use alloc::vec::Vec;
 
 pub(super) use client_hello::CompleteClientHelloHandling;
 use pki_types::UnixTime;
-use subtle::ConstantTimeEq;
+use crate::ct::ConstantTimeEq;
 
 use super::common::ActiveCertifiedKey;
 use super::hs::{self, ServerContext};

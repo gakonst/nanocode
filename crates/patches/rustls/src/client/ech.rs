@@ -4,7 +4,7 @@ use alloc::vec::Vec;
 use core::iter;
 
 use pki_types::{DnsName, EchConfigListBytes, ServerName};
-use subtle::ConstantTimeEq;
+use crate::ct::ConstantTimeEq;
 
 use crate::CipherSuite::TLS_EMPTY_RENEGOTIATION_INFO_SCSV;
 use crate::client::tls13;

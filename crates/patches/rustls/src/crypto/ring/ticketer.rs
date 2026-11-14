@@ -4,7 +4,7 @@ use core::fmt;
 use core::fmt::{Debug, Formatter};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use subtle::ConstantTimeEq;
+use crate::ct::ConstantTimeEq;
 
 use super::ring_like::aead;
 use super::ring_like::rand::{SecureRandom, SystemRandom};

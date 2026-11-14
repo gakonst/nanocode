@@ -3,7 +3,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use pki_types::ServerName;
-use subtle::ConstantTimeEq;
+use crate::ct::ConstantTimeEq;
 
 use super::client_conn::ClientConnectionData;
 use super::hs::{ClientContext, ClientHelloInput, ClientSessionValue};

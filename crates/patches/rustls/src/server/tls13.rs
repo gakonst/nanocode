@@ -4,7 +4,7 @@ use alloc::vec::Vec;
 
 pub(super) use client_hello::CompleteClientHelloHandling;
 use pki_types::{CertificateDer, UnixTime};
-use subtle::ConstantTimeEq;
+use crate::ct::ConstantTimeEq;
 
 use super::hs::{self, HandshakeHashOrBuffer, ServerContext};
 use super::server_conn::ServerConnectionData;

@@ -5,7 +5,7 @@ use alloc::vec::Vec;
 
 use pki_types::ServerName;
 pub(super) use server_hello::CompleteServerHelloHandling;
-use subtle::ConstantTimeEq;
+use crate::ct::ConstantTimeEq;
 
 use super::client_conn::ClientConnectionData;
 use super::hs::ClientContext;

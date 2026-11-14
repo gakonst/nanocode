@@ -1,7 +1,7 @@
 use pki_types::PrivateKeyDer;
 pub(crate) use ring as ring_like;
 use webpki::ring as webpki_algs;
-use zeroize::Zeroizing;
+use crate::zero::Zeroizing;
 
 use crate::Error;
 use crate::crypto::{CryptoProvider, KeyProvider, SecureRandom, SupportedKxGroup};

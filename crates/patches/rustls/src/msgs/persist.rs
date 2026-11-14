@@ -2,7 +2,7 @@ use alloc::vec::Vec;
 use core::cmp;
 
 use pki_types::{DnsName, UnixTime};
-use zeroize::Zeroizing;
+use crate::zero::Zeroizing;
 
 use crate::client::ResolvesClientCert;
 use crate::enums::{CipherSuite, ProtocolVersion};

@@ -34,6 +34,7 @@ pub mod junction;
 #[cfg(target_os = "macos")]
 pub mod trust_settings;
 pub mod webp;
+mod zero;
 
 pub use atomic::{AtomicArc, AtomicBox, AtomicStatic};
 pub use decimal::DecimalText;
@@ -43,3 +44,4 @@ pub use random::fill_random;
 pub use stack::current_thread_stack_remaining_bytes;
 pub use swap::{AsRaw, Enclosed, Guard, Pointer, Swap, SwapOption, Swapped};
 pub use waker::AtomicWaker;
+pub use zero::{zero, zero_vec};

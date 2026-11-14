@@ -3,7 +3,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt;
 
-use zeroize::Zeroize;
+use crate::zero::Zeroize;
 
 use crate::common_state::{CommonState, Side};
 use crate::conn::ConnectionRandoms;

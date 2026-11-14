@@ -7,7 +7,7 @@ use alloc::vec::Vec;
 pub(crate) use aws_lc_rs as ring_like;
 use pki_types::PrivateKeyDer;
 use webpki::aws_lc_rs as webpki_algs;
-use zeroize::Zeroizing;
+use crate::zero::Zeroizing;
 
 use crate::crypto::{CryptoProvider, KeyProvider, SecureRandom, SupportedKxGroup};
 use crate::enums::SignatureScheme;

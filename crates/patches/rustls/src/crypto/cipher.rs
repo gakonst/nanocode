@@ -2,7 +2,7 @@ use alloc::boxed::Box;
 use alloc::string::ToString;
 use core::fmt;
 
-use zeroize::Zeroize;
+use crate::zero::Zeroize;
 
 use crate::enums::{ContentType, ProtocolVersion};
 use crate::error::Error;

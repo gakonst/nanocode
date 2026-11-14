@@ -1,7 +1,7 @@
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
-use zeroize::Zeroize;
+use crate::zero::Zeroize;
 
 use super::{ActiveKeyExchange, hmac};
 use crate::error::Error;

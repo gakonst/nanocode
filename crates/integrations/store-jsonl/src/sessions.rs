@@ -113,8 +113,9 @@ fn clear_temporaries(directory: &Path) -> std::io::Result<()> {
             continue;
         }
         let abandoned = [".compact-", ".migrate-", COPY].into_iter().any(|marker| {
-            name.split_once(marker)
-                .and_then(|(_, rest)| rest.split_once('-'))
+            name.match_indices('.')
+                .find_map(|(at, _)| name[at..].strip_prefix(marker))
+                .and_then(|rest| rest.split_once('-'))
                 .and_then(|(pid, _)| pid.parse::<u32>().ok())
                 .is_some_and(|pid| !process_alive(pid))
         });

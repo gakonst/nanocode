@@ -1,7 +1,10 @@
 use std::{
     collections::{BTreeMap, HashMap, VecDeque},
     path::PathBuf,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -455,19 +458,15 @@ impl Payments {
         .events(self.events.clone())
         .identity(identity);
         let (environment, certificates) = (proxy.environment(), proxy.certificates().to_path_buf());
+        let started = Arc::new(AtomicBool::new(false));
+        let starting = Arc::clone(&started);
         let start = Box::new(move || {
-            let started = std::thread::Builder::new()
-                .name("nanocode-paying-proxy".to_owned())
-                .spawn(move || {
-                    if let Err(error) = proxy.spawn(policy) {
-                        nanocode_trace::warn!(target: "nanocode", error = %error, "shell commands pay no Tempo services: the paying proxy did not start");
-                    }
-                });
-            if let Err(error) = started {
+            starting.store(true, Ordering::Release);
+            if let Err(error) = proxy.spawn(policy) {
                 nanocode_trace::warn!(target: "nanocode", error = %error, "shell commands pay no Tempo services: the paying proxy did not start");
             }
         });
-        Ok((environment, certificates, start))
+        Ok((environment, (certificates, started), start))
     }
 
     fn mcp(&self, url: &str, terms: &Terms) -> Result<McpServer> {
@@ -1594,11 +1593,22 @@ fn alias(id: &str) -> Option<ModelSelection> {
 
 pub(crate) type Start = Box<dyn FnOnce() + Send>;
 
-type Paying = (Vec<(&'static str, String)>, PathBuf, Start);
+pub(crate) fn apart(start: Start) {
+    if let Err(error) = std::thread::Builder::new()
+        .name("nanocode-paying-proxy".to_owned())
+        .spawn(start)
+    {
+        nanocode_trace::warn!(target: "nanocode", error = %error, "shell commands pay no Tempo services: the paying proxy did not start");
+    }
+}
+
+type Bundle = (PathBuf, Arc<AtomicBool>);
+
+type Paying = (Vec<(&'static str, String)>, Bundle, Start);
 
 pub(crate) struct Closing {
     payments: Payments,
-    certificates: Option<PathBuf>,
+    certificates: Option<Bundle>,
     start: Option<Start>,
 }
 
@@ -1609,7 +1619,9 @@ impl Closing {
 }
 
 pub(crate) async fn close(closing: Closing) {
-    if let Some(certificates) = closing.certificates {
+    if let Some((certificates, started)) = closing.certificates
+        && started.load(Ordering::Acquire)
+    {
         let _ = nanocode_platform::spawn_blocking(move || std::fs::remove_file(certificates)).await;
     }
     let sessions = closing.payments.closing.get();
@@ -1778,7 +1790,7 @@ fn shell(
     payments: &Payments,
     args: &GatewayArgs,
     identity: Arc<Identity>,
-) -> Result<(ModelClients, Option<(PathBuf, Start)>)> {
+) -> Result<(ModelClients, Option<(Bundle, Start)>)> {
     if OWN_PROXY_SETTINGS
         .iter()
         .any(|name| std::env::var_os(name).is_some_and(|value| !value.is_empty()))

@@ -241,7 +241,15 @@ pub fn run_with(clients: ModelClients) -> ExitCode {
     )
     .then(|| clients.warming())
     .flatten();
-    let paying = closing.as_mut().and_then(tempo::Closing::take_start);
+    let one_shot = matches!(cli.command, Some(Command::Exec(_)));
+    let paying = match closing.as_mut().and_then(tempo::Closing::take_start) {
+        #[cfg(unix)]
+        Some(start) if one_shot => {
+            nanocode_process::prepare_commands(start);
+            None
+        }
+        paying => paying,
+    };
     let drawn = matches!(cli.command, None | Some(Command::Resume { .. }));
     let threads = telemetry
         .as_ref()
@@ -258,14 +266,13 @@ pub fn run_with(clients: ModelClients) -> ExitCode {
                 threads.start();
             }
             if let Some(start) = paying {
-                start();
+                tempo::apart(start);
             }
             if let Some(warming) = warming {
                 warming.await;
             }
         });
     }
-    let one_shot = matches!(cli.command, Some(Command::Exec(_)));
     let outcome = runtime.block_on(async move {
         match cli.command {
             Some(Command::Hand(args)) => hand(args).await,

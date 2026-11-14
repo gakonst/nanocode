@@ -60,7 +60,18 @@ pub fn set_command_environment(environment: Vec<(OsString, OsString)>) {
     COMMAND_ENVIRONMENT.set(environment);
 }
 
+type Prepare = std::sync::LazyLock<(), Box<dyn FnOnce() + Send>>;
+
+static PREPARE: std::sync::OnceLock<Prepare> = std::sync::OnceLock::new();
+
+pub fn prepare_commands(prepare: impl FnOnce() + Send + 'static) {
+    drop(PREPARE.set(Prepare::new(Box::new(prepare))));
+}
+
 pub(crate) fn command_environment() -> Arc<Vec<(OsString, OsString)>> {
+    if let Some(prepare) = PREPARE.get() {
+        Prepare::force(prepare);
+    }
     COMMAND_ENVIRONMENT.get()
 }
 

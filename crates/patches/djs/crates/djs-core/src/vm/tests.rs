@@ -2711,7 +2711,7 @@ fn privileged_templates_have_no_debug_fields() {
     );
     assert_eq!(
         out.log,
-        ["function f(a) { return a; } function map() {\n    [native code]\n}"]
+        ["function f(a) { return a; } function map() { [native code] }"]
     );
     let h = vm.heap();
     let (mut slim, mut full) = (0, 0);

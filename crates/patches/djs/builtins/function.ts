@@ -89,7 +89,7 @@ function FunctionPrototypeBind(this: Value, thisArg?: Value, ...args: Value[]): 
  */
 function FunctionPrototypeToString(this: Value): Str {
   if (IsProxy(this) && IsCallable(this)) {
-    return "function () {\n    [native code]\n}";
+    return "function () { [native code] }";
   }
   return FunctionToString(this);
 }

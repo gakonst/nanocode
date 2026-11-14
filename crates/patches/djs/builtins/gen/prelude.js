@@ -3929,7 +3929,7 @@ function FunctionPrototypeBind(thisArg, ...args) {
 // builtins/function.ts:90 Function.prototype.toString
 function FunctionPrototypeToString() {
   if (%IsProxy(this) && %IsCallable(this)) {
-    return "function () {\n    [native code]\n}";
+    return "function () { [native code] }";
   }
   return %FunctionToString(this);
 }

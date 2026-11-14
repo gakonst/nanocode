@@ -27,8 +27,8 @@ pub(crate) fn bound_function_create(
 }
 
 /// The source text of a function, as `Function.prototype.toString` returns it: the
-/// source slice for JS functions (D009), `function name() {\n    [native code]\n}` (as
-/// qjs prints it) for builtins and host functions, without the name for bound functions.
+/// source slice for JS functions (D009), `function name() { [native code] }` (as V8
+/// prints it) for builtins and host functions, without the name for bound functions.
 pub(crate) fn to_string(heap: &mut Heap, f: Value) -> Result<Str, Fault> {
     let Some(o) = f.as_object().filter(|&o| heap.is_callable(o)) else {
         return type_error("not a function");
@@ -51,7 +51,7 @@ pub(crate) fn to_string(heap: &mut Heap, f: Value) -> Result<Str, Fault> {
     Ok(heap.alloc_str(&crate::text::cat!(
         "function ",
         name,
-        "() {\n    [native code]\n}"
+        "() { [native code] }"
     ))?)
 }
 

@@ -11,7 +11,7 @@ This directory is a work in progress on the `cli-bench` branch. It came from a s
 | `harness/fakellm.mjs` | The fixture. A prompt carries `BENCH[run=<id>,mode=stream,tokens=N,rate=R]`, and `GET /_log?run=<id>` returns what the server did, with timestamps. Under the `/sa` path prefix a request without tools gets a short reply, for CLIs that send title or summary requests. |
 | `harness/lanes.mjs` | One entry per CLI: how to isolate it, run one headless prompt, and start its terminal interface. `verified` says what has run. |
 | `harness/smoke.mjs` | Runs one short stream through a lane both ways and prints what happened. |
-| `harness/suite.mjs` | Startup, one-shot, first frame, idle and install size. |
+| `harness/suite.mjs` | Startup, one-shot, first frame, idle, session store (`--sessions`, `--storehome`; `BENCH_PERF=1` adds perf counters to listing and resuming) and install size. |
 | `harness/sweep.mjs` | Streaming at fixed rates, headless (`--mode=cli`) and in the terminal interface (`--mode=tui`). |
 | `harness/tui.py`, `tui-replay.py`, `screen.py` | A PTY driver that answers terminal queries and records output with timestamps, a replay through pyte that finds when each token reached the screen, and a helper that prints a capture's final screen. |
 | `harness/analyze.mjs`, `report.mjs` | Lag statistics, and Markdown tables from `results/`. |

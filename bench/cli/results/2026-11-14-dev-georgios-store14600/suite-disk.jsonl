@@ -1,0 +1,2 @@
+{"at":"2026-11-14T04:24:35.363Z","load":75.13,"part":"disk","harness":"nc","install_mb":44.125,"binary_mb":44.11796569824219,"paths":[{"path":"/home/ubuntu/post-bin/nanocode-62a0936e4","kb":45184}]}
+{"at":"2026-11-14T04:24:35.397Z","load":75.13,"part":"disk","harness":"fx","install_mb":12.23046875,"binary_mb":12.220382690429688,"paths":[{"path":"/home/ubuntu/nc-bench/bench/cli/tools/install/fx","kb":12524}]}

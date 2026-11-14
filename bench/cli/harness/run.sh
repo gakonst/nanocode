@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Full benchmark run into results/<date>-<machine>/. Usage: harness/run.sh [machine-name] [steps...]
-# Steps (default all): smoke netaudit startup coldstart firstframe coldframe idle keys oneshot tools fleet store disk cli tui tui50k tuisize report
+# Steps (default all): smoke netaudit startup coldstart firstframe coldframe idle keys oneshot tools fleet store store14600 disk cli tui tui50k tuisize report post
 # ROUNDS, SAMPLES, ONLY (comma lanes), BENCH_NC_VARIANTS and QUIET_LOAD (1-minute load to wait for, default 0.5) tune it.
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -8,7 +8,7 @@ ROOT=$PWD
 [ -f tools/install/env.sh ] && . tools/install/env.sh
 export PYTHON=${PYTHON:-$ROOT/.venv/bin/python}
 machine=${1:-$(hostname -s)}; shift || true
-steps=${*:-smoke netaudit startup coldstart firstframe coldframe idle keys oneshot tools fleet store disk cli tui tui50k tuisize report}
+steps=${*:-smoke netaudit startup coldstart firstframe coldframe idle keys oneshot tools fleet store store14600 disk cli tui tui50k tuisize report post}
 dir=${BENCH_RESULTS:-$ROOT/results/$(date -u +%F)-$machine}
 export BENCH_RESULTS=$dir
 mkdir -p "$dir"
@@ -59,12 +59,15 @@ for s in $steps; do
     tools) step tools $guard node harness/suite.mjs --parts=tools --steps=${STEPS:-10,50} --toolrounds=${TOOLROUNDS:-10} $only ;;
     fleet) step fleet $guard node harness/suite.mjs --parts=fleet --fleet=${FLEET:-1,8,32} --fleetrounds=${FLEETROUNDS:-10} $only ;;
     store) step store $guard node harness/suite.mjs --parts=store --sessions=${SESSIONS:-1000} --storerounds=${STOREROUNDS:-20} $only ;;
+    store14600) [ "$(cat /proc/sys/kernel/perf_event_paranoid 2>/dev/null || echo 0)" -le 0 ] || note "store14600: perf counts kernel instructions only with kernel.perf_event_paranoid <= 0 (sudo sysctl kernel.perf_event_paranoid=-1)"
+      step store14600 env BENCH_PERF=1 $guard node harness/suite.mjs --parts=store --only=${STORE_LANES:-nc,fx} --sessions=14600 --storerounds=${STOREROUNDS:-10} --storehome=${STOREHOME:-$dir/store14600} ;;
     disk) step disk node harness/suite.mjs --parts=disk $only ;;
     cli) step cli $guard node harness/sweep.mjs --mode=cli --rates=${RATES:-100,1000,10000} --samples=$samples $only ;;
     tui) step tui $guard node harness/sweep.mjs --mode=tui --rates=${RATES:-100,1000,10000} --samples=$samples $only ;;
     tui50k) step tui50k $guard node harness/sweep.mjs --mode=tui --rates=50000 --samples=$samples --tag=50k $only ;;
     tuisize) step tuisize $guard node harness/sweep.mjs --mode=tui --rates=10000 --samples=$samples --cols=240 --rows=70 --tag=240x70 $only ;;
     report) node harness/report.mjs --dir="$dir" > "$dir/REPORT.md"; note "report written" ;;
+    post) python3 harness/post.py "$dir"; note "POST.md written" ;;
     *) note "unknown step $s" ;;
   esac
 done

@@ -1,0 +1,1 @@
+nc: nanocode 62a0936e45933ebf2b0287d182650f378988fec3 built with scripts/build-cli.sh (dist, non-PIE, BOLT 19) from a clean worktree

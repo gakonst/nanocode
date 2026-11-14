@@ -1,7 +1,7 @@
 // Startup, cold start, first frame, idle, keystroke echo, one-shot, long tool turns, concurrent fleets, session store and install size.
 // One JSON line per sample in results/suite[-tag].jsonl.
 // node harness/suite.mjs [--parts=startup,coldstart,firstframe,coldframe,idle,keys,oneshot,tools,fleet,store,disk] [--only=nc,fx] [--rounds=30]
-// store takes --sessions=N (1,000), --storerounds=R (20) and --storehome=DIR, which keeps each lane's N sessions in DIR/<lane> and reuses them on the next run, so a 14,600-session store is generated once; store-list and store-resume interleave the lanes round by round.
+// store takes --sessions=N (1,000), --storerounds=R (20), --storejobs=J (1; sessions saved at once) and --storehome=DIR, which keeps each lane's N sessions in DIR/<lane> and reuses them on the next run, so a 14,600-session store is generated once; store-list and store-resume interleave the lanes round by round.
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -226,21 +226,30 @@ if (parts.includes("store")) {
       say(name + ": reusing " + total + " sessions in " + kept);
       continue;
     }
-    const { home, env } = kept ? (() => { fs.rmSync(kept, { recursive: true, force: true }); fs.mkdirSync(kept + "/home", { recursive: true }); lanes[name].setup(kept + "/home", server.base, ws); return { home: kept + "/home", env: lanes[name].env(kept + "/home", server.base) }; })() : prepared(name, "store");
-    let failures = 0, cpu = 0;
-    const began = now();
-    for (let i = 0; i < total; i++) {
-      const run = "st-" + name + "-" + seq++;
-      const res = await measured(...x.saveHeadless(home, server.base, "Remember " + i + " BENCH[run=" + run + "]"), env);
-      if (res.code !== 0) failures++;
-      cpu += res.usage.tree_cpu_ms ?? 0;
-      await server.log(run);
-    }
+    const progress = kept && fs.existsSync(kept + "/.progress") ? JSON.parse(fs.readFileSync(kept + "/.progress", "utf8")) : null;
+    const { home, env } = !kept ? prepared(name, "store") : progress?.total === total ? { home: kept + "/home", env: lanes[name].env(kept + "/home", server.base) } : (() => { fs.rmSync(kept, { recursive: true, force: true }); fs.mkdirSync(kept + "/home", { recursive: true }); lanes[name].setup(kept + "/home", server.base, ws); return { home: kept + "/home", env: lanes[name].env(kept + "/home", server.base) }; })();
+    let failures = progress?.failures ?? 0, cpu = progress?.cpu ?? 0;
+    const began = now() - BigInt(Math.round((progress?.create_ms ?? 0) * 1e6));
+    if (progress) say(name + ": continuing from session " + progress.done + " of " + total);
+    let next = progress?.total === total ? progress.done : 0, done = next;
+    const save = async () => {
+      while (next < total) {
+        const i = next++;
+        const run = "st-" + name + "-" + seq++;
+        const res = await measured(...x.saveHeadless(home, server.base, "Remember " + i + " BENCH[run=" + run + "]"), env);
+        if (res.code !== 0) failures++;
+        cpu += res.usage.tree_cpu_ms ?? 0;
+        await server.log(run);
+        done++;
+        if (kept) fs.writeFileSync(kept + "/.progress", JSON.stringify({ total, done, failures, cpu, create_ms: msBetween(began, now()), unaccounted: progress?.unaccounted ?? 0 }));
+      }
+    };
+    await Promise.all(Array.from({ length: Number(args.storejobs ?? 1) }, save));
     const create_ms = msBetween(began, now());
     const kb = Number(spawnSync("du", ["-sk", x.store(home)], { encoding: "utf8" }).stdout.split("\t")[0]);
     const bytes = Number(spawnSync("du", ["-sb", x.store(home)], { encoding: "utf8" }).stdout.split("\t")[0]) || null;
     const store_files = Number(spawnSync("sh", ["-c", "find \"$1\" -type f | wc -l", "-", x.store(home)], { encoding: "utf8" }).stdout.trim());
-    emit({ part: "store", harness: name, sessions: total, failures, store_kb: kb, store_kb_per_session: kb / total, store_bytes_per_session: bytes && bytes / total, store_files, create_ms, create_cpu_ms_per_session: cpu / total });
+    emit({ part: "store", harness: name, sessions: total, failures, store_kb: kb, store_kb_per_session: kb / total, store_bytes_per_session: bytes && bytes / total, store_files, create_ms, create_cpu_ms_per_session: cpu / (total - (progress?.unaccounted ?? 0)) });
     if (kept) fs.writeFileSync(kept + "/.sessions", String(total));
     stores[name] = { x, home, env };
     say(name + ": " + total + " sessions stored");

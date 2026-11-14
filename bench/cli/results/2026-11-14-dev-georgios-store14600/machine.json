@@ -1,0 +1,21 @@
+{
+ "name": "dev-georgios",
+ "host": "dev-georgios (shared development server)",
+ "cpu": "AMD EPYC 4585PX 16-Core Processor",
+ "cores": 32,
+ "memory_gb": 62,
+ "os": "Ubuntu 24.04.5 LTS",
+ "kernel": "6.8.0-149-generic",
+ "arch": "x64",
+ "governor": "powersave",
+ "node": "v18.19.1",
+ "load_at_start": [
+  74.53,
+  79.9,
+  82.35
+ ],
+ "virtualization": null,
+ "at": "2026-11-14T04:24:26.777Z",
+ "commit": "575457964168866e2eedc14b330a24dc0fd82588",
+ "note": "Shared and heavily loaded: only the relative nc/fx numbers and perf counters mean anything here."
+}

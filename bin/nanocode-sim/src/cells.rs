@@ -477,6 +477,7 @@ impl Cells {
             script: format!("{:?} cell of {}", turn.kind, turn.id),
             tools: vec![json!({ "name": CHARGE }), json!({ "name": READ })].into(),
             stored: BTreeMap::new(),
+            started_at_ms: None,
             prelude: false,
             yield_time_ms: self.yield_ms,
             max_output_tokens: None,

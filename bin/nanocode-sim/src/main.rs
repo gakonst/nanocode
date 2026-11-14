@@ -3,6 +3,8 @@ mod agents;
 mod alloc;
 mod cells;
 mod disk;
+#[cfg(unix)]
+mod egress;
 mod executor;
 mod faults;
 mod host;
@@ -53,6 +55,7 @@ enum Scenario {
     Websocket,
     HttpServer,
     Alloc,
+    Egress,
 }
 
 struct Args {
@@ -66,15 +69,18 @@ struct Args {
     http_server: HttpServerMutation,
     #[cfg(unix)]
     alloc: alloc::AllocMutation,
+    #[cfg(unix)]
+    egress: egress::EgressMutation,
 }
 
 type Caught = BTreeMap<Invariant, (u64, u64, (u64, u64))>;
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: nanocode-sim --tidy | (--seed S | --seeds A..B) [--scenario store|agents|turns|runtime|websocket|http_server|alloc] [--ops N] [--twice] [--mutation {}] [--records content|slots] [--verbose]\n       turns: [--mutation {}] [--without {}]... [--live-seqs temporary|floor|gap|reuse] [--calm] [--policy reference|turnlog] [--row-limit BYTES] [--reopen-row-limit BYTES] [--long TURNS] [--snapshot-ratio K] [--snapshot-rows N] [--retain TURNS] [--state-bytes N] [--event-bytes N]\n       runtime: [--store memory|kv] [--calm] [--wire transport|http] [--mutation {}]\n       websocket: [--mutation {}]
+        "usage: nanocode-sim --tidy | (--seed S | --seeds A..B) [--scenario store|agents|turns|runtime|websocket|http_server|alloc|egress] [--ops N] [--twice] [--mutation {}] [--records content|slots] [--verbose]\n       turns: [--mutation {}] [--without {}]... [--live-seqs temporary|floor|gap|reuse] [--calm] [--policy reference|turnlog] [--row-limit BYTES] [--reopen-row-limit BYTES] [--long TURNS] [--snapshot-ratio K] [--snapshot-rows N] [--retain TURNS] [--state-bytes N] [--event-bytes N]\n       runtime: [--store memory|kv] [--calm] [--wire transport|http] [--mutation {}]\n       websocket: [--mutation {}]
        http_server: [--mutation {}]
-       alloc: [--mutation overstate_size|forget_free|scribble]",
+       alloc: [--mutation overstate_size|forget_free|scribble]
+       egress: [--mutation widen_allowlist|corrupt_tunnel_byte]",
         Mutation::names(),
         TurnMutation::names(),
         onelog::PROTECTIONS.join("|"),
@@ -124,6 +130,8 @@ fn parse_args(args: &[String]) -> Option<Args> {
     let mut http_server = HttpServerMutation::None;
     #[cfg(unix)]
     let mut alloc = alloc::AllocMutation::None;
+    #[cfg(unix)]
+    let mut egress = egress::EgressMutation::None;
     let mut rest = args.iter();
     while let Some(flag) = rest.next() {
         match flag.as_str() {
@@ -155,6 +163,8 @@ fn parse_args(args: &[String]) -> Option<Args> {
                     "http_server" => Scenario::HttpServer,
                     #[cfg(unix)]
                     "alloc" => Scenario::Alloc,
+                    #[cfg(unix)]
+                    "egress" => Scenario::Egress,
                     _ => return None,
                 };
             }
@@ -178,8 +188,12 @@ fn parse_args(args: &[String]) -> Option<Args> {
         (Scenario::HttpServer, Some(name)) => http_server = HttpServerMutation::parse(name)?,
         #[cfg(unix)]
         (Scenario::Alloc, Some(name)) => alloc = alloc::AllocMutation::parse(name)?,
+        #[cfg(unix)]
+        (Scenario::Egress, Some(name)) => egress = egress::EgressMutation::parse(name)?,
         #[cfg(not(unix))]
         (Scenario::Alloc, Some(_)) => return None,
+        #[cfg(not(unix))]
+        (Scenario::Egress, Some(_)) => return None,
         (Scenario::Agents, Some(_)) => return None,
     }
     turns.verbose = options.verbose;
@@ -196,6 +210,8 @@ fn parse_args(args: &[String]) -> Option<Args> {
         http_server,
         #[cfg(unix)]
         alloc,
+        #[cfg(unix)]
+        egress,
     })
 }
 
@@ -213,6 +229,10 @@ fn replay(seed: u64, args: &Args) -> String {
     #[cfg(unix)]
     if args.scenario == Scenario::Alloc {
         return alloc::replay(seed, options.ops, args.alloc);
+    }
+    #[cfg(unix)]
+    if args.scenario == Scenario::Egress {
+        return egress::replay(seed, args.egress);
     }
     if args.scenario == Scenario::Runtime {
         let mut command = format!("nanocode-sim --scenario runtime --seed {seed}");
@@ -445,7 +465,8 @@ fn report_turns(
 
 #[cfg(unix)]
 fn alloc_experiment(args: &Args) -> bool {
-    args.scenario == Scenario::Alloc && args.alloc != alloc::AllocMutation::None
+    (args.scenario == Scenario::Alloc && args.alloc != alloc::AllocMutation::None)
+        || (args.scenario == Scenario::Egress && args.egress != egress::EgressMutation::None)
 }
 
 #[cfg(not(unix))]
@@ -502,6 +523,8 @@ fn main() -> ExitCode {
     let mut http_server_totals = HttpServerStats::default();
     #[cfg(unix)]
     let mut alloc_totals = alloc::AllocStats::default();
+    #[cfg(unix)]
+    let mut egress_totals = egress::EgressStats::default();
     let mut caught = Caught::new();
     for seed in args.seeds.clone() {
         let verdict = match args.scenario {
@@ -534,6 +557,16 @@ fn main() -> ExitCode {
             ),
             #[cfg(not(unix))]
             Scenario::Alloc => unreachable!("the alloc scenario parses only on unix"),
+            #[cfg(unix)]
+            Scenario::Egress => egress::judge_seed(
+                seed,
+                args.egress,
+                args.twice,
+                args.options.verbose,
+                &mut egress_totals,
+            ),
+            #[cfg(not(unix))]
+            Scenario::Egress => unreachable!("the egress scenario parses only on unix"),
         };
         let Some(message) = verdict else {
             passed += 1;
@@ -570,6 +603,10 @@ fn main() -> ExitCode {
     #[cfg(unix)]
     if args.scenario == Scenario::Alloc {
         return alloc::report(&args.seeds, passed, failed, args.twice, args.alloc, &alloc_totals);
+    }
+    #[cfg(unix)]
+    if args.scenario == Scenario::Egress {
+        return egress::report(&args.seeds, passed, failed, args.twice, args.egress, &egress_totals);
     }
     if args.scenario == Scenario::Turns {
         return report_turns(&args, passed, failed, &turn_totals, &caught);

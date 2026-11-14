@@ -48,6 +48,8 @@ default_table='
 2 websocket_twice pass --scenario websocket --twice
 8 http_server pass --scenario http_server
 2 http_server_twice pass --scenario http_server --twice
+8 egress pass --scenario egress
+2 egress_twice pass --scenario egress --twice
 1 canary_cas_ignores_expected canary --scenario store --mutation cas_ignores_expected
 1 canary_record_insert_drops canary --scenario store --mutation record_insert_drops
 1 canary_power_loss_drops_acked canary --scenario store --mutation power_loss_drops_acked
@@ -75,6 +77,8 @@ default_table='
 1 canary_alloc_overstate_size canary --scenario alloc --mutation overstate_size
 1 canary_alloc_forget_free canary --scenario alloc --mutation forget_free
 1 canary_alloc_scribble canary --scenario alloc --mutation scribble
+1 canary_egress_widen_allowlist canary --scenario egress --mutation widen_allowlist
+1 canary_egress_corrupt_tunnel_byte canary --scenario egress --mutation corrupt_tunnel_byte
 '
 default_known='
 '

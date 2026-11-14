@@ -30,6 +30,7 @@ use std::{
     io,
     io::ErrorKind,
     net::{IpAddr, SocketAddr},
+    pin::Pin,
     sync::Arc,
     time::Duration,
 };
@@ -41,6 +42,35 @@ use tokio::{
 const HOP: &str = "connection keep-alive proxy-authenticate proxy-authorization proxy-connection te trailer transfer-encoding";
 
 pub type Slot = Arc<dyn Any + Send + Sync>;
+
+pub type Upstream = Box<dyn Duplex>;
+
+pub type Resolving = Pin<Box<dyn Future<Output = io::Result<Vec<SocketAddr>>> + Send>>;
+
+pub type Dialing = Pin<Box<dyn Future<Output = io::Result<Upstream>> + Send>>;
+
+pub trait Dial: Send + Sync + 'static {
+    fn resolve(&self, host: &str, port: u16) -> Resolving;
+
+    fn connect(&self, address: SocketAddr) -> Dialing;
+}
+
+struct Network;
+
+impl Dial for Network {
+    fn resolve(&self, host: &str, port: u16) -> Resolving {
+        let host = host.to_owned();
+        Box::pin(async move { Ok(lookup_host((host.as_str(), port)).await?.collect()) })
+    }
+
+    fn connect(&self, address: SocketAddr) -> Dialing {
+        Box::pin(async move {
+            let stream = TcpStream::connect(address).await?;
+            drop(stream.set_nodelay(true));
+            Ok(Box::new(stream) as Upstream)
+        })
+    }
+}
 
 type Refusal = Box<Reply>;
 
@@ -106,6 +136,7 @@ pub struct Proxy<A: Authority> {
     log: Option<Arc<Log>>,
     tls: Arc<Tls>,
     rules: Rules,
+    dial: Arc<dyn Dial>,
 }
 
 struct Admitted {
@@ -129,7 +160,14 @@ impl<A: Authority> Proxy<A> {
             log: None,
             tls,
             rules,
+            dial: Arc::new(Network),
         }
+    }
+
+    #[must_use]
+    pub fn dialing(mut self, dial: Arc<dyn Dial>) -> Self {
+        self.dial = dial;
+        self
     }
 
     pub(crate) fn logged(mut self, log: Arc<Log>) -> Self {
@@ -170,7 +208,7 @@ impl<A: Authority> Proxy<A> {
                 ended: ended.clone(),
             });
             let proxy = Arc::clone(&self);
-            nanocode_platform::spawn_task(async move { proxy.serve(stream, slot, source).await });
+            nanocode_platform::spawn(async move { proxy.serve(stream, slot, source).await });
         }
     }
 
@@ -297,7 +335,7 @@ impl<A: Authority> Proxy<A> {
         }
     }
 
-    async fn dial(&self, host: &str, port: u16) -> Result<TcpStream, Refusal> {
+    async fn dial(&self, host: &str, port: u16) -> Result<Upstream, Refusal> {
         let connect = self.rules.limits.connect;
         let failed = |host: &str| {
             self.noted(host, false);
@@ -318,7 +356,7 @@ impl<A: Authority> Proxy<A> {
                     && name.ends_with(TAILNET_SUFFIX)
                 {
                     return match timeout(connect, socks(*server, &name, port)).await {
-                        Ok(Ok(stream)) => Ok(stream),
+                        Ok(Ok(stream)) => Ok(Box::new(stream)),
                         _ => Err(failed(host)),
                     };
                 }
@@ -331,7 +369,7 @@ impl<A: Authority> Proxy<A> {
             .unwrap_or(host);
         let addresses: Vec<SocketAddr> = match literal.parse::<IpAddr>() {
             Ok(ip) => vec![SocketAddr::new(ip, port)],
-            Err(_) => timeout(connect, lookup_host((literal, port)))
+            Err(_) => timeout(connect, self.dial.resolve(literal, port))
                 .await
                 .ok()
                 .and_then(Result::ok)
@@ -341,8 +379,7 @@ impl<A: Authority> Proxy<A> {
                         StatusCode::BAD_GATEWAY,
                         &format!("{host} does not resolve."),
                     )
-                })?
-                .collect(),
+                })?,
         };
         let addresses: Vec<SocketAddr> = match private_hosts {
             None if addresses.is_empty()
@@ -365,8 +402,7 @@ impl<A: Authority> Proxy<A> {
             return Err(refuse(StatusCode::FORBIDDEN, &message));
         }
         for address in addresses {
-            if let Ok(Ok(stream)) = timeout(connect, TcpStream::connect(address)).await {
-                drop(stream.set_nodelay(true));
+            if let Ok(Ok(stream)) = timeout(connect, self.dial.connect(address)).await {
                 return Ok(stream);
             }
         }
@@ -391,7 +427,7 @@ impl<A: Authority> Proxy<A> {
         }
         if self.intercepts(&client, &host, port) {
             self.count(&client, &host, port, Kind::Intercepted);
-            nanocode_platform::spawn_task(async move {
+            nanocode_platform::spawn(async move {
                 match upgrade.await {
                     Ok(upgraded) => self.intercept(client, host, port, upgraded, slot).await,
                     Err(error) => warn!("egress upgrade: {error}"),
@@ -408,7 +444,7 @@ impl<A: Authority> Proxy<A> {
         };
         self.count(&client, &host, port, Kind::Tunneled);
         let idle = self.rules.limits.idle_tunnel;
-        nanocode_platform::spawn_task(async move {
+        nanocode_platform::spawn(async move {
             match upgrade.await {
                 Ok(upgraded) => pipe(upgraded, upstream, idle).await,
                 Err(error) => warn!("egress upgrade: {error}"),
@@ -621,7 +657,7 @@ impl<A: Authority> Proxy<A> {
         let idle = self.rules.limits.idle_tunnel;
         let body = if upgraded {
             let upstream = body.into_upgraded();
-            nanocode_platform::spawn_task(async move {
+            nanocode_platform::spawn(async move {
                 if let (Some(client), Some(upstream)) = (client, upstream)
                     && let Ok(client) = client.await
                 {

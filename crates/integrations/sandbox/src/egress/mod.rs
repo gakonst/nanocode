@@ -16,12 +16,14 @@ pub use address::{
 pub use addresses::{Addresses, Holder};
 pub use audit::Reporting;
 pub use authority::{Authority, Failure, Fixed, chain};
+pub use certificate::{DnType, ExtendedKeyUsagePurpose, Issuer, KeyPair};
 pub use lookup::Caching;
 pub use nanocode_sync::pipe;
-pub use proxy::{Identity, Limits, Proxy, Reach, Rules, Texts};
+pub use proxy::{
+    Dial, Dialing, Identity, Limits, Proxy, Reach, Resolving, Rules, Slot, Texts, Upstream,
+};
 pub use redact::{Injecting, Masker, Redactions, mask, masks};
 pub use sandbox::{Allowlist, Egress};
-pub use certificate::{DnType, ExtendedKeyUsagePurpose, Issuer, KeyPair};
 pub use tls::{BadCa, Leaves, Lifetime, Tls};
 pub use wire::{
     Ca, Called, Calls, Credential, Grant, Report, Secret, binds, framing, normalize_hosts,

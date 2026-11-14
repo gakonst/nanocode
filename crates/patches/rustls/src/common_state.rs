@@ -21,7 +21,6 @@ use crate::msgs::message::{
 };
 use crate::record_layer::PreEncryptAction;
 use crate::suites::{PartiallyExtractedSecrets, SupportedCipherSuite};
-#[cfg(feature = "tls12")]
 use crate::tls12::ConnectionSecrets;
 use crate::unbuffered::{EncryptError, InsufficientSizeError};
 use crate::vecbuf::ChunkVecBuffer;
@@ -45,7 +44,6 @@ pub struct CommonState {
     pub(crate) has_sent_close_notify: bool,
     /// If the peer has signaled end of stream.
     pub(crate) has_received_close_notify: bool,
-    #[cfg(feature = "std")]
     pub(crate) has_seen_eof: bool,
     pub(crate) peer_certificates: Option<CertificateChain<'static>>,
     message_fragmenter: MessageFragmenter,
@@ -80,7 +78,6 @@ impl CommonState {
             sent_fatal_alert: false,
             has_sent_close_notify: false,
             has_received_close_notify: false,
-            #[cfg(feature = "std")]
             has_seen_eof: false,
             peer_certificates: None,
             message_fragmenter: MessageFragmenter::default(),
@@ -323,7 +320,6 @@ impl CommonState {
         // be out by whatever the cipher+record overhead is.  That's a
         // constant and predictable amount, so it's not a terrible issue.
         let len = match limit {
-            #[cfg(feature = "std")]
             Limit::Yes => self
                 .sendable_tls
                 .apply_limit(payload.len()),
@@ -486,7 +482,6 @@ impl CommonState {
             .append(bytes.into_vec());
     }
 
-    #[cfg(feature = "tls12")]
     pub(crate) fn start_encryption_tls12(&mut self, secrets: &ConnectionSecrets, side: Side) {
         let (dec, enc) = secrets.make_cipher_pair(side);
         self.record_layer
@@ -727,7 +722,6 @@ impl CommonState {
     }
 }
 
-#[cfg(feature = "std")]
 impl CommonState {
     /// Send plaintext application data, fragmenting and
     /// encrypting it as it goes out.
@@ -920,7 +914,6 @@ impl Protocol {
 }
 
 enum Limit {
-    #[cfg(feature = "std")]
     Yes,
     No,
 }
@@ -1057,7 +1050,6 @@ impl<'a, const TLS13: bool> HandshakeFlight<'a, TLS13> {
     }
 }
 
-#[cfg(feature = "tls12")]
 pub(crate) type HandshakeFlightTls12<'a> = HandshakeFlight<'a, false>;
 pub(crate) type HandshakeFlightTls13<'a> = HandshakeFlight<'a, true>;
 

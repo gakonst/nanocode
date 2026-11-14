@@ -100,7 +100,6 @@ impl ConfigBuilder<ServerConfig, WantsServerCert> {
 
     /// Sets a custom [`ResolvesServerCert`].
     pub fn with_cert_resolver(self, cert_resolver: Arc<dyn ResolvesServerCert>) -> ServerConfig {
-        #[cfg(feature = "tls12")]
         let require_ems = self.provider.fips();
 
         ServerConfig {
@@ -109,10 +108,7 @@ impl ConfigBuilder<ServerConfig, WantsServerCert> {
             cert_resolver,
             ignore_client_order: false,
             max_fragment_size: None,
-            #[cfg(feature = "std")]
             session_storage: handy::ServerSessionMemoryCache::new(256),
-            #[cfg(not(feature = "std"))]
-            session_storage: Arc::new(handy::NoServerSessionStorage {}),
             ticketer: Arc::new(handy::NeverProducesTickets {}),
             alpn_protocols: Vec::new(),
             versions: self.state.versions,
@@ -122,7 +118,6 @@ impl ConfigBuilder<ServerConfig, WantsServerCert> {
             send_half_rtt_data: false,
             send_tls13_tickets: 2,
             max_tls13_tickets: 0,
-            #[cfg(feature = "tls12")]
             require_ems,
             time_provider: self.time_provider,
             cert_compressors: compress::default_cert_compressors().to_vec(),

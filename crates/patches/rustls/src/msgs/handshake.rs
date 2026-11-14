@@ -1,7 +1,5 @@
 use alloc::boxed::Box;
 use alloc::collections::BTreeSet;
-#[cfg(feature = "logging")]
-use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::ops::{Deref, DerefMut};
@@ -9,7 +7,6 @@ use core::{fmt, iter};
 
 use pki_types::{CertificateDer, DnsName};
 
-#[cfg(feature = "tls12")]
 use crate::crypto::ActiveKeyExchange;
 use crate::crypto::SecureRandom;
 use crate::enums::{
@@ -17,7 +14,6 @@ use crate::enums::{
     HandshakeType, ProtocolVersion, SignatureScheme,
 };
 use crate::error::InvalidMessage;
-#[cfg(feature = "tls12")]
 use crate::ffdhe_groups::FfdheGroup;
 use crate::log::warn;
 use crate::msgs::base::{MaybeEmpty, NonEmpty, Payload, PayloadU8, PayloadU16, PayloadU24};
@@ -180,7 +176,6 @@ impl SessionId {
         }
     }
 
-    #[cfg(feature = "tls12")]
     pub(crate) fn is_empty(&self) -> bool {
         self.len == 0
     }
@@ -1939,20 +1934,17 @@ impl Codec<'_> for EcParameters {
     }
 }
 
-#[cfg(feature = "tls12")]
 pub(crate) trait KxDecode<'a>: fmt::Debug + Sized {
     /// Decode a key exchange message given the key_exchange `algo`
     fn decode(r: &mut Reader<'a>, algo: KeyExchangeAlgorithm) -> Result<Self, InvalidMessage>;
 }
 
-#[cfg(feature = "tls12")]
 #[derive(Debug)]
 pub(crate) enum ClientKeyExchangeParams {
     Ecdh(ClientEcdhParams),
     Dh(ClientDhParams),
 }
 
-#[cfg(feature = "tls12")]
 impl ClientKeyExchangeParams {
     pub(crate) fn pub_key(&self) -> &[u8] {
         match self {
@@ -1969,7 +1961,6 @@ impl ClientKeyExchangeParams {
     }
 }
 
-#[cfg(feature = "tls12")]
 impl KxDecode<'_> for ClientKeyExchangeParams {
     fn decode(r: &mut Reader<'_>, algo: KeyExchangeAlgorithm) -> Result<Self, InvalidMessage> {
         use KeyExchangeAlgorithm::*;
@@ -1980,14 +1971,12 @@ impl KxDecode<'_> for ClientKeyExchangeParams {
     }
 }
 
-#[cfg(feature = "tls12")]
 #[derive(Debug)]
 pub(crate) struct ClientEcdhParams {
     /// RFC4492: `opaque point <1..2^8-1>;`
     pub(crate) public: PayloadU8<NonEmpty>,
 }
 
-#[cfg(feature = "tls12")]
 impl Codec<'_> for ClientEcdhParams {
     fn encode(&self, bytes: &mut Vec<u8>) {
         self.public.encode(bytes);
@@ -1999,14 +1988,12 @@ impl Codec<'_> for ClientEcdhParams {
     }
 }
 
-#[cfg(feature = "tls12")]
 #[derive(Debug)]
 pub(crate) struct ClientDhParams {
     /// RFC5246: `opaque dh_Yc<1..2^16-1>;`
     pub(crate) public: PayloadU16<NonEmpty>,
 }
 
-#[cfg(feature = "tls12")]
 impl Codec<'_> for ClientDhParams {
     fn encode(&self, bytes: &mut Vec<u8>) {
         self.public.encode(bytes);
@@ -2027,7 +2014,6 @@ pub(crate) struct ServerEcdhParams {
 }
 
 impl ServerEcdhParams {
-    #[cfg(feature = "tls12")]
     pub(crate) fn new(kx: &dyn ActiveKeyExchange) -> Self {
         Self {
             curve_params: EcParameters {
@@ -2068,7 +2054,6 @@ pub(crate) struct ServerDhParams {
 }
 
 impl ServerDhParams {
-    #[cfg(feature = "tls12")]
     pub(crate) fn new(kx: &dyn ActiveKeyExchange) -> Self {
         let Some(params) = kx.ffdhe_group() else {
             panic!("invalid NamedGroup for DHE key exchange: {:?}", kx.group());
@@ -2081,7 +2066,6 @@ impl ServerDhParams {
         }
     }
 
-    #[cfg(feature = "tls12")]
     pub(crate) fn as_ffdhe_group(&self) -> FfdheGroup<'_> {
         FfdheGroup::from_params_trimming_leading_zeros(&self.dh_p.0, &self.dh_g.0)
     }
@@ -2111,7 +2095,6 @@ pub(crate) enum ServerKeyExchangeParams {
 }
 
 impl ServerKeyExchangeParams {
-    #[cfg(feature = "tls12")]
     pub(crate) fn new(kx: &dyn ActiveKeyExchange) -> Self {
         match kx.group().key_exchange_algorithm() {
             KeyExchangeAlgorithm::DHE => Self::Dh(ServerDhParams::new(kx)),
@@ -2119,7 +2102,6 @@ impl ServerKeyExchangeParams {
         }
     }
 
-    #[cfg(feature = "tls12")]
     pub(crate) fn pub_key(&self) -> &[u8] {
         match self {
             Self::Ecdh(ecdh) => &ecdh.public.0,
@@ -2135,7 +2117,6 @@ impl ServerKeyExchangeParams {
     }
 }
 
-#[cfg(feature = "tls12")]
 impl KxDecode<'_> for ServerKeyExchangeParams {
     fn decode(r: &mut Reader<'_>, algo: KeyExchangeAlgorithm) -> Result<Self, InvalidMessage> {
         use KeyExchangeAlgorithm::*;
@@ -2187,7 +2168,6 @@ impl Codec<'_> for ServerKeyExchangePayload {
 }
 
 impl ServerKeyExchangePayload {
-    #[cfg(feature = "tls12")]
     pub(crate) fn unwrap_given_kxa(&self, kxa: KeyExchangeAlgorithm) -> Option<ServerKeyExchange> {
         if let Self::Unknown(unk) = self {
             let mut rd = Reader::init(unk.bytes());
@@ -2365,7 +2345,6 @@ pub(crate) struct NewSessionTicketPayload {
 }
 
 impl NewSessionTicketPayload {
-    #[cfg(feature = "tls12")]
     pub(crate) fn new(lifetime_hint: u32, ticket: Vec<u8>) -> Self {
         Self {
             lifetime_hint,
@@ -2510,7 +2489,6 @@ impl<'a> CertificateStatus<'a> {
         }
     }
 
-    #[cfg(feature = "tls12")]
     pub(crate) fn into_inner(self) -> Vec<u8> {
         self.ocsp_response.0.into_vec()
     }
@@ -3212,55 +3190,3 @@ fn low_quality_integer_hash(mut x: u32) -> u32 {
     x
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_ech_config_dupe_exts() {
-        let unknown_ext = EchConfigExtension::Unknown(UnknownExtension {
-            typ: ExtensionType::Unknown(0x42),
-            payload: Payload::new(vec![0x42]),
-        });
-        let mut config = config_template();
-        config
-            .extensions
-            .push(unknown_ext.clone());
-        config.extensions.push(unknown_ext);
-
-        assert!(config.has_duplicate_extension());
-        assert!(!config.has_unknown_mandatory_extension());
-    }
-
-    #[test]
-    fn test_ech_config_mandatory_exts() {
-        let mandatory_unknown_ext = EchConfigExtension::Unknown(UnknownExtension {
-            typ: ExtensionType::Unknown(0x42 | 0x8000), // Note: high bit set.
-            payload: Payload::new(vec![0x42]),
-        });
-        let mut config = config_template();
-        config
-            .extensions
-            .push(mandatory_unknown_ext);
-
-        assert!(!config.has_duplicate_extension());
-        assert!(config.has_unknown_mandatory_extension());
-    }
-
-    fn config_template() -> EchConfigContents {
-        EchConfigContents {
-            key_config: HpkeKeyConfig {
-                config_id: 0,
-                kem_id: HpkeKem::DHKEM_P256_HKDF_SHA256,
-                public_key: PayloadU16::new(b"xxx".into()),
-                symmetric_cipher_suites: vec![HpkeSymmetricCipherSuite {
-                    kdf_id: HpkeKdf::HKDF_SHA256,
-                    aead_id: HpkeAead::AES_128_GCM,
-                }],
-            },
-            maximum_name_length: 0,
-            public_name: DnsName::try_from("example.com").unwrap(),
-            extensions: vec![],
-        }
-    }
-}

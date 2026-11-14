@@ -10,8 +10,6 @@ use crate::msgs::handshake::ALL_KEY_EXCHANGE_ALGORITHMS;
 use crate::sync::Arc;
 use crate::time_provider::TimeProvider;
 use crate::versions;
-#[cfg(doc)]
-use crate::{ClientConfig, ServerConfig};
 
 /// A [builder] for [`ServerConfig`] or [`ClientConfig`] values.
 ///

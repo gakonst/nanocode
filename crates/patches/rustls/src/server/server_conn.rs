@@ -4,21 +4,16 @@ use core::fmt;
 use core::fmt::{Debug, Formatter};
 use core::marker::PhantomData;
 use core::ops::{Deref, DerefMut};
-#[cfg(feature = "std")]
 use std::io;
 
 use pki_types::{DnsName, UnixTime};
 
 use super::hs;
-#[cfg(feature = "std")]
 use crate::WantsVerifier;
 use crate::builder::ConfigBuilder;
-#[cfg(feature = "std")]
 use crate::common_state::State;
 use crate::common_state::{CommonState, Protocol, Side};
 use crate::conn::{ConnectionCommon, ConnectionCore, UnbufferedConnectionCommon};
-#[cfg(doc)]
-use crate::crypto;
 use crate::crypto::CryptoProvider;
 use crate::enums::{CertificateType, CipherSuite, ProtocolVersion, SignatureScheme};
 use crate::error::Error;
@@ -29,7 +24,6 @@ use crate::msgs::handshake::{ClientHelloPayload, ProtocolName, ServerExtensionsI
 use crate::msgs::message::Message;
 use crate::suites::ExtractedSecrets;
 use crate::sync::Arc;
-#[cfg(feature = "std")]
 use crate::time_provider::DefaultTimeProvider;
 use crate::time_provider::TimeProvider;
 use crate::vecbuf::ChunkVecBuffer;
@@ -423,7 +417,6 @@ pub struct ServerConfig {
     ///
     /// [RFC 7627]: https://datatracker.ietf.org/doc/html/rfc7627
     /// [FIPS 140-3 IG.pdf]: https://csrc.nist.gov/csrc/media/Projects/cryptographic-module-validation-program/documents/fips%20140-3/FIPS%20140-3%20IG.pdf
-    #[cfg(feature = "tls12")]
     pub require_ems: bool,
 
     /// Provides the current system time
@@ -467,7 +460,6 @@ impl ServerConfig {
     /// and safe protocol version defaults.
     ///
     /// For more information, see the [`ConfigBuilder`] documentation.
-    #[cfg(feature = "std")]
     pub fn builder() -> ConfigBuilder<Self, WantsVerifier> {
         Self::builder_with_protocol_versions(versions::DEFAULT_VERSIONS)
     }
@@ -484,7 +476,6 @@ impl ServerConfig {
     ///   the crate features and process default.
     ///
     /// For more information, see the [`ConfigBuilder`] documentation.
-    #[cfg(feature = "std")]
     pub fn builder_with_protocol_versions(
         versions: &[&'static versions::SupportedProtocolVersion],
     ) -> ConfigBuilder<Self, WantsVerifier> {
@@ -506,7 +497,6 @@ impl ServerConfig {
     /// version is not supported by the provider's ciphersuites.
     ///
     /// For more information, see the [`ConfigBuilder`] documentation.
-    #[cfg(feature = "std")]
     pub fn builder_with_provider(
         provider: Arc<CryptoProvider>,
     ) -> ConfigBuilder<Self, WantsVersions> {
@@ -551,15 +541,10 @@ impl ServerConfig {
     /// is concerned only with cryptography, whereas this _also_ covers TLS-level
     /// configuration that NIST recommends.
     pub fn fips(&self) -> bool {
-        #[cfg(feature = "tls12")]
         {
             self.provider.fips() && self.require_ems
         }
 
-        #[cfg(not(feature = "tls12"))]
-        {
-            self.provider.fips()
-        }
     }
 
     /// Return the crypto provider used to construct this client configuration.
@@ -580,7 +565,6 @@ impl ServerConfig {
             && protocol.supports_version(v)
     }
 
-    #[cfg(feature = "std")]
     pub(crate) fn supports_protocol(&self, proto: Protocol) -> bool {
         self.provider
             .cipher_suites
@@ -595,7 +579,6 @@ impl ServerConfig {
     }
 }
 
-#[cfg(feature = "std")]
 mod connection {
     use alloc::boxed::Box;
     use core::fmt;
@@ -635,10 +618,6 @@ mod connection {
             self.early_data.read(buf)
         }
 
-        #[cfg(read_buf)]
-        fn read_buf(&mut self, cursor: core::io::BorrowedCursor<'_, u8>) -> io::Result<()> {
-            self.early_data.read_buf(cursor)
-        }
     }
 
     /// This represents a single TLS server connection.
@@ -946,7 +925,6 @@ mod connection {
     }
 }
 
-#[cfg(feature = "std")]
 pub use connection::{AcceptedAlert, Acceptor, ReadEarlyData, ServerConnection};
 
 /// Unbuffered version of `ServerConnection`
@@ -1056,7 +1034,6 @@ impl Accepted {
     /// Takes the state returned from [`Acceptor::accept()`] as well as the [`ServerConfig`] and
     /// [`sign::CertifiedKey`] that should be used for the session. Returns an error if
     /// configuration-dependent validation of the received `ClientHello` message fails.
-    #[cfg(feature = "std")]
     pub fn into_connection(
         mut self,
         config: Arc<ServerConfig>,
@@ -1104,10 +1081,8 @@ impl Debug for Accepted {
     }
 }
 
-#[cfg(feature = "std")]
 struct Accepting;
 
-#[cfg(feature = "std")]
 impl State<ServerConnectionData> for Accepting {
     fn handle<'m>(
         self: Box<Self>,
@@ -1148,7 +1123,6 @@ impl EarlyDataState {
         };
     }
 
-    #[cfg(feature = "std")]
     fn was_accepted(&self) -> bool {
         matches!(self, Self::Accepted { .. })
     }
@@ -1171,7 +1145,6 @@ impl EarlyDataState {
         }
     }
 
-    #[cfg(feature = "std")]
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         match self {
             Self::Accepted { received, .. } => received.read(buf),
@@ -1179,13 +1152,6 @@ impl EarlyDataState {
         }
     }
 
-    #[cfg(read_buf)]
-    fn read_buf(&mut self, cursor: core::io::BorrowedCursor<'_, u8>) -> io::Result<()> {
-        match self {
-            Self::Accepted { received, .. } => received.read_buf(cursor),
-            _ => Err(io::Error::from(io::ErrorKind::BrokenPipe)),
-        }
-    }
 
     pub(super) fn take_received_plaintext(&mut self, bytes: Payload<'_>) -> bool {
         let available = bytes.bytes().len();
@@ -1234,7 +1200,6 @@ impl ConnectionCore<ServerConnectionData> {
         ))
     }
 
-    #[cfg(feature = "std")]
     pub(crate) fn reject_early_data(&mut self) {
         assert!(
             self.common_state.is_handshaking(),
@@ -1243,7 +1208,6 @@ impl ConnectionCore<ServerConnectionData> {
         self.data.early_data.reject();
     }
 
-    #[cfg(feature = "std")]
     pub(crate) fn get_sni_str(&self) -> Option<&str> {
         self.data.get_sni_str()
     }
@@ -1259,7 +1223,6 @@ pub struct ServerConnectionData {
 }
 
 impl ServerConnectionData {
-    #[cfg(feature = "std")]
     pub(super) fn get_sni_str(&self) -> Option<&str> {
         self.sni.as_ref().map(AsRef::as_ref)
     }
@@ -1267,32 +1230,3 @@ impl ServerConnectionData {
 
 impl crate::conn::SideData for ServerConnectionData {}
 
-#[cfg(feature = "std")]
-#[cfg(test)]
-mod tests {
-    use std::format;
-
-    use super::*;
-
-    // these branches not reachable externally, unless something else goes wrong.
-    #[test]
-    fn test_read_in_new_state() {
-        assert_eq!(
-            format!("{:?}", EarlyDataState::default().read(&mut [0u8; 5])),
-            "Err(Kind(BrokenPipe))"
-        );
-    }
-
-    #[cfg(read_buf)]
-    #[test]
-    fn test_read_buf_in_new_state() {
-        use core::io::BorrowedBuf;
-
-        let mut buf = [0u8; 5];
-        let mut buf: BorrowedBuf<'_, u8> = buf.as_mut_slice().into();
-        assert_eq!(
-            format!("{:?}", EarlyDataState::default().read_buf(buf.unfilled())),
-            "Err(Kind(BrokenPipe))"
-        );
-    }
-}

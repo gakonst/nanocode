@@ -389,22 +389,13 @@ extern crate alloc;
 // is in `std::prelude` but not in `core::prelude`. This helps maintain no-std support as even
 // developers that are not interested in, or aware of, no-std support and / or that never run
 // `cargo build --no-default-features` locally will get errors when they rely on `std::prelude` API.
-#[cfg(any(feature = "std", test))]
 extern crate std;
 
-#[cfg(doc)]
-use crate::crypto::CryptoProvider;
 
 // Import `test` sysroot crate for `Bencher` definitions.
-#[cfg(bench)]
-#[allow(unused_extern_crates)]
-extern crate test;
 
 // log for logging (optional).
-#[cfg(feature = "logging")]
-use log;
 
-#[cfg(not(feature = "logging"))]
 mod log {
     macro_rules! trace    ( ($($tt:tt)*) => {{}} );
     macro_rules! debug    ( ($($tt:tt)*) => {{}} );
@@ -413,9 +404,6 @@ mod log {
     pub(crate) use {_warn as warn, debug, error, trace};
 }
 
-#[cfg(test)]
-#[macro_use]
-mod test_macros;
 
 /// This internal `sync` module aliases the `Arc` implementation to allow downstream forks
 /// of rustls targeting architectures without atomic pointers to replace the implementation
@@ -438,29 +426,20 @@ mod conn;
 pub mod crypto;
 mod error;
 mod hash_hs;
-#[cfg(any(feature = "std", feature = "hashbrown"))]
 mod limited_cache;
 mod rand;
 mod record_layer;
-#[cfg(feature = "std")]
 mod stream;
-#[cfg(feature = "tls12")]
 mod tls12;
 mod tls13;
 mod vecbuf;
 mod verify;
-#[cfg(test)]
-mod verifybench;
 mod x509;
 #[macro_use]
 mod check;
-#[cfg(feature = "logging")]
-mod bs_debug;
 mod builder;
 mod enums;
 mod key_log;
-#[cfg(feature = "std")]
-mod key_log_file;
 mod suites;
 mod versions;
 mod webpki;
@@ -546,7 +525,6 @@ pub mod unbuffered {
 // The public interface is:
 pub use crate::builder::{ConfigBuilder, ConfigSide, WantsVerifier, WantsVersions};
 pub use crate::common_state::{CommonState, HandshakeKind, IoState, Side};
-#[cfg(feature = "std")]
 pub use crate::conn::{Connection, Reader, Writer};
 pub use crate::conn::{ConnectionCommon, SideData, kernel};
 pub use crate::enums::{
@@ -559,21 +537,16 @@ pub use crate::error::{
     PeerMisbehaved,
 };
 pub use crate::key_log::{KeyLog, NoKeyLog};
-#[cfg(feature = "std")]
-pub use crate::key_log_file::KeyLogFile;
 pub use crate::msgs::enums::NamedGroup;
 pub use crate::msgs::ffdhe_groups;
 pub use crate::msgs::handshake::DistinguishedName;
-#[cfg(feature = "std")]
 pub use crate::stream::{Stream, StreamOwned};
 pub use crate::suites::{
     CipherSuiteCommon, ConnectionTrafficSecrets, ExtractedSecrets, SupportedCipherSuite,
 };
-#[cfg(feature = "std")]
 pub use crate::ticketer::TicketRotator;
-#[cfg(any(feature = "std", feature = "hashbrown"))] // < XXX: incorrect feature gate
+// < XXX: incorrect feature gate
 pub use crate::ticketer::TicketSwitcher;
-#[cfg(feature = "tls12")]
 pub use crate::tls12::Tls12CipherSuite;
 pub use crate::tls13::Tls13CipherSuite;
 pub use crate::verify::DigitallySignedStruct;
@@ -588,9 +561,6 @@ pub mod client {
     mod ech;
     pub(super) mod handy;
     mod hs;
-    #[cfg(test)]
-    mod test;
-    #[cfg(feature = "tls12")]
     mod tls12;
     mod tls13;
 
@@ -599,11 +569,9 @@ pub mod client {
         ClientConfig, ClientConnectionData, ClientSessionStore, EarlyDataError, ResolvesClientCert,
         Resumption, TicketRequest, Tls12Resumption, UnbufferedClientConnection,
     };
-    #[cfg(feature = "std")]
     pub use client_conn::{ClientConnection, WriteEarlyData};
     pub use ech::{EchConfig, EchGreaseConfig, EchMode, EchStatus};
     pub use handy::AlwaysResolvesClientRawPublicKeys;
-    #[cfg(any(feature = "std", feature = "hashbrown"))]
     pub use handy::ClientSessionMemoryCache;
 
     /// Dangerous configuration that should be audited and used with extreme care.
@@ -621,7 +589,6 @@ pub mod client {
 }
 
 pub use client::ClientConfig;
-#[cfg(feature = "std")]
 pub use client::ClientConnection;
 
 /// Items for use in a server.
@@ -631,23 +598,17 @@ pub mod server {
     pub(crate) mod handy;
     mod hs;
     mod server_conn;
-    #[cfg(test)]
-    mod test;
-    #[cfg(feature = "tls12")]
     mod tls12;
     mod tls13;
 
     pub use builder::WantsServerCert;
-    #[cfg(any(feature = "std", feature = "hashbrown"))]
     pub use handy::ResolvesServerCertUsingSni;
-    #[cfg(any(feature = "std", feature = "hashbrown"))]
     pub use handy::ServerSessionMemoryCache;
     pub use handy::{AlwaysResolvesServerRawPublicKeys, NoServerSessionStorage};
     pub use server_conn::{
         Accepted, ClientHello, ProducesTickets, ResolvesServerCert, ServerConfig,
         ServerConnectionData, StoresServerSessions, UnbufferedServerConnection,
     };
-    #[cfg(feature = "std")]
     pub use server_conn::{AcceptedAlert, Acceptor, ReadEarlyData, ServerConnection};
 
     pub use crate::enums::CertificateType;
@@ -663,14 +624,12 @@ pub mod server {
 }
 
 pub use server::ServerConfig;
-#[cfg(feature = "std")]
 pub use server::ServerConnection;
 
 /// All defined protocol versions appear in this module.
 ///
 /// ALL_VERSIONS is a provided as an array of all of these values.
 pub mod version {
-    #[cfg(feature = "tls12")]
     pub use crate::versions::TLS12;
     pub use crate::versions::TLS13;
 }
@@ -691,12 +650,9 @@ pub mod sign {
 /// APIs for implementing QUIC TLS
 pub mod quic;
 
-#[cfg(any(feature = "std", feature = "hashbrown"))] // < XXX: incorrect feature gate
+// < XXX: incorrect feature gate
 /// APIs for implementing TLS tickets
 pub mod ticketer;
-
-/// This is the rustls manual.
-pub mod manual;
 
 pub mod time_provider;
 
@@ -706,15 +662,8 @@ pub mod lock;
 /// Polyfills for features that are not yet stabilized or available with current MSRV.
 pub(crate) mod polyfill;
 
-#[cfg(any(feature = "std", feature = "hashbrown"))]
 mod hash_map {
-    #[cfg(feature = "std")]
     pub(crate) use std::collections::HashMap;
-    #[cfg(feature = "std")]
     pub(crate) use std::collections::hash_map::Entry;
 
-    #[cfg(all(not(feature = "std"), feature = "hashbrown"))]
-    pub(crate) use hashbrown::HashMap;
-    #[cfg(all(not(feature = "std"), feature = "hashbrown"))]
-    pub(crate) use hashbrown::hash_map::Entry;
 }

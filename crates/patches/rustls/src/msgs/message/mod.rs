@@ -196,7 +196,6 @@ impl Message<'_> {
         }
     }
 
-    #[cfg(feature = "std")]
     pub(crate) fn into_owned(self) -> Message<'static> {
         let Self { version, payload } = self;
         Message {
@@ -205,12 +204,6 @@ impl Message<'_> {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn into_wire_bytes(self) -> Vec<u8> {
-        PlainMessage::from(self)
-            .into_unencrypted_opaque()
-            .encode()
-    }
 }
 
 impl TryFrom<PlainMessage> for Message<'static> {
@@ -258,5 +251,4 @@ pub(crate) const HEADER_SIZE: usize = 1 + 2 + 2;
 const MAX_PAYLOAD: u16 = 16_384 + 2048;
 
 /// Maximum on-the-wire message size.
-#[cfg(feature = "std")]
 pub(crate) const MAX_WIRE_SIZE: usize = MAX_PAYLOAD as usize + HEADER_SIZE;

@@ -249,9 +249,7 @@ mod client_hello {
                 let next = Box::new(hs::ExpectClientHello {
                     config: self.config,
                     transcript: HandshakeHashOrBuffer::Hash(self.transcript),
-                    #[cfg(feature = "tls12")]
                     session_id: SessionId::empty(),
-                    #[cfg(feature = "tls12")]
                     using_ems: false,
                     previous_hello: Some(PreviousClientHello {
                         offered_psk: client_hello

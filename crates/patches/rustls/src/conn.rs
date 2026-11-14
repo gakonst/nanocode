@@ -2,7 +2,6 @@ use alloc::boxed::Box;
 use core::fmt::Debug;
 use core::mem;
 use core::ops::{Deref, DerefMut, Range};
-#[cfg(feature = "std")]
 use std::io;
 
 use kernel::KernelConnection;
@@ -24,7 +23,6 @@ use crate::vecbuf::ChunkVecBuffer;
 pub mod kernel;
 pub(crate) mod unbuffered;
 
-#[cfg(feature = "std")]
 mod connection {
     use alloc::vec::Vec;
     use core::fmt::Debug;
@@ -240,39 +238,6 @@ mod connection {
                 .map(|()| len)
         }
 
-        /// Obtain plaintext data received from the peer over this TLS connection.
-        ///
-        /// If the peer closes the TLS session, this returns `Ok(())` without filling
-        /// any more of the buffer once all the pending data has been read. No further
-        /// data can be received on that connection, so the underlying TCP connection
-        /// should be half-closed too.
-        ///
-        /// If the peer closes the TLS session uncleanly (a TCP EOF without sending a
-        /// `close_notify` alert) this function returns a `std::io::Error` of type
-        /// `ErrorKind::UnexpectedEof` once any pending data has been read.
-        ///
-        /// Note that support for `close_notify` varies in peer TLS libraries: many do not
-        /// support it and uncleanly close the TCP connection (this might be
-        /// vulnerable to truncation attacks depending on the application protocol).
-        /// This means applications using rustls must both handle EOF
-        /// from this function, *and* unexpected EOF of the underlying TCP connection.
-        ///
-        /// If there are no bytes to read, this returns `Err(ErrorKind::WouldBlock.into())`.
-        ///
-        /// You may learn the number of bytes available at any time by inspecting
-        /// the return of [`Connection::process_new_packets`].
-        #[cfg(read_buf)]
-        fn read_buf(&mut self, mut cursor: core::io::BorrowedCursor<'_, u8>) -> io::Result<()> {
-            let before = cursor.written();
-            self.received_plaintext
-                .read_buf(cursor.reborrow())?;
-            let len = cursor.written() - before;
-            if len > 0 || cursor.capacity() == 0 {
-                return Ok(());
-            }
-
-            self.check_no_bytes_state()
-        }
     }
 
     impl BufRead for Reader<'_> {
@@ -389,7 +354,6 @@ https://docs.rs/rustls/latest/rustls/manual/_03_howto/index.html#unexpected-eof"
     }
 }
 
-#[cfg(feature = "std")]
 pub use connection::{Connection, Reader, Writer};
 
 #[derive(Debug)]
@@ -552,7 +516,6 @@ impl<Data> ConnectionCommon<Data> {
     }
 }
 
-#[cfg(feature = "std")]
 impl<Data> ConnectionCommon<Data> {
     /// Returns an object that allows reading plaintext.
     pub fn reader(&mut self) -> Reader<'_> {

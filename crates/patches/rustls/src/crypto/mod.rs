@@ -5,8 +5,6 @@ use core::fmt::Debug;
 use pki_types::PrivateKeyDer;
 use crate::zero::Zeroize;
 
-#[cfg(all(doc, feature = "tls12"))]
-use crate::Tls12CipherSuite;
 use crate::msgs::ffdhe_groups::FfdheGroup;
 use crate::sign::SigningKey;
 use crate::sync::Arc;
@@ -14,20 +12,9 @@ pub use crate::webpki::{
     WebPkiSupportedAlgorithms, verify_tls12_signature, verify_tls13_signature,
     verify_tls13_signature_with_raw_key,
 };
-#[cfg(doc)]
-use crate::{
-    ClientConfig, ConfigBuilder, ServerConfig, SupportedCipherSuite, Tls13CipherSuite, client,
-    crypto, server, sign,
-};
 use crate::{Error, NamedGroup, ProtocolVersion, SupportedProtocolVersion, suites};
 
-/// *ring* based CryptoProvider.
-#[cfg(feature = "ring")]
-pub mod ring;
 
-/// aws-lc-rs-based CryptoProvider.
-#[cfg(feature = "aws_lc_rs")]
-pub mod aws_lc_rs;
 
 /// TLS message encryption/decryption interfaces.
 pub mod cipher;
@@ -38,7 +25,6 @@ pub mod hash;
 /// HMAC interfaces.
 pub mod hmac;
 
-#[cfg(feature = "tls12")]
 /// Cryptography specific to TLS1.2.
 pub mod tls12;
 
@@ -263,23 +249,7 @@ See the documentation of the CryptoProvider type for more information.
     /// In all cases the application should explicitly specify the provider to use
     /// with [`CryptoProvider::install_default`].
     fn from_crate_features() -> Option<Self> {
-        #[cfg(all(
-            feature = "ring",
-            not(feature = "aws_lc_rs"),
-            not(feature = "custom-provider")
-        ))]
-        {
-            return Some(ring::default_provider());
-        }
 
-        #[cfg(all(
-            feature = "aws_lc_rs",
-            not(feature = "ring"),
-            not(feature = "custom-provider")
-        ))]
-        {
-            return Some(aws_lc_rs::default_provider());
-        }
 
         #[allow(unreachable_code)]
         None
@@ -657,104 +627,25 @@ impl From<Vec<u8>> for SharedSecret {
     }
 }
 
-/// This function returns a [`CryptoProvider`] that uses
-/// FIPS140-3-approved cryptography.
-///
-/// Using this function expresses in your code that you require
-/// FIPS-approved cryptography, and will not compile if you make
-/// a mistake with cargo features.
-///
-/// See our [FIPS documentation](crate::manual::_06_fips) for
-/// more detail.
-///
-/// Install this as the process-default provider, like:
-///
-/// ```rust
-/// # #[cfg(feature = "fips")] {
-/// rustls::crypto::default_fips_provider().install_default()
-///     .expect("default provider already set elsewhere");
-/// # }
-/// ```
-///
-/// You can also use this explicitly, like:
-///
-/// ```rust
-/// # #[cfg(feature = "fips")] {
-/// # let root_store = rustls::RootCertStore::empty();
-/// let config = rustls::ClientConfig::builder_with_provider(
-///         rustls::crypto::default_fips_provider().into()
-///     )
-///     .with_safe_default_protocol_versions()
-///     .unwrap()
-///     .with_root_certificates(root_store)
-///     .with_no_client_auth();
-/// # }
-/// ```
-#[cfg(all(feature = "aws_lc_rs", any(feature = "fips", rustls_docsrs)))]
-#[cfg_attr(rustls_docsrs, doc(cfg(feature = "fips")))]
-pub fn default_fips_provider() -> CryptoProvider {
-    aws_lc_rs::default_provider()
-}
 
 mod static_default {
-    #[cfg(not(feature = "std"))]
-    use alloc::boxed::Box;
-    #[cfg(feature = "std")]
     use std::sync::OnceLock;
 
-    #[cfg(not(feature = "std"))]
-    use once_cell::race::OnceBox;
 
     use super::CryptoProvider;
     use crate::sync::Arc;
 
-    #[cfg(feature = "std")]
     pub(crate) fn install_default(
         default_provider: CryptoProvider,
     ) -> Result<(), Arc<CryptoProvider>> {
         PROCESS_DEFAULT_PROVIDER.set(Arc::new(default_provider))
     }
 
-    #[cfg(not(feature = "std"))]
-    pub(crate) fn install_default(
-        default_provider: CryptoProvider,
-    ) -> Result<(), Arc<CryptoProvider>> {
-        PROCESS_DEFAULT_PROVIDER
-            .set(Box::new(Arc::new(default_provider)))
-            .map_err(|e| *e)
-    }
 
     pub(crate) fn get_default() -> Option<&'static Arc<CryptoProvider>> {
         PROCESS_DEFAULT_PROVIDER.get()
     }
 
-    #[cfg(feature = "std")]
     static PROCESS_DEFAULT_PROVIDER: OnceLock<Arc<CryptoProvider>> = OnceLock::new();
-    #[cfg(not(feature = "std"))]
-    static PROCESS_DEFAULT_PROVIDER: OnceBox<Arc<CryptoProvider>> = OnceBox::new();
 }
 
-#[cfg(test)]
-mod tests {
-    use std::vec;
-
-    use super::SharedSecret;
-
-    #[test]
-    fn test_shared_secret_strip_leading_zeros() {
-        let test_cases = [
-            (vec![0, 1], vec![1]),
-            (vec![1], vec![1]),
-            (vec![1, 0, 2], vec![1, 0, 2]),
-            (vec![0, 0, 1, 2], vec![1, 2]),
-            (vec![0, 0, 0], vec![]),
-            (vec![], vec![]),
-        ];
-        for (buf, expected) in test_cases {
-            let mut secret = SharedSecret::from(&buf[..]);
-            assert_eq!(secret.secret_bytes(), buf);
-            secret.strip_leading_zeros();
-            assert_eq!(secret.secret_bytes(), expected);
-        }
-    }
-}

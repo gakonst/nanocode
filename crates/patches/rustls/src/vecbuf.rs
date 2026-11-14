@@ -1,12 +1,9 @@
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 use core::{cmp, mem};
-#[cfg(feature = "std")]
 use std::io;
-#[cfg(feature = "std")]
 use std::io::Read;
 
-#[cfg(feature = "std")]
 use crate::msgs::message::OutboundChunks;
 
 /// This is a byte buffer that is built from a deque of byte vectors.
@@ -101,21 +98,6 @@ impl ChunkVecBuffer {
         first
     }
 
-    #[cfg(read_buf)]
-    /// Read data out of this object, writing it into `cursor`.
-    pub(crate) fn read_buf(
-        &mut self,
-        mut cursor: core::io::BorrowedCursor<'_, u8>,
-    ) -> io::Result<()> {
-        while !self.is_empty() && cursor.capacity() > 0 {
-            let chunk = &self.chunks[0][self.prefix_used..];
-            let used = cmp::min(chunk.len(), cursor.capacity());
-            cursor.append(&chunk[..used]);
-            self.consume(used);
-        }
-
-        Ok(())
-    }
 
     /// Inspect the first chunk from this object.
     pub(crate) fn peek(&self) -> Option<&[u8]> {
@@ -125,7 +107,6 @@ impl ChunkVecBuffer {
     }
 }
 
-#[cfg(feature = "std")]
 impl ChunkVecBuffer {
     pub(crate) fn is_full(&self) -> bool {
         self.limit
@@ -230,148 +211,4 @@ impl ChunkVecBuffer {
     }
 }
 
-#[cfg(all(test, feature = "std"))]
-mod tests {
-    use alloc::vec;
-    use alloc::vec::Vec;
 
-    use super::ChunkVecBuffer;
-
-    #[test]
-    fn short_append_copy_with_limit() {
-        let mut cvb = ChunkVecBuffer::new(Some(12));
-        assert_eq!(cvb.append_limited_copy(b"hello"[..].into()), 5);
-        assert_eq!(cvb.append_limited_copy(b"world"[..].into()), 5);
-        assert_eq!(cvb.append_limited_copy(b"hello"[..].into()), 2);
-        assert_eq!(cvb.append_limited_copy(b"world"[..].into()), 0);
-
-        let mut buf = [0u8; 12];
-        assert_eq!(cvb.read(&mut buf).unwrap(), 12);
-        assert_eq!(buf.to_vec(), b"helloworldhe".to_vec());
-    }
-
-    #[test]
-    fn read_byte_by_byte() {
-        let mut cvb = ChunkVecBuffer::new(None);
-        cvb.append(b"test fixture data".to_vec());
-        assert!(!cvb.is_empty());
-        for expect in b"test fixture data" {
-            let mut byte = [0];
-            assert_eq!(cvb.read(&mut byte).unwrap(), 1);
-            assert_eq!(byte[0], *expect);
-        }
-
-        assert_eq!(cvb.read(&mut [0]).unwrap(), 0);
-    }
-
-    #[test]
-    fn every_possible_chunk_interleaving() {
-        let input = (0..=0xffu8)
-            .cycle()
-            .take(4096)
-            .collect::<Vec<u8>>();
-
-        for input_chunk_len in 1..64usize {
-            for output_chunk_len in 1..65usize {
-                std::println!("check input={input_chunk_len} output={output_chunk_len}");
-                let mut cvb = ChunkVecBuffer::new(None);
-                for chunk in input.chunks(input_chunk_len) {
-                    cvb.append(chunk.to_vec());
-                }
-
-                assert_eq!(cvb.len(), input.len());
-                let mut buf = vec![0u8; output_chunk_len];
-
-                for expect in input.chunks(output_chunk_len) {
-                    assert_eq!(expect.len(), cvb.read(&mut buf).unwrap());
-                    assert_eq!(expect, &buf[..expect.len()]);
-                }
-
-                assert_eq!(cvb.read(&mut [0]).unwrap(), 0);
-            }
-        }
-    }
-
-    #[cfg(read_buf)]
-    #[test]
-    fn read_buf() {
-        use core::io::BorrowedBuf;
-        use core::mem::MaybeUninit;
-
-        {
-            let mut cvb = ChunkVecBuffer::new(None);
-            cvb.append(b"test ".to_vec());
-            cvb.append(b"fixture ".to_vec());
-            cvb.append(b"data".to_vec());
-
-            let mut buf = [MaybeUninit::<u8>::uninit(); 8];
-            let mut buf: BorrowedBuf<'_, u8> = buf.as_mut_slice().into();
-            cvb.read_buf(buf.unfilled()).unwrap();
-            assert_eq!(buf.filled(), b"test fix");
-            buf.clear();
-            cvb.read_buf(buf.unfilled()).unwrap();
-            assert_eq!(buf.filled(), b"ture dat");
-            buf.clear();
-            cvb.read_buf(buf.unfilled()).unwrap();
-            assert_eq!(buf.filled(), b"a");
-        }
-
-        {
-            let mut cvb = ChunkVecBuffer::new(None);
-            cvb.append(b"short message".to_vec());
-
-            let mut buf = [MaybeUninit::<u8>::uninit(); 1024];
-            let mut buf: BorrowedBuf<'_, u8> = buf.as_mut_slice().into();
-            cvb.read_buf(buf.unfilled()).unwrap();
-            assert_eq!(buf.filled(), b"short message");
-        }
-    }
-}
-
-#[cfg(bench)]
-mod benchmarks {
-    use alloc::vec;
-
-    use super::ChunkVecBuffer;
-
-    #[bench]
-    fn read_one_byte_from_large_message(b: &mut test::Bencher) {
-        b.iter(|| {
-            let mut cvb = ChunkVecBuffer::new(None);
-            cvb.append(vec![0u8; 16_384]);
-            assert_eq!(1, cvb.read(&mut [0u8]).unwrap());
-        });
-    }
-
-    #[bench]
-    fn read_all_individual_from_large_message(b: &mut test::Bencher) {
-        b.iter(|| {
-            let mut cvb = ChunkVecBuffer::new(None);
-            cvb.append(vec![0u8; 16_384]);
-            loop {
-                if let Ok(0) = cvb.read(&mut [0u8]) {
-                    break;
-                }
-            }
-        });
-    }
-
-    #[bench]
-    fn read_half_bytes_from_large_message(b: &mut test::Bencher) {
-        b.iter(|| {
-            let mut cvb = ChunkVecBuffer::new(None);
-            cvb.append(vec![0u8; 16_384]);
-            assert_eq!(8192, cvb.read(&mut [0u8; 8192]).unwrap());
-            assert_eq!(8192, cvb.read(&mut [0u8; 8192]).unwrap());
-        });
-    }
-
-    #[bench]
-    fn read_entire_large_message(b: &mut test::Bencher) {
-        b.iter(|| {
-            let mut cvb = ChunkVecBuffer::new(None);
-            cvb.append(vec![0u8; 16_384]);
-            assert_eq!(16_384, cvb.read(&mut [0u8; 16_384]).unwrap());
-        });
-    }
-}

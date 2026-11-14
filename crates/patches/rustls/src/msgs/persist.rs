@@ -9,11 +9,9 @@ use crate::enums::{CipherSuite, ProtocolVersion};
 use crate::error::InvalidMessage;
 use crate::msgs::base::{MaybeEmpty, PayloadU8, PayloadU16};
 use crate::msgs::codec::{Codec, Reader};
-#[cfg(feature = "tls12")]
 use crate::msgs::handshake::SessionId;
 use crate::msgs::handshake::{CertificateChain, ProtocolName};
 use crate::sync::{Arc, Weak};
-#[cfg(feature = "tls12")]
 use crate::tls12::Tls12CipherSuite;
 use crate::tls13::Tls13CipherSuite;
 use crate::verify::ServerCertVerifier;
@@ -150,18 +148,13 @@ impl core::ops::Deref for Tls13ClientSessionValue {
 
 #[derive(Debug, Clone)]
 pub struct Tls12ClientSessionValue {
-    #[cfg(feature = "tls12")]
     suite: &'static Tls12CipherSuite,
-    #[cfg(feature = "tls12")]
     pub(crate) session_id: SessionId,
-    #[cfg(feature = "tls12")]
     extended_ms: bool,
     #[doc(hidden)]
-    #[cfg(feature = "tls12")]
     pub(crate) common: ClientSessionCommon,
 }
 
-#[cfg(feature = "tls12")]
 impl Tls12ClientSessionValue {
     pub(crate) fn new(
         suite: &'static Tls12CipherSuite,
@@ -210,7 +203,6 @@ impl Tls12ClientSessionValue {
     }
 }
 
-#[cfg(feature = "tls12")]
 impl core::ops::Deref for Tls12ClientSessionValue {
     type Target = ClientSessionCommon;
 
@@ -422,7 +414,6 @@ impl ServerSessionValue {
         }
     }
 
-    #[cfg(feature = "tls12")]
     pub(crate) fn set_extended_ms_used(&mut self) {
         self.extended_ms = true;
     }
@@ -449,47 +440,3 @@ impl ServerSessionValue {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[cfg(feature = "std")] // for UnixTime::now
-    #[test]
-    fn serversessionvalue_is_debug() {
-        use std::{println, vec};
-        let ssv = ServerSessionValue::new(
-            None,
-            ProtocolVersion::TLSv1_3,
-            CipherSuite::TLS13_AES_128_GCM_SHA256,
-            &[1, 2, 3],
-            None,
-            None,
-            vec![4, 5, 6],
-            UnixTime::now(),
-            0x12345678,
-        );
-        println!("{ssv:?}");
-    }
-
-    #[test]
-    fn serversessionvalue_no_sni() {
-        let bytes = [
-            0x00, 0x03, 0x03, 0xc0, 0x23, 0x03, 0x01, 0x02, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x12, 0x23, 0x34, 0x45, 0x56, 0x67, 0x78, 0x89, 0xfe, 0xed, 0xf0, 0x0d,
-        ];
-        let mut rd = Reader::init(&bytes);
-        let ssv = ServerSessionValue::read(&mut rd).unwrap();
-        assert_eq!(ssv.get_encoding(), bytes);
-    }
-
-    #[test]
-    fn serversessionvalue_with_cert() {
-        let bytes = [
-            0x00, 0x03, 0x03, 0xc0, 0x23, 0x03, 0x01, 0x02, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x12, 0x23, 0x34, 0x45, 0x56, 0x67, 0x78, 0x89, 0xfe, 0xed, 0xf0, 0x0d,
-        ];
-        let mut rd = Reader::init(&bytes);
-        let ssv = ServerSessionValue::read(&mut rd).unwrap();
-        assert_eq!(ssv.get_encoding(), bytes);
-    }
-}

@@ -81,11 +81,6 @@ where
         self.conn.reader().read(buf)
     }
 
-    #[cfg(read_buf)]
-    fn read_buf(&mut self, cursor: core::io::BorrowedCursor<'_, u8>) -> Result<()> {
-        self.prepare_read()?;
-        self.conn.reader().read_buf(cursor)
-    }
 }
 
 impl<'a, C, T, S> BufRead for Stream<'a, C, T>
@@ -224,10 +219,6 @@ where
         self.as_stream().read(buf)
     }
 
-    #[cfg(read_buf)]
-    fn read_buf(&mut self, cursor: core::io::BorrowedCursor<'_, u8>) -> Result<()> {
-        self.as_stream().read_buf(cursor)
-    }
 }
 
 impl<C, T, S> BufRead for StreamOwned<C, T>
@@ -260,26 +251,3 @@ where
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use std::net::TcpStream;
-
-    use super::{Stream, StreamOwned};
-    use crate::client::ClientConnection;
-    use crate::server::ServerConnection;
-
-    #[test]
-    fn stream_can_be_created_for_connection_and_tcpstream() {
-        type _Test<'a> = Stream<'a, ClientConnection, TcpStream>;
-    }
-
-    #[test]
-    fn streamowned_can_be_created_for_client_and_tcpstream() {
-        type _Test = StreamOwned<ClientConnection, TcpStream>;
-    }
-
-    #[test]
-    fn streamowned_can_be_created_for_server_and_tcpstream() {
-        type _Test = StreamOwned<ServerConnection, TcpStream>;
-    }
-}

@@ -7,7 +7,6 @@ use pki_types::{ServerName, UnixTime};
 
 use super::handy::NoClientSessionStorage;
 use super::hs::{self, ClientHelloInput};
-#[cfg(feature = "std")]
 use crate::WantsVerifier;
 use crate::builder::ConfigBuilder;
 use crate::client::{EchMode, EchStatus};
@@ -23,12 +22,9 @@ use crate::msgs::handshake::ClientExtensionsInput;
 use crate::msgs::persist;
 use crate::suites::{ExtractedSecrets, SupportedCipherSuite};
 use crate::sync::Arc;
-#[cfg(feature = "std")]
 use crate::time_provider::DefaultTimeProvider;
 use crate::time_provider::TimeProvider;
 use crate::unbuffered::{EncryptError, TransmitTlsData};
-#[cfg(doc)]
-use crate::{DistinguishedName, crypto};
 use crate::{KeyLog, WantsVersions, compress, sign, verify, versions};
 
 /// A trait for the ability to store client session data, so that sessions
@@ -239,7 +235,6 @@ pub struct ClientConfig {
     ///
     /// [RFC 7627]: https://datatracker.ietf.org/doc/html/rfc7627
     /// [FIPS 140-3 IG.pdf]: https://csrc.nist.gov/csrc/media/Projects/cryptographic-module-validation-program/documents/fips%20140-3/FIPS%20140-3%20IG.pdf
-    #[cfg(feature = "tls12")]
     pub require_ems: bool,
 
     /// Provides the current system time
@@ -311,7 +306,6 @@ impl ClientConfig {
     /// and safe protocol version defaults.
     ///
     /// For more information, see the [`ConfigBuilder`] documentation.
-    #[cfg(feature = "std")]
     pub fn builder() -> ConfigBuilder<Self, WantsVerifier> {
         Self::builder_with_protocol_versions(versions::DEFAULT_VERSIONS)
     }
@@ -328,7 +322,6 @@ impl ClientConfig {
     ///   the crate features and process default.
     ///
     /// For more information, see the [`ConfigBuilder`] documentation.
-    #[cfg(feature = "std")]
     pub fn builder_with_protocol_versions(
         versions: &[&'static versions::SupportedProtocolVersion],
     ) -> ConfigBuilder<Self, WantsVerifier> {
@@ -350,7 +343,6 @@ impl ClientConfig {
     /// version is not supported by the provider's ciphersuites.
     ///
     /// For more information, see the [`ConfigBuilder`] documentation.
-    #[cfg(feature = "std")]
     pub fn builder_with_provider(
         provider: Arc<CryptoProvider>,
     ) -> ConfigBuilder<Self, WantsVersions> {
@@ -396,7 +388,6 @@ impl ClientConfig {
     pub fn fips(&self) -> bool {
         let mut is_fips = self.provider.fips();
 
-        #[cfg(feature = "tls12")]
         {
             is_fips = is_fips && self.require_ems
         }
@@ -436,7 +427,6 @@ impl ClientConfig {
             && protocol.supports_version(v)
     }
 
-    #[cfg(feature = "std")]
     pub(crate) fn supports_protocol(&self, proto: Protocol) -> bool {
         self.provider
             .cipher_suites
@@ -491,7 +481,6 @@ impl Resumption {
     ///
     /// This is the default `Resumption` choice, and enables resuming a TLS 1.2 session with
     /// a session id or RFC 5077 ticket.
-    #[cfg(feature = "std")]
     pub fn in_memory_sessions(num: usize) -> Self {
         Self {
             store: Arc::new(super::handy::ClientSessionMemoryCache::new(num)),
@@ -531,11 +520,8 @@ impl Default for Resumption {
     /// Create an in-memory session store resumption with up to 256 server names, allowing
     /// a TLS 1.2 session to resume with a session id or RFC 5077 ticket.
     fn default() -> Self {
-        #[cfg(feature = "std")]
         let ret = Self::in_memory_sessions(256);
 
-        #[cfg(not(feature = "std"))]
-        let ret = Self::disabled();
 
         ret
     }
@@ -605,7 +591,6 @@ impl EarlyData {
         matches!(self.state, EarlyDataState::Ready | EarlyDataState::Accepted)
     }
 
-    #[cfg(feature = "std")]
     fn is_accepted(&self) -> bool {
         matches!(
             self.state,
@@ -656,7 +641,6 @@ impl EarlyData {
     }
 }
 
-#[cfg(feature = "std")]
 mod connection {
     use alloc::vec::Vec;
     use core::fmt;
@@ -864,7 +848,6 @@ mod connection {
         }
     }
 }
-#[cfg(feature = "std")]
 pub use connection::{ClientConnection, WriteEarlyData};
 
 impl ConnectionCore<ClientConnectionData> {
@@ -893,7 +876,6 @@ impl ConnectionCore<ClientConnectionData> {
         Ok(Self::new(state, data, common_state))
     }
 
-    #[cfg(feature = "std")]
     pub(crate) fn is_early_data_accepted(&self) -> bool {
         self.data.early_data.is_accepted()
     }
@@ -1067,7 +1049,6 @@ impl fmt::Display for EarlyDataError {
     }
 }
 
-#[cfg(feature = "std")]
 impl std::error::Error for EarlyDataError {}
 
 /// State associated with a client connection.

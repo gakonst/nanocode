@@ -3,7 +3,6 @@
 use alloc::vec::Vec;
 use core::num::NonZeroUsize;
 use core::{fmt, mem};
-#[cfg(feature = "std")]
 use std::error::Error as StdError;
 
 use super::UnbufferedConnectionCommon;
@@ -578,7 +577,6 @@ impl fmt::Display for EncodeError {
     }
 }
 
-#[cfg(feature = "std")]
 impl StdError for EncodeError {}
 
 /// Errors that may arise when encrypting application data
@@ -609,7 +607,6 @@ impl fmt::Display for EncryptError {
     }
 }
 
-#[cfg(feature = "std")]
 impl StdError for EncryptError {}
 
 /// Provided buffer was too small

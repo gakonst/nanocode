@@ -1,7 +1,5 @@
 use core::fmt::Debug;
 
-#[cfg(all(doc, feature = "std"))]
-use crate::KeyLogFile;
 
 /// This trait represents the ability to do something useful
 /// with key material, such as logging it to a file for debugging.

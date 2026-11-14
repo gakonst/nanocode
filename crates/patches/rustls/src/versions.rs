@@ -21,7 +21,6 @@ impl fmt::Debug for SupportedProtocolVersion {
 }
 
 /// TLS1.2
-#[cfg(feature = "tls12")]
 pub static TLS12: SupportedProtocolVersion = SupportedProtocolVersion {
     version: ProtocolVersion::TLSv1_2,
 };
@@ -34,7 +33,6 @@ pub static TLS13: SupportedProtocolVersion = SupportedProtocolVersion {
 /// A list of all the protocol versions supported by rustls.
 pub static ALL_VERSIONS: &[&SupportedProtocolVersion] = &[
     &TLS13,
-    #[cfg(feature = "tls12")]
     &TLS12,
 ];
 
@@ -47,7 +45,6 @@ pub static DEFAULT_VERSIONS: &[&SupportedProtocolVersion] = ALL_VERSIONS;
 
 #[derive(Clone, Copy)]
 pub(crate) struct EnabledVersions {
-    #[cfg(feature = "tls12")]
     tls12: Option<&'static SupportedProtocolVersion>,
     tls13: Option<&'static SupportedProtocolVersion>,
 }
@@ -55,7 +52,6 @@ pub(crate) struct EnabledVersions {
 impl fmt::Debug for EnabledVersions {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut list = &mut f.debug_list();
-        #[cfg(feature = "tls12")]
         if let Some(v) = self.tls12 {
             list = list.entry(v);
         }
@@ -69,14 +65,12 @@ impl fmt::Debug for EnabledVersions {
 impl EnabledVersions {
     pub(crate) fn new(versions: &[&'static SupportedProtocolVersion]) -> Self {
         let mut ev = Self {
-            #[cfg(feature = "tls12")]
             tls12: None,
             tls13: None,
         };
 
         for v in versions {
             match v.version {
-                #[cfg(feature = "tls12")]
                 ProtocolVersion::TLSv1_2 => ev.tls12 = Some(v),
                 ProtocolVersion::TLSv1_3 => ev.tls13 = Some(v),
                 _ => {}
@@ -88,7 +82,6 @@ impl EnabledVersions {
 
     pub(crate) fn contains(&self, version: ProtocolVersion) -> bool {
         match version {
-            #[cfg(feature = "tls12")]
             ProtocolVersion::TLSv1_2 => self.tls12.is_some(),
             ProtocolVersion::TLSv1_3 => self.tls13.is_some(),
             _ => false,

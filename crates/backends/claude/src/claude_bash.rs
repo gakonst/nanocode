@@ -1148,7 +1148,7 @@ fn rendered(value: &Value, direct: bool) -> ToolOutput {
         (0, true) => ToolOutput::text("(Bash completed with no output)"),
         (0, false) => ToolOutput::text(text),
         _ if direct => ToolOutput::error(truncated_error(text)),
-        _ => ToolOutput::error(text),
+        _ => ToolOutput::text(text),
     }
 }
 fn truncated_error(text: String) -> String {

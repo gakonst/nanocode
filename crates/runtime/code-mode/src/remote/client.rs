@@ -11,7 +11,7 @@ use std::{
     time::Duration,
 };
 
-use nanocode_sync::{Atom, Slot};
+use nanocode_sync::{Atom, Signal, Slot};
 use nanocode_tool_contracts::{ToolOutput, ToolReceipt};
 
 use nanocode_sync::{
@@ -124,6 +124,17 @@ struct CallbackState {
 
 type Callbacks = HashMap<(String, String), CallbackState>;
 
+#[derive(Clone)]
+enum Adoption {
+    Awaited(Arc<Signal>),
+    Held {
+        tools: Vec<Arc<dyn Tool>>,
+        context: RemoteContext,
+    },
+}
+
+type Adoptions = HashMap<String, Adoption>;
+
 type Receipts = HashMap<(String, String), Vec<Weak<dyn ToolReceipt>>>;
 
 type Sending<'a> = (
@@ -216,6 +227,7 @@ fn mark_written(pending: &Waiters, ids: &[u64]) {
 struct Client {
     outgoing: mpsc::UnboundedSender<Outgoing>,
     callbacks: Atom<Callbacks>,
+    adoptions: Atom<Adoptions>,
     receipts: Atom<Receipts>,
     answers: Arc<Answers>,
     running: Atom<nanocode_sync::Map<u64, (String, AbortHandle)>>,
@@ -289,6 +301,35 @@ fn resumed(
             "remote reply channel closed; operation outcome unknown",
         ))
     })
+}
+
+async fn adopted(
+    client: &Weak<Client>,
+    session_id: &str,
+    name: &str,
+) -> Option<(Option<Arc<dyn Tool>>, RemoteContext)> {
+    let timeout = client.upgrade()?.operation_timeout;
+    let held = async {
+        loop {
+            let signal = match client.upgrade()?.adoption(session_id) {
+                Adoption::Held { tools, context } => {
+                    let tool = tools
+                        .into_iter()
+                        .find(|tool| tool.definition().name() == name);
+                    return Some((tool, context));
+                }
+                Adoption::Awaited(signal) => signal,
+            };
+            signal.wait().await;
+        }
+    };
+    let Some(timeout) = timeout else {
+        return held.await;
+    };
+    match select(pin!(held), pin!(nanocode_platform::sleep(timeout))).await {
+        Either::Left((held, _)) => held,
+        Either::Right(_) => None,
+    }
 }
 
 fn origin(call_id: &str) -> &str {
@@ -426,6 +467,7 @@ impl RemoteClient {
         let client = Arc::new(Client {
             outgoing,
             callbacks: Atom::default(),
+            adoptions: Atom::default(),
             receipts: Atom::default(),
             answers: Arc::default(),
             running: Atom::default(),
@@ -572,6 +614,15 @@ fn prepare_call(
 }
 
 impl Client {
+    fn adoption(&self, session_id: &str) -> Adoption {
+        self.adoptions.update(|adoptions| {
+            adoptions
+                .entry(session_id.to_owned())
+                .or_insert_with(|| Adoption::Awaited(Arc::default()))
+                .clone()
+        })
+    }
+
     fn dispatch(
         &self,
         frame: (Frame, Option<String>),
@@ -598,6 +649,9 @@ impl Client {
         {
             self.callbacks
                 .update(|callbacks| callbacks.retain(|(session, _), _| session != session_id));
+            self.adoptions.update(|adoptions| {
+                adoptions.remove(session_id);
+            });
             self.receipts
                 .update(|receipts| receipts.retain(|(session, _), _| session != session_id));
             self.answers.forget(&answer_key(session_id, ""));
@@ -764,6 +818,7 @@ impl Client {
                 )
             })
         });
+        let adopter = Arc::downgrade(self);
         let hands = Option::clone(&self.hands.get());
         let delivery = if hand.is_some() {
             RemoteDelivery::Immediate
@@ -789,6 +844,10 @@ impl Client {
             };
             let execution = Abortable::new(
                 async move {
+                    let local = match local {
+                        Some(local) => Some(local),
+                        None => adopted(&adopter, &context.session_id, &name).await,
+                    };
                     if let Some(hand) = hand {
                         let (_, mut authoritative) = local.ok_or_else(|| {
                             error(format!(
@@ -865,6 +924,7 @@ impl Client {
             abort.abort();
         }
         self.callbacks.set(HashMap::new());
+        self.adoptions.set(HashMap::new());
         self.receipts.set(HashMap::new());
         self.answers.forget("");
         let uncertain = format!(
@@ -895,6 +955,24 @@ impl Client {
                 id,
                 result: Err(refused.clone()),
             });
+        }
+    }
+
+    fn settle(&self, session_id: String, origin: String, carrier: Option<&str>) {
+        self.answers
+            .forget(&answer_key(&session_id, &format!("{origin}/")));
+        let key = (session_id, origin);
+        self.callbacks.update(|callbacks| {
+            callbacks.remove(&key);
+        });
+        let held = self
+            .receipts
+            .update(|receipts| receipts.remove(&key))
+            .unwrap_or_default();
+        if let Some(carrier) = carrier {
+            for receipt in held.iter().filter_map(Weak::upgrade) {
+                receipt.carried_by(Some(carrier));
+            }
         }
     }
 
@@ -1239,6 +1317,31 @@ impl RemoteTransport for RemoteClient {
     fn supports_tool_selection(&self) -> bool {
         self.client.tool_selection
     }
+    fn adopt(&self, context: &RemoteContext, tools: Vec<Arc<dyn Tool>>) {
+        let held = Adoption::Held {
+            tools,
+            context: RemoteContext {
+                history: Arc::default(),
+                ..context.clone()
+            },
+        };
+        let previous = self
+            .client
+            .adoptions
+            .update(|adoptions| adoptions.insert(context.session_id.clone(), held.clone()));
+        if let Some(Adoption::Awaited(signal)) = previous {
+            signal.fire();
+        }
+    }
+    fn delivered(&self, context: &RemoteContext, execution: &CodeModeExecution) {
+        let origin = match &execution.cell {
+            Some(cell) if cell.running => return,
+            Some(cell) => cell.origin_call_id.clone(),
+            None => context.call_id.clone(),
+        };
+        self.client
+            .settle(context.session_id.clone(), origin, Some(&context.call_id));
+    }
     fn request<'a>(
         &'a self,
         mut operation: RemoteOperation,
@@ -1386,22 +1489,11 @@ impl RemoteTransport for RemoteClient {
                     Ok(None) => None,
                 };
                 if let Some(origin) = completed {
-                    client
-                        .answers
-                        .forget(&answer_key(&session_id, &format!("{origin}/")));
-                    let key = (session_id, origin);
-                    client.callbacks.update(|callbacks| {
-                        callbacks.remove(&key);
-                    });
-                    let held = client
-                        .receipts
-                        .update(|receipts| receipts.remove(&key))
-                        .unwrap_or_default();
-                    if let (Ok(Some(_)), Some(carrier)) = (&result, &carrier) {
-                        for receipt in held.iter().filter_map(Weak::upgrade) {
-                            receipt.carried_by(Some(carrier));
-                        }
-                    }
+                    let carrier = match (&result, &carrier) {
+                        (Ok(Some(_)), Some(carrier)) => Some(carrier.as_str()),
+                        _ => None,
+                    };
+                    client.settle(session_id, origin, carrier);
                 }
             }
             guard.complete = true;

@@ -441,6 +441,8 @@ pub trait RemoteTransport: Send + Sync + 'static {
     ) -> Option<HostFuture<'a, Result<Option<Value>, CodeModeHostError>>> {
         None
     }
+    fn adopt(&self, _context: &RemoteContext, _tools: Vec<Arc<dyn Tool>>) {}
+    fn delivered(&self, _context: &RemoteContext, _execution: &CodeModeExecution) {}
     fn route_hands(&self, hands: Arc<dyn HandCalls>);
     fn notify(&self, operation: RemoteOperation) -> Result<(), CodeModeHostError>;
     fn detach_turn(
@@ -741,9 +743,11 @@ impl CodeModeHost for RemoteCodeModeHost {
                 return Ok(None);
             };
             ReceivedCalls::default().execution(&mut value)?;
-            serde_json::from_value(value)
-                .map(Some)
-                .map_err(|error| CodeModeHostError::new(error.to_string()))
+            let execution = serde_json::from_value(value)
+                .map_err(|error| CodeModeHostError::new(error.to_string()))?;
+            self.transport
+                .delivered(&RemoteContext::from_context(context), &execution);
+            Ok(Some(execution))
         })
     }
     fn recover_call<'a>(
@@ -751,6 +755,16 @@ impl CodeModeHost for RemoteCodeModeHost {
         context: ToolContext<'a>,
     ) -> HostFuture<'a, Result<Option<ToolOutput>, CodeModeHostError>> {
         Self::recover_call(self, context)
+    }
+    fn adopt<'a>(
+        &'a self,
+        context: ToolContext<'a>,
+        tools: Vec<Arc<dyn Tool>>,
+    ) -> HostFuture<'a, ()> {
+        Box::pin(async move {
+            self.transport
+                .adopt(&RemoteContext::from_context(context), tools);
+        })
     }
     fn route_hands(&self, name: &str, hands: Arc<dyn HandCalls>) {
         self.hand.set(Some(name.into()));

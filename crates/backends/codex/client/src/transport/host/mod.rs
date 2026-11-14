@@ -1,8 +1,8 @@
 use std::{future::Future, pin::Pin, time::Duration};
 
-use futures_util::StreamExt;
 use http::{HeaderMap, HeaderName, HeaderValue, header};
 use nanocode_http::layer::{self, retry};
+use nanocode_sync::StreamExt;
 
 #[cfg(target_family = "wasm")]
 pub(crate) mod socket;

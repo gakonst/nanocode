@@ -927,7 +927,7 @@ impl nanocode_code_mode::CodeModeToolset for ToolRegistry {
             if waits.is_empty() {
                 std::future::pending::<()>().await;
             }
-            futures_util::future::select_all(waits).await;
+            nanocode_sync::future::select_all(waits).await;
         })
     }
 }

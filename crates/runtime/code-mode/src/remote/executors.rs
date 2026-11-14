@@ -351,7 +351,7 @@ impl Tool for HandsTool {
                 return Ok(ToolOutput::json(&result).with_structured_result(result));
             }
             let described =
-                futures_util::future::join_all(executors.iter().map(|(name, host)| async move {
+                nanocode_sync::future::join_all(executors.iter().map(|(name, host)| async move {
                     let mut description = host.describe();
                     if let Some(description) = &mut description
                         && !description.capabilities.is_empty()

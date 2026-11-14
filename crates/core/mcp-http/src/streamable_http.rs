@@ -1,9 +1,5 @@
 use std::{collections::HashMap, future::Future, sync::Arc, time::Duration};
 
-use futures_util::{
-    StreamExt,
-    future::{AbortHandle, Abortable},
-};
 use http::{
     HeaderMap, HeaderName, HeaderValue, Method, StatusCode,
     header::{ACCEPT, AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, WWW_AUTHENTICATE},
@@ -16,6 +12,10 @@ use nanocode_mcp::{
 };
 use nanocode_platform::{sleep, timeout};
 use nanocode_sync::{SingleFlight, Slot, Swap};
+use nanocode_sync::{
+    StreamExt,
+    future::{AbortHandle, Abortable},
+};
 
 #[cfg(not(target_family = "wasm"))]
 use crate::oauth::OAuthRuntime;
@@ -43,10 +43,10 @@ pub enum HttpAuth {
 }
 
 #[cfg(not(target_family = "wasm"))]
-type BearerFuture<'a, T> = futures_util::future::BoxFuture<'a, T>;
+type BearerFuture<'a, T> = nanocode_sync::future::BoxFuture<'a, T>;
 
 #[cfg(target_family = "wasm")]
-type BearerFuture<'a, T> = futures_util::future::LocalBoxFuture<'a, T>;
+type BearerFuture<'a, T> = nanocode_sync::future::LocalBoxFuture<'a, T>;
 
 pub trait BearerSource: Send + Sync {
     fn token<'life0, 'async_trait>(
@@ -167,13 +167,13 @@ struct Cursor {
 #[cfg(not(target_family = "wasm"))]
 type Background = tokio::task::JoinHandle<()>;
 #[cfg(target_family = "wasm")]
-type Background = futures_util::future::AbortHandle;
+type Background = nanocode_sync::future::AbortHandle;
 
 #[cfg(not(target_family = "wasm"))]
 type Tasks = tokio::task::JoinSet<Option<RequestId>>;
 #[cfg(target_family = "wasm")]
-type Tasks = futures_util::stream::FuturesUnordered<
-    futures_util::future::LocalBoxFuture<'static, Option<RequestId>>,
+type Tasks = nanocode_sync::stream::FuturesUnordered<
+    nanocode_sync::future::LocalBoxFuture<'static, Option<RequestId>>,
 >;
 
 type Flights = HashMap<RequestId, AbortHandle>;
@@ -185,9 +185,9 @@ fn spawn_background(future: impl Future<Output = ()> + Send + 'static) -> Backgr
 
 #[cfg(target_family = "wasm")]
 fn spawn_background(future: impl Future<Output = ()> + 'static) -> Background {
-    let (handle, registration) = futures_util::future::AbortHandle::new_pair();
+    let (handle, registration) = nanocode_sync::future::AbortHandle::new_pair();
     nanocode_platform::spawn_local(async move {
-        let _ = futures_util::future::Abortable::new(future, registration).await;
+        let _ = nanocode_sync::future::Abortable::new(future, registration).await;
     });
     handle
 }
@@ -483,7 +483,7 @@ impl Reply {
     fn from_client(response: nanocode_http::Response) -> Self {
         let status = response.status();
         let headers = response.headers().clone();
-        let body = futures_util::stream::unfold(response, |mut response| async move {
+        let body = nanocode_sync::stream::unfold(response, |mut response| async move {
             match response.chunk().await {
                 Ok(Some(chunk)) => Some((Ok(chunk.to_vec()), response)),
                 Ok(None) => None,

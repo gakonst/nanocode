@@ -24,6 +24,7 @@ mod stack;
 mod swap;
 pub mod teddy;
 pub mod utf8;
+mod waker;
 #[cfg(unix)]
 pub mod unix;
 #[cfg(windows)]
@@ -41,3 +42,4 @@ pub use inline::{InlineVec, OwnedItems, new_arc_with};
 pub use random::fill_random;
 pub use stack::current_thread_stack_remaining_bytes;
 pub use swap::{AsRaw, Enclosed, Guard, Pointer, Swap, SwapOption, Swapped};
+pub use waker::AtomicWaker;

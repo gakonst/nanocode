@@ -52,9 +52,9 @@ pub use nanocode_mcp_http::oauth::{McpOAuthCredentials, McpOAuthRefreshGuard, Mc
 pub use nanocode_mcp_http::streamable_http::BearerSource;
 
 #[cfg(not(target_family = "wasm"))]
-pub type McpFuture<'a, T> = futures_util::future::BoxFuture<'a, T>;
+pub type McpFuture<'a, T> = nanocode_sync::future::BoxFuture<'a, T>;
 #[cfg(target_family = "wasm")]
-pub type McpFuture<'a, T> = futures_util::future::LocalBoxFuture<'a, T>;
+pub type McpFuture<'a, T> = nanocode_sync::future::LocalBoxFuture<'a, T>;
 
 const MAX_TOOL_SEARCH_SOURCE_DESCRIPTION_BYTES: usize = 4 * 1024;
 const CODEX_ENCRYPTED_CONTENT_META_KEY: &str = "codex/encryptedContent";

@@ -1,8 +1,8 @@
 use std::{fmt, pin::Pin};
 
 use bytes::Bytes;
-use futures_util::{Stream, TryStreamExt};
 use nanocode_sync::Slot;
+use nanocode_sync::{Stream, TryStreamExt};
 
 pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
 pub type ChunkStream = Pin<Box<dyn Stream<Item = Result<Bytes, BoxError>> + Send>>;
@@ -22,7 +22,7 @@ impl Body {
 
     pub fn wrap_stream<S>(stream: S) -> Self
     where
-        S: futures_util::TryStream + Send + 'static,
+        S: nanocode_sync::TryStream + Send + 'static,
         S::Error: Into<BoxError>,
         Bytes: From<S::Ok>,
     {
@@ -36,7 +36,7 @@ impl Body {
 
     pub fn sized_stream<S>(stream: S, length: u64) -> Self
     where
-        S: futures_util::TryStream + Send + 'static,
+        S: nanocode_sync::TryStream + Send + 'static,
         S::Error: Into<BoxError>,
         Bytes: From<S::Ok>,
     {

@@ -4,7 +4,6 @@ use crate::{
     ThreadMode, ThreadRecovery, ThreadTurn, ToolDefinition, ToolResultContent, Usage,
     collect_stream,
 };
-use futures_util::{FutureExt as _, StreamExt};
 use nanocode_agent_core::{
     Agent, AgentEvents, AgentHandle, AgentSessionContext, Capabilities, CostStatus,
     EstimatedUsdCost, ForkPoint, ForkRequest, HarnessFamily, Lineage, ModelSelection,
@@ -18,6 +17,7 @@ use nanocode_agent_core::{
     events::{AgentEventKind, AgentEventPublisher, TextDeltaRef},
     input::Prompt,
 };
+use nanocode_sync::{FutureExt as _, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 mod durable;

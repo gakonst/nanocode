@@ -76,7 +76,7 @@ impl McpOAuthCredentials {
 impl OAuthRuntime {
     pub fn refresh_if_needed<'call>(
         self: &'call Arc<Self>,
-    ) -> futures_util::future::BoxFuture<'call, Result<(), String>> {
+    ) -> nanocode_sync::future::BoxFuture<'call, Result<(), String>> {
         Box::pin(async move {
             let refresh_needed = self.credentials.load().as_ref().is_none_or(|credentials| {
                 credentials.needs_refresh()

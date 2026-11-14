@@ -1,7 +1,7 @@
 use std::{future::Future, pin::Pin};
 
-use futures_util::{Stream, TryStreamExt};
 use http::{HeaderMap, StatusCode};
+use nanocode_sync::{Stream, TryStreamExt};
 
 #[cfg(not(target_family = "wasm"))]
 pub type HttpFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;

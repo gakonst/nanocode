@@ -6,7 +6,7 @@ use crate::{
     embedded::{HandCalls, OwnedToolContext},
     runtime::ToolRuntime,
 };
-use futures_util::{Sink, SinkExt, Stream, StreamExt};
+use nanocode_sync::{Sink, SinkExt, Stream, StreamExt};
 use serde_json::Value;
 use std::{
     path::{Path, PathBuf},
@@ -778,7 +778,7 @@ impl SocketTransport {
 }
 
 struct SocketReader<S> {
-    socket: futures_util::stream::SplitStream<WebSocketStream<S>>,
+    socket: nanocode_sync::stream::SplitStream<WebSocketStream<S>>,
     writer: Option<Writer>,
 }
 

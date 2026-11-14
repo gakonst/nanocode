@@ -1,4 +1,4 @@
-use futures_util::TryStreamExt;
+use nanocode_sync::TryStreamExt;
 
 use crate::layer::{self, BoxFuture, Error, Layer, Next, Request, Response, Sender};
 

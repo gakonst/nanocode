@@ -5,8 +5,8 @@ compile_error!(
 
 use std::{collections::BTreeMap, future::Future, pin::Pin, sync::Arc, time::Duration};
 
-use futures_util::{Stream, StreamExt, stream};
 use nanocode_agent_types::{ClaudeTokens, EstimatedUsdCost, UsdAmount};
+use nanocode_sync::{Stream, StreamExt, stream};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 

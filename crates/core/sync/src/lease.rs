@@ -1,4 +1,4 @@
-use futures_util::future::BoxFuture;
+use crate::future::BoxFuture;
 use nanocode_platform::sleep;
 use nanocode_platform::spawn_task as spawn;
 use std::{

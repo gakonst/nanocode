@@ -27,7 +27,6 @@ serde_json.workspace = true
 nanocode-trace.workspace = true
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-futures-util.workspace = true
 nanocode-http.workspace = true
 
 [lints]

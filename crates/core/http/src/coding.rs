@@ -1,10 +1,10 @@
 use std::{error::Error, io};
 
-use futures_util::{Stream, StreamExt, stream};
 use nanocode_compression::{
     checksum::crc32,
     miniz::{self, Format, Level},
 };
+use nanocode_sync::{Stream, StreamExt, stream};
 use nanocode_zstd::{BlockHeader, BlockType, FrameHeader, StreamingDecoder, parse_frame_header};
 
 use crate::{
@@ -277,7 +277,7 @@ fn decoded(
 fn replace_body(
     mut response: crate::Response,
     body: impl FnOnce(
-        futures_util::stream::BoxStream<'static, crate::client::Result<bytes::Bytes>>,
+        nanocode_sync::stream::BoxStream<'static, crate::client::Result<bytes::Bytes>>,
     ) -> crate::ResponseStream,
 ) -> crate::Response {
     use http::header::{CONTENT_ENCODING, CONTENT_LENGTH};

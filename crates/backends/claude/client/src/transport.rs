@@ -90,7 +90,7 @@ async fn send_client(
     client: &HttpClient,
     request: nanocode_http::Request,
 ) -> Result<layer::Response, layer::Error> {
-    use futures_util::TryStreamExt;
+    use nanocode_sync::TryStreamExt;
 
     let again = request.try_clone();
     let mut response = match (client.execute(request).await, again) {

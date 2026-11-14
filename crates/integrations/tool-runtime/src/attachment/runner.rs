@@ -21,14 +21,14 @@ pub struct RunnerConfig {
 pub fn run_runner(
     config: RunnerConfig,
     tools: Tools,
-) -> futures_util::future::BoxFuture<'static, Result<(), AttachmentError>> {
+) -> nanocode_sync::future::BoxFuture<'static, Result<(), AttachmentError>> {
     Box::pin(async move { run_runner_with_tools(config, tools).await })
 }
 
 pub fn run_runner_with_tools(
     config: RunnerConfig,
     tools: Tools,
-) -> futures_util::future::BoxFuture<'static, Result<(), AttachmentError>> {
+) -> nanocode_sync::future::BoxFuture<'static, Result<(), AttachmentError>> {
     Box::pin(async move {
         super::RemoteRunner::new(config.name.clone())?;
         let workspace = tokio::fs::canonicalize(&config.workspace)

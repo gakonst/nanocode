@@ -4,8 +4,8 @@ use std::{
     sync::Arc,
 };
 
-use futures_util::FutureExt;
 use nanocode_durability_core::{StoreError, StoreFuture};
+use nanocode_sync::FutureExt;
 use nanocode_turnlog::{
     EffectClass, LogHost, Outcome as LogOutcome, Phase, Point as LogPoint, Record as LogRecord,
     Status as LogStatus, TurnLog,

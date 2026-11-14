@@ -12,7 +12,6 @@ autobenches = false
 
 [dependencies]
 nanocode-digest.workspace = true
-futures-util.workspace = true
 nanocode-trace.workspace = true
 nanocode-agent-config.workspace = true
 nanocode-agent-core.workspace = true

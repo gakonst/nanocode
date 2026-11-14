@@ -28,7 +28,7 @@ impl McpHandle {
         &'call self,
         query: &'call str,
         max_results: usize,
-    ) -> futures_util::future::BoxFuture<'call, Result<Value, String>> {
+    ) -> nanocode_sync::future::BoxFuture<'call, Result<Value, String>> {
         Box::pin(async move {
             if max_results == 0 {
                 return Err("max_results must be at least 1".into());
@@ -128,7 +128,7 @@ impl McpHandle {
     pub fn native_wait<'call>(
         &'call self,
         timeout: Duration,
-    ) -> futures_util::future::BoxFuture<'call, Value> {
+    ) -> nanocode_sync::future::BoxFuture<'call, Value> {
         Box::pin(async move {
             let _ = nanocode_platform::timeout(timeout, self.state.wait_for_startup()).await;
             self.state.native_status()
@@ -140,7 +140,7 @@ impl McpHandle {
         name: &'call str,
         input: Value,
         metadata: Value,
-    ) -> futures_util::future::BoxFuture<'call, Result<Value, String>> {
+    ) -> nanocode_sync::future::BoxFuture<'call, Result<Value, String>> {
         Box::pin(async move { self.native_call_checked(name, input, metadata, None).await })
     }
 
@@ -150,7 +150,7 @@ impl McpHandle {
         input: Value,
         metadata: Value,
         admitted_definition: &'call Value,
-    ) -> futures_util::future::BoxFuture<'call, Result<Value, String>> {
+    ) -> nanocode_sync::future::BoxFuture<'call, Result<Value, String>> {
         Box::pin(async move {
             self.native_call_checked(name, input, metadata, Some(admitted_definition))
                 .await
@@ -212,7 +212,7 @@ impl McpHandle {
     pub fn native_list_resources<'call>(
         &'call self,
         server: Option<&'call str>,
-    ) -> futures_util::future::BoxFuture<'call, Result<Value, String>> {
+    ) -> nanocode_sync::future::BoxFuture<'call, Result<Value, String>> {
         Box::pin(async move {
             self.state.wait_for_startup().await;
             if let Some(name) = server {
@@ -277,7 +277,7 @@ impl McpHandle {
         &'call self,
         server: &'call str,
         uri: &'call str,
-    ) -> futures_util::future::BoxFuture<'call, Result<Value, String>> {
+    ) -> nanocode_sync::future::BoxFuture<'call, Result<Value, String>> {
         Box::pin(async move {
             let configured = self.native_server(server)?;
             if uri.is_empty() || uri.len() > 64 * 1024 || uri.contains('\0') {

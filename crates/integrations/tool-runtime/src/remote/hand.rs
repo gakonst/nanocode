@@ -59,7 +59,7 @@ pub enum HandEvent {
 }
 
 pub type ConfirmRefusal =
-    std::sync::Arc<dyn Fn(u16) -> futures_util::future::BoxFuture<'static, bool> + Send + Sync>;
+    std::sync::Arc<dyn Fn(u16) -> nanocode_sync::future::BoxFuture<'static, bool> + Send + Sync>;
 
 pub struct Hand {
     endpoint: HandEndpoint,
@@ -242,7 +242,7 @@ impl Hand {
     pub fn run<F>(
         self,
         mut events: F,
-    ) -> futures_util::future::BoxFuture<'static, Result<(), CodeModeHostError>>
+    ) -> nanocode_sync::future::BoxFuture<'static, Result<(), CodeModeHostError>>
     where
         F: FnMut(HandEvent) + Send + 'static,
     {

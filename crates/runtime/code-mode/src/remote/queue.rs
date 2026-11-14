@@ -6,12 +6,12 @@ use std::{
     time::Duration,
 };
 
-use futures_util::{
+use nanocode_platform::Instant;
+use nanocode_sync::{
     FutureExt, Stream, StreamExt,
     future::{BoxFuture, Either},
     stream::FuturesUnordered,
 };
-use nanocode_platform::Instant;
 use serde_json::Value;
 use tokio::sync::mpsc;
 

@@ -32,8 +32,8 @@ use std::{
     process::ExitCode,
 };
 
-use futures_util::StreamExt;
 use nanocode::{ModelSelection, ServiceTier, Thinking, durability::TranscriptItem};
+use nanocode_sync::StreamExt;
 
 use crate::{
     cli::{Cli, Command, GatewayArgs, HandArgs, HarnessArg, SessionArgs, SessionsArgs},

@@ -1484,7 +1484,7 @@ pub(crate) struct Ownership {
 
 struct Opening {
     finish: SwapOption<tokio::sync::oneshot::Sender<()>>,
-    finished: futures_util::future::Shared<tokio::sync::oneshot::Receiver<()>>,
+    finished: nanocode_sync::future::Shared<tokio::sync::oneshot::Receiver<()>>,
 }
 
 impl Opening {
@@ -1492,7 +1492,7 @@ impl Opening {
         let (finish, finished) = tokio::sync::oneshot::channel();
         Arc::new(Self {
             finish: SwapOption::from_pointee(finish),
-            finished: futures_util::FutureExt::shared(finished),
+            finished: nanocode_sync::FutureExt::shared(finished),
         })
     }
 }

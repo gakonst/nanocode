@@ -4,9 +4,9 @@ use crate::{
     confine,
     egress::{Allowlist, Egress, Limits, Secret, Tls, tailnet_host},
 };
-use futures_util::future::BoxFuture;
 use nanocode_platform::{Elapsed, timeout};
 use nanocode_sync::Signal;
+use nanocode_sync::future::BoxFuture;
 use std::{
     collections::VecDeque,
     io,

@@ -7,7 +7,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use bytes::Bytes;
-use futures_util::StreamExt;
 use http::uri::Authority;
 use nanocode_http::Url;
 use nanocode_http::header::{
@@ -17,6 +16,7 @@ use nanocode_http::header::{
 use nanocode_http::server::{self, Outgoing, Reply, Upgraded};
 use nanocode_http::{Method, StatusCode};
 use nanocode_sync::Atom;
+use nanocode_sync::StreamExt;
 use nanocode_tls::rustls::ServerConfig;
 use nanocode_tls::rustls::crypto::CryptoProvider;
 use nanocode_tls::rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
@@ -414,7 +414,7 @@ impl<P: PaymentProvider + 'static> Proxy<P> {
 
     fn answer_events(
         &self,
-        body: futures_util::stream::BoxStream<'static, nanocode_http::Result<Bytes>>,
+        body: nanocode_sync::stream::BoxStream<'static, nanocode_http::Result<Bytes>>,
         provider: P,
         url: Url,
     ) -> server::BodyStream {

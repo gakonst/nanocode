@@ -22,7 +22,6 @@ nanocode-home.workspace = true
 nanocode-audio.workspace = true
 nanocode-sys.workspace = true
 nanocode-types.workspace = true
-futures-util.workspace = true
 http.workspace = true
 nanocode-http.workspace = true
 nanocode-image.workspace = true

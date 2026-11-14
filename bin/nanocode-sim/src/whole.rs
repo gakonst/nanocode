@@ -577,7 +577,7 @@ async fn epoch(
         Ok::<_, String>(agents)
     };
     let (agents, stopped) =
-        futures_util::future::join(roots, stop(&runtime, shape, world, client)).await;
+        nanocode_sync::future::join(roots, stop(&runtime, shape, world, client)).await;
     let agents = agents?;
     stopped?;
     settle(&runtime, &store, shape, world).await?;

@@ -70,37 +70,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
 
 [[package]]
-name = "futures-core"
-version = "0.3.32"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7e3450815272ef58cec6d564423f6e755e25379b217b0bc688e295ba24df6b1d"
-
-[[package]]
-name = "futures-sink"
-version = "0.3.32"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c39754e157331b013978ec91992bde1ac089843443c49cbc7f46150b0fad0893"
-
-[[package]]
-name = "futures-task"
-version = "0.3.32"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "037711b3d59c33004d3856fbdc83b99d4ff37a24768fa1be9ce3538a1cde4393"
-
-[[package]]
-name = "futures-util"
-version = "0.3.32"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "389ca41296e6190b48053de0321d02a77f32f8a5d2461dd38762c0593805c6d6"
-dependencies = [
- "futures-core",
- "futures-sink",
- "futures-task",
- "pin-project-lite",
- "slab",
-]
-
-[[package]]
 name = "getrandom"
 version = "0.3.4"
 dependencies = [
@@ -214,7 +183,6 @@ dependencies = [
 name = "nanocode-agent"
 version = "0.7.0"
 dependencies = [
- "futures-util",
  "nanocode-agent-config",
  "nanocode-agent-core",
  "nanocode-digest",
@@ -247,7 +215,6 @@ dependencies = [
 name = "nanocode-agent-core"
 version = "0.7.0"
 dependencies = [
- "futures-util",
  "nanocode-agent-types",
  "nanocode-home",
  "nanocode-platform",
@@ -310,7 +277,6 @@ dependencies = [
 name = "nanocode-backend-claude"
 version = "0.7.0"
 dependencies = [
- "futures-util",
  "http",
  "libc",
  "nanocode-agent-config",
@@ -343,7 +309,6 @@ name = "nanocode-backend-claude-client"
 version = "0.7.0"
 dependencies = [
  "bytes",
- "futures-util",
  "http",
  "memchr",
  "nanocode-agent-types",
@@ -383,7 +348,6 @@ dependencies = [
 name = "nanocode-backend-codex"
 version = "0.7.0"
 dependencies = [
- "futures-util",
  "http",
  "libc",
  "nanocode-agent-config",
@@ -414,7 +378,6 @@ dependencies = [
 name = "nanocode-backend-codex-client"
 version = "0.7.0"
 dependencies = [
- "futures-util",
  "http",
  "memchr",
  "nanocode-agent-types",
@@ -457,7 +420,6 @@ dependencies = [
 name = "nanocode-cli"
 version = "0.7.0"
 dependencies = [
- "futures-util",
  "http",
  "mimalloc",
  "nanocode",
@@ -489,7 +451,6 @@ dependencies = [
 name = "nanocode-code-mode"
 version = "0.7.0"
 dependencies = [
- "futures-util",
  "nanocode-audio",
  "nanocode-code-mode-engine",
  "nanocode-digest",
@@ -532,7 +493,6 @@ dependencies = [
 name = "nanocode-computer"
 version = "0.7.0"
 dependencies = [
- "futures-util",
  "libc",
  "nanocode-computer-repl",
  "nanocode-jpeg",
@@ -579,7 +539,6 @@ dependencies = [
 name = "nanocode-durability"
 version = "0.7.0"
 dependencies = [
- "futures-util",
  "nanocode-agent-core",
  "nanocode-durability-core",
  "nanocode-platform",
@@ -594,7 +553,6 @@ dependencies = [
 name = "nanocode-durability-core"
 version = "0.7.0"
 dependencies = [
- "futures-util",
  "nanocode-digest",
  "nanocode-platform",
  "nanocode-sync",
@@ -626,7 +584,6 @@ name = "nanocode-http"
 version = "0.7.0"
 dependencies = [
  "bytes",
- "futures-util",
  "http",
  "httparse",
  "nanocode-compression",
@@ -697,7 +654,6 @@ dependencies = [
 name = "nanocode-mcp-http"
 version = "0.7.0"
 dependencies = [
- "futures-util",
  "http",
  "nanocode-http",
  "nanocode-mcp",
@@ -715,7 +671,6 @@ dependencies = [
 name = "nanocode-mcp-tools"
 version = "0.7.0"
 dependencies = [
- "futures-util",
  "http",
  "nanocode-digest",
  "nanocode-home",
@@ -741,7 +696,6 @@ name = "nanocode-mpp"
 version = "0.7.0"
 dependencies = [
  "bytes",
- "futures-util",
  "graviola",
  "http",
  "nanocode-http",
@@ -865,7 +819,6 @@ name = "nanocode-sandbox"
 version = "0.7.0"
 dependencies = [
  "bytes",
- "futures-util",
  "graviola",
  "http",
  "libc",
@@ -910,7 +863,6 @@ dependencies = [
 name = "nanocode-sim"
 version = "0.7.0"
 dependencies = [
- "futures-util",
  "http",
  "nanocode",
  "nanocode-agent-core",
@@ -965,7 +917,6 @@ dependencies = [
 name = "nanocode-subagents"
 version = "0.7.0"
 dependencies = [
- "futures-util",
  "nanocode-agent-core",
  "nanocode-durability-core",
  "nanocode-platform",
@@ -982,7 +933,6 @@ dependencies = [
 name = "nanocode-sync"
 version = "0.7.0"
 dependencies = [
- "futures-util",
  "nanocode-platform",
  "nanocode-sys",
  "serde",
@@ -1037,7 +987,6 @@ dependencies = [
 name = "nanocode-tool-host"
 version = "0.7.0"
 dependencies = [
- "futures-util",
  "nanocode-code-mode",
  "nanocode-digest",
  "nanocode-home",
@@ -1068,7 +1017,6 @@ dependencies = [
 name = "nanocode-tool-runtime"
 version = "0.7.0"
 dependencies = [
- "futures-util",
  "http",
  "nanocode-code-mode",
  "nanocode-home",
@@ -1143,7 +1091,6 @@ dependencies = [
 name = "nanocode-types"
 version = "0.7.0"
 dependencies = [
- "futures-util",
  "nanocode-platform",
  "nanocode-sync",
  "nanocode-trace",
@@ -1177,11 +1124,11 @@ dependencies = [
 name = "nanocode-websocket"
 version = "0.7.0"
 dependencies = [
- "futures-util",
  "http",
  "httparse",
  "nanocode-digest",
  "nanocode-platform",
+ "nanocode-sync",
  "nanocode-sys",
  "nanocode-tls",
  "tokio",
@@ -1644,12 +1591,6 @@ dependencies = [
  "errno",
  "libc",
 ]
-
-[[package]]
-name = "slab"
-version = "0.4.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 
 [[package]]
 name = "socket2"

@@ -11,7 +11,7 @@ autotests = false
 autobenches = false
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-futures-util.workspace = true
+nanocode-sync.workspace = true
 http.workspace = true
 httparse.workspace = true
 nanocode-digest.workspace = true

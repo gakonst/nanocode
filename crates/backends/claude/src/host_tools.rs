@@ -11,9 +11,9 @@ use std::{
 use crate::tools::{
     BashExecution, BashExecutor, BashRequest, BashResult, ClaudeBash, host::HostTool, text_files,
 };
-use futures_util::future::{AbortHandle, abortable};
 use nanocode_agent_core::input::ImageDetail;
 use nanocode_process_contracts::{FileHost, ForegroundCommand, ForegroundExecutor};
+use nanocode_sync::future::{AbortHandle, abortable};
 use nanocode_sync::{Atom, Signal};
 use nanocode_sys::base64::STANDARD;
 use nanocode_tool_host::{

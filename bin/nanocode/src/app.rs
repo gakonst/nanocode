@@ -5,7 +5,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use futures_util::StreamExt;
 use nanocode::{
     AgentStatus, ExecutionPolicyDisposition, ExecutorSelection, HarnessFamily, ModelSelection,
     PromptRequest, PromptRoute, Runner, RunnerEvent, RunnerInfo, RunnerProtocol, RunnerServer,
@@ -18,6 +17,7 @@ use nanocode::{
     durability::{SessionSummary, TranscriptItem},
 };
 use nanocode_observability::TUI_TARGET;
+use nanocode_sync::StreamExt;
 use nanocode_tui::{
     composer::{Composer, ComposerAction},
     effort::{DialAction, EffortDial},

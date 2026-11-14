@@ -25,7 +25,6 @@ nanocode-trace.workspace = true
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 nanocode-process.workspace = true
-futures-util.workspace = true
 http.workspace = true
 nanocode-tls.workspace = true
 tokio = { workspace = true, features = ["fs", "io-util", "net", "rt", "signal", "sync", "time"] }

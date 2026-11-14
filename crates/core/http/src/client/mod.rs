@@ -9,7 +9,6 @@ mod response;
 use std::{fmt, future::Future, net::SocketAddr, pin::Pin, sync::Arc, time::Duration};
 
 use bytes::Bytes;
-use futures_util::StreamExt;
 use http::{
     HeaderMap, HeaderValue, Method, StatusCode, Version,
     header::{
@@ -18,6 +17,7 @@ use http::{
     },
 };
 use nanocode_platform::{Instant, now, timeout};
+use nanocode_sync::StreamExt;
 use nanocode_url::Url;
 
 pub use body::{Body, BoxError, ChunkStream};

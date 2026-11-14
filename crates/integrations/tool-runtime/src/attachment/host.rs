@@ -6,8 +6,8 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use futures_util::{Sink, SinkExt, Stream, StreamExt, future};
 use nanocode_sync::{Atom, Slot};
+use nanocode_sync::{Sink, SinkExt, Stream, StreamExt, future};
 use nanocode_websocket::{
     CloseCode, CloseFrame, Message,
     server::{ErrorResponse, Request, Response},
@@ -254,7 +254,7 @@ impl RemoteRunner {
 
     pub fn tools<'call>(
         &'call self,
-    ) -> futures_util::future::BoxFuture<'call, Result<RemoteTools, AttachmentError>> {
+    ) -> nanocode_sync::future::BoxFuture<'call, Result<RemoteTools, AttachmentError>> {
         Box::pin(async move {
             let mut catalog = self.inner.catalog.subscribe();
             let mut failure = self.inner.failure.subscribe();

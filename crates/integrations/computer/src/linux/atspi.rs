@@ -4,8 +4,8 @@ use super::{
     wire::Value,
 };
 use crate::state::Node;
-use futures_util::{StreamExt, stream};
 use nanocode_platform::{timeout, timeout_at};
+use nanocode_sync::{StreamExt, stream};
 use std::{collections::HashMap, future::Future, time::Duration};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 

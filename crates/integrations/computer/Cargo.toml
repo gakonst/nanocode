@@ -27,7 +27,6 @@ libc.workspace = true
 nanocode-sys.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
-futures-util.workspace = true
 nanocode-jpeg.workspace = true
 nanocode-sys.workspace = true
 

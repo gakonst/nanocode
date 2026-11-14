@@ -8,7 +8,8 @@ use std::{
     task::{Context, Poll, Waker},
 };
 
-use futures_util::{Stream, StreamExt, task::AtomicWaker};
+use crate::{Stream, StreamExt};
+use nanocode_sys::AtomicWaker;
 
 pub struct InOrder<F> {
     parent: Arc<AtomicWaker>,

@@ -1,7 +1,7 @@
 use std::fmt::Display;
 
-use futures_util::{Sink, SinkExt, Stream, StreamExt};
 use nanocode_sync::Owned;
+use nanocode_sync::{Sink, SinkExt, Stream, StreamExt};
 use tokio::sync::{mpsc, oneshot};
 
 use super::{PEER_CLOSED, RemoteDelivery, RemoteFrame, RemoteLink};
@@ -196,7 +196,7 @@ pub fn websocket<St, M, E>(
     ping: fn() -> M,
     (interval, timeout): (std::time::Duration, std::time::Duration),
 ) -> (
-    MessageLink<futures_util::stream::BoxStream<'static, Result<String, &'static str>>, M>,
+    MessageLink<nanocode_sync::stream::BoxStream<'static, Result<String, &'static str>>, M>,
     impl Future<Output = &'static str> + Send,
 )
 where

@@ -1,7 +1,7 @@
 use std::{error::Error, io};
 
-use futures_util::{Stream, StreamExt, stream};
 use nanocode_compression::brotli::{Decoder, Status};
+use nanocode_sync::{Stream, StreamExt, stream};
 
 const HTTP_READ_CHUNK_SIZE: usize = 4096;
 

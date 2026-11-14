@@ -1,12 +1,12 @@
 use crate::egress::wire::Secret;
 use bytes::Bytes;
-use futures_util::stream::unfold;
 use http::header::{self, HeaderMap, HeaderName, HeaderValue};
 use nanocode_http::{
     server::{BodyStream, Incoming},
     wire::WireError,
 };
 use nanocode_platform::timeout;
+use nanocode_sync::stream::unfold;
 use nanocode_sys::base64::STANDARD;
 use std::{cmp::Reverse, error::Error, fmt, sync::Arc, time::Duration};
 

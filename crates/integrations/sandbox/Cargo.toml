@@ -16,7 +16,6 @@ include = ["src/**", "Cargo.toml"]
 
 [target.'cfg(unix)'.dependencies]
 bytes.workspace = true
-futures-util.workspace = true
 http.workspace = true
 nanocode-http.workspace = true
 nanocode-sync.workspace = true

@@ -7,7 +7,6 @@ use std::{
     },
 };
 
-use futures_util::FutureExt;
 use nanocode::{
     backend::Prompt,
     session_host::{Submission, TurnState},
@@ -21,6 +20,7 @@ use nanocode_durability_core::{
     OwnerId, OwnerToken, Settle, StateCommit, StateStore, StoreError, StoreFuture, SummaryUpdate,
 };
 use nanocode_sync::Atom;
+use nanocode_sync::FutureExt;
 use serde_json::{Map, Value, json, value::to_raw_value};
 
 use crate::{

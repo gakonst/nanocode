@@ -1,6 +1,6 @@
 use std::{panic::AssertUnwindSafe, sync::Arc};
 
-use futures_util::FutureExt;
+use nanocode_sync::FutureExt;
 use nanocode_tools::ToolOutputWire;
 use serde::Serialize;
 use serde_json::{Value, value::to_raw_value};

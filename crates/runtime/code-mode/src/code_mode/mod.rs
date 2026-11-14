@@ -13,16 +13,16 @@ use std::{
     time::Duration,
 };
 
-use futures_util::{FutureExt, StreamExt};
+use nanocode_sync::{FutureExt, StreamExt};
 
 #[cfg(not(target_family = "wasm"))]
-type CallFuture<'a> = futures_util::future::BoxFuture<'a, CompletedNestedCall>;
+type CallFuture<'a> = nanocode_sync::future::BoxFuture<'a, CompletedNestedCall>;
 #[cfg(target_family = "wasm")]
-type CallFuture<'a> = futures_util::future::LocalBoxFuture<'a, CompletedNestedCall>;
+type CallFuture<'a> = nanocode_sync::future::LocalBoxFuture<'a, CompletedNestedCall>;
 #[cfg(not(target_family = "wasm"))]
-type FlushFuture = futures_util::future::BoxFuture<'static, ()>;
+type FlushFuture = nanocode_sync::future::BoxFuture<'static, ()>;
 #[cfg(target_family = "wasm")]
-type FlushFuture = futures_util::future::LocalBoxFuture<'static, ()>;
+type FlushFuture = nanocode_sync::future::LocalBoxFuture<'static, ()>;
 
 fn request_flush(
     record: Option<&Arc<CellRecord>>,

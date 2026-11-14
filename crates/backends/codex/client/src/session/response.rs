@@ -9,7 +9,7 @@ use std::{
 };
 
 use crate::client::call::Service;
-use futures_util::{Stream, future::poll_fn};
+use nanocode_sync::{Stream, future::poll_fn};
 use nanocode_platform::Instant;
 use tokio::sync::mpsc;
 use nanocode_trace::{Instrument, info_span};

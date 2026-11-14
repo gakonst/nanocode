@@ -38,7 +38,7 @@ use crate::client::{
     tower::{CodeCall, CodeCallKind, GenerationOutput as TurnResult, ResponsesOutput},
     transport::{ResponsesError, ResponsesTransport, TransportStats, TransportStatsSnapshot},
 };
-use futures_util::{FutureExt, StreamExt, stream::FuturesOrdered};
+use nanocode_sync::{FutureExt, StreamExt, stream::FuturesOrdered};
 use nanocode_platform::{Duration, Instant, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, value::RawValue};

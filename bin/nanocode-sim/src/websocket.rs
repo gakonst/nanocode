@@ -15,7 +15,7 @@ use std::{
     time::Duration,
 };
 
-use futures_util::{SinkExt as _, StreamExt as _};
+use nanocode_sync::{SinkExt as _, StreamExt as _};
 use nanocode_websocket::{CloseCode, CloseFrame, Message, Utf8Bytes, client_async_with_config};
 
 use crate::{

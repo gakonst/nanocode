@@ -1,4 +1,4 @@
-use futures_util::stream::Stream;
+use crate::stream::Stream;
 use std::{
     pin::Pin,
     sync::{

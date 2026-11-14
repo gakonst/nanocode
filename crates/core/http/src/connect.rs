@@ -2,9 +2,9 @@ use std::{
     collections::VecDeque, env, future::Future, io, net::SocketAddr, sync::Arc, time::Duration,
 };
 
-use futures_util::{StreamExt, stream::FuturesUnordered};
 use nanocode_platform::sleep_until;
 use nanocode_sync::{Duplex, SwapOption};
+use nanocode_sync::{StreamExt, stream::FuturesUnordered};
 use nanocode_sys::base64::STANDARD;
 use nanocode_tls::{
     ClientStream,

@@ -9,8 +9,8 @@ use std::{
     time::Duration,
 };
 
-use futures_util::future::{Either, select};
 use nanocode_subagents::{AgentId, AgentUpdate, ScopedAgentUpdate};
+use nanocode_sync::future::{Either, select};
 use nanocode_sync::{Atom, Owned};
 use nanocode_tool_host::embedded::HostFuture;
 use serde::{Deserialize, Serialize};

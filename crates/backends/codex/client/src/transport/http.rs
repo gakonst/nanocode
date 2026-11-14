@@ -322,7 +322,7 @@ impl ResponsesHttp {
 
 #[cfg(not(target_family = "wasm"))]
 async fn collect_layered(mut body: layer::Body) -> Result<String, layer::Error> {
-    use futures_util::StreamExt;
+    use nanocode_sync::StreamExt;
 
     let mut bytes = Vec::new();
     while let Some(chunk) = body.next().await {
@@ -406,7 +406,7 @@ impl SseStream {
                     .map(|chunk| self.decoder.push(&chunk)),
                 #[cfg(not(target_family = "wasm"))]
                 SseBody::Layered(body) => {
-                    use futures_util::StreamExt;
+                    use nanocode_sync::StreamExt;
 
                     idle_within(&mut self.idle, body.next())
                         .await?

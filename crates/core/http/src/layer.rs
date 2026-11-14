@@ -1,7 +1,7 @@
 use std::{fmt, future::Future, pin::Pin};
 
-use futures_util::Stream;
 use http::{HeaderMap, Method, StatusCode};
+use nanocode_sync::Stream;
 
 pub mod origin;
 pub mod retry;

@@ -7,8 +7,8 @@ use std::{
     },
 };
 
-use futures_util::Stream;
 use nanocode_platform::Instant;
+use nanocode_sync::Stream;
 use nanocode_sync::{Inbox, Slot, Swap};
 use nanocode_types_core::responses::MessagePhase;
 use serde::Serialize;

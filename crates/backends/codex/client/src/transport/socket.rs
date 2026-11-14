@@ -6,10 +6,10 @@ use std::{
     time::Duration,
 };
 
-use futures_util::{FutureExt, SinkExt, StreamExt};
 use http::{HeaderValue, header};
 use nanocode_http::layer::retry;
 use nanocode_platform::timeout;
+use nanocode_sync::{FutureExt, SinkExt, StreamExt};
 use nanocode_websocket::{
     Error as WebSocketError, Frame, IntoClientRequest, MaybeTlsStream, Message, OpCode,
     ProtocolError, Utf8Bytes, WebSocketStream,

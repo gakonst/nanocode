@@ -5,12 +5,12 @@ use std::{
     time::{Duration, Instant},
 };
 
-use futures_util::Stream;
 use nanocode::{
     ClaudeModel, Model, ModelSelection,
     http::{self as layer, BoxFuture, Event, EventHook, Layer, Next},
     tools::mcp::{McpPaymentManagement, McpPaymentProvider, McpPendingPayment, McpServer},
 };
+use nanocode_sync::Stream;
 use nanocode_sync::{Atom, Signal, SingleFlight};
 use serde_json::Value;
 
@@ -241,7 +241,7 @@ impl Exchange for NextExchange<'_> {
             status,
             headers,
             request.url().clone(),
-            futures_util::stream::empty(),
+            nanocode_sync::stream::empty(),
         ))
     }
 }
@@ -484,7 +484,7 @@ impl Payments {
         let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
         self.listeners
             .update(|listeners| listeners.push(sender.clone()));
-        futures_util::stream::unfold(receiver, |mut receiver| async move {
+        nanocode_sync::stream::unfold(receiver, |mut receiver| async move {
             receiver.recv().await.map(|notice| (notice, receiver))
         })
     }
@@ -1431,7 +1431,7 @@ impl Tempo {
     }
 
     pub(crate) async fn load(&self) {
-        futures_util::future::join(
+        nanocode_sync::future::join(
             self.listing.load(&self.payments),
             self.catalog.load(&self.payments),
         )

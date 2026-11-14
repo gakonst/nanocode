@@ -5,9 +5,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use nanocode_sync::Atom;
-
-use futures_util::{SinkExt, StreamExt};
+use nanocode_sync::{Atom, SinkExt, StreamExt};
 use nanocode_trace::Instrument as _;
 use nanocode_url::Url;
 use nanocode_websocket::{

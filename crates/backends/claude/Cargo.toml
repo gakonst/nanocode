@@ -27,7 +27,6 @@ nanocode-tools.workspace = true
 nanocode-image.workspace = true
 nanocode-home = { workspace = true  }
 nanocode-url.workspace = true
-futures-util.workspace = true
 nanocode-code-mode = { path = "../../runtime/code-mode", version = "0.7.0"   }
 tokio = { workspace = true, features = ["sync", "time"] }
 http.workspace = true

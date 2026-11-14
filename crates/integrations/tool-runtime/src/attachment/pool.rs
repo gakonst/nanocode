@@ -6,7 +6,7 @@ use crate::{
     embedded::CodeModeHost,
     remote::{CodeModeExecutors, SocketPolicy, SocketShutdown, SocketTransport},
 };
-use futures_util::{SinkExt, StreamExt, future};
+use nanocode_sync::{SinkExt, StreamExt, future};
 use std::{
     collections::{BTreeMap, HashSet},
     fmt,
@@ -544,7 +544,7 @@ impl RunnerPool {
     pub fn connect<'call>(
         &'call self,
         config: Runner,
-    ) -> futures_util::future::BoxFuture<'call, Result<RunnerHandle, AttachmentError>> {
+    ) -> nanocode_sync::future::BoxFuture<'call, Result<RunnerHandle, AttachmentError>> {
         Box::pin(async move {
             let name = config.name.clone();
             let result = self.connect_detected(config).await;
@@ -791,7 +791,7 @@ impl RunnerPool {
     pub fn disconnect<'call>(
         &'call self,
         name: &'call str,
-    ) -> futures_util::future::BoxFuture<'call, Result<(), AttachmentError>> {
+    ) -> nanocode_sync::future::BoxFuture<'call, Result<(), AttachmentError>> {
         Box::pin(async move { self.disconnect_entry(name, None).await })
     }
     async fn disconnect_entry(
@@ -892,7 +892,7 @@ impl RunnerPool {
     }
     pub fn shutdown<'call>(
         &'call self,
-    ) -> futures_util::future::BoxFuture<'call, Result<(), AttachmentError>> {
+    ) -> nanocode_sync::future::BoxFuture<'call, Result<(), AttachmentError>> {
         Box::pin(async move {
             let (names, executors, servers) = self.inner.commit(|state| {
                 state.closed = true;
@@ -978,7 +978,7 @@ impl RunnerPool {
     pub fn listen<'call>(
         &'call self,
         config: RunnerServerConfig,
-    ) -> futures_util::future::BoxFuture<'call, Result<RunnerServer, AttachmentError>> {
+    ) -> nanocode_sync::future::BoxFuture<'call, Result<RunnerServer, AttachmentError>> {
         Box::pin(async move {
             super::install_default_rustls_crypto_provider();
             config.validate()?;
@@ -1339,7 +1339,7 @@ impl RunnerHandle {
     }
     pub fn disconnect<'call>(
         &'call self,
-    ) -> futures_util::future::BoxFuture<'call, Result<(), AttachmentError>> {
+    ) -> nanocode_sync::future::BoxFuture<'call, Result<(), AttachmentError>> {
         Box::pin(async move {
             self.pool
                 .disconnect_entry(&self.name, Some(&self.identity))
@@ -1400,7 +1400,7 @@ impl RunnerServer {
     }
     pub fn stop<'call>(
         &'call self,
-    ) -> futures_util::future::BoxFuture<'call, Result<(), AttachmentError>> {
+    ) -> nanocode_sync::future::BoxFuture<'call, Result<(), AttachmentError>> {
         Box::pin(async move {
             self.inner.cancel.fire();
             if let Some(task) = self.inner.task.take() {

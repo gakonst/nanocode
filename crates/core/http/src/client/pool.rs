@@ -6,7 +6,6 @@ use std::{
     time::Duration,
 };
 
-use futures_util::task::noop_waker_ref;
 use nanocode_platform::{Instant, now};
 use nanocode_sync::{Atom, Slot};
 use tokio::io::ReadBuf;
@@ -91,7 +90,7 @@ fn open(connection: &mut Connection) -> bool {
     }
     let mut probe = [0u8; 1];
     let mut buffer = ReadBuf::new(&mut probe);
-    let mut context = Context::from_waker(noop_waker_ref());
+    let mut context = Context::from_waker(std::task::Waker::noop());
     matches!(
         tokio::io::AsyncRead::poll_read(Pin::new(connection.io_mut()), &mut context, &mut buffer),
         Poll::Pending

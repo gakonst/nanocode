@@ -25,7 +25,6 @@ test = false
 bench = false
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-futures-util.workspace = true
 http.workspace = true
 mimalloc = { workspace = true, features = ["no_thp"] }
 nanocode = { path = "../../crates/nanocode", version = "0.7.0", default-features = false, features = ["local-cells"] }

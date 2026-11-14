@@ -8500,7 +8500,7 @@ impl Registry {
                     return std::future::pending().await;
                 }
                 drop(
-                    futures_util::future::select_all(
+                    nanocode_sync::future::select_all(
                         changes
                             .iter_mut()
                             .map(|changes| Box::pin(changes.changed())),

@@ -5,12 +5,12 @@ use std::{
     time::Duration,
 };
 
-use futures_util::{
+use nanocode_agent_core::backend::BackendFuture;
+use nanocode_platform::{Instant, MaybeSend};
+use nanocode_sync::{
     FutureExt as _,
     future::{AbortHandle, Abortable},
 };
-use nanocode_agent_core::backend::BackendFuture;
-use nanocode_platform::{Instant, MaybeSend};
 use tokio::sync::oneshot;
 
 #[derive(Debug)]
@@ -124,12 +124,11 @@ where
     F: Future<Output = T>,
 {
     let delay = deadline.saturating_duration_since(nanocode_platform::now());
-    futures_util::pin_mut!(future);
-    let timeout = sleep(delay);
-    futures_util::pin_mut!(timeout);
-    match futures_util::future::select(future, timeout).await {
-        futures_util::future::Either::Left((output, _)) => Ok(output),
-        futures_util::future::Either::Right(((), _)) => Err(()),
+    let future = std::pin::pin!(future);
+    let timeout = std::pin::pin!(sleep(delay));
+    match nanocode_sync::future::select(future, timeout).await {
+        nanocode_sync::future::Either::Left((output, _)) => Ok(output),
+        nanocode_sync::future::Either::Right(((), _)) => Err(()),
     }
 }
 

@@ -57,7 +57,7 @@ pub trait McpPaymentProvider: Send + Sync {
     fn prepare<'life0, 'life1, 'async_trait>(
         &'life0 self,
         payment_required: &'life1 Value,
-    ) -> futures_util::future::BoxFuture<
+    ) -> nanocode_sync::future::BoxFuture<
         'async_trait,
         Result<Option<Box<dyn McpPendingPayment>>, String>,
     >
@@ -70,7 +70,7 @@ pub trait McpPaymentProvider: Send + Sync {
         &'life0 self,
         payment_required: &'life1 Value,
         management: &'life2 dyn McpPaymentManagement,
-    ) -> futures_util::future::BoxFuture<
+    ) -> nanocode_sync::future::BoxFuture<
         'async_trait,
         Result<Option<Box<dyn McpPendingPayment>>, String>,
     >
@@ -94,7 +94,7 @@ pub trait McpPaymentManagement: Send + Sync {
     fn send<'life0, 'async_trait>(
         &'life0 self,
         credential: Value,
-    ) -> futures_util::future::BoxFuture<'async_trait, Result<Option<Value>, String>>
+    ) -> nanocode_sync::future::BoxFuture<'async_trait, Result<Option<Value>, String>>
     where
         'life0: 'async_trait,
         Self: 'async_trait;
@@ -108,13 +108,13 @@ pub trait McpPendingPayment: Send {
 
     fn commit<'async_trait>(
         self: Box<Self>,
-    ) -> futures_util::future::BoxFuture<'async_trait, Result<(), String>>
+    ) -> nanocode_sync::future::BoxFuture<'async_trait, Result<(), String>>
     where
         Self: 'async_trait;
 
     fn rollback<'async_trait>(
         self: Box<Self>,
-    ) -> futures_util::future::BoxFuture<'async_trait, Result<(), String>>
+    ) -> nanocode_sync::future::BoxFuture<'async_trait, Result<(), String>>
     where
         Self: 'async_trait;
 }

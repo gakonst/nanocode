@@ -1,9 +1,9 @@
 use std::{collections::VecDeque, fmt, pin::Pin, sync::Arc, time::Duration};
 
 use bytes::Bytes;
-use futures_util::{FutureExt, Stream, StreamExt, stream::BoxStream};
 use http::{HeaderMap, StatusCode, Version, header::CONTENT_LENGTH};
 use nanocode_platform::{Instant, now};
+use nanocode_sync::{FutureExt, Stream, StreamExt, stream::BoxStream};
 use nanocode_url::Url;
 use serde::de::DeserializeOwned;
 
@@ -253,7 +253,7 @@ impl Response {
 
     #[must_use]
     pub fn bytes_stream(self) -> BoxStream<'static, Result<Bytes>> {
-        futures_util::stream::unfold(self, |mut response| async move {
+        nanocode_sync::stream::unfold(self, |mut response| async move {
             response
                 .chunk()
                 .await

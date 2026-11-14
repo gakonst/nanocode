@@ -6,8 +6,8 @@ use std::{
     },
 };
 
-use futures_util::FutureExt;
 use nanocode_sync::Atom;
+use nanocode_sync::FutureExt;
 use serde_json::{Value, json, value::to_raw_value};
 
 use super::{

@@ -2,7 +2,7 @@ use super::{
     ClaudeClient, ClaudeToolSpec, ContentBlock, Message, MessagesRequest, Role,
     ServerToolDefinition, StopReason, collect_stream,
 };
-use futures_util::StreamExt as _;
+use nanocode_sync::StreamExt as _;
 use serde_json::{Value, json};
 use std::sync::Arc;
 

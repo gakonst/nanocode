@@ -6,8 +6,8 @@ use std::{
     },
 };
 
-use futures_util::future::{AbortHandle, Abortable, select_all};
 use nanocode_platform::{Duration, Instant};
+use nanocode_sync::future::{AbortHandle, Abortable, select_all};
 use nanocode_sync::{Atom, Signal, Slot};
 use nanocode_tool_contracts::RunningTask;
 use serde_json::{Value, json};

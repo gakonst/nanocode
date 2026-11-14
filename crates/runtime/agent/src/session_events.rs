@@ -6,9 +6,9 @@ use std::{
     time::Duration,
 };
 
-use futures_util::future::{Either, select};
 use nanocode_platform::Instant;
 use nanocode_subagents::{AgentUpdate, ScopedAgentUpdate};
+use nanocode_sync::future::{Either, select};
 use nanocode_tool_host::embedded::HostFuture;
 use serde::{Serialize, Serializer, ser::SerializeMap};
 use serde_json::{Map, Value};

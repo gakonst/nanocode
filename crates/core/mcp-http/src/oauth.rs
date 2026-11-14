@@ -254,7 +254,7 @@ pub trait McpOAuthStore: Send + Sync {
         &'life0 self,
         server_name: &'life1 str,
         server_url: &'life2 str,
-    ) -> futures_util::future::BoxFuture<'async_trait, Result<Option<McpOAuthCredentials>, String>>
+    ) -> nanocode_sync::future::BoxFuture<'async_trait, Result<Option<McpOAuthCredentials>, String>>
     where
         'life0: 'async_trait,
         'life1: 'async_trait,
@@ -266,7 +266,7 @@ pub trait McpOAuthStore: Send + Sync {
         server_name: &'life1 str,
         server_url: &'life2 str,
         credentials: &'life3 McpOAuthCredentials,
-    ) -> futures_util::future::BoxFuture<'async_trait, Result<(), String>>
+    ) -> nanocode_sync::future::BoxFuture<'async_trait, Result<(), String>>
     where
         'life0: 'async_trait,
         'life1: 'async_trait,
@@ -278,7 +278,7 @@ pub trait McpOAuthStore: Send + Sync {
         &'life0 self,
         _server_name: &'life1 str,
         _server_url: &'life2 str,
-    ) -> futures_util::future::BoxFuture<'async_trait, Result<Box<dyn McpOAuthRefreshGuard>, String>>
+    ) -> nanocode_sync::future::BoxFuture<'async_trait, Result<Box<dyn McpOAuthRefreshGuard>, String>>
     where
         'life0: 'async_trait,
         'life1: 'async_trait,
@@ -295,7 +295,7 @@ pub trait McpOAuthStore: Send + Sync {
         &'life0 self,
         _server_name: &'life1 str,
         _server_url: &'life2 str,
-    ) -> futures_util::future::BoxFuture<'async_trait, ()>
+    ) -> nanocode_sync::future::BoxFuture<'async_trait, ()>
     where
         'life0: 'async_trait,
         'life1: 'async_trait,
@@ -344,7 +344,7 @@ impl OAuthRuntime {
 
     pub fn access_token<'call>(
         self: &'call Arc<Self>,
-    ) -> futures_util::future::BoxFuture<'call, Result<String, String>> {
+    ) -> nanocode_sync::future::BoxFuture<'call, Result<String, String>> {
         Box::pin(async move {
             self.refresh_if_needed().await?;
             self.current_access_token().await
@@ -495,7 +495,7 @@ pub fn transport_from_credentials<'call>(
     store: Arc<dyn McpOAuthStore>,
     credentials: McpOAuthCredentials,
     metadata_cache: &'call OAuthMetadataCache,
-) -> futures_util::future::BoxFuture<'call, Result<OAuthTransport, String>> {
+) -> nanocode_sync::future::BoxFuture<'call, Result<OAuthTransport, String>> {
     Box::pin(async move {
         let base_url = Url::parse(server_url).map_err(|error| {
             format!("failed to initialize MCP OAuth state: URL parse error: {error}")
@@ -1250,7 +1250,7 @@ pub fn begin_login(
     server_url: String,
     headers: BTreeMap<String, SecretSource>,
     store: Arc<dyn McpOAuthStore>,
-) -> futures_util::future::BoxFuture<'static, Result<OAuthLoginFlow, String>> {
+) -> nanocode_sync::future::BoxFuture<'static, Result<OAuthLoginFlow, String>> {
     Box::pin(async move {
         let client = oauth_http_client(headers)?;
         let listener = TcpListener::bind("127.0.0.1:0")

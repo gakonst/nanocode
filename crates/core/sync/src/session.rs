@@ -1,5 +1,5 @@
+use crate::future::BoxFuture;
 use crate::{Lines, Owned, Turn};
-use futures_util::future::BoxFuture;
 use nanocode_platform::{sleep, timeout, timeout_at};
 use std::{
     fmt::{Debug, Display},

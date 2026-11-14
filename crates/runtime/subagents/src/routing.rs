@@ -98,10 +98,10 @@ impl SpawnDecision {
 }
 
 #[cfg(not(target_family = "wasm"))]
-type RouteFuture<'a, T> = futures_util::future::BoxFuture<'a, T>;
+type RouteFuture<'a, T> = nanocode_sync::future::BoxFuture<'a, T>;
 
 #[cfg(target_family = "wasm")]
-type RouteFuture<'a, T> = futures_util::future::LocalBoxFuture<'a, T>;
+type RouteFuture<'a, T> = nanocode_sync::future::LocalBoxFuture<'a, T>;
 
 pub trait SpawnRouter: Send + Sync {
     fn resolve<'life0, 'life1, 'life2, 'life3, 'life4, 'async_trait>(

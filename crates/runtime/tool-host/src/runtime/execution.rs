@@ -155,7 +155,7 @@ impl ToolRuntime {
         &'call self,
         source: &'call str,
         context: ToolContext<'call>,
-    ) -> futures_util::future::BoxFuture<
+    ) -> nanocode_sync::future::BoxFuture<
         'call,
         Result<CodeModeExecution, crate::embedded::CodeModeHostError>,
     > {
@@ -172,7 +172,7 @@ impl ToolRuntime {
         source: &'call str,
         context: ToolContext<'call>,
         observer: &'call mut dyn CodeModeObserver,
-    ) -> futures_util::future::BoxFuture<
+    ) -> nanocode_sync::future::BoxFuture<
         'call,
         Result<CodeModeExecution, crate::embedded::CodeModeHostError>,
     > {
@@ -196,7 +196,7 @@ impl ToolRuntime {
         &'call self,
         source: &'call str,
         context: OwnedToolContext,
-    ) -> futures_util::future::BoxFuture<
+    ) -> nanocode_sync::future::BoxFuture<
         'call,
         Result<CodeModeExecution, crate::embedded::CodeModeHostError>,
     > {
@@ -213,7 +213,7 @@ impl ToolRuntime {
         source: &'call str,
         context: OwnedToolContext,
         observer: &'call mut dyn CodeModeObserver,
-    ) -> futures_util::future::BoxFuture<
+    ) -> nanocode_sync::future::BoxFuture<
         'call,
         Result<CodeModeExecution, crate::embedded::CodeModeHostError>,
     > {
@@ -237,7 +237,7 @@ impl ToolRuntime {
         &'call self,
         input: &'call str,
         context: ToolContext<'call>,
-    ) -> futures_util::future::BoxFuture<
+    ) -> nanocode_sync::future::BoxFuture<
         'call,
         Result<CodeModeExecution, crate::embedded::CodeModeHostError>,
     > {
@@ -254,7 +254,7 @@ impl ToolRuntime {
         input: &'call str,
         context: ToolContext<'call>,
         observer: &'call mut dyn CodeModeObserver,
-    ) -> futures_util::future::BoxFuture<
+    ) -> nanocode_sync::future::BoxFuture<
         'call,
         Result<CodeModeExecution, crate::embedded::CodeModeHostError>,
     > {
@@ -277,7 +277,7 @@ impl ToolRuntime {
     pub fn recover_code<'call>(
         &'call self,
         context: ToolContext<'call>,
-    ) -> futures_util::future::BoxFuture<
+    ) -> nanocode_sync::future::BoxFuture<
         'call,
         Result<Option<CodeModeExecution>, crate::embedded::CodeModeHostError>,
     > {
@@ -293,7 +293,7 @@ impl ToolRuntime {
         &'call self,
         name: &'call str,
         context: ToolContext<'call>,
-    ) -> futures_util::future::BoxFuture<'call, Option<ToolOutput>> {
+    ) -> nanocode_sync::future::BoxFuture<'call, Option<ToolOutput>> {
         Box::pin(async move {
             match &self.inner {
                 Runtime::Native(_) => self.recovery.as_ref()?.recover(name, context).await,
@@ -307,7 +307,7 @@ impl ToolRuntime {
         name: &'call str,
         input: ToolInput,
         context: ToolContext<'call>,
-    ) -> futures_util::future::BoxFuture<
+    ) -> nanocode_sync::future::BoxFuture<
         'call,
         Result<ToolOutput, crate::embedded::CodeModeHostError>,
     > {
@@ -334,7 +334,7 @@ impl ToolRuntime {
         name: &'call str,
         input: Value,
         context: ToolContext<'call>,
-    ) -> futures_util::future::BoxFuture<'call, ToolOutput> {
+    ) -> nanocode_sync::future::BoxFuture<'call, ToolOutput> {
         match &self.inner {
             Runtime::Native(runtime) => runtime.execute_nested_tool(name, input, context),
             Runtime::Host(_) => Box::pin(async move {
@@ -362,7 +362,7 @@ impl ToolRuntimeControl {
         }
     }
 
-    pub fn preempt_turn<'call>(&'call self) -> futures_util::future::BoxFuture<'call, ()> {
+    pub fn preempt_turn<'call>(&'call self) -> nanocode_sync::future::BoxFuture<'call, ()> {
         Box::pin(async move {
             match &self.inner {
                 RuntimeControl::Native(control) => control.preempt_turn().await,
@@ -381,7 +381,7 @@ impl ToolRuntimeControl {
     pub fn detach_turn_with_updates<'call>(
         &'call self,
         observer: &'call mut (dyn FnMut(&str) -> Box<dyn CodeModeObserver> + Send),
-    ) -> futures_util::future::BoxFuture<'call, ()> {
+    ) -> nanocode_sync::future::BoxFuture<'call, ()> {
         Box::pin(async move {
             match &self.inner {
                 RuntimeControl::Native(control) => control.detach_turn_with_updates(observer).await,
@@ -390,7 +390,7 @@ impl ToolRuntimeControl {
         })
     }
 
-    pub fn cancel_turn<'call>(&'call self) -> futures_util::future::BoxFuture<'call, ()> {
+    pub fn cancel_turn<'call>(&'call self) -> nanocode_sync::future::BoxFuture<'call, ()> {
         Box::pin(async move {
             match &self.inner {
                 RuntimeControl::Native(control) => control.cancel_turn().await,
@@ -402,7 +402,7 @@ impl ToolRuntimeControl {
     pub fn cancel_turn_with_updates<'call>(
         &'call self,
         observer: &'call mut dyn CodeModeObserver,
-    ) -> futures_util::future::BoxFuture<'call, ()> {
+    ) -> nanocode_sync::future::BoxFuture<'call, ()> {
         Box::pin(async move {
             match &self.inner {
                 RuntimeControl::Native(control) => control.cancel_turn_with_updates(observer).await,
@@ -411,7 +411,7 @@ impl ToolRuntimeControl {
         })
     }
 
-    pub fn cancel<'call>(&'call self) -> futures_util::future::BoxFuture<'call, ()> {
+    pub fn cancel<'call>(&'call self) -> nanocode_sync::future::BoxFuture<'call, ()> {
         Box::pin(async move {
             match &self.inner {
                 RuntimeControl::Native(control) => control.cancel().await,
@@ -423,7 +423,7 @@ impl ToolRuntimeControl {
     pub fn cancel_with_updates<'call>(
         &'call self,
         observer: &'call mut dyn CodeModeObserver,
-    ) -> futures_util::future::BoxFuture<'call, ()> {
+    ) -> nanocode_sync::future::BoxFuture<'call, ()> {
         Box::pin(async move {
             match &self.inner {
                 RuntimeControl::Native(control) => control.cancel_with_updates(observer).await,
@@ -789,7 +789,7 @@ impl NativeToolRuntime {
         &'call self,
         source: &'call str,
         context: ToolContext<'call>,
-    ) -> futures_util::future::BoxFuture<
+    ) -> nanocode_sync::future::BoxFuture<
         'call,
         Result<CodeModeExecution, crate::embedded::CodeModeHostError>,
     > {
@@ -802,7 +802,7 @@ impl NativeToolRuntime {
         source: &'call str,
         context: ToolContext<'call>,
         observer: &'call mut dyn CodeModeObserver,
-    ) -> futures_util::future::BoxFuture<
+    ) -> nanocode_sync::future::BoxFuture<
         'call,
         Result<CodeModeExecution, crate::embedded::CodeModeHostError>,
     > {
@@ -818,7 +818,7 @@ impl NativeToolRuntime {
         &'call self,
         source: &'call str,
         context: OwnedToolContext,
-    ) -> futures_util::future::BoxFuture<
+    ) -> nanocode_sync::future::BoxFuture<
         'call,
         Result<CodeModeExecution, crate::embedded::CodeModeHostError>,
     > {
@@ -831,7 +831,7 @@ impl NativeToolRuntime {
         source: &'call str,
         context: OwnedToolContext,
         observer: &'call mut dyn CodeModeObserver,
-    ) -> futures_util::future::BoxFuture<
+    ) -> nanocode_sync::future::BoxFuture<
         'call,
         Result<CodeModeExecution, crate::embedded::CodeModeHostError>,
     > {
@@ -842,7 +842,7 @@ impl NativeToolRuntime {
         &'call self,
         input: &'call str,
         context: ToolContext<'call>,
-    ) -> futures_util::future::BoxFuture<
+    ) -> nanocode_sync::future::BoxFuture<
         'call,
         Result<CodeModeExecution, crate::embedded::CodeModeHostError>,
     > {
@@ -858,7 +858,7 @@ impl NativeToolRuntime {
         input: &'call str,
         context: ToolContext<'call>,
         observer: &'call mut dyn CodeModeObserver,
-    ) -> futures_util::future::BoxFuture<
+    ) -> nanocode_sync::future::BoxFuture<
         'call,
         Result<CodeModeExecution, crate::embedded::CodeModeHostError>,
     > {
@@ -935,7 +935,7 @@ impl NativeToolRuntime {
     pub fn recover_code<'call>(
         &'call self,
         context: ToolContext<'call>,
-    ) -> futures_util::future::BoxFuture<
+    ) -> nanocode_sync::future::BoxFuture<
         'call,
         Result<Option<CodeModeExecution>, crate::embedded::CodeModeHostError>,
     > {
@@ -965,7 +965,7 @@ impl NativeToolRuntime {
         name: &'call str,
         input: ToolInput,
         context: ToolContext<'call>,
-    ) -> futures_util::future::BoxFuture<
+    ) -> nanocode_sync::future::BoxFuture<
         'call,
         Result<ToolOutput, crate::embedded::CodeModeHostError>,
     > {
@@ -988,7 +988,7 @@ impl NativeToolRuntime {
         name: &'call str,
         input: Value,
         context: ToolContext<'call>,
-    ) -> futures_util::future::BoxFuture<'call, ToolOutput> {
+    ) -> nanocode_sync::future::BoxFuture<'call, ToolOutput> {
         Box::pin(self.registry.execute_nested(name, input, context))
     }
 }
@@ -1085,7 +1085,7 @@ impl NativeToolRuntimeControl {
         }
     }
 
-    pub fn preempt_turn<'call>(&'call self) -> futures_util::future::BoxFuture<'call, ()> {
+    pub fn preempt_turn<'call>(&'call self) -> nanocode_sync::future::BoxFuture<'call, ()> {
         Box::pin(async move {
             self.code_mode.preempt_turn();
             for (session, host) in self.remote() {
@@ -1111,7 +1111,7 @@ impl NativeToolRuntimeControl {
     pub fn detach_turn_with_updates<'call>(
         &'call self,
         observer: &'call mut (dyn FnMut(&str) -> Box<dyn CodeModeObserver> + Send),
-    ) -> futures_util::future::BoxFuture<'call, ()> {
+    ) -> nanocode_sync::future::BoxFuture<'call, ()> {
         Box::pin(async move {
             let turn_id = self.current_turn.load(Ordering::Acquire);
             self.code_mode.detach_turn(turn_id, &mut *observer).await;
@@ -1122,7 +1122,7 @@ impl NativeToolRuntimeControl {
     }
 
     #[doc(hidden)]
-    pub fn cancel_turn<'call>(&'call self) -> futures_util::future::BoxFuture<'call, ()> {
+    pub fn cancel_turn<'call>(&'call self) -> nanocode_sync::future::BoxFuture<'call, ()> {
         Box::pin(async move {
             let turn_id = self.current_turn.load(Ordering::Acquire);
             self.code_mode.terminate_turn(turn_id, None).await;
@@ -1138,7 +1138,7 @@ impl NativeToolRuntimeControl {
     pub fn cancel_turn_with_updates<'call>(
         &'call self,
         observer: &'call mut dyn CodeModeObserver,
-    ) -> futures_util::future::BoxFuture<'call, ()> {
+    ) -> nanocode_sync::future::BoxFuture<'call, ()> {
         Box::pin(async move {
             let turn_id = self.current_turn.load(Ordering::Acquire);
 
@@ -1158,7 +1158,7 @@ impl NativeToolRuntimeControl {
     }
 
     #[doc(hidden)]
-    pub fn cancel<'call>(&'call self) -> futures_util::future::BoxFuture<'call, ()> {
+    pub fn cancel<'call>(&'call self) -> nanocode_sync::future::BoxFuture<'call, ()> {
         Box::pin(async move {
             let _code_mode_quiescence = self.code_mode.terminate_all(None).await;
             if let Some(workspace) = &self.workspace {
@@ -1176,7 +1176,7 @@ impl NativeToolRuntimeControl {
     pub fn cancel_with_updates<'call>(
         &'call self,
         observer: &'call mut dyn CodeModeObserver,
-    ) -> futures_util::future::BoxFuture<'call, ()> {
+    ) -> nanocode_sync::future::BoxFuture<'call, ()> {
         Box::pin(async move {
             let _code_mode_quiescence = self.code_mode.terminate_all(Some(&mut *observer)).await;
             if let Some(workspace) = &self.workspace {

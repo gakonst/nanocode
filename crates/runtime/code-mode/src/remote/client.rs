@@ -14,7 +14,7 @@ use std::{
 use nanocode_sync::{Atom, Slot};
 use nanocode_tool_contracts::{ToolOutput, ToolReceipt};
 
-use futures_util::{
+use nanocode_sync::{
     FutureExt, StreamExt,
     future::{AbortHandle, Abortable, Either, select},
     stream::FuturesUnordered,

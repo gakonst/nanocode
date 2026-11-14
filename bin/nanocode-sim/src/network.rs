@@ -197,7 +197,7 @@ impl Network {
                 return Ok(HttpResponse::new(
                     http::StatusCode::from_u16(status).expect("a simulated status is valid"),
                     headers,
-                    Box::pin(futures_util::stream::once(async move { Ok(body.into_bytes()) })),
+                    Box::pin(nanocode_sync::stream::once(async move { Ok(body.into_bytes()) })),
                 ));
             }
             Fate::Delivered { .. } => {}
@@ -258,7 +258,7 @@ impl Network {
             http::HeaderValue::from_static("text/event-stream"),
         );
         headers.insert("request-id", http::HeaderValue::from_static("req_sim"));
-        let body = futures_util::stream::unfold(parts, |mut parts| async move {
+        let body = nanocode_sync::stream::unfold(parts, |mut parts| async move {
             let (gap_ms, part) = parts.pop_front()?;
             nanocode_platform::sleep(Duration::from_millis(gap_ms)).await;
             Some((part, parts))

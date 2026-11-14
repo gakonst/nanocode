@@ -368,7 +368,7 @@ impl AttachmentConnector {
 
     pub fn connect(
         self,
-    ) -> futures_util::future::BoxFuture<
+    ) -> nanocode_sync::future::BoxFuture<
         'static,
         Result<(Attachment, AttachmentEvents), AttachmentError>,
     > {
@@ -493,7 +493,7 @@ impl Attachment {
         self.status.borrow().clone()
     }
 
-    pub fn detach(self) -> futures_util::future::BoxFuture<'static, Result<(), AttachmentError>> {
+    pub fn detach(self) -> nanocode_sync::future::BoxFuture<'static, Result<(), AttachmentError>> {
         Box::pin(async move {
             let _ = self.refs.command_tx.try_send(driver::Command::Detach);
             self.closed().await
@@ -502,7 +502,7 @@ impl Attachment {
 
     pub fn closed<'call>(
         &'call self,
-    ) -> futures_util::future::BoxFuture<'call, Result<(), AttachmentError>> {
+    ) -> nanocode_sync::future::BoxFuture<'call, Result<(), AttachmentError>> {
         Box::pin(async move {
             let mut closed = self.closed.clone();
             loop {
@@ -551,7 +551,7 @@ impl fmt::Debug for AttachmentEvents {
 impl AttachmentEvents {
     pub fn recv<'call>(
         &'call mut self,
-    ) -> futures_util::future::BoxFuture<'call, Option<AttachmentEvent>> {
+    ) -> nanocode_sync::future::BoxFuture<'call, Option<AttachmentEvent>> {
         Box::pin(async move { self.events.recv().await })
     }
 }

@@ -24,7 +24,7 @@ use std::{
     },
 };
 
-use futures_util::FutureExt;
+use nanocode_sync::FutureExt;
 use nanocode_tools::{Tool, ToolContext, ToolDefinition, ToolInput, ToolOutput};
 use serde_json::value::to_raw_value;
 use serde_json::{Value, json};

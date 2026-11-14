@@ -12,7 +12,6 @@ autobenches = false
 
 [dependencies]
 nanocode-digest.workspace = true
-futures-util.workspace = true
 nanocode-platform.workspace = true
 nanocode-sync.workspace = true
 nanocode-sys.workspace = true

@@ -15,7 +15,6 @@ autobenches = false
 
 [dependencies]
 nanocode-sync.workspace = true
-futures-util.workspace = true
 http.workspace = true
 nanocode-mcp.workspace = true
 nanocode-http.workspace = true

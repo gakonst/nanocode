@@ -1,7 +1,7 @@
 use std::{io, process::Stdio, time::Duration};
 
-use futures_util::StreamExt;
 use nanocode_mcp::{Inbound, Message, Outgoing, RpcError, jsonrpc::PARSE_ERROR};
+use nanocode_sync::StreamExt;
 use serde_json::Value;
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},

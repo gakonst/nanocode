@@ -999,7 +999,7 @@ async fn run_group<S: StateStore + ?Sized>(store: &mut S, group: Vec<Grouped>) {
             ))
             .await
     };
-    let (contents, mut acquired) = futures_util::future::join(contents, acquired).await;
+    let (contents, mut acquired) = nanocode_sync::future::join(contents, acquired).await;
     if acquired.len() != count {
         let error = StoreError::Backend(format!(
             "durability store answered {} of {count} grouped acquisitions",

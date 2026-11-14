@@ -7,15 +7,15 @@ use std::{
 };
 
 use bytes::Bytes;
-use futures_util::{
-    Stream, StreamExt,
-    future::{Either, select},
-};
 use http::{
     HeaderMap, HeaderValue, Method, StatusCode, Version,
     header::{CONTENT_LENGTH, DATE, TRANSFER_ENCODING, UPGRADE},
 };
 use nanocode_platform::timeout;
+use nanocode_sync::{
+    Stream, StreamExt,
+    future::{Either, select},
+};
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
     sync::{mpsc, oneshot},
@@ -62,7 +62,7 @@ impl Incoming {
 
     #[must_use]
     pub fn into_stream(self) -> BodyStream {
-        futures_util::stream::unfold(self, |mut body| async move {
+        nanocode_sync::stream::unfold(self, |mut body| async move {
             body.chunk()
                 .await
                 .map_err(BoxError::from)

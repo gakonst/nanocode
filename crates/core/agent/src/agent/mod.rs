@@ -6,7 +6,7 @@ use crate::{
     },
     usage::TurnUsage,
 };
-use futures_util::Stream;
+use nanocode_sync::Stream;
 use nanocode_types::{
     Model, Prompt, Thinking,
     events::{AgentEvent, AgentEvents},

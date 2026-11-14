@@ -3,12 +3,11 @@ use std::sync::{
     atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
 };
 
-use futures_util::{
-    StreamExt,
+use nanocode_agent_core::backend::{BackendFuture, ParkedCall};
+use nanocode_sync::{
+    Atom, Signal, Slot, StreamExt,
     future::{AbortHandle, Abortable},
 };
-use nanocode_agent_core::backend::{BackendFuture, ParkedCall};
-use nanocode_sync::{Atom, Signal, Slot};
 use nanocode_trace::Instrument as _;
 use tokio::sync::Notify;
 
@@ -130,7 +129,7 @@ impl ModelCall {
     }
 
     pub(super) fn stream(self: &Arc<Self>) -> ClaudeStream {
-        Box::pin(futures_util::stream::unfold(
+        Box::pin(nanocode_sync::stream::unfold(
             (Arc::clone(self), 0_usize),
             |(call, read)| async move {
                 let next = call.next(read).await?;

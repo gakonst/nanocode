@@ -114,7 +114,7 @@ impl ProcessRoutes {
         &'call self,
         session_id: &'call str,
         mounts: &'call [String],
-    ) -> futures_util::future::BoxFuture<'call, Result<(), ToolError>> {
+    ) -> nanocode_sync::future::BoxFuture<'call, Result<(), ToolError>> {
         Box::pin(async move {
             let mounts = mounts.to_vec();
             self.session(session_id)?
@@ -154,7 +154,7 @@ impl ProcessRoutes {
         &'call self,
         session_id: &'call str,
         path: &'call std::path::Path,
-    ) -> futures_util::future::BoxFuture<'call, Result<Option<String>, ToolError>> {
+    ) -> nanocode_sync::future::BoxFuture<'call, Result<Option<String>, ToolError>> {
         Box::pin(async move {
             let path = PathBuf::from(path);
             self.session(session_id)?
@@ -185,7 +185,7 @@ impl ProcessRoutes {
         &'call self,
         session_id: &'call str,
         id: i32,
-    ) -> futures_util::future::BoxFuture<'call, Result<SessionMapping, ToolError>> {
+    ) -> nanocode_sync::future::BoxFuture<'call, Result<SessionMapping, ToolError>> {
         Box::pin(async move {
             self.session(session_id)?
                 .run(move |owner| {
@@ -207,7 +207,7 @@ impl ProcessRoutes {
         &'call self,
         session_id: &'call str,
         mapping: SessionMapping,
-    ) -> futures_util::future::BoxFuture<'call, Result<i32, ToolError>> {
+    ) -> nanocode_sync::future::BoxFuture<'call, Result<i32, ToolError>> {
         Box::pin(async move {
             self.session(session_id)?
                 .run(move |owner| {

@@ -1,4 +1,4 @@
-use futures_util::future::{Either, join, select};
+use crate::future::{Either, join, select};
 use nanocode_platform::{Instant, sleep_until};
 use std::{
     pin::pin,

@@ -1,11 +1,11 @@
 use std::{error::Error, io, mem, pin::Pin};
 
-use futures_util::{Stream, StreamExt, stream};
 use http::{HeaderMap, header::CONTENT_ENCODING};
 use nanocode_compression::{
     checksum::crc32,
     inflate::{Inflate, InflateFlush, InflateStatus},
 };
+use nanocode_sync::{Stream, StreamExt, stream};
 
 const DECODED_CHUNK_BYTES: usize = 4096;
 const RAW_WINDOW_BITS: i32 = -15;

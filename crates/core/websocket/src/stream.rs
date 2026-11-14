@@ -5,10 +5,10 @@ use std::{
     task::{Context, Poll, Wake, Waker},
 };
 
-use futures_util::{
+use nanocode_sync::{
+    AtomicWaker,
     sink::{Sink, SinkExt as _},
     stream::{FusedStream, Stream},
-    task::AtomicWaker,
 };
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt as _, ReadBuf};
 

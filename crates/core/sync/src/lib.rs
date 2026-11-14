@@ -1,6 +1,7 @@
 use std::{future::Future, pin::Pin, sync::Arc};
 
 mod armed;
+pub mod future;
 mod hasher;
 mod in_order;
 #[cfg(not(target_family = "wasm"))]
@@ -16,17 +17,21 @@ pub mod select;
 #[cfg(not(target_family = "wasm"))]
 mod session;
 mod shared;
+pub mod sink;
 mod spine;
 #[cfg(not(target_family = "wasm"))]
 mod splice;
+pub mod stream;
 mod tree;
 pub mod unbounded;
+mod unordered;
 mod vector;
 mod waits;
 mod wakes;
 mod weighed;
 
 pub use armed::Armed;
+pub use future::FutureExt;
 pub use in_order::{InOrder, join_in_order, try_join_in_order};
 #[cfg(not(target_family = "wasm"))]
 pub use lanes::{Bounds, Lanes, together};
@@ -35,20 +40,23 @@ pub use lease::{Backoff, Keeping, Lease, Renew, keep_lease, retry};
 pub use map::AtomMap;
 #[cfg(not(target_family = "wasm"))]
 pub use map::{Kept, Throttle};
+pub use nanocode_sys::AtomicWaker;
 pub use ordered::{OrdMap, OrdSet};
 #[cfg(not(target_family = "wasm"))]
 pub use reentry::{Claim, Reentry};
 #[cfg(not(target_family = "wasm"))]
 pub use session::{Locker, SessionLock, SessionLockError, SessionLocks};
 pub use shared::{Map, Set};
+pub use sink::{Sink, SinkExt};
 #[cfg(not(target_family = "wasm"))]
 pub use splice::{Duplex, pipe, splice};
+pub use stream::{Stream, StreamExt, TryStream, TryStreamExt};
 pub use vector::Vector;
 pub use waits::{SlowWait, slow_waits};
 pub use wakes::{Wake, WakeHub, WakeOutbox, Wakes, Wakeup, Wakeups, woken};
 pub use weighed::Weighed;
 
-use futures_util::future::{FutureExt, Shared};
+use future::Shared;
 use nanocode_sys::Enclosed;
 pub use nanocode_sys::{Guard, Swap, SwapOption};
 use tokio::sync::{mpsc, oneshot};
@@ -822,9 +830,9 @@ impl<S: 'static> Actor<S> {
                 let work = job(state);
                 let output = {
                     let abandoned = Box::pin(sender.closed());
-                    match futures_util::future::select(work, abandoned).await {
-                        futures_util::future::Either::Left((output, _)) => Some(output),
-                        futures_util::future::Either::Right(_) => None,
+                    match future::select(work, abandoned).await {
+                        future::Either::Left((output, _)) => Some(output),
+                        future::Either::Right(_) => None,
                     }
                 };
                 if let Some(output) = output {
@@ -856,9 +864,9 @@ impl<S: 'static> Actor<S> {
                 let work = job(state);
                 let output = {
                     let abandoned = Box::pin(sender.closed());
-                    match futures_util::future::select(work, abandoned).await {
-                        futures_util::future::Either::Left((output, _)) => Some(output),
-                        futures_util::future::Either::Right(_) => None,
+                    match future::select(work, abandoned).await {
+                        future::Either::Left((output, _)) => Some(output),
+                        future::Either::Right(_) => None,
                     }
                 };
                 if let Some(output) = output {
@@ -1040,7 +1048,7 @@ async fn detached<T: Send + 'static>(future: impl Future<Output = T> + Send + 's
 }
 
 #[cfg(not(target_family = "wasm"))]
-type RecentRead<V, E> = Shared<futures_util::future::BoxFuture<'static, Result<V, Arc<E>>>>;
+type RecentRead<V, E> = Shared<future::BoxFuture<'static, Result<V, Arc<E>>>>;
 
 #[cfg(not(target_family = "wasm"))]
 type RecentReads<V, E> = map::Aged<Arc<str>, RecentRead<V, E>>;
@@ -1079,7 +1087,7 @@ where
     }
 
     pub fn keep(&self, key: &str, value: V) {
-        let read: RecentRead<V, E> = futures_util::future::ready(Ok(value)).boxed().shared();
+        let read: RecentRead<V, E> = future::ready(Ok(value)).boxed().shared();
         let _ = read.clone().now_or_never();
         let now = nanocode_platform::now();
         let key: Arc<str> = key.into();

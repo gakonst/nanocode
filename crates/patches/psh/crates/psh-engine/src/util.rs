@@ -896,10 +896,11 @@ impl UtilCtx<'_> {
                 Err(_) => sub.fds.close(0),
             }
         }
+        let cleared = env.clear;
         UtilChild {
             fut: Box::pin(async move {
                 let mut sub = sub;
-                let r = run_wrapped(&mut sub, argv, Vec::new()).await;
+                let r = run_wrapped(&mut sub, argv, Vec::new(), cleared).await;
                 let last = sub.status;
                 r.unwrap_or_else(|u| u.status(last))
             }),
@@ -981,7 +982,12 @@ impl UtilCtx<'_> {
 }
 
 /// What a wrapper runs: a standalone builtin, a utility, or an external.
-async fn run_wrapped(vp: &mut Vp, argv: Vec<Vec<u8>>, assigns: Vec<(String, Vec<u8>)>) -> R {
+async fn run_wrapped(
+    vp: &mut Vp,
+    argv: Vec<Vec<u8>>,
+    assigns: Vec<(String, Vec<u8>)>,
+    cleared: bool,
+) -> R {
     if argv.is_empty() {
         return Ok(0);
     }
@@ -992,7 +998,11 @@ async fn run_wrapped(vp: &mut Vp, argv: Vec<Vec<u8>>, assigns: Vec<(String, Vec<
     if let Some(e) = lookup(vp, &name).await {
         return Box::pin(run(vp, e, argv, assigns)).await;
     }
-    crate::exec::run_external(vp, argv, assigns).await
+    let opts = crate::exec::ExtOpts {
+        cleared,
+        ..crate::exec::ExtOpts::default()
+    };
+    crate::exec::run_external_with(vp, argv, assigns, opts).await
 }
 
 #[cfg(test)]

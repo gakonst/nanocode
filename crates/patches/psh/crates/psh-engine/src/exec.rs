@@ -1882,6 +1882,7 @@ pub(crate) struct ExtOpts {
     /// `bash`/`sh` run in psh: a virtual process instead of a program (D1411).
     pub shell: bool,
     pub process: bool,
+    pub cleared: bool,
 }
 
 /// Starts an external command and waits for it, pumping its pipes to engine objects.
@@ -1931,7 +1932,7 @@ pub(crate) async fn run_external_with(
         // A child gets `_` as the path of what it runs, as bash passes it (not
         // through `exec`).
         let mut extra = assigns.clone();
-        if !opts.exec {
+        if !opts.exec && !opts.cleared {
             extra.retain(|(n, _)| n != "_");
             extra.push(("_".to_string(), program.clone()));
         }

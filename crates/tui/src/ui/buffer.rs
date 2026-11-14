@@ -441,11 +441,13 @@ impl<'next> Iterator for BufferDiff<'_, 'next> {
             self.position += 1;
             let current = &self.next[index];
             let previous = &self.previous[index];
-            let width = usize::from(current.cell_width());
             if current == previous {
-                self.position += width.saturating_sub(1);
+                if current.symbol_bytes().len() > 1 {
+                    self.position += usize::from(current.cell_width()).saturating_sub(1);
+                }
                 continue;
             }
+            let width = usize::from(current.cell_width());
             let previous_width = usize::from(previous.cell_width());
             if width > 1 && current.symbol().contains(VARIATION_SELECTOR_EMOJI) {
                 self.trailing = Some(Trailing {

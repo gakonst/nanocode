@@ -73,7 +73,11 @@ impl ModelPromptCache {
         if let Some(key) = self.key.get() {
             return Ok(Arc::clone(key));
         }
-        let derived = Arc::from(prefix_key(model, tools, instructions, &self.seed)?);
+        let derived = if model.is_custom() {
+            Arc::clone(&self.seed)
+        } else {
+            Arc::from(prefix_key(model, tools, instructions)?)
+        };
         Ok(Arc::clone(self.key.get_or_init(|| derived)))
     }
 
@@ -103,24 +107,13 @@ impl SharedPromptCache {
 
 const PREFIX_KEY_TAG: &str = "nanocode-prefix-";
 
-const CUSTOM_MODEL_KEY_BUCKETS: u8 = 4;
-
 pub(crate) fn is_prefix_key(key: &str) -> bool {
     key.starts_with(PREFIX_KEY_TAG)
 }
 
-fn prefix_key(
-    model: Model,
-    tools: &[ToolDefinition],
-    instructions: &str,
-    seed: &str,
-) -> Result<String> {
+fn prefix_key(model: Model, tools: &[ToolDefinition], instructions: &str) -> Result<String> {
     let hex = prefix_digest(model, tools, instructions)?;
-    if !model.is_custom() {
-        return Ok(format!("{PREFIX_KEY_TAG}{hex}"));
-    }
-    let bucket = Sha256::digest(seed.as_bytes())[0] % CUSTOM_MODEL_KEY_BUCKETS;
-    Ok(format!("{PREFIX_KEY_TAG}{hex}-{bucket}"))
+    Ok(format!("{PREFIX_KEY_TAG}{hex}"))
 }
 
 struct PrefixDigest {

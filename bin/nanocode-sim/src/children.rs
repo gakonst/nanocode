@@ -5,7 +5,7 @@ use std::{
 };
 
 use nanocode::{
-    ChildHost, ChildSpec, ChildToolCall, NanocodeError, RemoteChildren,
+    ChildHost, ChildSpec, ChildToolCall, ChildTurn, NanocodeError, RemoteChildren,
     backend::{BackendFuture, Prompt, PromptInput, ToolInput, TurnResult},
 };
 use nanocode_sync::{
@@ -42,6 +42,7 @@ const OUTPUT_BUDGET: usize = 16_384;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChildMutation {
     None,
+    AcksEarly,
     AdoptsTurn,
     ForgetsNotice,
     SettlesLazily,
@@ -50,6 +51,7 @@ pub enum ChildMutation {
 impl ChildMutation {
     pub fn parse(name: &str) -> Option<Self> {
         match name {
+            "child-acks-early" => Some(Self::AcksEarly),
             "child-adopts-turn" => Some(Self::AdoptsTurn),
             "child-forgets-notice" => Some(Self::ForgetsNotice),
             "child-settles-lazily" => Some(Self::SettlesLazily),
@@ -60,6 +62,7 @@ impl ChildMutation {
     pub const fn name(self) -> &'static str {
         match self {
             Self::None => "none",
+            Self::AcksEarly => "child-acks-early",
             Self::AdoptsTurn => "child-adopts-turn",
             Self::ForgetsNotice => "child-forgets-notice",
             Self::SettlesLazily => "child-settles-lazily",
@@ -67,7 +70,7 @@ impl ChildMutation {
     }
 
     pub const NAMES: &'static str =
-        "child-adopts-turn|child-forgets-notice|child-settles-lazily";
+        "child-acks-early|child-adopts-turn|child-forgets-notice|child-settles-lazily";
 }
 
 #[derive(Clone, Debug)]
@@ -1049,9 +1052,10 @@ impl ChildHost for Host {
         session_id: Arc<str>,
         request_id: String,
         prompt: Prompt,
-    ) -> BackendFuture<nanocode::backend::Result<TurnResult>> {
+    ) -> BackendFuture<nanocode::backend::Result<ChildTurn>> {
         let children = Arc::clone(&self.0);
-        Box::pin(async move {
+        let acks_early = children.mutation == ChildMutation::AcksEarly;
+        let accepted: BackendFuture<nanocode::backend::Result<ChildTurn>> = Box::pin(async move {
             let text = prompt_text(&prompt)?;
             children.live(|live| live.run_calls += 1);
             if !children.live(|live| live.open.contains(&session_id)) {
@@ -1078,19 +1082,27 @@ impl ChildHost for Host {
                     "remote child {session_id}'s answer to the turn was lost"
                 )));
             }
-            let outcome = match reply {
+            let turn: ChildTurn = match reply {
                 Reply::Finished(outcome) => {
                     children.live(|live| live.waiters.remove(&key));
-                    outcome
+                    Box::pin(async move { children.result(&session_id, request_id, outcome) })
                 }
-                Reply::Pending => receiver.await.map_err(|_| {
-                    failed(format!(
-                        "remote child {session_id} turn {request_id} lost its waiter"
-                    ))
-                })?,
+                Reply::Pending => Box::pin(async move {
+                    let outcome = receiver.await.map_err(|_| {
+                        failed(format!(
+                            "remote child {session_id} turn {request_id} lost its waiter"
+                        ))
+                    })?;
+                    children.result(&session_id, request_id, outcome)
+                }),
             };
-            children.result(&session_id, request_id, outcome)
-        })
+            Ok(turn)
+        });
+        if acks_early {
+            let turn: ChildTurn = Box::pin(async move { accepted.await?.await });
+            return Box::pin(async move { Ok(turn) });
+        }
+        accepted
     }
 
     fn steer(

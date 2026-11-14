@@ -16,7 +16,7 @@ pub use handoff::{
     Base, Missing, ResumeError, Settled, Unresumable, base_checkpoint, settle_pending,
 };
 pub use one_log::{OneLog, OneLogJournals, OneLogStore, Policy};
-pub use remote::{ChildHost, ChildSpec, ChildToolCall, RemoteChildren};
+pub use remote::{ChildHost, ChildSpec, ChildToolCall, ChildTurn, RemoteChildren};
 pub use router::{
     CheckpointFormats, Harness, HarnessBuilder, HarnessRequest, NoFormats, session_store,
 };

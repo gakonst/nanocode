@@ -17,6 +17,8 @@ use serde_json::{Value, json, value::RawValue};
 
 const REMOTE_MARKER: &str = "remote_child";
 
+pub type ChildTurn = BackendFuture<Result<TurnResult>>;
+
 pub struct ChildSpec {
     pub host_context: Option<Arc<str>>,
     pub lineage: Lineage,
@@ -52,7 +54,7 @@ pub trait ChildHost: Send + Sync + 'static {
         session_id: Arc<str>,
         request_id: String,
         prompt: Prompt,
-    ) -> BackendFuture<Result<TurnResult>>;
+    ) -> BackendFuture<Result<ChildTurn>>;
 
     fn steer(
         &self,
@@ -99,11 +101,11 @@ impl RemoteChildren {
             remote.restored.remove_if(session_id, |()| true)?;
             let session_id: Arc<str> = session_id.into();
             Some(Box::pin(async move {
-                remote
-                    .host
-                    .pending(session_id)
-                    .await
-                    .map_err(std::io::Error::other)
+                let pending = remote.host.pending(Arc::clone(&session_id)).await;
+                if pending.is_err() {
+                    remote.restored.insert(session_id, ());
+                }
+                pending.map_err(std::io::Error::other)
             }))
         }));
         children
@@ -331,27 +333,46 @@ fn unsupported<T: 'static>(capability: &'static str) -> BackendFuture<Result<T>>
 }
 
 impl RemoteBackend {
-    fn start(&self, prompt: BackendPrompt) -> BackendTurn {
+    fn start(&self, prompt: BackendPrompt) -> BackendFuture<Result<BackendTurn>> {
         let key = prompt.key.0;
         let request_id = prompt
             .request_id
             .clone()
             .unwrap_or_else(|| nanocode_platform::uuid_v7().to_string());
         self.requests.insert(key, request_id.clone());
-        let run = self.children.host.run(
-            Arc::clone(&self.session_id),
-            request_id.clone(),
-            prompt.prompt,
-        );
+        let children = Arc::clone(&self.children);
+        let input = prompt.prompt;
         let requests = Arc::clone(&self.requests);
-        BackendTurn {
-            request_id: Some(request_id),
-            result: Box::pin(async move {
-                let result = run.await;
-                requests.remove_if(&key, |_| true);
-                result
-            }),
-        }
+        let session_id = Arc::clone(&self.session_id);
+        Box::pin(async move {
+            let mut attempt = 0_u32;
+            let turn: ChildTurn = loop {
+                match children
+                    .host
+                    .run(Arc::clone(&session_id), request_id.clone(), input.clone())
+                    .await
+                {
+                    Ok(turn) => break turn,
+                    Err(error @ NanocodeError::Backend { .. })
+                        if children.contains(&session_id) =>
+                    {
+                        attempt = attempt.saturating_add(1);
+                        let delay = nanocode_subagents::completion_retry_delay(attempt);
+                        nanocode_trace::warn!(%error, session_id = &*session_id, request_id, ?delay, "remote child did not take the turn; retrying the same request");
+                        nanocode_platform::sleep(delay).await;
+                    }
+                    Err(error) => break Box::pin(async move { Err(error) }),
+                }
+            };
+            Ok(BackendTurn {
+                request_id: Some(request_id),
+                result: Box::pin(async move {
+                    let result = turn.await;
+                    requests.remove_if(&key, |_| true);
+                    result
+                }),
+            })
+        })
     }
 
     fn steer_turn(
@@ -384,13 +405,12 @@ impl LifecycleBackend for RemoteBackend {
     }
 
     fn submit(&self, prompt: BackendPrompt) -> BackendFuture<Result<BackendTurn>> {
-        let turn = self.start(prompt);
-        Box::pin(async move { Ok(turn) })
+        self.start(prompt)
     }
 
     fn route(&self, prompt: BackendPrompt) -> BackendFuture<Result<BackendPromptRoute>> {
         let turn = self.start(prompt);
-        Box::pin(async move { Ok(BackendPromptRoute::Started(turn)) })
+        Box::pin(async move { turn.await.map(BackendPromptRoute::Started) })
     }
 
     fn steer(&self, key: BackendTurnKey, prompt: Prompt) -> BackendFuture<Result<()>> {

@@ -164,7 +164,7 @@ pub type Defaults = nanocode_agent_host::Defaults<CodexHarness, ClaudeHarness>;
 pub type Nanocode = nanocode_agent::Runtime<Defaults>;
 pub type NanocodeBuilder<B = nanocode_agent::Unselected> =
     nanocode_agent::RuntimeBuilder<B, Defaults>;
-pub use nanocode_agent::{ChildHost, ChildSpec, ChildToolCall, RemoteChildren};
+pub use nanocode_agent::{ChildHost, ChildSpec, ChildToolCall, ChildTurn, RemoteChildren};
 pub use nanocode_agent::{
     DurableOutcome, EventSink, PromptRejection, SessionEvent, SessionEvents, SpawnBuilder,
     SubagentUpdates, Unselected, admit_prompt,

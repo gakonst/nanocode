@@ -747,7 +747,7 @@ fn completion_request_id(session_id: &str, revision: u64, attempt: u32) -> Strin
     }
 }
 
-fn completion_retry_delay(attempt: u32) -> Duration {
+pub fn completion_retry_delay(attempt: u32) -> Duration {
     Duration::from_millis(1000_u64 << attempt.clamp(1, 9)).min(Duration::from_secs(300))
 }
 
@@ -6140,8 +6140,17 @@ impl Registry {
                         .is_some_and(|session| session.resume_attempts > 0)
                 })
                 .await;
-            if let Some(pending) = resuming.then(|| resolver(session_id)).flatten() {
-                return pending.await;
+            let mut attempt = 0_u32;
+            while let Some(pending) = resuming.then(|| resolver(session_id)).flatten() {
+                match pending.await {
+                    Ok(pending) => return Ok(pending),
+                    Err(error) => {
+                        attempt = attempt.saturating_add(1);
+                        let delay = completion_retry_delay(attempt);
+                        nanocode_trace::warn!(%error, session_id, ?delay, "the pending turn of a restored subagent did not answer; retrying");
+                        platform::sleep(delay).await;
+                    }
+                }
             }
         }
         match self.store_for(root) {
@@ -8711,6 +8720,19 @@ impl Registry {
     }
 
     async fn close_batch(&self, root_session_id: &str, ids: Vec<AgentId>) -> std::io::Result<()> {
+        let root = root_session_id.to_owned();
+        if self
+            .state
+            .call(move |state| {
+                state
+                    .scopes
+                    .get(&root)
+                    .is_some_and(|scope| scope.life.closing())
+            })
+            .await
+        {
+            return Ok(());
+        }
         let mut errors = Vec::new();
         for id in ids.into_iter().rev() {
             if let Err(error) = self.close(root_session_id, id).await {

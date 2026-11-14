@@ -1829,6 +1829,11 @@ impl ClaudeClient {
         self.subscription_identity = identity;
         self
     }
+    #[must_use]
+    pub fn with_install_id(mut self, install: impl Into<String>) -> Self {
+        self.subscription_identity.install_id = Some(install.into());
+        self
+    }
     #[doc(hidden)]
     pub fn bind_subscription_session(mut self, session: &str) -> Self {
         self.subscription_session = session.to_owned();
@@ -1928,7 +1933,10 @@ impl ClaudeClient {
                 digests: None,
             })
         } else {
-            api_body(head, messages, streaming, None, cache)
+            let metadata = self
+                .subscription_identity
+                .api_metadata(&self.subscription_session)?;
+            api_body(head, messages, streaming, None, cache, &metadata)
         }
     }
 
@@ -2047,6 +2055,9 @@ impl ClaudeClient {
                 "message threads need the Messages API wire, not the subscription wire".into(),
             ));
         }
+        let metadata = self
+            .subscription_identity
+            .api_metadata(&self.subscription_session)?;
         wire.thread = Some(
             api_body(
                 head,
@@ -2054,6 +2065,7 @@ impl ClaudeClient {
                 wire.streaming,
                 Some(param),
                 None,
+                &metadata,
             )?
             .body,
         );
@@ -2217,6 +2229,13 @@ impl ClaudeClient {
                     );
                 }
                 headers.remove("x-claude-code-request-class");
+            } else {
+                headers.insert(
+                    "x-claude-code-session-id",
+                    http::header::HeaderValue::from_str(&self.subscription_session).map_err(
+                        |_| ClaudeError::Protocol("invalid Claude Code session header".into()),
+                    )?,
+                );
             }
             for (name, value) in &headers {
                 if name == http::header::AUTHORIZATION
@@ -2713,6 +2732,7 @@ fn api_body<M: WireMessage>(
     streaming: bool,
     thread: Option<&ThreadParam>,
     cache: Option<&WireCache>,
+    metadata: &Value,
 ) -> Result<WireBody, ClaudeError> {
     let continuing = matches!(thread, Some(ThreadParam::Continue { .. }));
     let MessagesRequest {
@@ -2761,6 +2781,7 @@ fn api_body<M: WireMessage>(
         container: Option<&'a str>,
         #[serde(skip_serializing_if = "Option::is_none")]
         tools: Option<&'a serde_json::value::RawValue>,
+        metadata: &'a Value,
         #[serde(skip_serializing_if = "Option::is_none")]
         thread: Option<&'a ThreadParam>,
         stream: bool,
@@ -2808,6 +2829,7 @@ fn api_body<M: WireMessage>(
     let tail = serde_json::to_string(&Tail {
         container: container.as_deref(),
         tools: tools_raw,
+        metadata,
         thread,
         stream: streaming,
     })?;

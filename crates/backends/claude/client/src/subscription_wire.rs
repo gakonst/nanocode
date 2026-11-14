@@ -94,11 +94,6 @@ impl SubscriptionIdentity {
                 return Ok(json!({"user_id":user}));
             }
         }
-        let install = self.install_id.as_deref().unwrap_or(session);
-        let input = self.account_uuid.as_ref().map_or_else(
-            || format!("omp-claude-device-id-v1:{install}"),
-            |account| format!("omp-claude-device-id-v2\0{install}\0{account}"),
-        );
         #[derive(Serialize)]
         struct User<'a> {
             device_id: String,
@@ -107,11 +102,33 @@ impl SubscriptionIdentity {
             account_uuid: Option<&'a str>,
         }
         let user = User {
-            device_id: hex_digest(input.as_bytes()),
+            device_id: self.device_id(session),
             session_id: session,
             account_uuid: self.account_uuid.as_deref(),
         };
         Ok(json!({"user_id":serde_json::to_string(&user)?}))
+    }
+    pub(crate) fn api_metadata(&self, session: &str) -> Result<Value, ClaudeError> {
+        #[derive(Serialize)]
+        struct User<'a> {
+            device_id: String,
+            account_uuid: &'a str,
+            session_id: &'a str,
+        }
+        let user = User {
+            device_id: self.device_id(session),
+            account_uuid: self.account_uuid.as_deref().unwrap_or_default(),
+            session_id: session,
+        };
+        Ok(json!({"user_id":serde_json::to_string(&user)?}))
+    }
+    fn device_id(&self, session: &str) -> String {
+        let install = self.install_id.as_deref().unwrap_or(session);
+        let input = self.account_uuid.as_ref().map_or_else(
+            || format!("omp-claude-device-id-v1:{install}"),
+            |account| format!("omp-claude-device-id-v2\0{install}\0{account}"),
+        );
+        hex_digest(input.as_bytes())
     }
 }
 pub(crate) fn hex_digest(input: &[u8]) -> String {

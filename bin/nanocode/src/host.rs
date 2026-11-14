@@ -667,10 +667,18 @@ impl Host {
         .raw_api_events(false)
         .cyber_access_program(config.cyber_access_program)
         .build()?;
+        let install = install_id();
+        let identified = |client: ClaudeClient| {
+            if client.uses_subscription() {
+                client
+            } else {
+                client.with_install_id(install.clone())
+            }
+        };
         let (tempo_openai, tempo_claude, boundless) = match &config.clients.tempo {
             Some(tempo) => (
                 Some(tempo.openai().raw_api_events(false).build()?),
-                Some(tempo.claude()),
+                Some(identified(tempo.claude())),
                 Some(tempo.boundless().raw_api_events(false).build()?),
             ),
             None => (None, None, None),
@@ -716,13 +724,13 @@ impl Host {
             });
         let described = std::sync::Arc::clone(&hand);
         let listed = std::sync::Arc::clone(&config.clients.context_windows);
-        let claude = ClaudeHarness::new(
+        let claude = ClaudeHarness::new(identified(
             config
                 .clients
                 .claude
                 .as_ref()
                 .map_or_else(ClaudeClient::default, |claude| claude()),
-        )
+        ))
         .client_for(move |request| {
             tempo_claude
                 .clone()
@@ -874,6 +882,24 @@ pub fn parse_tier(value: &str) -> Result<ServiceTier> {
         "ultrafast" => Ok(ServiceTier::Ultrafast),
         other => Err(format!("unknown service tier {other:?}").into()),
     }
+}
+
+fn install_id() -> String {
+    let path = home_dir(None).map(|home| home.join("install_id"));
+    if let Ok(path) = &path
+        && let Ok(id) = std::fs::read_to_string(path)
+        && nanocode_platform::Uuid::parse_str(&id).is_ok()
+    {
+        return id;
+    }
+    let id = nanocode_platform::uuid_v4().to_string();
+    if let Ok(path) = &path {
+        let _ = path
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|()| std::fs::write(path, &id));
+    }
+    id
 }
 
 pub fn home_dir(explicit: Option<&Path>) -> Result<PathBuf> {

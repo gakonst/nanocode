@@ -158,7 +158,9 @@ function ErrorConstruct(newTarget: Value, fallback: Str, message: Value, options
   if (IsObject(options)) {
     InstallErrorCause(o, AsObj(options));
   }
-  RecordStack(o);
+  if (CaptureStack(o)) {
+    FinishErrorStack(o);
+  }
   return o;
 }
 

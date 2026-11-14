@@ -3452,7 +3452,7 @@ function ErrorStackTraceLimit() {
 
 // builtins/error.ts:153
 function ErrorConstruct(newTarget, fallback, message, options) {
-  let $1, $2;
+  let $1, $2, $3, $4;
   const o = %ErrorCreate((($1 = %ConstructorPrototype(newTarget, fallback), ($1 !== undefined) ? %AsObj($1) : GetPrototypeFromConstructorSlow(newTarget, fallback))));
   if (message !== undefined) {
     %DefineDataPropertyOrThrow(o, "message", ToString(message), 5);
@@ -3460,56 +3460,58 @@ function ErrorConstruct(newTarget, fallback, message, options) {
   if (%IsObject(options)) {
     ($2 = %AsObj(options), (%HasProperty($2, "cause")) ? (%DefineDataPropertyOrThrow(o, "cause", %Get($2, "cause"), 5), undefined) : undefined);
   }
-  RecordStack(o);
+  if (%CaptureStack(o)) {
+    (($3 = %ErrorStack(o), (!%IsPendingStack($3)) ? $3 : (%SetErrorStack(o, undefined), ($4 = FinishStack(o, $3), (%SetErrorStack(o, $4), $4)))));
+  }
   return o;
 }
 
-// builtins/error.ts:170 constructor Error
+// builtins/error.ts:172 constructor Error
 function ErrorConstructor(message, options) {
   return ErrorConstruct(new.target, "ErrorPrototype", message, options);
 }
 
-// builtins/error.ts:180 constructor EvalError
+// builtins/error.ts:182 constructor EvalError
 function EvalErrorConstructor(message, options) {
   return ErrorConstruct(new.target, "EvalErrorPrototype", message, options);
 }
 
-// builtins/error.ts:190 constructor RangeError
+// builtins/error.ts:192 constructor RangeError
 function RangeErrorConstructor(message, options) {
   return ErrorConstruct(new.target, "RangeErrorPrototype", message, options);
 }
 
-// builtins/error.ts:200 constructor ReferenceError
+// builtins/error.ts:202 constructor ReferenceError
 function ReferenceErrorConstructor(message, options) {
   return ErrorConstruct(new.target, "ReferenceErrorPrototype", message, options);
 }
 
-// builtins/error.ts:210 constructor SyntaxError
+// builtins/error.ts:212 constructor SyntaxError
 function SyntaxErrorConstructor(message, options) {
   return ErrorConstruct(new.target, "SyntaxErrorPrototype", message, options);
 }
 
-// builtins/error.ts:220 constructor TypeError
+// builtins/error.ts:222 constructor TypeError
 function TypeErrorConstructor(message, options) {
   return ErrorConstruct(new.target, "TypeErrorPrototype", message, options);
 }
 
-// builtins/error.ts:230 constructor URIError
+// builtins/error.ts:232 constructor URIError
 function URIErrorConstructor(message, options) {
   return ErrorConstruct(new.target, "URIErrorPrototype", message, options);
 }
 
-// builtins/error.ts:240 value Error.prototype.name
+// builtins/error.ts:242 value Error.prototype.name
 function ErrorPrototypeName() {
   return "Error";
 }
 
-// builtins/error.ts:249 value Error.prototype.message
+// builtins/error.ts:251 value Error.prototype.message
 function ErrorPrototypeMessage() {
   return "";
 }
 
-// builtins/error.ts:257 Error.prototype.toString
+// builtins/error.ts:259 Error.prototype.toString
 function ErrorPrototypeToString() {
   if (!%IsObject(this)) {
     throw %NewTypeError("not an object");
@@ -3528,19 +3530,19 @@ function ErrorPrototypeToString() {
   return nameStr + ": " + msgStr;
 }
 
-// builtins/error.ts:281 constructor InternalError
+// builtins/error.ts:283 constructor InternalError
 function InternalErrorConstructor(message, options) {
   return ErrorConstruct(new.target, "InternalErrorPrototype", message, options);
 }
 
-// builtins/error.ts:291 constructor AggregateError
+// builtins/error.ts:293 constructor AggregateError
 function AggregateErrorConstructor(errors, message, options) {
   const o = ErrorConstruct(new.target, "AggregateErrorPrototype", message, options);
   %DefineDataPropertyOrThrow(o, "errors", IterableToList(errors), 5);
   return o;
 }
 
-// builtins/error.ts:303 constructor SuppressedError
+// builtins/error.ts:305 constructor SuppressedError
 function SuppressedErrorConstructor(error, suppressed, message) {
   const o = %ErrorCreate(GetPrototypeFromConstructor(new.target, "SuppressedErrorPrototype"));
   if (message !== undefined) {
@@ -3552,44 +3554,44 @@ function SuppressedErrorConstructor(error, suppressed, message) {
   return o;
 }
 
-// builtins/error.ts:321 %CallSitePrototype%.isNative
+// builtins/error.ts:323 %CallSitePrototype%.isNative
 function CallSiteIsNative() {
   return %CallSiteSlot(this, 5);
 }
 
-// builtins/error.ts:329 %CallSitePrototype%.isConstructor
+// builtins/error.ts:331 %CallSitePrototype%.isConstructor
 function CallSiteIsConstructor() {
   return %CallSiteSlot(this, 6);
 }
 
-// builtins/error.ts:337 %CallSitePrototype%.getFileName
+// builtins/error.ts:339 %CallSitePrototype%.getFileName
 function CallSiteGetFileName() {
   return %CallSiteSlot(this, 2);
 }
 
-// builtins/error.ts:345 %CallSitePrototype%.getFunction
+// builtins/error.ts:347 %CallSitePrototype%.getFunction
 function CallSiteGetFunction() {
   return %CallSiteSlot(this, 0);
 }
 
-// builtins/error.ts:353 %CallSitePrototype%.getFunctionName
+// builtins/error.ts:355 %CallSitePrototype%.getFunctionName
 function CallSiteGetFunctionName() {
   return %CallSiteSlot(this, 1);
 }
 
-// builtins/error.ts:361 %CallSitePrototype%.getLineNumber
+// builtins/error.ts:363 %CallSitePrototype%.getLineNumber
 function CallSiteGetLineNumber() {
   const line = %CallSiteSlot(this, 3);
   return line === 0 ? null : line;
 }
 
-// builtins/error.ts:370 %CallSitePrototype%.getColumnNumber
+// builtins/error.ts:372 %CallSitePrototype%.getColumnNumber
 function CallSiteGetColumnNumber() {
   const line = %CallSiteSlot(this, 3);
   return line === 0 ? null : %CallSiteSlot(this, 4);
 }
 
-// builtins/error.ts:380 value %CallSitePrototype%[Symbol.toStringTag]
+// builtins/error.ts:382 value %CallSitePrototype%[Symbol.toStringTag]
 function CallSiteToStringTag() {
   return "CallSite";
 }

@@ -1182,54 +1182,54 @@ ErrorConstruct: reentrant
   builtins/error.ts:156:45  ToString (builtin)
   builtins/error.ts:156:5  DefineDataPropertyOrThrow (intrinsic)
   builtins/error.ts:159:5  InstallErrorCause (builtin)
-  builtins/error.ts:161:3  RecordStack (builtin)
+  builtins/error.ts:162:5  FinishErrorStack (builtin)
 
 ErrorConstructor: reentrant (constructor Error)
-  builtins/error.ts:171:10  ErrorConstruct (builtin)
+  builtins/error.ts:173:10  ErrorConstruct (builtin)
 
 EvalErrorConstructor: reentrant (constructor EvalError)
-  builtins/error.ts:181:10  ErrorConstruct (builtin)
+  builtins/error.ts:183:10  ErrorConstruct (builtin)
 
 RangeErrorConstructor: reentrant (constructor RangeError)
-  builtins/error.ts:191:10  ErrorConstruct (builtin)
+  builtins/error.ts:193:10  ErrorConstruct (builtin)
 
 ReferenceErrorConstructor: reentrant (constructor ReferenceError)
-  builtins/error.ts:201:10  ErrorConstruct (builtin)
+  builtins/error.ts:203:10  ErrorConstruct (builtin)
 
 SyntaxErrorConstructor: reentrant (constructor SyntaxError)
-  builtins/error.ts:211:10  ErrorConstruct (builtin)
+  builtins/error.ts:213:10  ErrorConstruct (builtin)
 
 TypeErrorConstructor: reentrant (constructor TypeError)
-  builtins/error.ts:221:10  ErrorConstruct (builtin)
+  builtins/error.ts:223:10  ErrorConstruct (builtin)
 
 URIErrorConstructor: reentrant (constructor URIError)
-  builtins/error.ts:231:10  ErrorConstruct (builtin)
+  builtins/error.ts:233:10  ErrorConstruct (builtin)
 
 ErrorPrototypeName: leaf (value Error.prototype.name)
 
 ErrorPrototypeMessage: leaf (value Error.prototype.message)
 
 ErrorPrototypeToString: reentrant (Error.prototype.toString)
-  builtins/error.ts:262:23  Get (intrinsic)
-  builtins/error.ts:263:55  ToString (builtin)
-  builtins/error.ts:264:22  Get (intrinsic)
-  builtins/error.ts:265:48  ToString (builtin)
+  builtins/error.ts:264:23  Get (intrinsic)
+  builtins/error.ts:265:55  ToString (builtin)
+  builtins/error.ts:266:22  Get (intrinsic)
+  builtins/error.ts:267:48  ToString (builtin)
 
 InternalErrorConstructor: reentrant (constructor InternalError)
-  builtins/error.ts:282:10  ErrorConstruct (builtin)
+  builtins/error.ts:284:10  ErrorConstruct (builtin)
 
 AggregateErrorConstructor: reentrant (constructor AggregateError)
-  builtins/error.ts:292:18  ErrorConstruct (builtin)
-  builtins/error.ts:293:42  IterableToList (builtin)
-  builtins/error.ts:293:3  DefineDataPropertyOrThrow (intrinsic)
+  builtins/error.ts:294:18  ErrorConstruct (builtin)
+  builtins/error.ts:295:42  IterableToList (builtin)
+  builtins/error.ts:295:3  DefineDataPropertyOrThrow (intrinsic)
 
 SuppressedErrorConstructor: reentrant (constructor SuppressedError)
-  builtins/error.ts:304:30  GetPrototypeFromConstructor (builtin)
-  builtins/error.ts:306:45  ToString (builtin)
-  builtins/error.ts:306:5  DefineDataPropertyOrThrow (intrinsic)
-  builtins/error.ts:308:3  DefineDataPropertyOrThrow (intrinsic)
-  builtins/error.ts:309:3  DefineDataPropertyOrThrow (intrinsic)
-  builtins/error.ts:310:3  RecordStack (builtin)
+  builtins/error.ts:306:30  GetPrototypeFromConstructor (builtin)
+  builtins/error.ts:308:45  ToString (builtin)
+  builtins/error.ts:308:5  DefineDataPropertyOrThrow (intrinsic)
+  builtins/error.ts:310:3  DefineDataPropertyOrThrow (intrinsic)
+  builtins/error.ts:311:3  DefineDataPropertyOrThrow (intrinsic)
+  builtins/error.ts:312:3  RecordStack (builtin)
 
 CallSiteIsNative: leaf (%CallSitePrototype%.isNative)
 

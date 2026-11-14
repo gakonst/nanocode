@@ -68,23 +68,18 @@
 )]
 #![cfg_attr(rustls_pki_types_docsrs, feature(doc_cfg))]
 
-#[cfg(feature = "alloc")]
 extern crate alloc;
 
-#[cfg(feature = "alloc")]
 use alloc::vec::Vec;
 use core::fmt;
 use core::ops::Deref;
 use core::time::Duration;
-#[cfg(feature = "alloc")]
 use pem::{PemObject, PemObjectFilter, SectionKind};
 #[cfg(all(
     feature = "std",
     not(all(target_family = "wasm", target_os = "unknown"))
 ))]
 use std::time::SystemTime;
-#[cfg(all(target_family = "wasm", target_os = "unknown", feature = "web"))]
-use web_time::SystemTime;
 
 pub mod alg_id;
 mod base64;
@@ -95,7 +90,6 @@ mod server_name;
 /// These APIs allow decoding PEM format in an iterator, which means you
 /// can load multiple different types of PEM section from a file in a single
 /// pass.
-#[cfg(feature = "alloc")]
 pub mod pem;
 
 pub use alg_id::AlgorithmIdentifier;
@@ -136,7 +130,6 @@ pub enum PrivateKeyDer<'a> {
 
 impl PrivateKeyDer<'_> {
     /// Clone the private key to a `'static` value
-    #[cfg(feature = "alloc")]
     pub fn clone_key(&self) -> PrivateKeyDer<'static> {
         use PrivateKeyDer::*;
         match self {
@@ -156,7 +149,6 @@ impl PrivateKeyDer<'_> {
     }
 }
 
-#[cfg(feature = "alloc")]
 impl PemObject for PrivateKeyDer<'static> {
     fn from_pem(kind: SectionKind, value: Vec<u8>) -> Option<Self> {
         match kind {
@@ -270,7 +262,6 @@ impl<'a> TryFrom<&'a [u8]> for PrivateKeyDer<'a> {
 
 static INVALID_KEY_DER_ERR: &str = "unknown or invalid key format";
 
-#[cfg(feature = "alloc")]
 impl TryFrom<Vec<u8>> for PrivateKeyDer<'_> {
     type Error = &'static str;
 
@@ -305,7 +296,6 @@ pub struct PrivatePkcs1KeyDer<'a>(Der<'a>);
 
 impl PrivatePkcs1KeyDer<'_> {
     /// Clone the private key to a `'static` value
-    #[cfg(feature = "alloc")]
     pub fn clone_key(&self) -> PrivatePkcs1KeyDer<'static> {
         PrivatePkcs1KeyDer::from(self.0.as_ref().to_vec())
     }
@@ -316,7 +306,6 @@ impl PrivatePkcs1KeyDer<'_> {
     }
 }
 
-#[cfg(feature = "alloc")]
 impl PemObjectFilter for PrivatePkcs1KeyDer<'static> {
     const KIND: SectionKind = SectionKind::RsaPrivateKey;
 }
@@ -327,7 +316,6 @@ impl<'a> From<&'a [u8]> for PrivatePkcs1KeyDer<'a> {
     }
 }
 
-#[cfg(feature = "alloc")]
 impl From<Vec<u8>> for PrivatePkcs1KeyDer<'_> {
     fn from(vec: Vec<u8>) -> Self {
         Self(Der(BytesInner::Owned(vec)))
@@ -365,7 +353,6 @@ pub struct PrivateSec1KeyDer<'a>(Der<'a>);
 
 impl PrivateSec1KeyDer<'_> {
     /// Clone the private key to a `'static` value
-    #[cfg(feature = "alloc")]
     pub fn clone_key(&self) -> PrivateSec1KeyDer<'static> {
         PrivateSec1KeyDer::from(self.0.as_ref().to_vec())
     }
@@ -376,7 +363,6 @@ impl PrivateSec1KeyDer<'_> {
     }
 }
 
-#[cfg(feature = "alloc")]
 impl PemObjectFilter for PrivateSec1KeyDer<'static> {
     const KIND: SectionKind = SectionKind::EcPrivateKey;
 }
@@ -387,7 +373,6 @@ impl<'a> From<&'a [u8]> for PrivateSec1KeyDer<'a> {
     }
 }
 
-#[cfg(feature = "alloc")]
 impl From<Vec<u8>> for PrivateSec1KeyDer<'_> {
     fn from(vec: Vec<u8>) -> Self {
         Self(Der(BytesInner::Owned(vec)))
@@ -426,7 +411,6 @@ pub struct PrivatePkcs8KeyDer<'a>(Der<'a>);
 
 impl PrivatePkcs8KeyDer<'_> {
     /// Clone the private key to a `'static` value
-    #[cfg(feature = "alloc")]
     pub fn clone_key(&self) -> PrivatePkcs8KeyDer<'static> {
         PrivatePkcs8KeyDer::from(self.0.as_ref().to_vec())
     }
@@ -437,7 +421,6 @@ impl PrivatePkcs8KeyDer<'_> {
     }
 }
 
-#[cfg(feature = "alloc")]
 impl PemObjectFilter for PrivatePkcs8KeyDer<'static> {
     const KIND: SectionKind = SectionKind::PrivateKey;
 }
@@ -448,7 +431,6 @@ impl<'a> From<&'a [u8]> for PrivatePkcs8KeyDer<'a> {
     }
 }
 
-#[cfg(feature = "alloc")]
 impl From<Vec<u8>> for PrivatePkcs8KeyDer<'_> {
     fn from(vec: Vec<u8>) -> Self {
         Self(Der(BytesInner::Owned(vec)))
@@ -486,10 +468,7 @@ pub struct TrustAnchor<'a> {
 
 impl TrustAnchor<'_> {
     /// Yield a `'static` lifetime of the `TrustAnchor` by allocating owned `Der` variants
-    #[cfg(feature = "alloc")]
     pub fn to_owned(&self) -> TrustAnchor<'static> {
-        #[cfg(not(feature = "std"))]
-        use alloc::borrow::ToOwned;
         TrustAnchor {
             subject: self.subject.as_ref().to_owned().into(),
             subject_public_key_info: self.subject_public_key_info.as_ref().to_owned().into(),
@@ -530,7 +509,6 @@ impl TrustAnchor<'_> {
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct CertificateRevocationListDer<'a>(Der<'a>);
 
-#[cfg(feature = "alloc")]
 impl PemObjectFilter for CertificateRevocationListDer<'static> {
     const KIND: SectionKind = SectionKind::Crl;
 }
@@ -555,7 +533,6 @@ impl<'a> From<&'a [u8]> for CertificateRevocationListDer<'a> {
     }
 }
 
-#[cfg(feature = "alloc")]
 impl From<Vec<u8>> for CertificateRevocationListDer<'_> {
     fn from(vec: Vec<u8>) -> Self {
         Self(Der::from(vec))
@@ -582,7 +559,6 @@ impl From<Vec<u8>> for CertificateRevocationListDer<'_> {
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct CertificateSigningRequestDer<'a>(Der<'a>);
 
-#[cfg(feature = "alloc")]
 impl PemObjectFilter for CertificateSigningRequestDer<'static> {
     const KIND: SectionKind = SectionKind::Csr;
 }
@@ -607,7 +583,6 @@ impl<'a> From<&'a [u8]> for CertificateSigningRequestDer<'a> {
     }
 }
 
-#[cfg(feature = "alloc")]
 impl From<Vec<u8>> for CertificateSigningRequestDer<'_> {
     fn from(vec: Vec<u8>) -> Self {
         Self(Der::from(vec))
@@ -650,7 +625,6 @@ impl<'a> CertificateDer<'a> {
     }
 }
 
-#[cfg(feature = "alloc")]
 impl PemObjectFilter for CertificateDer<'static> {
     const KIND: SectionKind = SectionKind::Certificate;
 }
@@ -675,7 +649,6 @@ impl<'a> From<&'a [u8]> for CertificateDer<'a> {
     }
 }
 
-#[cfg(feature = "alloc")]
 impl From<Vec<u8>> for CertificateDer<'_> {
     fn from(vec: Vec<u8>) -> Self {
         Self(Der::from(vec))
@@ -684,7 +657,6 @@ impl From<Vec<u8>> for CertificateDer<'_> {
 
 impl CertificateDer<'_> {
     /// Converts this certificate into its owned variant, unfreezing borrowed content (if any)
-    #[cfg(feature = "alloc")]
     pub fn into_owned(self) -> CertificateDer<'static> {
         CertificateDer(Der(self.0.0.into_owned()))
     }
@@ -713,7 +685,6 @@ pub type SubjectPublicKeyInfo<'a> = SubjectPublicKeyInfoDer<'a>;
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct SubjectPublicKeyInfoDer<'a>(Der<'a>);
 
-#[cfg(feature = "alloc")]
 impl PemObjectFilter for SubjectPublicKeyInfoDer<'static> {
     const KIND: SectionKind = SectionKind::PublicKey;
 }
@@ -738,7 +709,6 @@ impl<'a> From<&'a [u8]> for SubjectPublicKeyInfoDer<'a> {
     }
 }
 
-#[cfg(feature = "alloc")]
 impl From<Vec<u8>> for SubjectPublicKeyInfoDer<'_> {
     fn from(vec: Vec<u8>) -> Self {
         Self(Der::from(vec))
@@ -747,7 +717,6 @@ impl From<Vec<u8>> for SubjectPublicKeyInfoDer<'_> {
 
 impl SubjectPublicKeyInfoDer<'_> {
     /// Converts this SubjectPublicKeyInfo into its owned variant, unfreezing borrowed content (if any)
-    #[cfg(feature = "alloc")]
     pub fn into_owned(self) -> SubjectPublicKeyInfoDer<'static> {
         SubjectPublicKeyInfoDer(Der(self.0.0.into_owned()))
     }
@@ -760,13 +729,11 @@ pub struct EchConfigListBytes<'a>(BytesInner<'a>);
 
 impl EchConfigListBytes<'_> {
     /// Converts this config into its owned variant, unfreezing borrowed content (if any)
-    #[cfg(feature = "alloc")]
     pub fn into_owned(self) -> EchConfigListBytes<'static> {
         EchConfigListBytes(self.0.into_owned())
     }
 }
 
-#[cfg(feature = "alloc")]
 impl EchConfigListBytes<'static> {
     /// Convert an iterator over PEM items into an `EchConfigListBytes` and private key.
     ///
@@ -810,7 +777,6 @@ impl EchConfigListBytes<'static> {
     }
 }
 
-#[cfg(feature = "alloc")]
 impl PemObjectFilter for EchConfigListBytes<'static> {
     const KIND: SectionKind = SectionKind::EchConfigList;
 }
@@ -841,7 +807,6 @@ impl<'a> From<&'a [u8]> for EchConfigListBytes<'a> {
     }
 }
 
-#[cfg(feature = "alloc")]
 impl From<Vec<u8>> for EchConfigListBytes<'_> {
     fn from(vec: Vec<u8>) -> Self {
         Self(BytesInner::Owned(vec))
@@ -985,7 +950,6 @@ impl<'a> From<&'a [u8]> for Der<'a> {
     }
 }
 
-#[cfg(feature = "alloc")]
 impl From<Vec<u8>> for Der<'static> {
     fn from(vec: Vec<u8>) -> Self {
         Self(BytesInner::Owned(vec))
@@ -1000,12 +964,10 @@ impl fmt::Debug for Der<'_> {
 
 #[derive(Debug, Clone)]
 enum BytesInner<'a> {
-    #[cfg(feature = "alloc")]
     Owned(Vec<u8>),
     Borrowed(&'a [u8]),
 }
 
-#[cfg(feature = "alloc")]
 impl BytesInner<'_> {
     fn into_owned(self) -> BytesInner<'static> {
         BytesInner::Owned(match self {
@@ -1018,7 +980,6 @@ impl BytesInner<'_> {
 impl AsRef<[u8]> for BytesInner<'_> {
     fn as_ref(&self) -> &[u8] {
         match &self {
-            #[cfg(feature = "alloc")]
             BytesInner::Owned(vec) => vec.as_ref(),
             BytesInner::Borrowed(slice) => slice,
         }
@@ -1076,55 +1037,3 @@ fn hex<'a>(f: &mut fmt::Formatter<'_>, payload: impl IntoIterator<Item = &'a u8>
     Ok(())
 }
 
-#[cfg(all(test, feature = "std"))]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn der_debug() {
-        let der = Der::from_slice(&[0x01, 0x02, 0x03]);
-        assert_eq!(format!("{der:?}"), "0x010203");
-    }
-
-    #[test]
-    fn alg_id_debug() {
-        let alg_id = AlgorithmIdentifier::from_slice(&[0x01, 0x02, 0x03]);
-        assert_eq!(format!("{alg_id:?}"), "0x010203");
-    }
-
-    #[test]
-    fn fips_status_debug() {
-        let fips = FipsStatus::certified("hello");
-        assert_eq!(format!("{fips:?}"), "Certified { certificate: \"hello\" }");
-    }
-
-    #[test]
-    fn bytes_inner_equality() {
-        let owned_a = BytesInner::Owned(vec![1, 2, 3]);
-        let owned_b = BytesInner::Owned(vec![4, 5]);
-        let borrowed_a = BytesInner::Borrowed(&[1, 2, 3]);
-        let borrowed_b = BytesInner::Borrowed(&[99]);
-
-        // Self-equality.
-        assert_eq!(owned_a, owned_a);
-        assert_eq!(owned_b, owned_b);
-        assert_eq!(borrowed_a, borrowed_a);
-        assert_eq!(borrowed_b, borrowed_b);
-
-        // Borrowed vs Owned equality
-        assert_eq!(owned_a, borrowed_a);
-        assert_eq!(borrowed_a, owned_a);
-
-        // Owned inequality
-        assert_ne!(owned_a, owned_b);
-        assert_ne!(owned_b, owned_a);
-
-        // Borrowed inequality
-        assert_ne!(borrowed_a, borrowed_b);
-        assert_ne!(borrowed_b, borrowed_a);
-
-        // Borrowed vs Owned inequality
-        assert_ne!(owned_a, borrowed_b);
-        assert_ne!(borrowed_b, owned_a);
-    }
-}

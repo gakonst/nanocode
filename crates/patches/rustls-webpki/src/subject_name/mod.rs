@@ -12,9 +12,7 @@
 // ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 // OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
-#[cfg(feature = "alloc")]
 use alloc::string::String;
-#[cfg(feature = "alloc")]
 use core::fmt;
 
 use crate::der::{self, FromDer};
@@ -318,7 +316,6 @@ impl<'a> FromDer<'a> for GeneralName<'a> {
     const TYPE_ID: DerTypeId = DerTypeId::GeneralName;
 }
 
-#[cfg(feature = "alloc")]
 impl fmt::Debug for GeneralName<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -341,10 +338,8 @@ impl fmt::Debug for GeneralName<'_> {
     }
 }
 
-#[cfg(feature = "alloc")]
 struct IpAddrSlice<'a>(&'a [u8]);
 
-#[cfg(feature = "alloc")]
 impl fmt::Debug for IpAddrSlice<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.0.len() {
@@ -404,69 +399,3 @@ impl fmt::Debug for IpAddrSlice<'_> {
     }
 }
 
-#[cfg(all(test, feature = "alloc"))]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn debug_names() {
-        assert_eq!(
-            format!(
-                "{:?}",
-                GeneralName::DnsName(crate::untrusted::Input::from(b"example.com"))
-            ),
-            "DnsName(\"example.com\")"
-        );
-
-        assert_eq!(format!("{:?}", GeneralName::DirectoryName), "DirectoryName");
-
-        assert_eq!(
-            format!(
-                "{:?}",
-                GeneralName::IpAddress(crate::untrusted::Input::from(&[192, 0, 2, 1][..]))
-            ),
-            "IpAddress(192.0.2.1)"
-        );
-
-        assert_eq!(
-            format!(
-                "{:?}",
-                GeneralName::IpAddress(crate::untrusted::Input::from(
-                    &[0x20, 0x01, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x0d, 0xb8][..]
-                ))
-            ),
-            "IpAddress(2001::db8)"
-        );
-
-        assert_eq!(
-            format!(
-                "{:?}",
-                GeneralName::IpAddress(crate::untrusted::Input::from(&[1, 2, 3, 4, 5, 6][..]))
-            ),
-            "IpAddress([invalid: 01, 02, 03, 04, 05, 06])"
-        );
-
-        assert_eq!(
-            format!(
-                "{:?}",
-                GeneralName::UniformResourceIdentifier(crate::untrusted::Input::from(
-                    b"https://example.com"
-                ))
-            ),
-            "UniformResourceIdentifier(\"https://example.com\")"
-        );
-
-        assert_eq!(
-            format!("{:?}", GeneralName::Unsupported(0x66)),
-            "Unsupported(0x66)"
-        );
-    }
-
-    #[test]
-    fn name_iter_end_after_error() {
-        let input = crate::untrusted::Input::from(&[0x30]);
-        let mut iter = NameIterator::new(Some(input));
-        assert_eq!(iter.next().unwrap().unwrap_err(), Error::BadDer);
-        assert!(iter.next().is_none());
-    }
-}

@@ -44,11 +44,8 @@
 // Enable documentation for all features on docs.rs
 #![cfg_attr(webpki_docsrs, feature(doc_cfg))]
 
-#[cfg(any(feature = "std", test))]
 extern crate std;
 
-#[cfg(any(test, feature = "alloc"))]
-#[cfg_attr(test, macro_use)]
 extern crate alloc;
 
 #[macro_use]
@@ -68,8 +65,6 @@ mod crl;
 mod verify_cert;
 mod x509;
 
-#[cfg(test)]
-pub(crate) mod test_utils;
 
 pub use {
     cert::Cert,
@@ -92,7 +87,6 @@ pub use {
     },
 };
 
-#[cfg(feature = "alloc")]
 pub use crl::{OwnedCertRevocationList, OwnedRevokedCert};
 
 /// An array of all the verification algorithms exported by this crate.

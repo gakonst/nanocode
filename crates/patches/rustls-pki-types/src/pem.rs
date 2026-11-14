@@ -5,9 +5,7 @@ use alloc::vec::Vec;
 use core::fmt;
 use core::marker::PhantomData;
 use core::ops::ControlFlow;
-#[cfg(feature = "std")]
 use std::fs::File;
-#[cfg(feature = "std")]
 use std::io::{self, ErrorKind};
 
 use crate::base64;
@@ -33,7 +31,6 @@ pub trait PemObject: Sized {
     /// Decode the first section of this type from the PEM contents of the named file.
     ///
     /// [`Error::NoItemsFound`] is returned if no such items are found.
-    #[cfg(feature = "std")]
     fn from_pem_file(file_name: impl AsRef<std::path::Path>) -> Result<Self, Error> {
         Self::pem_file_iter(file_name)?
             .next()
@@ -46,7 +43,6 @@ pub trait PemObject: Sized {
     ///
     /// - errors opening the file are reported from this function directly,
     /// - errors reading from the file are reported from the returned iterator,
-    #[cfg(feature = "std")]
     fn pem_file_iter(
         file_name: impl AsRef<std::path::Path>,
     ) -> Result<ReadIter<io::BufReader<File>, Self>, Error> {
@@ -56,7 +52,6 @@ pub trait PemObject: Sized {
     }
 
     /// Decode the first section of this type from PEM read from an [`io::Read`].
-    #[cfg(feature = "std")]
     fn from_pem_reader(rd: impl io::Read) -> Result<Self, Error> {
         Self::pem_reader_iter(rd)
             .next()
@@ -64,7 +59,6 @@ pub trait PemObject: Sized {
     }
 
     /// Iterate over all sections of this type from PEM present in an [`io::Read`].
-    #[cfg(feature = "std")]
     fn pem_reader_iter<R: io::Read>(rd: R) -> ReadIter<io::BufReader<R>, Self> {
         ReadIter::new(io::BufReader::new(rd))
     }
@@ -90,7 +84,6 @@ impl<T: PemObjectFilter + From<Vec<u8>>> PemObject for T {
 }
 
 /// Extract and return all PEM sections by reading `rd`.
-#[cfg(feature = "std")]
 pub struct ReadIter<R, T> {
     rd: R,
     _ty: PhantomData<T>,
@@ -100,7 +93,6 @@ pub struct ReadIter<R, T> {
     done: bool,
 }
 
-#[cfg(feature = "std")]
 impl<R: io::BufRead, T: PemObject> ReadIter<R, T> {
     /// Create a new iterator.
     pub fn new(rd: R) -> Self {
@@ -114,7 +106,6 @@ impl<R: io::BufRead, T: PemObject> ReadIter<R, T> {
     }
 }
 
-#[cfg(feature = "std")]
 impl<R: io::BufRead, T: PemObject> Iterator for ReadIter<R, T> {
     type Item = Result<T, Error>;
 
@@ -229,14 +220,12 @@ impl PemObject for (SectionKind, Vec<u8>) {
 /// - Ok(None) is returned if there is no PEM section read from `rd`.
 /// - Underlying IO errors produce a `Err(...)`
 /// - Otherwise each decoded section is returned with a `Ok(Some(...))`
-#[cfg(feature = "std")]
 pub fn from_buf(rd: &mut dyn io::BufRead) -> Result<Option<(SectionKind, Vec<u8>)>, Error> {
     let mut b64buf = Vec::with_capacity(1024);
     let mut line = Vec::with_capacity(80);
     from_buf_inner(rd, &mut line, &mut b64buf)
 }
 
-#[cfg(feature = "std")]
 fn from_buf_inner(
     rd: &mut dyn io::BufRead,
     line: &mut Vec<u8>,
@@ -495,7 +484,6 @@ pub enum Error {
     Base64Decode(String),
 
     /// I/O errors, from APIs that accept `std::io` types.
-    #[cfg(feature = "std")]
     Io(io::Error),
 
     /// No items found of desired type
@@ -515,7 +503,6 @@ impl fmt::Display for Error {
                 write!(f, "illegal section start: {line:?}")
             }
             Self::Base64Decode(e) => write!(f, "base64 decode error: {e}"),
-            #[cfg(feature = "std")]
             Self::Io(e) => write!(f, "I/O error: {e}"),
             Self::NoItemsFound => write!(f, "no items found"),
             Self::SectionTooLarge => write!(f, "PEM section exceeds maximum allowed size of 10 MB"),
@@ -523,12 +510,10 @@ impl fmt::Display for Error {
     }
 }
 
-#[cfg(feature = "std")]
 impl std::error::Error for Error {}
 
 // Ported from https://github.com/rust-lang/rust/blob/91cfcb021935853caa06698b759c293c09d1e96a/library/std/src/io/mod.rs#L1990 and
 // modified to look for our accepted newlines.
-#[cfg(feature = "std")]
 fn read_until_newline<R: io::BufRead + ?Sized>(r: &mut R, buf: &mut Vec<u8>) -> io::Result<usize> {
     let mut read = 0;
     loop {

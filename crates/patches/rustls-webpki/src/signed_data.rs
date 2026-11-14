@@ -21,13 +21,11 @@ use crate::verify_cert::Budget;
 
 use pki_types::SignatureVerificationAlgorithm;
 
-#[cfg(feature = "alloc")]
 use alloc::vec::Vec;
 
 /// X.509 certificates and related items that are signed are almost always
 /// encoded in the format "tbs||signatureAlgorithm||signature". This structure
 /// captures this pattern as an owned data type.
-#[cfg(feature = "alloc")]
 #[derive(Clone, Debug)]
 pub(crate) struct OwnedSignedData {
     /// The signed data. This would be `tbsCertificate` in the case of an X.509
@@ -48,7 +46,6 @@ pub(crate) struct OwnedSignedData {
     pub(crate) signature: Vec<u8>,
 }
 
-#[cfg(feature = "alloc")]
 impl OwnedSignedData {
     /// Return a borrowed [`SignedData`] from the owned representation.
     pub(crate) fn borrow(&self) -> SignedData<'_> {
@@ -137,7 +134,6 @@ impl<'a> SignedData<'a> {
     }
 
     /// Convert the borrowed signed data to an [`OwnedSignedData`].
-    #[cfg(feature = "alloc")]
     pub(crate) fn to_owned(&self) -> OwnedSignedData {
         OwnedSignedData {
             data: self.data.as_slice_less_safe().to_vec(),
@@ -208,9 +204,7 @@ pub(crate) fn verify_signed_data(
 
     Err(Error::UnsupportedSignatureAlgorithmContext(
         UnsupportedSignatureAlgorithmContext {
-            #[cfg(feature = "alloc")]
             signature_algorithm_id: signed_data.algorithm.as_slice_less_safe().to_vec(),
-            #[cfg(feature = "alloc")]
             supported_algorithms: supported_algorithms
                 .iter()
                 .map(|&alg| alg.signature_alg_id())
@@ -229,9 +223,7 @@ pub(crate) fn verify_signature(
     if signature_alg.public_key_alg_id().as_ref() != spki.algorithm_id_value.as_slice_less_safe() {
         return Err(Error::UnsupportedSignatureAlgorithmForPublicKeyContext(
             UnsupportedSignatureAlgorithmForPublicKeyContext {
-                #[cfg(feature = "alloc")]
                 signature_algorithm_id: signature_alg.signature_alg_id().as_ref().to_vec(),
-                #[cfg(feature = "alloc")]
                 public_key_algorithm_id: spki.algorithm_id_value.as_slice_less_safe().to_vec(),
             },
         ));

@@ -12,15 +12,12 @@
 // ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 // OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
-#[cfg(feature = "alloc")]
 use alloc::string::String;
-#[cfg(feature = "alloc")]
 use alloc::vec::Vec;
 use core::fmt;
 use core::ops::ControlFlow;
 
 use pki_types::UnixTime;
-#[cfg(feature = "alloc")]
 use pki_types::{AlgorithmIdentifier, ServerName};
 
 use crate::verify_cert::RequiredEkuNotFoundContext;
@@ -387,7 +384,6 @@ impl fmt::Display for Error {
     }
 }
 
-#[cfg(feature = "std")]
 impl ::std::error::Error for Error {}
 
 /// Additional context for the `CertNotValidForName` error variant.
@@ -396,13 +392,11 @@ impl ::std::error::Error for Error {}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InvalidNameContext {
     /// Expected server name.
-    #[cfg(feature = "alloc")]
     pub expected: ServerName<'static>,
     /// The names presented in the end entity certificate.
     ///
     /// These are the subject names as present in the leaf certificate and may contain DNS names
     /// with or without a wildcard label as well as IP address names.
-    #[cfg(feature = "alloc")]
     pub presented: Vec<String>,
 }
 
@@ -412,10 +406,8 @@ pub struct InvalidNameContext {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UnsupportedSignatureAlgorithmForPublicKeyContext {
     /// The signature algorithm OID.
-    #[cfg(feature = "alloc")]
     pub signature_algorithm_id: Vec<u8>,
     /// The public key algorithm OID.
-    #[cfg(feature = "alloc")]
     pub public_key_algorithm_id: Vec<u8>,
 }
 
@@ -425,10 +417,8 @@ pub struct UnsupportedSignatureAlgorithmForPublicKeyContext {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UnsupportedSignatureAlgorithmContext {
     /// The signature algorithm OID that was unsupported.
-    #[cfg(feature = "alloc")]
     pub signature_algorithm_id: Vec<u8>,
     /// Supported algorithms that were available for signature verification.
-    #[cfg(feature = "alloc")]
     pub supported_algorithms: Vec<AlgorithmIdentifier>,
 }
 

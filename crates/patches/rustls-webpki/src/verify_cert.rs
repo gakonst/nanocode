@@ -12,7 +12,6 @@
 // ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 // OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
-#[cfg(feature = "alloc")]
 use alloc::vec::Vec;
 use core::fmt;
 use core::ops::ControlFlow;
@@ -461,17 +460,14 @@ fn check_basic_constraints(
 #[derive(Clone, PartialEq, Eq)]
 pub struct RequiredEkuNotFoundContext {
     /// The required ExtendedKeyUsage.
-    #[cfg(feature = "alloc")]
     pub required: KeyUsage,
     /// The ExtendedKeyUsage OIDs present in the certificate.
-    #[cfg(feature = "alloc")]
     pub present: Vec<Vec<usize>>,
 }
 
 impl fmt::Debug for RequiredEkuNotFoundContext {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut builder = f.debug_struct("RequiredEkuNotFoundContext");
-        #[cfg(feature = "alloc")]
         builder.field(
             "required",
             match &self.required.inner {
@@ -479,16 +475,13 @@ impl fmt::Debug for RequiredEkuNotFoundContext {
                 ExtendedKeyUsage::RequiredIfPresent(inner) => inner,
             },
         );
-        #[cfg(feature = "alloc")]
         builder.field("present", &EkuListDebug(&self.present));
         builder.finish()
     }
 }
 
-#[cfg(feature = "alloc")]
 struct EkuListDebug<'a>(&'a [Vec<usize>]);
 
-#[cfg(feature = "alloc")]
 impl fmt::Debug for EkuListDebug<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "[")?;
@@ -574,7 +567,6 @@ impl ExtendedKeyUsageValidator for KeyUsage {
     // https://tools.ietf.org/html/rfc5280#section-4.2.1.12
     fn validate(&self, iter: KeyPurposeIdIter<'_, '_>) -> Result<(), Error> {
         let mut empty = true;
-        #[cfg(feature = "alloc")]
         let mut present = Vec::new();
 
         for id in iter {
@@ -584,7 +576,6 @@ impl ExtendedKeyUsageValidator for KeyUsage {
                 return Ok(());
             }
 
-            #[cfg(feature = "alloc")]
             present.push(id.to_decoded_oid());
         }
 
@@ -592,9 +583,7 @@ impl ExtendedKeyUsageValidator for KeyUsage {
             (true, ExtendedKeyUsage::RequiredIfPresent(_)) => Ok(()),
             _ => Err(Error::RequiredEkuNotFoundContext(
                 RequiredEkuNotFoundContext {
-                    #[cfg(feature = "alloc")]
                     required: Self { inner: self.inner },
-                    #[cfg(feature = "alloc")]
                     present,
                 },
             )),
@@ -678,7 +667,6 @@ impl<'a> KeyPurposeId<'a> {
     }
 
     /// Yield the OID value as a sequence of `usize` components.
-    #[cfg(feature = "alloc")]
     pub fn to_decoded_oid(&self) -> Vec<usize> {
         OidDecoder::new(self.oid_value.as_slice_less_safe()).collect()
     }

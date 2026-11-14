@@ -22,13 +22,16 @@ http.workspace = true
 nanocode = { path = "../../crates/nanocode", default-features = false, features = ["local-cells"] }
 nanocode-agent-core.workspace = true
 nanocode-compression.workspace = true
+nanocode-digest.workspace = true
 nanocode-durability-core.workspace = true
 nanocode-durability.workspace = true
 nanocode-http.workspace = true
 nanocode-platform.workspace = true
 nanocode-subagents.workspace = true
 nanocode-sync.workspace = true
+nanocode-sys.workspace = true
 nanocode-turnlog.workspace = true
+nanocode-websocket.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["sync", "macros", "io-util"] }
 tracing.workspace = true

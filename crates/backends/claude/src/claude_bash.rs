@@ -1236,8 +1236,16 @@ impl Tool for TaskStopTool {
         Box::pin(async move {
             let output: ToolResult = {
                 let input = input.decode_json::<Value>()?;
+                let nested = context.call_id().contains("/code-");
                 Ok(match self.invoke(input, context).await {
                     Ok(value) => ToolOutput::text(value.to_string()).with_structured_result(value),
+                    Err(error) if nested => ToolOutput::error(
+                        error
+                            .strip_prefix("<tool_use_error>")
+                            .and_then(|error| error.strip_suffix("</tool_use_error>"))
+                            .unwrap_or(&error)
+                            .to_owned(),
+                    ),
                     Err(error) => ToolOutput::error(error),
                 })
             };

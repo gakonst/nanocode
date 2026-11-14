@@ -80,6 +80,9 @@ impl Tool for ClaudeFileTool {
                     .await
                 {
                     Ok(output) => output,
+                    Err(error) if context.call_id().contains("/code-") => {
+                        return Ok(ToolOutput::error(error));
+                    }
                     Err(error) => {
                         return Ok(ToolOutput::error(format!(
                             "<tool_use_error>{error}</tool_use_error>"

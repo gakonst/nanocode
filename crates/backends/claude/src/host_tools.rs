@@ -133,7 +133,18 @@ impl HostFileTool {
             }
             _ => {
                 let edit = text_files::Edit::parse(input)?;
-                let content = self.existing(&path).await?;
+                let content = match self.files.read(&path).await {
+                    Ok(Some(content)) => content,
+                    Ok(None) if edit.creates() => String::new(),
+                    Ok(None) => return Err(self.missing()),
+                    Err(error) if directory(&error) => {
+                        return Err(
+                            "Error calling tool (Edit): EISDIR: illegal operation on a directory, read"
+                                .into(),
+                        );
+                    }
+                    Err(error) => return Err(error),
+                };
                 let (updated, _) = edit.apply(&content)?;
                 self.files.write(&path, &updated).await?;
                 Ok(crate::tools::text_files::edited(
@@ -173,7 +184,7 @@ impl HostFileTool {
             .files
             .read_bytes(path)
             .await?
-            .ok_or_else(|| format!("path: {} does not exist", path.display()))?;
+            .ok_or_else(|| self.missing())?;
         let media_type = match nanocode_image::guess_format(&bytes) {
             Some(nanocode_image::Format::Png) => "image/png",
             Some(nanocode_image::Format::Jpeg) => "image/jpeg",
@@ -197,11 +208,29 @@ impl HostFileTool {
     }
 
     async fn existing(&self, path: &Path) -> Result<String, String> {
-        self.files
-            .read(path)
-            .await?
-            .ok_or_else(|| format!("path: {} does not exist", path.display()))
+        match self.files.read(path).await {
+            Ok(Some(content)) => Ok(content),
+            Ok(None) => Err(self.missing()),
+            Err(error) if directory(&error) => Err(format!(
+                "EISDIR: illegal operation on a directory, read '{}'",
+                path.display()
+            )),
+            Err(error) => Err(error),
+        }
     }
+
+    fn missing(&self) -> String {
+        format!(
+            "File does not exist. Note: your current working directory is {}.",
+            self.workspace.display()
+        )
+    }
+}
+
+fn directory(error: &str) -> bool {
+    error.starts_with("EISDIR")
+        || error.ends_with(": Is a directory")
+        || error.contains("Is a directory (os error 21)")
 }
 
 impl Tool for HostFileTool {
@@ -359,12 +388,12 @@ impl HostTaskTool {
             .filter(|id| !(stop && id.is_null()))
             .or_else(|| stop.then(|| fields.get("shell_id")).flatten())
             .and_then(Value::as_str)
-            .ok_or("task_id or its deprecated shell_id alias must be a string")?;
+            .ok_or("Missing required parameter: task_id")?;
         let job = self
             .jobs
             .entries
             .read(|entries| entries.get(id).cloned())
-            .ok_or("unknown task_id in this session")?;
+            .ok_or_else(|| format!("No task found with ID: {id}"))?;
         if stop {
             let status = job.status();
             if status != "running" {

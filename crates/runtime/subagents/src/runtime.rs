@@ -23,7 +23,7 @@ use nanocode_agent_core::{
 use nanocode_durability_core::StoreError;
 use nanocode_platform::Instant;
 use nanocode_schema::Validator;
-use nanocode_sync::{Atom, Sequencer, Turn};
+use nanocode_sync::{Atom, Sequencer, Signal, Turn};
 use nanocode_sync::{mpsc, oneshot, watch};
 use nanocode_tool_contracts::ToolReceipt;
 use nanocode_trace::Instrument;
@@ -31,6 +31,7 @@ use serde::Serialize;
 use serde_json::Value;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque},
+    fmt::Write as _,
     sync::{
         Arc, Weak,
         atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering},
@@ -410,6 +411,11 @@ impl Sessions {
         !self.parked.is_empty()
     }
 
+    fn any_active_direct(&mut self) -> bool {
+        self.refresh();
+        !self.active_direct.is_empty()
+    }
+
     fn parked_ids(&mut self) -> Vec<AgentId> {
         self.refresh();
         let mut ids = self.parked.iter().copied().collect::<Vec<_>>();
@@ -623,6 +629,7 @@ pub struct Registry {
     completion_dispatch: Atom<AgentMap<Sequencer>>,
     completion_batches: Atom<nanocode_sync::Map<String, mpsc::UnboundedSender<(AgentId, u64)>>>,
     completion_routes: Atom<AgentMap<u64>>,
+    completion_wakes: Atom<HashMap<String, (Instant, Instant)>>,
     result_readers: Atom<AgentMap<Readers>>,
     root_watches: Atom<HashSet<String>>,
     running_roots: Atom<HashSet<String>>,
@@ -734,6 +741,43 @@ pub fn completion_continuation_prompt(id: AgentId, status: &AgentStatus) -> Stri
     }
 }
 
+fn completion_batch_prompt(completions: &[(AgentId, &AgentStatus)]) -> String {
+    let mut prompt = format!("{} subagents finished:\n", completions.len());
+    for (id, status) in completions {
+        let line = match status {
+            AgentStatus::Failed { error } => writeln!(prompt, "Subagent {id} failed: {error}"),
+            AgentStatus::Completed { output } => {
+                writeln!(prompt, "Subagent {id} completed: {output}")
+            }
+            _ => writeln!(prompt, "Subagent {id} was interrupted before finishing."),
+        };
+        line.expect("writing to a String does not fail");
+    }
+    prompt.push('\n');
+    prompt.push_str(
+        "Continue the current task using only the result fields needed for the next step. \
+         Integrate or verify them as appropriate. For a failed subagent, decide whether to \
+         retry, recover, or report the failure. For an interrupted subagent, call list_agents \
+         with include_completed=true to inspect it, and decide whether to resume it with a \
+         message, replace it, or finish without it. Perform any remaining work, and then \
+         respond to the user. Do not merely repeat the raw results, and do not repeat side \
+         effects the subagents already completed.\n",
+    );
+    if let Some((id, status)) = completions.last() {
+        let status = match status {
+            AgentStatus::Failed { .. } => "failed",
+            AgentStatus::Completed { .. } => "completed",
+            _ => "interrupted",
+        };
+        write!(
+            prompt,
+            "\n<subagent_completion agent_id=\"{id}\" status=\"{status}\" />"
+        )
+        .expect("writing to a String does not fail");
+    }
+    prompt
+}
+
 fn completion_request_id(session_id: &str, revision: u64, attempt: u32) -> String {
     match attempt {
         0 => format!(
@@ -752,9 +796,16 @@ pub fn completion_retry_delay(attempt: u32) -> Duration {
 }
 
 struct SteerWatch {
+    injected: Arc<Signal>,
     request_id: String,
     prompt: String,
     outcome: oneshot::Sender<NoticeOutcome>,
+}
+
+enum Routed {
+    Skipped,
+    Started,
+    Steered(Arc<Signal>),
 }
 
 #[derive(Clone, Copy)]
@@ -855,10 +906,11 @@ impl NoticeOutcome {
                 continue;
             };
             if steered {
-                if let Some((_, carrier)) =
+                if let Some((steer, carrier)) =
                     run.message_id.as_deref().and_then(|id| watched.get_mut(id))
                 {
                     *carrier = run.turn_id;
+                    steer.injected.fire();
                 }
                 continue;
             }
@@ -2882,6 +2934,7 @@ impl Registry {
             completion_dispatch: Atom::default(),
             completion_batches: Atom::default(),
             completion_routes: Atom::default(),
+            completion_wakes: Atom::default(),
             result_readers: Atom::default(),
             root_watches: Atom::default(),
             running_roots: Atom::default(),
@@ -6667,13 +6720,53 @@ impl Registry {
         parent: &Agent,
         root_session_id: &str,
         completions: Vec<(AgentId, u64)>,
-    ) -> std::io::Result<()> {
+    ) -> std::io::Result<Vec<Arc<Signal>>> {
         let ids = completions.iter().map(|(id, _)| *id).collect::<Vec<_>>();
         let result = self
             .dispatch_parent_batch(parent, root_session_id, completions)
             .await;
         self.release_dispatch(root_session_id, &ids);
         result
+    }
+
+    async fn root_active(&self, root_session_id: &str) -> bool {
+        let root = root_session_id.to_owned();
+        self.state
+            .call(move |state| {
+                state
+                    .scopes
+                    .get_mut(&root)
+                    .is_some_and(|scope| scope.sessions.any_active_direct())
+            })
+            .await
+    }
+
+    async fn completion_deadline(&self, root_session_id: &str) -> Option<Instant> {
+        if !self.root_active(root_session_id).await {
+            self.completion_wakes
+                .update(|wakes| wakes.remove(root_session_id));
+            return None;
+        }
+        let (first, last) = self
+            .completion_wakes
+            .read(|wakes| wakes.get(root_session_id).copied())?;
+        let deadline = last + last.saturating_duration_since(first);
+        (Instant::now() < deadline).then_some(deadline)
+    }
+
+    async fn record_completion_wake(&self, root_session_id: &str) {
+        let active = self.root_active(root_session_id).await;
+        let now = Instant::now();
+        self.completion_wakes.update(|wakes| {
+            if active {
+                wakes
+                    .entry(root_session_id.to_owned())
+                    .or_insert((now, now))
+                    .1 = now;
+            } else {
+                wakes.remove(root_session_id);
+            }
+        });
     }
 
     fn release_dispatch(&self, root_session_id: &str, ids: &[AgentId]) {
@@ -6712,14 +6805,18 @@ impl Registry {
         parent: &Agent,
         root_session_id: &str,
         mut completions: Vec<(AgentId, u64)>,
-    ) -> std::io::Result<()> {
+    ) -> std::io::Result<Vec<Arc<Signal>>> {
         completions.sort_unstable_by(|left, right| left.0.cmp(&right.0).then(right.1.cmp(&left.1)));
         completions.dedup_by_key(|(id, _)| *id);
         if let [(id, revision)] = completions[..] {
-            return self
-                .continue_parent(parent, root_session_id, id, revision)
-                .await
-                .map(drop);
+            let result = self
+                .dispatch_parent(parent, root_session_id, id, revision)
+                .await;
+            self.release_dispatch(root_session_id, &[id]);
+            return result.map(|routed| match routed {
+                Routed::Steered(injected) => vec![injected],
+                Routed::Skipped | Routed::Started => Vec::new(),
+            });
         }
         let mut dispatches = Vec::with_capacity(completions.len());
         for &(id, _) in &completions {
@@ -6794,11 +6891,12 @@ impl Registry {
                 )),
             }
         }
+        let mut steered = Vec::new();
         for (_, group) in groups {
-            self.route_completions(parent, root_session_id, group).await;
+            steered.extend(self.route_completions(parent, root_session_id, group).await);
         }
         drop(dispatches);
-        Ok(())
+        Ok(steered)
     }
 
     fn watch_steer(
@@ -6807,9 +6905,11 @@ impl Registry {
         parent: &Agent,
         request_id: &str,
         prompt: &str,
-    ) -> oneshot::Receiver<NoticeOutcome> {
+    ) -> (oneshot::Receiver<NoticeOutcome>, Arc<Signal>) {
         let (outcome, steered) = oneshot::channel();
+        let injected = Arc::new(Signal::new());
         let mut steer = SteerWatch {
+            injected: Arc::clone(&injected),
             request_id: request_id.to_owned(),
             prompt: prompt.to_owned(),
             outcome,
@@ -6844,7 +6944,7 @@ impl Registry {
                 }
             };
             match watcher.send(steer) {
-                Ok(()) => return steered,
+                Ok(()) => return (steered, injected),
                 Err(mpsc::error::SendError(returned)) => steer = returned,
             }
         }
@@ -6855,14 +6955,12 @@ impl Registry {
         parent: &Agent,
         root_session_id: &str,
         group: Vec<(AgentId, u64, AgentStatus, String, u32)>,
-    ) {
+    ) -> Option<Arc<Signal>> {
         let group = group
             .into_iter()
             .filter(|(id, revision, _, _, _)| self.claim_route(root_session_id, *id, *revision))
             .collect::<Vec<_>>();
-        let Some((_, first_revision, _, first_session, _)) = group.first() else {
-            return;
-        };
+        let (_, first_revision, _, first_session, _) = group.first()?;
         let request_id = if let [(_, revision, _, session_id, attempt)] = &group[..] {
             completion_request_id(session_id, *revision, *attempt)
         } else {
@@ -6879,12 +6977,17 @@ impl Registry {
                 durable::checkpoint_key(&members)
             )
         };
-        let prompt = group
-            .iter()
-            .map(|(id, _, status, _, _)| completion_continuation_prompt(*id, status))
-            .collect::<Vec<_>>()
-            .join("\n\n");
-        let steered = self.watch_steer(root_session_id, parent, &request_id, &prompt);
+        let prompt = if let [(id, _, status, _, _)] = &group[..] {
+            completion_continuation_prompt(*id, status)
+        } else {
+            completion_batch_prompt(
+                &group
+                    .iter()
+                    .map(|(id, _, status, _, _)| (*id, status))
+                    .collect::<Vec<_>>(),
+            )
+        };
+        let (steered, injected) = self.watch_steer(root_session_id, parent, &request_id, &prompt);
         match parent
             .route_prompt_request(
                 nanocode_agent_core::PromptRequest::new(prompt.clone())
@@ -6902,12 +7005,17 @@ impl Registry {
                         routes.insert(key.clone(), *revision);
                     });
                 }
+                let routed = match route {
+                    PromptRoute::Started(_) => None,
+                    PromptRoute::Steered => Some(Arc::clone(&injected)),
+                };
                 let registry = Arc::downgrade(self);
                 let parent = parent.downgrade();
                 let root_session_id = root_session_id.to_owned();
                 drop(platform::spawn(async move {
                     let outcome =
                         NoticeOutcome::of_route(route, steered, &parent, request_id, prompt).await;
+                    injected.fire();
                     let Some(registry) = registry.upgrade() else {
                         return;
                     };
@@ -6917,6 +7025,7 @@ impl Registry {
                             .await;
                     }
                 }));
+                routed
             }
             Err(error) => {
                 for (id, revision, _, _, _) in &group {
@@ -6935,6 +7044,7 @@ impl Registry {
                     }
                 }
                 nanocode_trace::warn!(%error, "subagent completions did not continue their parent");
+                None
             }
         }
     }
@@ -6950,7 +7060,7 @@ impl Registry {
             .dispatch_parent(parent, root_session_id, id, revision)
             .await;
         self.release_dispatch(root_session_id, &[id]);
-        result
+        result.map(|routed| !matches!(routed, Routed::Skipped))
     }
 
     async fn dispatch_parent(
@@ -6959,7 +7069,7 @@ impl Registry {
         root_session_id: &str,
         id: AgentId,
         revision: u64,
-    ) -> std::io::Result<bool> {
+    ) -> std::io::Result<Routed> {
         if parent.session_id() != root_session_id {
             return Err(std::io::Error::other(
                 "subagent completion parent is not the root session",
@@ -6977,11 +7087,11 @@ impl Registry {
             .completion_routes
             .read(|routes| routes.get(&key) == Some(&revision))
         {
-            return Ok(false);
+            return Ok(Routed::Skipped);
         }
         let Some((_, _, _, parked)) = self.peek_completion(root_session_id, id, revision).await
         else {
-            return Ok(false);
+            return Ok(Routed::Skipped);
         };
         if parked
             || self
@@ -6992,7 +7102,7 @@ impl Registry {
             if !parked && self.store_for(root_session_id).is_some() {
                 self.persist_durably(root_session_id).await?;
             }
-            return Ok(false);
+            return Ok(Routed::Skipped);
         }
         if self.store_for(root_session_id).is_some()
             && let Err(error) = self.persist_durably(root_session_id).await
@@ -7003,14 +7113,14 @@ impl Registry {
         let Some((status, session_id, attempt, _)) =
             self.peek_completion(root_session_id, id, revision).await
         else {
-            return Ok(false);
+            return Ok(Routed::Skipped);
         };
         let request_id = completion_request_id(&session_id, revision, attempt);
         if !self.claim_route(root_session_id, id, revision) {
-            return Ok(false);
+            return Ok(Routed::Skipped);
         }
         let prompt = completion_continuation_prompt(id, &status);
-        let steered = self.watch_steer(root_session_id, parent, &request_id, &prompt);
+        let (steered, injected) = self.watch_steer(root_session_id, parent, &request_id, &prompt);
         match parent
             .route_prompt_request(
                 nanocode_agent_core::PromptRequest::new(prompt.clone())
@@ -7028,11 +7138,16 @@ impl Registry {
                 self.completion_routes.update(|routes| {
                     routes.insert(key.clone(), revision);
                 });
+                let routed = match route {
+                    PromptRoute::Started(_) => Routed::Started,
+                    PromptRoute::Steered => Routed::Steered(Arc::clone(&injected)),
+                };
                 let registry = Arc::downgrade(self);
                 let parent = parent.downgrade();
                 drop(platform::spawn(async move {
                     let outcome =
                         NoticeOutcome::of_route(route, steered, &parent, request_id, prompt).await;
+                    injected.fire();
                     let Some(registry) = registry.upgrade() else {
                         return;
                     };
@@ -7040,7 +7155,7 @@ impl Registry {
                         .settle_notice(&key.0, id, revision, outcome, &parent)
                         .await;
                 }));
-                Ok(true)
+                Ok(routed)
             }
             Err(error) => {
                 self.release_route(root_session_id, id, revision);
@@ -9549,16 +9664,37 @@ async fn continue_root(
 ) {
     while let Some(first) = completions.recv().await {
         let mut batch = vec![first];
-        while let Ok(completion) = completions.try_recv() {
-            batch.push(completion);
+        loop {
+            while let Ok(completion) = completions.try_recv() {
+                batch.push(completion);
+            }
+            let Some(deadline) = registry.completion_deadline(&root_session_id).await else {
+                break;
+            };
+            nanocode_sync::select! {
+                completion = completions.recv() => match completion {
+                    Some(completion) => batch.push(completion),
+                    None => break,
+                },
+                () = platform::sleep(deadline.saturating_duration_since(Instant::now())) => {}
+            }
         }
         match resolver(&root_session_id) {
             Some(parent) => {
-                if let Err(error) = registry
+                match registry
                     .continue_parent_batch(&parent, &root_session_id, batch)
                     .await
                 {
-                    nanocode_trace::warn!(%error, "subagent completions did not continue their parent");
+                    Ok(steered) => {
+                        drop(parent);
+                        registry.record_completion_wake(&root_session_id).await;
+                        for injected in steered {
+                            injected.wait().await;
+                        }
+                    }
+                    Err(error) => {
+                        nanocode_trace::warn!(%error, "subagent completions did not continue their parent");
+                    }
                 }
             }
             None => {

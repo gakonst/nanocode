@@ -17,6 +17,7 @@
   const nativeSettled = native("__nanocodeSettled");
   const nativeNext = native("__nanocodeNext");
   const nativeCatalog = native("__nanocodeCatalog");
+  const nativeExit = native("__nanocodeExit");
   const definitionsJson = native("__nanocodeDefinitions");
   const preludeSource = native("__nanocodePrelude");
   const preludeAtSetup = native("__nanocodePreludeAtSetup");
@@ -85,7 +86,6 @@
   const now = typeof globalThis.performance?.now === "function"
     ? () => globalThis.performance.now()
     : () => Date.now();
-  const EXIT = Symbol("exit");
   const ignore = () => {};
   const pendingTools = [];
   const timers = new Map();
@@ -196,10 +196,6 @@
   }
 
   function uncaught(reason, rejection) {
-    if (reason === EXIT) {
-      stopCell();
-      return undefined;
-    }
     const message = rejection
       ? "Unhandled promise rejection: " + describe(reason)
       : thrownText(reason);
@@ -490,7 +486,6 @@
       settle = resolve;
       stopCell = end;
       promise.then(end, (error) => {
-        if (error === EXIT) return end();
         if (ended) return;
         ended = true;
         threw = true;
@@ -567,7 +562,7 @@
       nativeYield();
     }
 
-    function exit() { throw EXIT; }
+    function exit() { nativeExit(terminal()); }
 
     const describe = (index) => (descriptions ??= jsonParse(nativeCatalog(0)))[index];
     const allTools = Object.freeze(definitions.map((tool, index) => {

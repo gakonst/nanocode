@@ -99,8 +99,9 @@ const SETTLED: u32 = 10;
 pub(crate) const NEXT: u32 = 11;
 const CATALOG: u32 = 12;
 const QUIET: u32 = 13;
+const EXIT: u32 = 14;
 
-const HOST_FNS: [(u32, &str); 11] = [
+const HOST_FNS: [(u32, &str); 12] = [
     (TOOL, "__nanocodeTool"),
     (CONTENT, "__nanocodeContent"),
     (TEXT, "__nanocodeText"),
@@ -112,6 +113,7 @@ const HOST_FNS: [(u32, &str); 11] = [
     (VALUE, "__nanocodeValue"),
     (SETTLED, "__nanocodeSettled"),
     (CATALOG, "__nanocodeCatalog"),
+    (EXIT, "__nanocodeExit"),
 ];
 
 #[derive(Clone)]
@@ -337,6 +339,7 @@ pub(crate) struct ExecutionState {
     journal: Option<JournalWriter>,
     replay: Option<Replay>,
     settling: bool,
+    exited: Option<String>,
     started: Instant,
 }
 
@@ -376,6 +379,7 @@ impl ExecutionState {
             journal: None,
             replay: None,
             settling: false,
+            exited: None,
             started: nanocode_platform::now(),
         }
     }
@@ -567,6 +571,10 @@ impl ExecutionState {
         std::mem::take(&mut self.settling)
     }
 
+    pub(crate) const fn exited(&mut self) -> Option<String> {
+        self.exited.take()
+    }
+
     pub(crate) fn host_call(&mut self, call: &HostCall<'_>) -> Result<Reply<'_>, Throw> {
         match call.fn_id() {
             TOOL => {
@@ -627,6 +635,10 @@ impl ExecutionState {
             }
             SETTLED => {
                 self.settling = true;
+                Ok(Reply::Nothing)
+            }
+            EXIT => {
+                self.exited = Some(text(call, 0)?);
                 Ok(Reply::Nothing)
             }
             CATALOG => {

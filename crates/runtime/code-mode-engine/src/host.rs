@@ -119,6 +119,10 @@ impl Machine {
                         Err(throw) => Err(throw.clone()),
                     };
                     call.reply(reply).map_err(failure)?;
+                    if let Some(encoded) = state.exited() {
+                        instance.abort();
+                        return ended(state, &encoded);
+                    }
                     if instance.fuel_used().saturating_sub(started) >= slice {
                         return Ok(Ran::Sliced);
                     }
@@ -149,13 +153,6 @@ impl Machine {
                     return Ok(Ran::Idle);
                 }
                 Step::Done => {
-                    if let Replaying::Diverged(reason) = state.replaying(true) {
-                        state.send(RuntimeEvent::Diverged {
-                            cell_id: state.execution_id,
-                            reason,
-                        });
-                        return Ok(Ran::Finished);
-                    }
                     let encoded = instance
                         .result()
                         .map_err(failure)?
@@ -164,8 +161,7 @@ impl Machine {
                             "embedded Code Mode returned a result that is not text".to_owned()
                         })?
                         .into_owned();
-                    state.send_terminal(&encoded)?;
-                    return Ok(Ran::Finished);
+                    return ended(state, &encoded);
                 }
             }
         }
@@ -303,6 +299,18 @@ enum Idle {
         timer: Option<Duration>,
         park: Option<Duration>,
     },
+}
+
+fn ended(state: &mut ExecutionState, encoded: &str) -> Result<Ran, String> {
+    if let Replaying::Diverged(reason) = state.replaying(true) {
+        state.send(RuntimeEvent::Diverged {
+            cell_id: state.execution_id,
+            reason,
+        });
+        return Ok(Ran::Finished);
+    }
+    state.send_terminal(encoded)?;
+    Ok(Ran::Finished)
 }
 
 fn failure(error: djs_embed::Error) -> String {

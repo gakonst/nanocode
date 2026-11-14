@@ -10,6 +10,7 @@ members = [
     "crates/core/types-core",
     "crates/core/unicode-normalization",
     "crates/core/itoa",
+    "crates/core/shlex",
     "crates/core/process",
     "crates/integrations/agent-host",
     "crates/runtime/tool-host",
@@ -206,6 +207,7 @@ rustpython-stdlib = { path = "crates/patches/rustpython-stdlib" }
 rustpython-unicode = { path = "crates/patches/rustpython-unicode" }
 rustpython-vm = { path = "crates/patches/rustpython-vm" }
 rustpython-wtf8 = { path = "crates/patches/rustpython-wtf8" }
+shlex = { path = "crates/core/shlex" }
 unicode-normalization = { path = "crates/core/unicode-normalization" }
 
 [workspace.lints.rust]

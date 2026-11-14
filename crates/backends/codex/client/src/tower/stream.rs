@@ -170,6 +170,13 @@ struct AssistantStreamItem {
     phase: Option<MessagePhase>,
 }
 
+struct DoneMessage {
+    index: u32,
+    item_id: Option<ResponseItemId>,
+    phase: Option<MessagePhase>,
+    text: String,
+}
+
 struct StreamTiming {
     started_at: Instant,
     model_started_at: Option<Instant>,
@@ -382,6 +389,9 @@ enum StreamEvent<'a> {
         output_index: Option<u32>,
         text: &'a RawValue,
     },
+    PartAdded {
+        output_index: Option<u32>,
+    },
     ItemDone {
         output_index: Option<u32>,
         item: ResponseItem,
@@ -538,6 +548,12 @@ fn decode_wire_event(raw: &str, responses: bool) -> Result<DecodedEvent<'_>, ser
                 response,
             )
         }
+        "response.content_part.added" => (
+            StreamEvent::PartAdded {
+                output_index: optional(event.output_index)?,
+            },
+            None,
+        ),
         "response.output_text.done" => (
             StreamEvent::TextDone {
                 output_index: optional(event.output_index)?,
@@ -730,6 +746,8 @@ where
     let mut assistant_items = HashMap::new();
     let mut tool_items = HashMap::new();
     let mut assistant_texts = HashMap::<u32, (Option<MessagePhase>, String)>::new();
+    let mut done_texts = HashMap::<u32, String>::new();
+    let mut done_message = None::<DoneMessage>;
     let item_namespace = nanocode_platform::uuid_v4();
     let mut timing = StreamTiming::new(started_at, model_started_at);
     let context = EventContext {
@@ -777,6 +795,30 @@ where
         };
         if !matches!(&event.decoded, Ok((decoded, _)) if decoded.is_delta()) {
             flush_display_deltas(events, &mut timing)?;
+        }
+        if let Ok((decoded, _)) = &event.decoded
+            && let Some(message) = done_message.take()
+        {
+            match decoded {
+                StreamEvent::Failure | StreamEvent::Other => done_message = Some(message),
+                StreamEvent::PartAdded { output_index }
+                    if output_index.unwrap_or(0) == message.index =>
+                {
+                    done_texts.insert(message.index, message.text);
+                }
+                _ => {
+                    events.emit(
+                        AgentEventKind::AssistantMessage,
+                        AssistantMessage {
+                            model_call_index: call_index,
+                            item_id: message.item_id.as_deref(),
+                            phase: message.phase,
+                            text: Cow::Borrowed(&message.text),
+                        },
+                    )?;
+                    assistant_texts.insert(message.index, (message.phase, message.text));
+                }
+            }
         }
         let (event, published) =
             match publish_received(&context, &received, event, &mut timing).await {
@@ -920,25 +962,23 @@ where
                         )),
                         phase: None,
                     });
-                let emitted = assistant_texts.entry(index).or_default();
-                emitted.0 = item.phase;
-                emitted.1.push_str(&text);
-                events.emit(
-                    AgentEventKind::AssistantMessage,
-                    AssistantMessage {
-                        model_call_index: call_index,
-                        item_id: item.item_id.as_deref(),
-                        phase: item.phase,
-                        text: Cow::Borrowed(&emitted.1),
-                    },
-                )?;
+                let mut done = done_texts.remove(&index).unwrap_or_default();
+                done.push_str(&text);
+                done_message = Some(DoneMessage {
+                    index,
+                    item_id: item.item_id.clone(),
+                    phase: item.phase,
+                    text: done,
+                });
             }
+            StreamEvent::PartAdded { .. } => {}
             StreamEvent::ItemDone {
                 output_index,
                 mut item,
             } => {
                 let index = output_index.unwrap_or(done_items.len() as u32);
                 normalize_stream_item(&mut item, index, &item_namespace, &mut assistant_items);
+                done_texts.remove(&index);
                 if !emitted_message(&item, assistant_texts.remove(&index)) {
                     emit_assistant_message(events, call_index, &item)?;
                 }

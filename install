@@ -15,14 +15,16 @@ digest() {
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 curl -fsSL "$release/SHA256SUMS" -o "$tmp/SHA256SUMS"
-expected="$(grep " nanocode-$target.gz$" "$tmp/SHA256SUMS" | cut -d' ' -f1)"
+packed=gz
+if command -v xz >/dev/null 2>&1 && grep -q " nanocode-$target.xz$" "$tmp/SHA256SUMS"; then packed=xz; fi
+expected="$(grep " nanocode-$target.$packed$" "$tmp/SHA256SUMS" | cut -d' ' -f1)"
 if [ -z "$expected" ]; then echo "nanocode: the release has no build for $target" >&2; exit 1; fi
 mkdir -p "$bin"
 if [ ! -x "$bin/nanocode" ] || [ "$(cat "$bin/.nanocode.sha256" 2>/dev/null)" != "$expected" ]; then
   echo "nanocode: downloading $target" >&2
-  curl -fsSL "$release/nanocode-$target.gz" -o "$tmp/nanocode.gz"
-  if [ "$(digest "$tmp/nanocode.gz")" != "$expected" ]; then echo "nanocode: checksum mismatch for nanocode-$target.gz" >&2; exit 1; fi
-  gunzip -c "$tmp/nanocode.gz" > "$tmp/nanocode"
+  curl -fsSL "$release/nanocode-$target.$packed" -o "$tmp/nanocode.$packed"
+  if [ "$(digest "$tmp/nanocode.$packed")" != "$expected" ]; then echo "nanocode: checksum mismatch for nanocode-$target.$packed" >&2; exit 1; fi
+  case $packed in xz) xz -dc "$tmp/nanocode.xz" > "$tmp/nanocode" ;; *) gunzip -c "$tmp/nanocode.gz" > "$tmp/nanocode" ;; esac
   chmod +x "$tmp/nanocode"
   mv "$tmp/nanocode" "$bin/nanocode"
   ln -sf nanocode "$bin/nc"

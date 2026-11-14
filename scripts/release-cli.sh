@@ -16,11 +16,14 @@ for arch in arm64 amd64; do
   cp "target/linux-$arch/cli/$triple/nanocode" "$out/nanocode-$triple"
 done
 cd "$out"
-rm -f ./*.gz SHA256SUMS
-for binary in nanocode-*; do gzip -9 -c "$binary" > "$binary.gz"; done
-shasum -a 256 ./*.gz | sed 's# \./# #' > SHA256SUMS
+rm -f ./*.gz ./*.xz SHA256SUMS
+for binary in nanocode-*; do
+  gzip -9 -c "$binary" > "$binary.gz"
+  case $binary in nanocode-cua-driver-*) ;; *) xz -9e -c "$binary" > "$binary.xz" ;; esac
+done
+shasum -a 256 ./*.gz ./*.xz | sed 's# \./# #' > SHA256SUMS
 if [ "${1:-}" = "--publish" ]; then
   git -C "$root" push -f origin "$(git -C "$root" rev-parse HEAD):refs/tags/nanocode-cli"
   cp "$root/install" install.sh
-  gh release upload nanocode-cli --repo nanocodexyz/nanocode --clobber ./*.gz SHA256SUMS install.sh
+  gh release upload nanocode-cli --repo nanocodexyz/nanocode --clobber ./*.gz ./*.xz SHA256SUMS install.sh
 fi

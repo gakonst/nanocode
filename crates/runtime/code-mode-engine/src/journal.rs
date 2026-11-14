@@ -239,4 +239,5 @@ impl JournalWriter {
 pub struct CellJournaling {
     pub journal: SharedJournal,
     pub replay: Option<Vec<JournalEntry>>,
+    pub started_at_ms: Option<u64>,
 }

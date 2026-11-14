@@ -341,6 +341,8 @@ pub(crate) struct ExecutionState {
     settling: bool,
     exited: Option<String>,
     started: Instant,
+    monotonic_base: f64,
+    monotonic_floor: f64,
 }
 
 struct Replay {
@@ -381,6 +383,8 @@ impl ExecutionState {
             settling: false,
             exited: None,
             started: nanocode_platform::now(),
+            monotonic_base: 0.0,
+            monotonic_floor: 0.0,
         }
     }
 
@@ -391,16 +395,24 @@ impl ExecutionState {
         tools: Arc<CellTools>,
         journaling: Option<CellJournaling>,
     ) {
-        let (journal, replay) = journaling.map_or((None, None), |journaling| {
-            (
-                Some(journaling.journal.writer()),
-                journaling.replay.map(|entries| Replay {
-                    entries,
-                    pos: 0,
-                    diverged: None,
-                }),
-            )
-        });
+        let (journal, replay, monotonic_base) =
+            journaling.map_or((None, None, 0.0), |journaling| {
+                let monotonic_base = journaling
+                    .started_at_ms
+                    .filter(|_| journaling.replay.is_some())
+                    .map_or(0.0, |started_at_ms| {
+                        wall_since(started_at_ms).as_secs_f64() * 1000.0
+                    });
+                (
+                    Some(journaling.journal.writer()),
+                    journaling.replay.map(|entries| Replay {
+                        entries,
+                        pos: 0,
+                        diverged: None,
+                    }),
+                    monotonic_base,
+                )
+            });
         *self = Self {
             execution_id,
             events: std::mem::take(&mut self.events),
@@ -408,6 +420,7 @@ impl ExecutionState {
             tools: Some(tools),
             journal,
             replay,
+            monotonic_base,
             ..Self::new()
         };
     }
@@ -466,14 +479,14 @@ impl ExecutionState {
             return;
         }
         let now = nanocode_platform::now();
-        let wall = wall_ms();
         let mut scheduled = Vec::new();
         for (id, timeout) in &mut self.pending_timeouts {
             let Some((at_ms, delay_ms)) = timeout.planned.take() else {
                 continue;
             };
-            let due = at_ms.saturating_add(delay_ms).saturating_sub(wall);
-            timeout.deadline = now.checked_add(Duration::from_millis(due));
+            let due =
+                Duration::from_millis(delay_ms.saturating_add(1)).saturating_sub(wall_since(at_ms));
+            timeout.deadline = now.checked_add(due);
             if let Some(deadline) = timeout.deadline {
                 scheduled.push((deadline, *id));
             }
@@ -628,7 +641,7 @@ impl ExecutionState {
                 let kind = call.arg(0).as_number().unwrap_or(0.0) as u8;
                 let live = match kind {
                     0 => wall_ms() as f64,
-                    1 => self.started.elapsed().as_secs_f64() * 1000.0,
+                    1 => self.monotonic_base + self.started.elapsed().as_secs_f64() * 1000.0,
                     _ => call.arg(1).as_number().unwrap_or(0.0),
                 };
                 Ok(Reply::Number(self.value(kind, live)))
@@ -758,14 +771,19 @@ impl ExecutionState {
         }
         let wanted = match kind {
             0 => JournalEntry::Clock { value: live },
-            1 => JournalEntry::Monotonic { value: live },
+            1 => JournalEntry::Monotonic {
+                value: live.max(self.monotonic_floor),
+            },
             _ => JournalEntry::Random { value: live },
         };
         match self.expect(wanted, 0) {
+            Expectation::Replayed(JournalEntry::Monotonic { value })
+            | Expectation::Live(JournalEntry::Monotonic { value }) => {
+                self.monotonic_floor = value;
+                value
+            }
             Expectation::Replayed(
-                JournalEntry::Clock { value }
-                | JournalEntry::Monotonic { value }
-                | JournalEntry::Random { value },
+                JournalEntry::Clock { value } | JournalEntry::Random { value },
             ) => value,
             _ => live,
         }
@@ -945,6 +963,13 @@ pub(crate) fn text(call: &HostCall<'_>, index: usize) -> Result<String, Throw> {
         .as_str()
         .map(Cow::into_owned)
         .ok_or_else(|| Throw::type_error(format!("argument {index} must be a string")))
+}
+
+fn wall_since(at_ms: u64) -> Duration {
+    nanocode_platform::UNIX_EPOCH
+        .checked_add(Duration::from_millis(at_ms))
+        .and_then(|at| nanocode_platform::system_time().duration_since(at).ok())
+        .unwrap_or_default()
 }
 
 fn wall_ms() -> u64 {

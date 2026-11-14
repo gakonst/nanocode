@@ -723,6 +723,7 @@ impl CodeModeRuntime {
             script: journal.script.clone(),
             tools: metadata,
             stored: stored.clone(),
+            started_at_ms: journal.started_at_ms,
             prelude: journal.prelude,
             yield_time_ms: journal.yield_time_ms,
             max_output_tokens: journal.max_output_tokens,
@@ -991,6 +992,7 @@ impl CodeModeRuntime {
                     script: source.code.clone(),
                     tools: metadata,
                     stored: stored.clone(),
+                    started_at_ms: Some(replay::wall_ms()),
                     prelude: self.prelude.is_some(),
                     yield_time_ms: source.yield_time_ms.unwrap_or(millis(self.yields.wait)),
                     max_output_tokens: Some(output_token_budget),
@@ -2999,6 +3001,7 @@ async fn run_cell_actor(
             .map(|record| nanocode_code_mode_engine::CellJournaling {
                 journal: record.journal.clone(),
                 replay: plan.as_mut().map(|plan| std::mem::take(&mut plan.entries)),
+                started_at_ms: record.started_at_ms,
             });
     let run = async {
         host.worker

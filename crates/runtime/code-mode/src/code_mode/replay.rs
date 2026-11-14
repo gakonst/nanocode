@@ -33,6 +33,8 @@ pub struct CellJournal {
     #[serde(default)]
     pub stored: BTreeMap<String, Value>,
     #[serde(default)]
+    pub started_at_ms: Option<u64>,
+    #[serde(default)]
     pub prelude: bool,
     pub yield_time_ms: u64,
     #[serde(default)]
@@ -73,6 +75,8 @@ pub struct CellJournalHeader {
     pub tools: Arc<[Value]>,
     #[serde(default)]
     pub stored: BTreeMap<String, Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at_ms: Option<u64>,
     #[serde(default)]
     pub prelude: bool,
     pub yield_time_ms: u64,
@@ -149,6 +153,7 @@ impl CellJournal {
             script: header.script,
             tools: header.tools.to_vec(),
             stored: header.stored,
+            started_at_ms: header.started_at_ms,
             prelude: header.prelude,
             yield_time_ms: header.yield_time_ms,
             max_output_tokens: header.max_output_tokens,
@@ -641,6 +646,7 @@ pub(super) struct CellRecord {
     pub(super) script: String,
     pub(super) tools: Arc<[Value]>,
     pub(super) stored: HashMap<String, Arc<RawValue>>,
+    pub(super) started_at_ms: Option<u64>,
     pub(super) prelude: bool,
     pub(super) yield_time_ms: u64,
     pub(super) max_output_tokens: Option<usize>,
@@ -923,6 +929,7 @@ impl CellRecord {
             script: self.script.clone(),
             tools: Arc::clone(&self.tools),
             stored: self.stored_json(),
+            started_at_ms: self.started_at_ms,
             prelude: self.prelude,
             yield_time_ms: self.yield_time_ms,
             max_output_tokens: self.max_output_tokens,
@@ -1111,6 +1118,7 @@ impl CellRecord {
                         .map(|value| (key.clone(), value))
                 })
                 .collect(),
+            started_at_ms: self.started_at_ms,
             prelude: self.prelude,
             yield_time_ms: self.yield_time_ms,
             max_output_tokens: self.max_output_tokens,

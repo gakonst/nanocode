@@ -186,9 +186,14 @@ pub(crate) fn install_default_tools_with_providers(
         .build()
         .map_err(|error| NanocodeError::InvalidRequest(error.to_string()))?;
     selected = selected.add_shared_tools(additive)?;
-    let ends_with_turn = headless || handle.root_session_id() != handle.session_id();
+    let delivery = match (handle.root_session_id() != handle.session_id(), headless) {
+        (true, _) => crate::claude_bash::Delivery::EndsWithTurn,
+        (false, true) => crate::claude_bash::Delivery::Held,
+        (false, false) => crate::claude_bash::Delivery::Prompted,
+    };
     let bound = jobs.clone();
     let reaped = jobs.clone();
+    let held = jobs.clone();
     let tools = crate::claude_tools::install(&selected, workspace, handle)?
         .adapter_shutdown(move || {
             let jobs = jobs.clone();
@@ -196,8 +201,12 @@ pub(crate) fn install_default_tools_with_providers(
                 jobs.shutdown().await;
             }
         })
-        .agent_bound(move |agent, steer| bound.bind(agent, steer, ends_with_turn));
-    Ok(if ends_with_turn {
+        .agent_bound(move |agent, steer| bound.bind(agent, steer, delivery));
+    let tools = match delivery {
+        crate::claude_bash::Delivery::Held => tools.turn_hold(move || held.hold()),
+        _ => tools,
+    };
+    Ok(if !matches!(delivery, crate::claude_bash::Delivery::Prompted) {
         tools.adapter_cleanup(move || {
             let jobs = reaped.clone();
             async move {

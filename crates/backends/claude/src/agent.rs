@@ -327,6 +327,7 @@ pub struct ClaudeTools {
     pub(crate) shared_tool_names: HashSet<String>,
     pub(crate) shared_shutdown: Option<ToolCleanup>,
     pub(crate) agent_bound: Vec<AgentBound>,
+    pub(crate) turn_hold: Vec<ToolCleanup>,
 }
 impl nanocode_tools::ToolCollection for ClaudeTools {
     type Error = NanocodeError;
@@ -431,6 +432,16 @@ impl ClaudeTools {
         bound: impl Fn(&Agent, &Steer) + Send + Sync + 'static,
     ) -> Self {
         self.agent_bound.push(Arc::new(bound));
+        self
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) fn turn_hold<F, Fut>(mut self, hold: F) -> Self
+    where
+        F: Fn() -> Fut + Send + Sync + 'static,
+        Fut: crate::ToolFuture<Output = ()> + 'static,
+    {
+        self.turn_hold.push(Arc::new(move || Box::pin(hold())));
         self
     }
 
@@ -1440,6 +1451,7 @@ impl ClaudeBuilder {
         let mut code_turn_settle = Vec::new();
         let mut code_quiet = Vec::new();
         let mut agent_bound = Vec::new();
+        let mut turn_hold = Vec::new();
         let mut nested_tools = None;
         let mut recovery = None;
         if let Some(factory) = &self.tools_factory {
@@ -1457,6 +1469,7 @@ impl ClaudeBuilder {
             code_turn_settle.extend(native.code_turn_settle);
             code_quiet.extend(native.code_quiet);
             agent_bound.extend(native.agent_bound);
+            turn_hold.extend(native.turn_hold);
         }
 
         if self.claude.model.trim().is_empty()
@@ -1650,6 +1663,7 @@ impl ClaudeBuilder {
                 shared_tool_names: HashSet::new(),
                 shared_shutdown: None,
                 agent_bound: Vec::new(),
+                turn_hold: Vec::new(),
             };
             let adapted = adapter(catalog)?;
             nested_tools = adapted.nested_tools;
@@ -1671,6 +1685,7 @@ impl ClaudeBuilder {
             code_turn_settle.extend(adapted.code_turn_settle);
             code_quiet.extend(adapted.code_quiet);
             agent_bound.extend(adapted.agent_bound);
+            turn_hold.extend(adapted.turn_hold);
             self.client_tool_search = false;
         }
         let mut names = handlers.keys().map(String::as_str).collect::<HashSet<_>>();
@@ -1815,6 +1830,7 @@ impl ClaudeBuilder {
             code_turn_preempt,
             code_turn_settle,
             code_quiet,
+            turn_hold,
             nested_tools,
             recovery,
             dynamic_tools: self.dynamic_tools,
@@ -3343,6 +3359,7 @@ struct State {
     code_turn_preempt: Vec<ToolCleanup>,
     code_turn_settle: Vec<ToolCleanup>,
     code_quiet: Vec<CodeQuiet>,
+    turn_hold: Vec<ToolCleanup>,
     lifecycle_opened: Atom<Option<String>>,
     subagent_type: Option<String>,
     subagent_type_resolver: Option<SubagentTypeResolver>,
@@ -8146,6 +8163,22 @@ impl State {
                 continue;
             }
 
+            let holds = self.turn_hold.iter().map(|hold| hold()).collect::<Vec<_>>();
+            if !holds.is_empty()
+                && self
+                    .steering
+                    .acquire()
+                    .await
+                    .get(&request.key)
+                    .is_some_and(|turn| turn.pending.is_empty())
+            {
+                for hold in holds {
+                    nanocode_sync::select! {
+                        () = cancel.cancelled() => return Err(NanocodeError::TurnCancelled),
+                        () = hold => {}
+                    }
+                }
+            }
             let more_instructions = {
                 let mut turns = self.steering.acquire().await;
                 if let Some(turn) = turns.get_mut(&request.key) {

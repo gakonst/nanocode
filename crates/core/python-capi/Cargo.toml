@@ -11,6 +11,11 @@ autotests = false
 autobenches = false
 build = "build.rs"
 
+[dependencies]
+nanocode-numeric = { path = "../numeric" }
+nanocode-platform.workspace = true
+rustpython-vm.workspace = true
+
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
 

@@ -132,15 +132,20 @@ impl PyModule {
     }
 
     pub fn __init_dict_from_def(vm: &VirtualMachine, module: &Py<Self>) {
-        let doc = module.def.unwrap().doc.map(|doc| doc.to_owned());
-        module.init_dict(module.name.unwrap(), doc, vm);
+        let (Some(def), Some(name)) = (module.def, module.name) else {
+            return;
+        };
+        let doc = def.doc.map(|doc| doc.to_owned());
+        module.init_dict(name, doc, vm);
     }
 }
 
 impl Py<PyModule> {
     pub fn __init_methods(&self, vm: &VirtualMachine) -> PyResult<()> {
-        debug_assert!(self.def.is_some());
-        for method in self.def.unwrap().methods {
+        let Some(def) = self.def else {
+            return Ok(());
+        };
+        for method in def.methods {
             let func = method
                 .to_function()
                 .with_module(self.name.unwrap())

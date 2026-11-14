@@ -791,6 +791,11 @@ dependencies = [
 [[package]]
 name = "nanocode-python-capi"
 version = "0.7.0"
+dependencies = [
+ "nanocode-numeric",
+ "nanocode-platform",
+ "rustpython-vm",
+]
 
 [[package]]
 name = "nanocode-python-cli"

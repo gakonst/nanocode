@@ -182,12 +182,12 @@ impl nanocode_agent_types::BackendFailure for ClaudeError {
     }
 }
 
-fn retry_after(headers: &http::header::HeaderMap) -> Option<Duration> {
+fn retry_after(headers: &nanocode_http::types::header::HeaderMap) -> Option<Duration> {
     if let Some(delay) = retry::retry_after_ms(headers) {
         return Some(delay);
     }
     let value = headers
-        .get(http::header::RETRY_AFTER)?
+        .get(nanocode_http::types::header::RETRY_AFTER)?
         .to_str()
         .ok()?
         .trim();
@@ -1627,11 +1627,11 @@ pub type ClaudeAuthFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
 pub trait ClaudeAuthProvider: Send + Sync {
     fn headers(
         &self,
-    ) -> ClaudeAuthFuture<'_, Result<http::header::HeaderMap, ClaudeAuthUnavailable>>;
+    ) -> ClaudeAuthFuture<'_, Result<nanocode_http::types::header::HeaderMap, ClaudeAuthUnavailable>>;
 
     fn recover_unauthorized<'a>(
         &'a self,
-        _rejected: &'a http::header::HeaderMap,
+        _rejected: &'a nanocode_http::types::header::HeaderMap,
     ) -> ClaudeAuthFuture<'a, Result<bool, ClaudeAuthUnavailable>> {
         Box::pin(async { Ok(false) })
     }
@@ -1666,7 +1666,7 @@ impl ClaudeAuthUnavailable {
 #[derive(Clone)]
 enum ClientAuth {
     ApiKey(String),
-    Headers(http::header::HeaderMap),
+    Headers(nanocode_http::types::header::HeaderMap),
     Provider(Arc<dyn ClaudeAuthProvider>),
 }
 
@@ -1754,7 +1754,7 @@ impl ClaudeClient {
     pub fn with_auth_headers(
         http: HttpClient,
         endpoint: impl Into<String>,
-        headers: http::header::HeaderMap,
+        headers: nanocode_http::types::header::HeaderMap,
     ) -> Self {
         Self {
             http: HttpConnection::Client(http),
@@ -2088,12 +2088,13 @@ impl ClaudeClient {
             let mut provider_headers = None;
             let mut headers = match &self.auth {
                 ClientAuth::ApiKey(key) => {
-                    let mut headers = http::header::HeaderMap::new();
-                    let mut value = http::header::HeaderValue::from_str(key).map_err(|_| {
-                        ClaudeAuthUnavailable::new(
-                            "the Claude API key is not a valid HTTP header value",
-                        )
-                    })?;
+                    let mut headers = nanocode_http::types::header::HeaderMap::new();
+                    let mut value = nanocode_http::types::header::HeaderValue::from_str(key)
+                        .map_err(|_| {
+                            ClaudeAuthUnavailable::new(
+                                "the Claude API key is not a valid HTTP header value",
+                            )
+                        })?;
                     value.set_sensitive(true);
                     headers.insert("x-api-key", value);
                     headers
@@ -2187,10 +2188,10 @@ impl ClaudeClient {
                 betas.push(MESSAGE_THREADS_BETA);
             }
             if !betas.is_empty() {
-                let value =
-                    http::header::HeaderValue::from_str(&betas.join(",")).map_err(|_| {
-                        ClaudeAuthUnavailable::new("the combined anthropic-beta header is invalid")
-                    })?;
+                let value = nanocode_http::types::header::HeaderValue::from_str(&betas.join(","))
+                    .map_err(|_| {
+                    ClaudeAuthUnavailable::new("the combined anthropic-beta header is invalid")
+                })?;
                 headers.insert("anthropic-beta", value);
             }
             if self.subscription_compatibility {
@@ -2223,22 +2224,23 @@ impl ClaudeClient {
                 ] {
                     headers.insert(
                         name,
-                        http::header::HeaderValue::from_str(&value).map_err(|_| {
-                            ClaudeError::Protocol("invalid subscription wire header".into())
-                        })?,
+                        nanocode_http::types::header::HeaderValue::from_str(&value).map_err(
+                            |_| ClaudeError::Protocol("invalid subscription wire header".into()),
+                        )?,
                     );
                 }
                 headers.remove("x-claude-code-request-class");
             } else {
                 headers.insert(
                     "x-claude-code-session-id",
-                    http::header::HeaderValue::from_str(&self.subscription_session).map_err(
-                        |_| ClaudeError::Protocol("invalid Claude Code session header".into()),
-                    )?,
+                    nanocode_http::types::header::HeaderValue::from_str(&self.subscription_session)
+                        .map_err(|_| {
+                            ClaudeError::Protocol("invalid Claude Code session header".into())
+                        })?,
                 );
             }
             for (name, value) in &headers {
-                if name == http::header::AUTHORIZATION
+                if name == nanocode_http::types::header::AUTHORIZATION
                     || name == "x-api-key"
                     || value.is_sensitive()
                 {
@@ -2246,7 +2248,7 @@ impl ClaudeClient {
                     if !value.is_empty() && !credentials.iter().any(|item| item == &value) {
                         credentials.push(value.to_string());
                     }
-                    if name == http::header::AUTHORIZATION
+                    if name == nanocode_http::types::header::AUTHORIZATION
                         && let Some((_, token)) = value.split_once(' ')
                         && !token.trim().is_empty()
                         && !credentials.iter().any(|item| item == token.trim())
@@ -2274,7 +2276,7 @@ impl ClaudeClient {
                 }
             };
 
-            if response.status() == http::StatusCode::UNAUTHORIZED
+            if response.status() == nanocode_http::types::StatusCode::UNAUTHORIZED
                 && !retried
                 && let (ClientAuth::Provider(provider), Some(headers)) =
                     (&self.auth, provider_headers.as_ref())
@@ -2371,7 +2373,7 @@ impl ClaudeClient {
 
         let is_sse = response
             .headers()
-            .get(http::header::CONTENT_TYPE)
+            .get(nanocode_http::types::header::CONTENT_TYPE)
             .and_then(|value| value.to_str().ok())
             .and_then(|value| value.split(';').next())
             .is_some_and(|value| value.trim().eq_ignore_ascii_case("text/event-stream"));

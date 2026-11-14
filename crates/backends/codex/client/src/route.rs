@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
-use http::{
+use nanocode_http::layer::{BoxFuture, Error, Layer, Next, Request, Response};
+use nanocode_http::types::{
     HeaderValue,
     header::{AUTHORIZATION, InvalidHeaderValue},
 };
-use nanocode_http::layer::{BoxFuture, Error, Layer, Next, Request, Response};
 use serde::Deserialize;
 
 const MODEL_FIELD: &[u8] = b"\"model\":\"";

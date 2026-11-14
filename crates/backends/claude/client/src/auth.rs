@@ -1,6 +1,6 @@
 use std::{sync::Arc, time::Duration};
 
-use http::header::{AUTHORIZATION, HeaderMap, HeaderValue};
+use nanocode_http::types::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 use nanocode_platform::SystemTime;
 use nanocode_sync::{Atom, SingleFlight, SwapOption};
 

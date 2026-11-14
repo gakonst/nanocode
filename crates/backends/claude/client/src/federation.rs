@@ -106,7 +106,7 @@ impl ClaudeTokenSource for FederatedToken {
 
     fn refresh_rejected<'a>(
         &'a self,
-        _rejected: &'a http::HeaderValue,
+        _rejected: &'a nanocode_http::types::HeaderValue,
     ) -> ClaudeAuthFuture<'a, Result<Option<ClaudeAccessToken>, ClaudeAuthUnavailable>> {
         Box::pin(async move { self.exchange().await.map(Some) })
     }

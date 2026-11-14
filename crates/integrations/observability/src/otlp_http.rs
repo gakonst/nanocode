@@ -97,7 +97,7 @@ impl Http {
             .default_headers(nanocode_http::accept_encoding(HeaderMap::new()))
             .build()
             .expect("the default blocking HTTP client builds");
-        let url = http::Uri::from_str(endpoint)
+        let url = nanocode_http::types::Uri::from_str(endpoint)
             .map_err(|error| OtlpError::Endpoint {
                 endpoint: endpoint.to_owned(),
                 reason: error.to_string(),

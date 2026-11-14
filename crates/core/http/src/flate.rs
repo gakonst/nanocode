@@ -1,6 +1,6 @@
 use std::{error::Error, io, mem, pin::Pin};
 
-use http::{HeaderMap, header::CONTENT_ENCODING};
+use crate::types::{HeaderMap, header::CONTENT_ENCODING};
 use nanocode_compression::{
     checksum::crc32,
     inflate::{Inflate, InflateFlush, InflateStatus},

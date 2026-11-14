@@ -1,7 +1,7 @@
 use std::{fmt, sync::mpsc as sync_channel, thread, time::Duration};
 
-use bytes::Bytes;
-use http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
+use crate::types::{HeaderMap, HeaderName, HeaderValue, StatusCode};
+use nanocode_bytes::Bytes;
 use nanocode_sync::mpsc;
 use nanocode_url::Url;
 
@@ -103,14 +103,14 @@ impl Client {
     }
 
     pub fn post<U: IntoUrl>(&self, url: U) -> RequestBuilder {
-        self.request(http::Method::POST, url)
+        self.request(crate::types::Method::POST, url)
     }
 
     pub fn get<U: IntoUrl>(&self, url: U) -> RequestBuilder {
-        self.request(http::Method::GET, url)
+        self.request(crate::types::Method::GET, url)
     }
 
-    pub fn request<U: IntoUrl>(&self, method: http::Method, url: U) -> RequestBuilder {
+    pub fn request<U: IntoUrl>(&self, method: crate::types::Method, url: U) -> RequestBuilder {
         RequestBuilder {
             client: self.clone(),
             inner: self.client.request(method, url),
@@ -138,9 +138,9 @@ impl RequestBuilder {
     pub fn header<K, V>(self, key: K, value: V) -> Self
     where
         HeaderName: TryFrom<K>,
-        <HeaderName as TryFrom<K>>::Error: Into<http::Error>,
+        <HeaderName as TryFrom<K>>::Error: Into<crate::types::Error>,
         HeaderValue: TryFrom<V>,
-        <HeaderValue as TryFrom<V>>::Error: Into<http::Error>,
+        <HeaderValue as TryFrom<V>>::Error: Into<crate::types::Error>,
     {
         Self {
             client: self.client,

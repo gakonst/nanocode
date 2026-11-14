@@ -1,7 +1,7 @@
 use std::{collections::VecDeque, fmt, pin::Pin, sync::Arc, time::Duration};
 
-use bytes::Bytes;
-use http::{HeaderMap, StatusCode, Version, header::CONTENT_LENGTH};
+use crate::types::{HeaderMap, StatusCode, Version, header::CONTENT_LENGTH};
+use nanocode_bytes::Bytes;
 use nanocode_platform::{Instant, now};
 use nanocode_sync::{FutureExt, Stream, StreamExt, stream::BoxStream};
 use nanocode_url::Url;
@@ -101,7 +101,6 @@ pub struct Response {
     headers: HeaderMap,
     url: Url,
     body: Body,
-    extensions: http::Extensions,
 }
 
 impl Response {
@@ -131,7 +130,6 @@ impl Response {
             headers,
             url,
             body,
-            extensions: http::Extensions::new(),
         }
     }
 
@@ -145,7 +143,6 @@ impl Response {
             headers,
             url,
             body: Body::Stream(Box::pin(body)),
-            extensions: http::Extensions::new(),
         }
     }
 
@@ -175,15 +172,6 @@ impl Response {
     #[must_use]
     pub const fn url(&self) -> &Url {
         &self.url
-    }
-
-    #[must_use]
-    pub const fn extensions(&self) -> &http::Extensions {
-        &self.extensions
-    }
-
-    pub const fn extensions_mut(&mut self) -> &mut http::Extensions {
-        &mut self.extensions
     }
 
     #[must_use]
@@ -288,16 +276,13 @@ impl Response {
         let version = self.version;
         let headers = self.headers.clone();
         let url = self.url.clone();
-        let extensions = self.extensions.clone();
-        let mut stripped = self;
-        stripped.extensions = http::Extensions::new();
+        let stripped = self;
         Self {
             status,
             version,
             headers,
             url,
             body: Body::Stream(body(stripped.bytes_stream())),
-            extensions,
         }
     }
 }

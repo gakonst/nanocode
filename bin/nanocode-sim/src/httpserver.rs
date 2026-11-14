@@ -6,8 +6,8 @@ use std::{
     time::Duration,
 };
 
-use bytes::Bytes;
-use http::{HeaderValue, Method, StatusCode, header};
+use nanocode_bytes::Bytes;
+use nanocode_http::types::{HeaderValue, Method, StatusCode, header};
 use nanocode_http::{
     client::BoxError,
     server::{self, Options, Outgoing, Reply, Request},
@@ -646,7 +646,7 @@ async fn handle(
     log.borrow_mut().handled.push(Handled {
         method: request.method.clone(),
         target: request.target.clone(),
-        http_10: request.version == http::Version::HTTP_10,
+        http_10: request.version == nanocode_http::types::Version::HTTP_10,
         body: None,
     });
     let Some(exchange) = script.exchanges.get(index) else {

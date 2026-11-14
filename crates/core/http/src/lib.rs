@@ -1,4 +1,6 @@
 pub mod layer;
+pub mod parse;
+pub mod types;
 
 #[cfg(not(target_family = "wasm"))]
 mod brotli;
@@ -26,10 +28,10 @@ pub use client::{
 pub use coding::*;
 #[cfg(not(target_family = "wasm"))]
 pub use flate::{FlateCoding, decode_body};
-pub use http::{Method, StatusCode, Version, header};
 #[cfg(not(target_family = "wasm"))]
 pub use nanocode_url::Url;
 #[cfg(not(target_family = "wasm"))]
 pub use sender::{
     BoundedError, ClientSender, bounded_text, client_error, error_detail, execute, retryable,
 };
+pub use types::{Method, StatusCode, Version, header};

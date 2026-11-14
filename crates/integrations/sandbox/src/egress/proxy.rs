@@ -8,8 +8,8 @@ use crate::egress::{
     tls::Tls,
     wire::{Credential, Secret},
 };
-use bytes::Bytes;
-use http::{
+use nanocode_bytes::Bytes;
+use nanocode_http::types::{
     Method, StatusCode, Uri,
     header::{self, HeaderMap, HeaderValue},
     uri::Authority as UriAuthority,

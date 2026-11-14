@@ -57,22 +57,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "http"
-version = "1.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6970f50e31d6fc17d3fa27329444bfa74e196cf62e95052a3f6fee181dba6425"
-dependencies = [
- "bytes",
- "itoa",
-]
-
-[[package]]
-name = "httparse"
-version = "1.10.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87"
-
-[[package]]
 name = "indexmap"
 version = "2.14.0"
 
@@ -228,7 +212,6 @@ dependencies = [
 name = "nanocode-backend-claude"
 version = "0.7.0"
 dependencies = [
- "http",
  "libc",
  "nanocode-agent-config",
  "nanocode-agent-core",
@@ -259,10 +242,9 @@ dependencies = [
 name = "nanocode-backend-claude-client"
 version = "0.7.0"
 dependencies = [
- "bytes",
- "http",
  "memchr",
  "nanocode-agent-types",
+ "nanocode-bytes",
  "nanocode-digest",
  "nanocode-home",
  "nanocode-http",
@@ -298,7 +280,6 @@ dependencies = [
 name = "nanocode-backend-codex"
 version = "0.7.0"
 dependencies = [
- "http",
  "libc",
  "nanocode-agent-config",
  "nanocode-agent-core",
@@ -328,7 +309,6 @@ dependencies = [
 name = "nanocode-backend-codex-client"
 version = "0.7.0"
 dependencies = [
- "http",
  "memchr",
  "nanocode-agent-types",
  "nanocode-audio",
@@ -352,6 +332,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "nanocode-bytes"
+version = "0.7.0"
+
+[[package]]
 name = "nanocode-chatgpt-extension"
 version = "0.7.0"
 dependencies = [
@@ -370,7 +354,6 @@ dependencies = [
 name = "nanocode-cli"
 version = "0.7.0"
 dependencies = [
- "http",
  "nanocode",
  "nanocode-agent-host",
  "nanocode-arguments",
@@ -533,9 +516,7 @@ dependencies = [
 name = "nanocode-http"
 version = "0.7.0"
 dependencies = [
- "bytes",
- "http",
- "httparse",
+ "nanocode-bytes",
  "nanocode-compression",
  "nanocode-platform",
  "nanocode-sync",
@@ -603,7 +584,6 @@ dependencies = [
 name = "nanocode-mcp-http"
 version = "0.7.0"
 dependencies = [
- "http",
  "nanocode-http",
  "nanocode-mcp",
  "nanocode-platform",
@@ -620,7 +600,6 @@ dependencies = [
 name = "nanocode-mcp-tools"
 version = "0.7.0"
 dependencies = [
- "http",
  "nanocode-digest",
  "nanocode-home",
  "nanocode-http",
@@ -644,9 +623,8 @@ dependencies = [
 name = "nanocode-mpp"
 version = "0.7.0"
 dependencies = [
- "bytes",
  "graviola",
- "http",
+ "nanocode-bytes",
  "nanocode-http",
  "nanocode-platform",
  "nanocode-sync",
@@ -666,7 +644,6 @@ version = "0.7.0"
 name = "nanocode-observability"
 version = "0.7.0"
 dependencies = [
- "http",
  "nanocode-arguments",
  "nanocode-http",
  "nanocode-platform",
@@ -771,10 +748,9 @@ dependencies = [
 name = "nanocode-sandbox"
 version = "0.7.0"
 dependencies = [
- "bytes",
  "graviola",
- "http",
  "libc",
+ "nanocode-bytes",
  "nanocode-http",
  "nanocode-platform",
  "nanocode-sync",
@@ -805,7 +781,7 @@ dependencies = [
 name = "nanocode-shell"
 version = "0.7.0"
 dependencies = [
- "bytes",
+ "nanocode-bytes",
  "psh-classify",
  "psh-engine",
  "psh-syntax",
@@ -816,10 +792,9 @@ dependencies = [
 name = "nanocode-sim"
 version = "0.7.0"
 dependencies = [
- "bytes",
- "http",
  "nanocode",
  "nanocode-agent-core",
+ "nanocode-bytes",
  "nanocode-code-mode",
  "nanocode-compression",
  "nanocode-digest",
@@ -973,9 +948,9 @@ dependencies = [
 name = "nanocode-tool-runtime"
 version = "0.7.0"
 dependencies = [
- "http",
  "nanocode-code-mode",
  "nanocode-home",
+ "nanocode-http",
  "nanocode-mcp-tools",
  "nanocode-platform",
  "nanocode-process",
@@ -1077,9 +1052,8 @@ dependencies = [
 name = "nanocode-websocket"
 version = "0.7.0"
 dependencies = [
- "http",
- "httparse",
  "nanocode-digest",
+ "nanocode-http",
  "nanocode-platform",
  "nanocode-sync",
  "nanocode-sys",

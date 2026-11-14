@@ -68,7 +68,7 @@ pub fn client_error(error: crate::Error) -> Error {
 
 #[derive(Debug)]
 pub enum BoundedError {
-    Method(http::method::InvalidMethod),
+    Method(crate::types::method::InvalidMethod),
     Http(crate::Error),
     Over(usize),
     Text(std::string::FromUtf8Error),
@@ -141,7 +141,7 @@ pub async fn execute(
         status,
         headers,
         url,
-        body.map_ok(bytes::Bytes::from)
+        body.map_ok(nanocode_bytes::Bytes::from)
             .map_err(|error| crate::Error::body(layer::Error::new(error.detail()))),
     ))
 }

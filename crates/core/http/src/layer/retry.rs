@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use http::{HeaderMap, HeaderName};
+use crate::types::{HeaderMap, HeaderName};
 
 const SHOULD_RETRY: HeaderName = HeaderName::from_static("x-should-retry");
 
@@ -31,7 +31,7 @@ pub const fn patient_status(status: u16) -> bool {
 pub fn retry_after(headers: &HeaderMap) -> Option<Duration> {
     retry_after_ms(headers).or_else(|| {
         let seconds = headers
-            .get(http::header::RETRY_AFTER)?
+            .get(crate::types::header::RETRY_AFTER)?
             .to_str()
             .ok()?
             .trim()

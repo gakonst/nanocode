@@ -15,7 +15,7 @@ description = "Codex backend: agent driver, tools and durability over the Respon
 rustdoc-args = ["-D", "warnings"]
 
 [dependencies]
-http.workspace = true
+nanocode-http.workspace = true
 nanocode-agent-config.workspace = true
 nanocode-agent-core.workspace = true
 nanocode-backend-codex-client.workspace = true
@@ -36,7 +36,6 @@ nanocode-digest.workspace = true
 nanocode-trace.workspace = true
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-nanocode-http.workspace = true
 nanocode-process.workspace = true
 nanocode-tls.workspace = true
 tokio = { workspace = true, features = ["fs", "io-util", "rt", "time"] }

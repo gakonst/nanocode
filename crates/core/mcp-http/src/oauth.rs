@@ -4,7 +4,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use http::{HeaderName, HeaderValue};
+use nanocode_http::types::{HeaderName, HeaderValue};
 use nanocode_http::{StatusCode, Url};
 use nanocode_mcp::oauth::{
     AuthorizationCallback, AuthorizationMetadata, AuthorizationUrl, ClientAuthentication,
@@ -745,7 +745,9 @@ async fn discover_resource_metadata_url(
                 }
             }
             status => {
-                nanocode_trace::debug!("resource metadata probe returned unexpected status: {status}");
+                nanocode_trace::debug!(
+                    "resource metadata probe returned unexpected status: {status}"
+                );
             }
         }
     }

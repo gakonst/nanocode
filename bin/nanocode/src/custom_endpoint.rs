@@ -92,11 +92,12 @@ fn anthropic(clients: ModelClients) -> Result<ModelClients, String> {
             nanocode::claude::ClaudeClient::new(http.clone(), url.clone(), value.clone())
         })),
         AnthropicCredential::Bearer => {
-            let mut headers = http::header::HeaderMap::new();
-            let mut value = http::header::HeaderValue::from_str(&format!("Bearer {value}"))
-                .map_err(|error| format!("{name}: {error}"))?;
+            let mut headers = nanocode_http::types::header::HeaderMap::new();
+            let mut value =
+                nanocode_http::types::header::HeaderValue::from_str(&format!("Bearer {value}"))
+                    .map_err(|error| format!("{name}: {error}"))?;
             value.set_sensitive(true);
-            headers.insert(http::header::AUTHORIZATION, value);
+            headers.insert(nanocode_http::types::header::AUTHORIZATION, value);
             Ok(clients.claude(move || {
                 nanocode::claude::ClaudeClient::with_auth_headers(
                     http.clone(),
@@ -116,7 +117,8 @@ fn behind_login(clients: ModelClients) -> Result<ModelClients, String> {
     else {
         return Ok(clients);
     };
-    http::header::HeaderValue::from_str(&key).map_err(|error| format!("{name}: {error}"))?;
+    nanocode_http::types::header::HeaderValue::from_str(&key)
+        .map_err(|error| format!("{name}: {error}"))?;
     Ok(clients.claude(move || {
         nanocode::claude::ClaudeClient::subscription_or_key(&key)
             .expect("the Anthropic API key was checked when the clients were built")

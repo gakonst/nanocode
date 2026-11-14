@@ -1,6 +1,6 @@
 use std::{collections::HashMap, future::Future, sync::Arc, time::Duration};
 
-use http::{
+use nanocode_http::types::{
     HeaderMap, HeaderName, HeaderValue, Method, StatusCode,
     header::{ACCEPT, AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, WWW_AUTHENTICATE},
 };

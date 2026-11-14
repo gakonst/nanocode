@@ -27,7 +27,9 @@ pub(crate) const INITIAL_TRANSPORT_BACKOFF: Duration = Duration::from_millis(100
 
 pub(crate) const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
-pub(crate) async fn tls_connector<T>(request: &http::Request<T>) -> std::io::Result<Connector> {
+pub(crate) async fn tls_connector<T>(
+    request: &nanocode_http::types::Request<T>,
+) -> std::io::Result<Connector> {
     if request.uri().scheme_str() != Some("wss") {
         return Ok(Connector::Plain);
     }
@@ -317,21 +319,21 @@ fn request(
     config: &Config,
     connection_id: &str,
     runtime_id: &str,
-) -> Result<http::Request<()>, AttachmentError> {
+) -> Result<nanocode_http::types::Request<()>, AttachmentError> {
     let mut request = config
         .endpoint
         .as_str()
         .into_client_request()
         .map_err(|error| AttachmentError::Transport(error.to_string().into()))?;
-    let mut authorization = http::HeaderValue::from_str(&config.authorization)
+    let mut authorization = nanocode_http::types::HeaderValue::from_str(&config.authorization)
         .map_err(|_| AttachmentError::Authentication("invalid bearer credential".into()))?;
     authorization.set_sensitive(true);
     request
         .headers_mut()
-        .insert(http::header::AUTHORIZATION, authorization);
+        .insert(nanocode_http::types::header::AUTHORIZATION, authorization);
     request.headers_mut().insert(
         "x-nanocode-request-id",
-        http::HeaderValue::from_str(connection_id)
+        nanocode_http::types::HeaderValue::from_str(connection_id)
             .map_err(|_| AttachmentError::Transport("invalid connection identity".into()))?,
     );
 
@@ -343,12 +345,12 @@ fn request(
     {
         request.headers_mut().insert(
             "x-nanocode-hand-machine-id",
-            http::HeaderValue::from_str(machine.id())
+            nanocode_http::types::HeaderValue::from_str(machine.id())
                 .map_err(|_| AttachmentError::Transport("invalid machine identity".into()))?,
         );
         request.headers_mut().insert(
             "x-nanocode-hand-runtime-id",
-            http::HeaderValue::from_str(runtime_id)
+            nanocode_http::types::HeaderValue::from_str(runtime_id)
                 .map_err(|_| AttachmentError::Transport("invalid runtime identity".into()))?,
         );
     }
@@ -400,9 +402,9 @@ impl Failure {
     }
 }
 
-fn retry_after(headers: &http::HeaderMap) -> Option<Duration> {
+fn retry_after(headers: &nanocode_http::types::HeaderMap) -> Option<Duration> {
     let value = headers
-        .get(http::header::RETRY_AFTER)?
+        .get(nanocode_http::types::header::RETRY_AFTER)?
         .to_str()
         .ok()?
         .trim();
@@ -1561,7 +1563,7 @@ async fn accept_runner(
         nanocode_websocket::WebSocketStream<
             nanocode_websocket::MaybeTlsStream<tokio::net::TcpStream>,
         >,
-        http::Response<Option<Vec<u8>>>,
+        nanocode_http::types::Response<Option<Vec<u8>>>,
     ),
     nanocode_websocket::Error,
 > {
@@ -1573,11 +1575,11 @@ async fn accept_runner(
              mut response: nanocode_websocket::server::Response| {
                 let header = request
                     .headers()
-                    .get(http::header::AUTHORIZATION)
+                    .get(nanocode_http::types::header::AUTHORIZATION)
                     .and_then(|value| value.to_str().ok());
                 let protocol = request
                     .headers()
-                    .get(http::header::SEC_WEBSOCKET_PROTOCOL)
+                    .get(nanocode_http::types::header::SEC_WEBSOCKET_PROTOCOL)
                     .and_then(|value| value.to_str().ok())
                     .and_then(|value| {
                         let mut values = value.split(',').map(str::trim);
@@ -1593,8 +1595,8 @@ async fn accept_runner(
                 {
                     if protocol.is_some() {
                         response.headers_mut().insert(
-                            http::header::SEC_WEBSOCKET_PROTOCOL,
-                            http::HeaderValue::from_static("bearer"),
+                            nanocode_http::types::header::SEC_WEBSOCKET_PROTOCOL,
+                            nanocode_http::types::HeaderValue::from_static("bearer"),
                         );
                     }
                     Ok(response)
@@ -1609,7 +1611,7 @@ async fn accept_runner(
                     let mut rejection = nanocode_websocket::server::ErrorResponse::new(Some(
                         "invalid runner credential".into(),
                     ));
-                    *rejection.status_mut() = http::StatusCode::UNAUTHORIZED;
+                    *rejection.status_mut() = nanocode_http::types::StatusCode::UNAUTHORIZED;
                     Err(rejection)
                 }
             };
@@ -1622,7 +1624,7 @@ async fn accept_runner(
         )
         .await
         {
-            return Ok((socket, http::Response::new(None)));
+            return Ok((socket, nanocode_http::types::Response::new(None)));
         }
     }
 }

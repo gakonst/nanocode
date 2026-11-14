@@ -82,7 +82,7 @@ impl Proxy {
             format!("http://{value}")
         };
         let uri = value
-            .parse::<http::Uri>()
+            .parse::<crate::types::Uri>()
             .map_err(|_| invalid_input(format!("invalid proxy URL {value:?}")))?;
         let scheme = match uri.scheme_str() {
             Some("http") => ProxyScheme::Http,
@@ -101,7 +101,7 @@ impl Proxy {
                 (Some(userinfo), host_port)
             });
         let host_uri = format!("http://{host_port}")
-            .parse::<http::Uri>()
+            .parse::<crate::types::Uri>()
             .map_err(|_| invalid_input("proxy URL has an invalid host"))?;
         let host = host_uri
             .host()
@@ -325,7 +325,7 @@ where
         .ok()
         .and_then(|response| response.lines().next())
         .and_then(|line| line.split_whitespace().nth(1))
-        .and_then(|status| http::StatusCode::from_bytes(status.as_bytes()).ok())
+        .and_then(|status| crate::types::StatusCode::from_bytes(status.as_bytes()).ok())
         .ok_or_else(|| invalid_input("HTTP CONNECT response has no valid status"))?;
     if !status.is_success() {
         return Err(io::Error::new(
@@ -583,7 +583,9 @@ where
             let rejected = error
                 .get_ref()
                 .and_then(|inner| inner.downcast_ref::<nanocode_tls::rustls::Error>())
-                .is_some_and(|tls| matches!(tls, nanocode_tls::rustls::Error::InvalidCertificate(_)));
+                .is_some_and(|tls| {
+                    matches!(tls, nanocode_tls::rustls::Error::InvalidCertificate(_))
+                });
             if rejected {
                 io::Error::new(io::ErrorKind::InvalidData, UntrustedCertificate(error))
             } else {

@@ -1,6 +1,6 @@
 use crate::egress::wire::Secret;
-use bytes::Bytes;
-use http::header::{self, HeaderMap, HeaderName, HeaderValue};
+use nanocode_bytes::Bytes;
+use nanocode_http::types::header::{self, HeaderMap, HeaderName, HeaderValue};
 use nanocode_http::{
     server::{BodyStream, Incoming},
     wire::WireError,

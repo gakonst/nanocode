@@ -1,7 +1,7 @@
 use std::{future::Future, pin::Pin, time::Duration};
 
-use http::{HeaderMap, HeaderName, HeaderValue, header};
 use nanocode_http::layer::{self, retry};
+use nanocode_http::types::{HeaderMap, HeaderName, HeaderValue, header};
 use nanocode_sync::StreamExt;
 
 #[cfg(target_family = "wasm")]
@@ -42,7 +42,7 @@ pub async fn send_http(
 ) -> Result<HostHttpResponse, HostError> {
     let response = sender
         .send(layer::Request {
-            method: http::Method::POST,
+            method: nanocode_http::types::Method::POST,
             url: request.endpoint().to_owned(),
             headers: request.http_headers()?,
             body: body.as_bytes().to_vec(),

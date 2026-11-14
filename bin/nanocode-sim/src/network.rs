@@ -182,20 +182,20 @@ impl Network {
             Fate::Status(status, retry_after_ms) => {
                 self.world.count(|counts| counts.faults += 1);
                 self.world.trace(&format!("net status {status}"));
-                let mut headers = http::HeaderMap::new();
+                let mut headers = nanocode_http::types::HeaderMap::new();
                 headers.insert(
                     "retry-after-ms",
-                    http::HeaderValue::from(retry_after_ms),
+                    nanocode_http::types::HeaderValue::from(retry_after_ms),
                 );
                 headers.insert(
-                    http::header::CONTENT_TYPE,
-                    http::HeaderValue::from_static("application/json"),
+                    nanocode_http::types::header::CONTENT_TYPE,
+                    nanocode_http::types::HeaderValue::from_static("application/json"),
                 );
                 let body = format!(
                     "{{\"type\":\"error\",\"error\":{{\"type\":\"overloaded_error\",\"message\":\"sim status {status}\"}}}}"
                 );
                 return Ok(HttpResponse::new(
-                    http::StatusCode::from_u16(status).expect("a simulated status is valid"),
+                    nanocode_http::types::StatusCode::from_u16(status).expect("a simulated status is valid"),
                     headers,
                     Box::pin(nanocode_sync::stream::once(
                         async move { Ok(body.into_bytes()) },
@@ -254,18 +254,18 @@ impl Network {
                 parts.push_back((0, Err(transport("sim: stream reset", false))));
             }
         }
-        let mut headers = http::HeaderMap::new();
+        let mut headers = nanocode_http::types::HeaderMap::new();
         headers.insert(
-            http::header::CONTENT_TYPE,
-            http::HeaderValue::from_static("text/event-stream"),
+            nanocode_http::types::header::CONTENT_TYPE,
+            nanocode_http::types::HeaderValue::from_static("text/event-stream"),
         );
-        headers.insert("request-id", http::HeaderValue::from_static("req_sim"));
+        headers.insert("request-id", nanocode_http::types::HeaderValue::from_static("req_sim"));
         let body = nanocode_sync::stream::unfold(parts, |mut parts| async move {
             let (gap_ms, part) = parts.pop_front()?;
             nanocode_platform::sleep(Duration::from_millis(gap_ms)).await;
             Some((part, parts))
         });
-        Ok(HttpResponse::new(http::StatusCode::OK, headers, Box::pin(body)))
+        Ok(HttpResponse::new(nanocode_http::types::StatusCode::OK, headers, Box::pin(body)))
     }
 }
 

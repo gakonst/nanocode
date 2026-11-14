@@ -4,7 +4,7 @@ use crate::client::{
     OpenAiAuthSnapshot, monotonic_now_ns,
     transport::host::{HostConnectRequest, HostError, HostHttpBody, HostTransport},
 };
-use http::header;
+use nanocode_http::types::header;
 #[cfg(not(target_family = "wasm"))]
 use nanocode_http::layer::{self, retry};
 

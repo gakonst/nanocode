@@ -20,7 +20,6 @@ nanocode-http.workspace = true
 nanocode-platform.workspace = true
 nanocode-sync.workspace = true
 nanocode-turnlog.workspace = true
-http.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 nanocode-trace.workspace = true

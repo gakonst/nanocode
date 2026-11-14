@@ -5,9 +5,9 @@ use std::{
 };
 
 #[cfg(not(target_family = "wasm"))]
-use http::header;
-#[cfg(not(target_family = "wasm"))]
 use nanocode_http::layer::retry;
+#[cfg(not(target_family = "wasm"))]
+use nanocode_http::types::header;
 use serde_json::{Map, Value, json};
 
 use crate::client::{
@@ -138,7 +138,7 @@ impl ChatGateway {
         if url.trim_end_matches('/') == self.default_api_base_url() {
             return true;
         }
-        url.parse::<http::Uri>().is_ok_and(|url| {
+        url.parse::<nanocode_http::types::Uri>().is_ok_and(|url| {
             matches!(url.scheme_str(), Some("http" | "https"))
                 && url.host().is_some_and(|host| {
                     host.eq_ignore_ascii_case("localhost")
@@ -221,7 +221,7 @@ impl ChatGateway {
         }
         let body: Value = serde_json::from_str(request).ok()?;
         let key = body.get("prompt_cache_key").and_then(Value::as_str)?;
-        (!key.is_empty() && http::HeaderValue::from_str(key).is_ok())
+        (!key.is_empty() && nanocode_http::types::HeaderValue::from_str(key).is_ok())
             .then(|| GatewayHeader::plain(SESSION_AFFINITY, key))
     }
 
@@ -439,7 +439,7 @@ async fn stall<T>(
 }
 
 #[cfg(not(target_family = "wasm"))]
-fn provider_rejected(status: u16, headers: &http::HeaderMap) -> ResponsesError {
+fn provider_rejected(status: u16, headers: &nanocode_http::types::HeaderMap) -> ResponsesError {
     let (code, message) = if (300..400).contains(&status) {
         (
             "provider_redirect",

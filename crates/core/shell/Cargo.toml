@@ -11,7 +11,7 @@ autotests = false
 autobenches = false
 
 [dependencies]
-bytes.workspace = true
+nanocode-bytes.workspace = true
 psh-classify.workspace = true
 psh-engine.workspace = true
 psh-syntax.workspace = true

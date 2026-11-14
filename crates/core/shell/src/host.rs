@@ -6,7 +6,7 @@ use crate::{
     machine::{Identity, Machine},
     shell::{Changes, Limit, Limits},
 };
-use bytes::Bytes;
+use nanocode_bytes::Bytes;
 use psh_engine::{
     ControlHandle, HostFile,
     host::{

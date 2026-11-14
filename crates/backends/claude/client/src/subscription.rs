@@ -1,7 +1,7 @@
 use std::{fmt, sync::Arc};
 
-use http::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 use nanocode_digest::Sha256;
+use nanocode_http::types::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 use nanocode_platform::UNIX_EPOCH;
 use nanocode_sync::SingleFlight;
 use nanocode_sys::base64::URL_SAFE_NO_PAD;

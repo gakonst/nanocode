@@ -2,7 +2,7 @@ use crate::{
     fs::{FileSystem, Kind, Remove, Reply, Stat, Write, normalize},
     machine::Machine,
 };
-use bytes::{Bytes, BytesMut};
+use nanocode_bytes::{Bytes, BytesMut};
 use std::{cell::RefCell, collections::BTreeMap, io, rc::Rc};
 
 const SYMLINK_HOPS: u32 = 40;

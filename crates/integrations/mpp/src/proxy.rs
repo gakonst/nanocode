@@ -6,14 +6,14 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use bytes::Bytes;
-use http::uri::Authority;
+use nanocode_bytes::Bytes;
 use nanocode_http::Url;
 use nanocode_http::header::{
     CONNECTION, CONTENT_TYPE, HOST, HeaderMap, HeaderName, HeaderValue, PROXY_AUTHENTICATE,
     PROXY_AUTHORIZATION,
 };
 use nanocode_http::server::{self, Outgoing, Reply, Upgraded};
+use nanocode_http::types::uri::Authority;
 use nanocode_http::{Method, StatusCode};
 use nanocode_sync::Atom;
 use nanocode_sync::StreamExt;

@@ -5,7 +5,7 @@ use crate::{
     host::{Host, Vfs},
     shell::{Limit, Limits},
 };
-use bytes::Bytes;
+use nanocode_bytes::Bytes;
 use psh_engine::{ControlHandle, HostFile, ShellConfig, util::UtilPolicy};
 use std::{
     any::Any,

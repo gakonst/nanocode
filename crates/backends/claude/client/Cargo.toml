@@ -19,13 +19,12 @@ nanocode-home.workspace = true
 nanocode-sys.workspace = true
 nanocode-url.workspace = true
 nanocode-http.workspace = true
-http.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 nanocode-trace.workspace = true
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-bytes = "1.9"
+nanocode-bytes.workspace = true
 tokio = { workspace = true, features = ["fs", "io-util", "net", "process"] }
 nanocode-tls.workspace = true
 unicode-normalization.workspace = true

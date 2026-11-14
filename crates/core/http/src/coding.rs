@@ -210,9 +210,11 @@ pub fn gzip(bytes: &[u8], level: u32) -> io::Result<Vec<u8>> {
 const ACCEPTED_ENCODINGS: &str = "gzip,deflate";
 
 #[must_use]
-pub fn accept_encoding(mut headers: http::HeaderMap) -> http::HeaderMap {
-    if let http::header::Entry::Vacant(entry) = headers.entry(http::header::ACCEPT_ENCODING) {
-        entry.insert(http::HeaderValue::from_static(ACCEPTED_ENCODINGS));
+pub fn accept_encoding(mut headers: crate::types::HeaderMap) -> crate::types::HeaderMap {
+    if let crate::types::header::Entry::Vacant(entry) =
+        headers.entry(crate::types::header::ACCEPT_ENCODING)
+    {
+        entry.insert(crate::types::HeaderValue::from_static(ACCEPTED_ENCODINGS));
     }
     headers
 }
@@ -220,7 +222,7 @@ pub fn accept_encoding(mut headers: http::HeaderMap) -> http::HeaderMap {
 #[must_use]
 pub fn client() -> crate::Client {
     crate::Client::builder()
-        .default_headers(accept_encoding(http::HeaderMap::new()))
+        .default_headers(accept_encoding(crate::types::HeaderMap::new()))
         .build()
         .expect("the default HTTP client builds")
 }
@@ -235,7 +237,7 @@ pub fn decode_flate_response(response: crate::Response) -> crate::Response {
 }
 
 pub fn decode_response(response: crate::Response) -> crate::Response {
-    use http::header::{CONTENT_ENCODING, CONTENT_LENGTH};
+    use crate::types::header::{CONTENT_ENCODING, CONTENT_LENGTH};
 
     if FlateCoding::from_headers(response.headers()).is_some() {
         return decode_flate_response(response);
@@ -270,17 +272,21 @@ pub fn decode_response(response: crate::Response) -> crate::Response {
 
 fn decoded(
     stream: impl Stream<Item = io::Result<Vec<u8>>> + Send + 'static,
-) -> impl Stream<Item = crate::client::Result<bytes::Bytes>> + Send + 'static {
-    stream.map(|chunk| chunk.map(bytes::Bytes::from).map_err(crate::Error::body))
+) -> impl Stream<Item = crate::client::Result<nanocode_bytes::Bytes>> + Send + 'static {
+    stream.map(|chunk| {
+        chunk
+            .map(nanocode_bytes::Bytes::from)
+            .map_err(crate::Error::body)
+    })
 }
 
 fn replace_body(
     mut response: crate::Response,
     body: impl FnOnce(
-        nanocode_sync::stream::BoxStream<'static, crate::client::Result<bytes::Bytes>>,
+        nanocode_sync::stream::BoxStream<'static, crate::client::Result<nanocode_bytes::Bytes>>,
     ) -> crate::ResponseStream,
 ) -> crate::Response {
-    use http::header::{CONTENT_ENCODING, CONTENT_LENGTH};
+    use crate::types::header::{CONTENT_ENCODING, CONTENT_LENGTH};
 
     response.headers_mut().remove(CONTENT_ENCODING);
     response.headers_mut().remove(CONTENT_LENGTH);

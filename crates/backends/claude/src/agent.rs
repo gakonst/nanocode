@@ -103,10 +103,7 @@ fn truncate_middle(text: &str, max_tokens: u64) -> String {
     )
 }
 
-fn bound_tool_result(
-    content: ToolResultContent,
-    limit: u64,
-) -> (ToolResultContent, Option<usize>) {
+fn bound_tool_result(content: ToolResultContent, limit: u64) -> (ToolResultContent, Option<usize>) {
     match content {
         ToolResultContent::Text(text) => {
             if estimate_text_tokens(&text) <= limit {
@@ -2440,7 +2437,7 @@ async fn web_fetch_with_source<P: crate::tools::web::ApprovedWebFetchSource>(
             }
         }
     }
-    let status = http::StatusCode::from_u16(page.status)
+    let status = nanocode_http::types::StatusCode::from_u16(page.status)
         .ok()
         .and_then(|status| status.canonical_reason())
         .unwrap_or("Unknown Status");
@@ -2613,7 +2610,10 @@ const COMPACT_RESUME: &str = "Continue the conversation from where it left off w
 const COMPACT_KEPT: &str = "The messages after this summary are the most recent messages from before compaction, kept verbatim. The summary was written without seeing them, so something it says has not happened yet may already have happened in them.";
 const INTERRUPTED_BY_USER: &str = "[Request interrupted by user]";
 
-const BACKGROUND_STARTED: [&str; 2] = ["running in background with ID: ", "moved to the background (ID: "];
+const BACKGROUND_STARTED: [&str; 2] = [
+    "running in background with ID: ",
+    "moved to the background (ID: ",
+];
 const BACKGROUND_NOTICE_PREFIX: &str = "background-stopped-";
 
 fn stopped_background_notices(
@@ -5034,8 +5034,7 @@ impl State {
                 "auto_compact_token_limit": cursor.threshold,
             }),
         );
-        let result =
-            Box::pin(self.compact_locked(conversation, cancel, mode, cursor, step)).await;
+        let result = Box::pin(self.compact_locked(conversation, cancel, mode, cursor, step)).await;
         match &result {
             Ok(_) => self.emit(
                 events,
@@ -7440,8 +7439,8 @@ impl State {
                     pending.push(Message::effort(effort).into());
                 }
             }
-            let first = self.upstream_context
-                && !pending.iter().any(|message| message.role == Role::User);
+            let first =
+                self.upstream_context && !pending.iter().any(|message| message.role == Role::User);
             if first && let Some(message) = prompt.last_mut() {
                 message.content.insert(0, ContentBlock::text(ATTRIBUTION));
             }

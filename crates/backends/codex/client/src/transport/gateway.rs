@@ -376,7 +376,8 @@ impl ResponsesGateway {
         }
         validate_base_url(&self.api_base_url)?;
         if self.headers.iter().any(|header| {
-            header.value.is_empty() || http::HeaderValue::from_str(&header.value).is_err()
+            header.value.is_empty()
+                || nanocode_http::types::HeaderValue::from_str(&header.value).is_err()
         }) {
             return Err("gateway header values must be non-empty visible ASCII");
         }
@@ -397,7 +398,7 @@ impl ResponsesGateway {
 }
 
 pub(crate) fn validate_base_url(url: &str) -> Result<(), &'static str> {
-    let uri: http::Uri = url
+    let uri: nanocode_http::types::Uri = url
         .parse()
         .map_err(|_| "the gateway base URL must be an absolute http or https URL")?;
     if !matches!(uri.scheme_str(), Some("http" | "https")) {

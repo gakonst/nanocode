@@ -7,7 +7,7 @@ use crate::{
     host::{Host, Vfs},
     machine::{Identity, Machine},
 };
-use bytes::Bytes;
+use nanocode_bytes::Bytes;
 use psh_engine::{
     HostFile, ShellConfig,
     util::{UtilEntry, UtilPolicy},

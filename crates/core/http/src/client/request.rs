@@ -1,6 +1,6 @@
 use std::{fmt, time::Duration};
 
-use http::{
+use crate::types::{
     HeaderMap, HeaderName, HeaderValue, Method,
     header::{AUTHORIZATION, CONTENT_TYPE, Entry, OccupiedEntry},
 };
@@ -161,9 +161,9 @@ impl RequestBuilder {
     pub fn header<K, V>(self, key: K, value: V) -> Self
     where
         HeaderName: TryFrom<K>,
-        <HeaderName as TryFrom<K>>::Error: Into<http::Error>,
+        <HeaderName as TryFrom<K>>::Error: Into<crate::types::Error>,
         HeaderValue: TryFrom<V>,
-        <HeaderValue as TryFrom<V>>::Error: Into<http::Error>,
+        <HeaderValue as TryFrom<V>>::Error: Into<crate::types::Error>,
     {
         self.header_sensitive(key, value, false)
     }
@@ -171,9 +171,9 @@ impl RequestBuilder {
     fn header_sensitive<K, V>(mut self, key: K, value: V, sensitive: bool) -> Self
     where
         HeaderName: TryFrom<K>,
-        <HeaderName as TryFrom<K>>::Error: Into<http::Error>,
+        <HeaderName as TryFrom<K>>::Error: Into<crate::types::Error>,
         HeaderValue: TryFrom<V>,
-        <HeaderValue as TryFrom<V>>::Error: Into<http::Error>,
+        <HeaderValue as TryFrom<V>>::Error: Into<crate::types::Error>,
     {
         let mut error = None;
         if let Ok(request) = &mut self.request {

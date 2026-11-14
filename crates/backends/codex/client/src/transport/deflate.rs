@@ -4,11 +4,11 @@ use std::{
     task::{Context, Poll},
 };
 
-use http::{HeaderMap, header};
 use nanocode_compression::{
     inflate::{Inflate, InflateFlush, InflateStatus},
     miniz::{self, Format, Level},
 };
+use nanocode_http::types::{HeaderMap, header};
 use nanocode_websocket::WebSocketConfig;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 

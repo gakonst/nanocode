@@ -3,7 +3,7 @@ use crate::{
     host::Vfs,
     machine::Machine,
 };
-use bytes::Bytes;
+use nanocode_bytes::Bytes;
 use psh_engine::{
     HostFile,
     host::{FileKind, OpenOptions},

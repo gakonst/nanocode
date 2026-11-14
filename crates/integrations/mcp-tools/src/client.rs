@@ -4,8 +4,8 @@ use std::sync::{
 };
 
 #[cfg(not(target_family = "wasm"))]
-use http::header::PROXY_AUTHORIZATION;
-use http::{HeaderMap, HeaderName, HeaderValue, header::USER_AGENT};
+use nanocode_http::types::header::PROXY_AUTHORIZATION;
+use nanocode_http::types::{HeaderMap, HeaderName, HeaderValue, header::USER_AGENT};
 use nanocode_mcp::{
     CallToolParams, CallToolResult, Error as SessionError, Implementation, Inbound, Outgoing,
     Session, Tool,

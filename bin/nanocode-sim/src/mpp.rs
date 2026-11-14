@@ -1,6 +1,6 @@
 use std::{cell::Cell, ops::Range, process::ExitCode, sync::Arc};
 
-use bytes::Bytes;
+use nanocode_bytes::Bytes;
 use nanocode_http::{
     Method, Request, Response, StatusCode, Url,
     header::{AUTHORIZATION, HeaderMap, HeaderValue, WWW_AUTHENTICATE},

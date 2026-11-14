@@ -11,12 +11,10 @@ autotests = false
 autobenches = false
 
 [dependencies]
-http.workspace = true
 nanocode-sync.workspace = true
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-bytes.workspace = true
-httparse.workspace = true
+nanocode-bytes.workspace = true
 nanocode-compression.workspace = true
 nanocode-platform.workspace = true
 nanocode-sys.workspace = true

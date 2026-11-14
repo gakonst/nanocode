@@ -8,14 +8,14 @@ mod response;
 
 use std::{fmt, future::Future, net::SocketAddr, pin::Pin, sync::Arc, time::Duration};
 
-use bytes::Bytes;
-use http::{
+use crate::types::{
     HeaderMap, HeaderValue, Method, StatusCode, Version,
     header::{
         CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_TYPE, Entry, HOST, LOCATION, PROXY_AUTHORIZATION,
         REFERER, TRANSFER_ENCODING, USER_AGENT,
     },
 };
+use nanocode_bytes::Bytes;
 use nanocode_platform::{Instant, now, timeout};
 use nanocode_sync::StreamExt;
 use nanocode_url::Url;
@@ -107,7 +107,10 @@ impl Default for ClientBuilder {
 impl ClientBuilder {
     pub fn new() -> Self {
         let mut headers = HeaderMap::new();
-        headers.insert(http::header::ACCEPT, HeaderValue::from_static("*/*"));
+        headers.insert(
+            crate::types::header::ACCEPT,
+            HeaderValue::from_static("*/*"),
+        );
         Self {
             headers,
             redirect: redirect::Policy::default(),
@@ -156,7 +159,7 @@ impl ClientBuilder {
     pub fn user_agent<V>(mut self, value: V) -> Self
     where
         HeaderValue: TryFrom<V>,
-        <HeaderValue as TryFrom<V>>::Error: Into<http::Error>,
+        <HeaderValue as TryFrom<V>>::Error: Into<crate::types::Error>,
     {
         match HeaderValue::try_from(value) {
             Ok(value) => {

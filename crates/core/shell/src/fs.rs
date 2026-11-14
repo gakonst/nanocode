@@ -1,4 +1,4 @@
-use bytes::Bytes;
+use nanocode_bytes::Bytes;
 use std::{future::Future, io, pin::Pin};
 
 pub enum Reply<T> {

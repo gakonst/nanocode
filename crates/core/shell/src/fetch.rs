@@ -1,4 +1,4 @@
-use bytes::Bytes;
+use nanocode_bytes::Bytes;
 use std::{cell::RefCell, future::Future, pin::Pin, rc::Rc, time::Duration};
 
 #[derive(Clone, Debug, PartialEq, Eq)]

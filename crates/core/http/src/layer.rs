@@ -1,6 +1,6 @@
 use std::{fmt, future::Future, pin::Pin};
 
-use http::{HeaderMap, Method, StatusCode};
+use crate::types::{HeaderMap, Method, StatusCode};
 use nanocode_sync::Stream;
 
 pub mod origin;

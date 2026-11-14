@@ -1,7 +1,7 @@
 use std::{fmt, io};
 
-use bytes::Bytes;
-use http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Version, header};
+use crate::types::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Version, header};
+use nanocode_bytes::Bytes;
 use nanocode_sync::Duplex;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -184,7 +184,7 @@ const fn version(minor: u8) -> Version {
     }
 }
 
-fn header_map(parsed: &[httparse::Header<'_>]) -> Result<HeaderMap, WireError> {
+fn header_map(parsed: &[crate::parse::Header<'_>]) -> Result<HeaderMap, WireError> {
     let mut headers = HeaderMap::with_capacity(parsed.len());
     for header in parsed {
         let name = HeaderName::from_bytes(header.name.as_bytes())
@@ -196,9 +196,9 @@ fn header_map(parsed: &[httparse::Header<'_>]) -> Result<HeaderMap, WireError> {
     Ok(headers)
 }
 
-fn parse_error(error: httparse::Error) -> WireError {
+fn parse_error(error: crate::parse::Error) -> WireError {
     match error {
-        httparse::Error::TooManyHeaders => {
+        crate::parse::Error::TooManyHeaders => {
             WireError::Parse(format!("more than {HEADERS_MAX} headers"))
         }
         other => WireError::Parse(other.to_string()),
@@ -206,9 +206,9 @@ fn parse_error(error: httparse::Error) -> WireError {
 }
 
 pub fn parse_response(bytes: &[u8]) -> Result<Option<(ResponseHead, usize)>, WireError> {
-    let mut parsed = [httparse::EMPTY_HEADER; HEADERS_MAX];
-    let mut response = httparse::Response::new(&mut parsed);
-    let httparse::Status::Complete(length) = response.parse(bytes).map_err(parse_error)? else {
+    let mut parsed = [crate::parse::EMPTY_HEADER; HEADERS_MAX];
+    let mut response = crate::parse::Response::new(&mut parsed);
+    let crate::parse::Status::Complete(length) = response.parse(bytes).map_err(parse_error)? else {
         return Ok(None);
     };
     let code = response
@@ -229,9 +229,9 @@ pub fn parse_response(bytes: &[u8]) -> Result<Option<(ResponseHead, usize)>, Wir
 }
 
 pub fn parse_request(bytes: &[u8]) -> Result<Option<(RequestHead, usize)>, WireError> {
-    let mut parsed = [httparse::EMPTY_HEADER; HEADERS_MAX];
-    let mut request = httparse::Request::new(&mut parsed);
-    let httparse::Status::Complete(length) = request.parse(bytes).map_err(parse_error)? else {
+    let mut parsed = [crate::parse::EMPTY_HEADER; HEADERS_MAX];
+    let mut request = crate::parse::Request::new(&mut parsed);
+    let crate::parse::Status::Complete(length) = request.parse(bytes).map_err(parse_error)? else {
         return Ok(None);
     };
     let method = request.method.expect("a complete request has a method");

@@ -308,7 +308,8 @@ impl HomeFirst {
 impl ClaudeAuthProvider for HomeFirst {
     fn headers(
         &self,
-    ) -> ClaudeAuthFuture<'_, Result<http::header::HeaderMap, ClaudeAuthUnavailable>> {
+    ) -> ClaudeAuthFuture<'_, Result<nanocode_http::types::header::HeaderMap, ClaudeAuthUnavailable>>
+    {
         Box::pin(async move {
             if let Some(home) = &self.home
                 && let Some(headers) = home.ready_headers().await
@@ -326,7 +327,7 @@ impl ClaudeAuthProvider for HomeFirst {
 
     fn recover_unauthorized<'a>(
         &'a self,
-        rejected: &'a http::header::HeaderMap,
+        rejected: &'a nanocode_http::types::header::HeaderMap,
     ) -> ClaudeAuthFuture<'a, Result<bool, ClaudeAuthUnavailable>> {
         Box::pin(async move {
             match self.signed_in().await {

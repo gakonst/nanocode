@@ -1,6 +1,6 @@
 use std::{future::Future, pin::Pin};
 
-use http::{HeaderMap, StatusCode};
+use nanocode_http::types::{HeaderMap, StatusCode};
 use nanocode_sync::{Stream, TryStreamExt};
 
 #[cfg(not(target_family = "wasm"))]
@@ -30,7 +30,7 @@ impl<S: nanocode_http::layer::Sender + 'static> HttpTransport for SenderTranspor
             let response = self
                 .0
                 .send(nanocode_http::layer::Request {
-                    method: http::Method::POST,
+                    method: nanocode_http::types::Method::POST,
                     url: request.endpoint,
                     headers: request.headers,
                     body: request.body.into_bytes(),

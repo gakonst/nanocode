@@ -1212,11 +1212,12 @@ async fn dial(target: &AttachmentTarget) -> Result<(DialedSocket, String), Attac
         .into_client_request()
         .map_err(error)?;
     let mut authorization =
-        http::HeaderValue::from_str(&format!("Bearer {}", target.bearer())).map_err(error)?;
+        nanocode_http::types::HeaderValue::from_str(&format!("Bearer {}", target.bearer()))
+            .map_err(error)?;
     authorization.set_sensitive(true);
     request
         .headers_mut()
-        .insert(http::header::AUTHORIZATION, authorization);
+        .insert(nanocode_http::types::header::AUTHORIZATION, authorization);
     let connector = super::driver::tls_connector(&request)
         .await
         .map_err(error)?;
@@ -1497,12 +1498,12 @@ async fn incoming(
     let authenticate = |request: &Request, mut response: Response| {
         let bearer = request
             .headers()
-            .get(http::header::AUTHORIZATION)
+            .get(nanocode_http::types::header::AUTHORIZATION)
             .and_then(|value| value.to_str().ok())
             .and_then(|value| value.strip_prefix("Bearer "));
         let protocol = request
             .headers()
-            .get(http::header::SEC_WEBSOCKET_PROTOCOL)
+            .get(nanocode_http::types::header::SEC_WEBSOCKET_PROTOCOL)
             .and_then(|value| value.to_str().ok())
             .and_then(|value| {
                 let mut values = value.split(',').map(str::trim);
@@ -1514,8 +1515,8 @@ async fn incoming(
             });
         if protocol.is_some() {
             response.headers_mut().insert(
-                http::header::SEC_WEBSOCKET_PROTOCOL,
-                http::HeaderValue::from_static("bearer"),
+                nanocode_http::types::header::SEC_WEBSOCKET_PROTOCOL,
+                nanocode_http::types::HeaderValue::from_static("bearer"),
             );
         }
         if bearer.or(protocol) == Some(token.as_str()) {
@@ -1525,7 +1526,7 @@ async fn incoming(
             Ok(response)
         } else {
             let mut response = ErrorResponse::new(Some("invalid runner credential".into()));
-            *response.status_mut() = http::StatusCode::UNAUTHORIZED;
+            *response.status_mut() = nanocode_http::types::StatusCode::UNAUTHORIZED;
             Err(response)
         }
     };

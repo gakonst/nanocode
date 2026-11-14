@@ -1098,7 +1098,7 @@ async fn serve_socket(stream: TcpStream, runners: Runners) {
     let authenticate = |request: &Request, response: Response| {
         let found = request
             .headers()
-            .get(http::header::AUTHORIZATION)
+            .get(nanocode_http::types::header::AUTHORIZATION)
             .and_then(|value| value.to_str().ok())
             .and_then(|value| value.strip_prefix("Bearer "))
             .and_then(|bearer| runners.read(|runners| runners.get(bearer).cloned()));
@@ -1107,7 +1107,7 @@ async fn serve_socket(stream: TcpStream, runners: Runners) {
             Ok(response)
         } else {
             let mut rejection = ErrorResponse::new(Some("unknown runner credential".into()));
-            *rejection.status_mut() = http::StatusCode::UNAUTHORIZED;
+            *rejection.status_mut() = nanocode_http::types::StatusCode::UNAUTHORIZED;
             Err(rejection)
         }
     };
@@ -1328,12 +1328,12 @@ impl RemoteRunner {
             .as_str()
             .into_client_request()
             .map_err(transport_error)?;
-        let mut authorization = http::HeaderValue::from_str(&format!("Bearer {}", target.bearer()))
+        let mut authorization = nanocode_http::types::HeaderValue::from_str(&format!("Bearer {}", target.bearer()))
             .map_err(transport_error)?;
         authorization.set_sensitive(true);
         request
             .headers_mut()
-            .insert(http::header::AUTHORIZATION, authorization);
+            .insert(nanocode_http::types::header::AUTHORIZATION, authorization);
         let runner = self.clone();
         Ok(RunnerConnection(nanocode_platform::spawn_task(async move {
             let mut backoff = super::driver::INITIAL_TRANSPORT_BACKOFF;

@@ -333,9 +333,9 @@ where
         Some(rejection) => {
             let (parts, body) = rejection.into_parts();
             let body = body.map(String::into_bytes);
-            Err(Error::Http(Box::new(http::Response::from_parts(
-                parts, body,
-            ))))
+            Err(Error::Http(Box::new(
+                nanocode_http::types::Response::from_parts(parts, body),
+            )))
         }
         None => Ok(WebSocketStream::new(
             stream,

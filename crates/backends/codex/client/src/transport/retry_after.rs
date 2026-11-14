@@ -1,5 +1,5 @@
-use http::{HeaderMap, header};
 use nanocode_http::layer::retry;
+use nanocode_http::types::{HeaderMap, header};
 #[cfg(target_family = "wasm")]
 use nanocode_platform::Instant;
 #[cfg(not(target_family = "wasm"))]

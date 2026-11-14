@@ -1,7 +1,7 @@
 use std::io;
 
-use http::Uri;
 use nanocode_http::connect::{self, Alpn, Proxy, ProxyScheme};
+use nanocode_http::types::Uri;
 use nanocode_websocket::{
     Error, MaybeTlsStream, Result, WebSocketStream, client::Request, client::Response,
     client_async_with_config,

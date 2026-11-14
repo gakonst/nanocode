@@ -1,8 +1,8 @@
 use std::io::Write as _;
 
 use nanocode_sys::base64::STANDARD;
-use http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri, Version};
-use httparse::Status;
+use nanocode_http::types::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri, Version};
+use nanocode_http::parse::Status;
 use tokio::io::{AsyncRead, AsyncReadExt as _};
 
 use crate::error::{Error, ProtocolError, Result, SubProtocolError, UrlError};
@@ -28,14 +28,14 @@ const ATTACK_PACKETS_CHECKED_MIN: usize = 64;
 const HTTP_MINOR_VERSION_MIN: u8 = 1;
 
 pub mod client {
-    pub type Request = http::Request<()>;
-    pub type Response = http::Response<Option<Vec<u8>>>;
+    pub type Request = nanocode_http::types::Request<()>;
+    pub type Response = nanocode_http::types::Response<Option<Vec<u8>>>;
 }
 
 pub mod server {
-    pub type Request = http::Request<()>;
-    pub type Response = http::Response<()>;
-    pub type ErrorResponse = http::Response<Option<String>>;
+    pub type Request = nanocode_http::types::Request<()>;
+    pub type Response = nanocode_http::types::Response<()>;
+    pub type ErrorResponse = nanocode_http::types::Response<Option<String>>;
 
     pub trait Callback: Sized {
         fn on_request(
@@ -99,7 +99,7 @@ impl IntoClientRequest for Uri {
         if host.is_empty() {
             return Err(Error::Url(UrlError::EmptyHostName));
         }
-        let request = http::Request::builder()
+        let request = nanocode_http::types::Request::builder()
             .method("GET")
             .header("Host", host)
             .header("Connection", "Upgrade")
@@ -350,7 +350,7 @@ pub(crate) async fn read_handshake<T: TryParse, S: AsyncRead + Unpin>(
     }
 }
 
-fn header_map(raw: &[httparse::Header<'_>]) -> Result<HeaderMap> {
+fn header_map(raw: &[nanocode_http::parse::Header<'_>]) -> Result<HeaderMap> {
     let mut headers = HeaderMap::new();
     for header in raw {
         headers.append(
@@ -363,8 +363,8 @@ fn header_map(raw: &[httparse::Header<'_>]) -> Result<HeaderMap> {
 
 impl TryParse for client::Response {
     fn try_parse(buffer: &[u8]) -> Result<Option<(usize, Self)>> {
-        let mut headers = [httparse::EMPTY_HEADER; HEADERS_MAX];
-        let mut raw = httparse::Response::new(&mut headers);
+        let mut headers = [nanocode_http::parse::EMPTY_HEADER; HEADERS_MAX];
+        let mut raw = nanocode_http::parse::Response::new(&mut headers);
         let Status::Complete(size) = raw.parse(buffer)? else {
             return Ok(None);
         };
@@ -383,8 +383,8 @@ impl TryParse for client::Response {
 
 impl TryParse for server::Request {
     fn try_parse(buffer: &[u8]) -> Result<Option<(usize, Self)>> {
-        let mut headers = [httparse::EMPTY_HEADER; HEADERS_MAX];
-        let mut raw = httparse::Request::new(&mut headers);
+        let mut headers = [nanocode_http::parse::EMPTY_HEADER; HEADERS_MAX];
+        let mut raw = nanocode_http::parse::Request::new(&mut headers);
         let Status::Complete(size) = raw.parse(buffer)? else {
             return Ok(None);
         };
@@ -457,7 +457,7 @@ fn is_valid_key(key: &HeaderValue) -> bool {
             .is_ok_and(|decoded| decoded.len() == KEY_BYTES)
 }
 
-pub(crate) fn write_response<T>(output: &mut Vec<u8>, response: &http::Response<T>) -> Result<()> {
+pub(crate) fn write_response<T>(output: &mut Vec<u8>, response: &nanocode_http::types::Response<T>) -> Result<()> {
     write!(
         output,
         "{} {}\r\n",

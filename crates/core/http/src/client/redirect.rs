@@ -1,6 +1,6 @@
 use std::{error::Error as StdError, fmt};
 
-use http::StatusCode;
+use crate::types::StatusCode;
 use nanocode_url::Url;
 
 use super::body::BoxError;

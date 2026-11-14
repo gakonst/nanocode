@@ -6,8 +6,8 @@ use std::{
     time::Duration,
 };
 
-use http::{HeaderValue, header};
 use nanocode_http::layer::retry;
+use nanocode_http::types::{HeaderValue, header};
 use nanocode_platform::timeout;
 use nanocode_sync::{FutureExt, SinkExt, StreamExt};
 use nanocode_sync::{mpsc, oneshot};
@@ -457,7 +457,10 @@ fn map_handshake_error(error: WebSocketError) -> ResponsesError {
     }
 }
 
-fn handshake_rejection_detail(body: Option<&[u8]>, headers: &http::HeaderMap) -> String {
+fn handshake_rejection_detail(
+    body: Option<&[u8]>,
+    headers: &nanocode_http::types::HeaderMap,
+) -> String {
     let body = body.map_or_else(String::new, |body| {
         String::from_utf8_lossy(body).into_owned()
     });
@@ -520,7 +523,7 @@ fn is_transient_websocket(error: &WebSocketError) -> bool {
     }
 }
 
-fn header_string(headers: &http::HeaderMap, name: &str) -> Option<String> {
+fn header_string(headers: &nanocode_http::types::HeaderMap, name: &str) -> Option<String> {
     headers
         .get(name)
         .and_then(|value| value.to_str().ok())

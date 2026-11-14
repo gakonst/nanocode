@@ -15,8 +15,8 @@ pub enum Error {
     Utf8(String),
     AttackAttempt,
     Url(UrlError),
-    Http(Box<http::Response<Option<Vec<u8>>>>),
-    HttpFormat(http::Error),
+    Http(Box<nanocode_http::types::Response<Option<Vec<u8>>>>),
+    HttpFormat(nanocode_http::types::Error),
 }
 
 impl fmt::Display for Error {
@@ -85,8 +85,8 @@ impl From<UrlError> for Error {
     }
 }
 
-impl From<http::Error> for Error {
-    fn from(error: http::Error) -> Self {
+impl From<nanocode_http::types::Error> for Error {
+    fn from(error: nanocode_http::types::Error) -> Self {
         Self::HttpFormat(error)
     }
 }
@@ -103,40 +103,42 @@ impl From<string::FromUtf8Error> for Error {
     }
 }
 
-impl From<http::header::InvalidHeaderValue> for Error {
-    fn from(error: http::header::InvalidHeaderValue) -> Self {
+impl From<nanocode_http::types::header::InvalidHeaderValue> for Error {
+    fn from(error: nanocode_http::types::header::InvalidHeaderValue) -> Self {
         Self::HttpFormat(error.into())
     }
 }
 
-impl From<http::header::InvalidHeaderName> for Error {
-    fn from(error: http::header::InvalidHeaderName) -> Self {
+impl From<nanocode_http::types::header::InvalidHeaderName> for Error {
+    fn from(error: nanocode_http::types::header::InvalidHeaderName) -> Self {
         Self::HttpFormat(error.into())
     }
 }
 
-impl From<http::header::ToStrError> for Error {
-    fn from(error: http::header::ToStrError) -> Self {
+impl From<nanocode_http::types::header::ToStrError> for Error {
+    fn from(error: nanocode_http::types::header::ToStrError) -> Self {
         Self::Utf8(error.to_string())
     }
 }
 
-impl From<http::uri::InvalidUri> for Error {
-    fn from(error: http::uri::InvalidUri) -> Self {
+impl From<nanocode_http::types::uri::InvalidUri> for Error {
+    fn from(error: nanocode_http::types::uri::InvalidUri) -> Self {
         Self::HttpFormat(error.into())
     }
 }
 
-impl From<http::status::InvalidStatusCode> for Error {
-    fn from(error: http::status::InvalidStatusCode) -> Self {
+impl From<nanocode_http::types::status::InvalidStatusCode> for Error {
+    fn from(error: nanocode_http::types::status::InvalidStatusCode) -> Self {
         Self::HttpFormat(error.into())
     }
 }
 
-impl From<httparse::Error> for Error {
-    fn from(error: httparse::Error) -> Self {
+impl From<nanocode_http::parse::Error> for Error {
+    fn from(error: nanocode_http::parse::Error) -> Self {
         match error {
-            httparse::Error::TooManyHeaders => Self::Capacity(CapacityError::TooManyHeaders),
+            nanocode_http::parse::Error::TooManyHeaders => {
+                Self::Capacity(CapacityError::TooManyHeaders)
+            }
             error => Self::Protocol(ProtocolError::HttparseError(error)),
         }
     }
@@ -195,9 +197,9 @@ pub enum ProtocolError {
     SecWebSocketSubProtocolError(SubProtocolError),
     JunkAfterRequest,
     CustomResponseSuccessful,
-    InvalidHeader(Box<http::header::HeaderName>),
+    InvalidHeader(Box<nanocode_http::types::header::HeaderName>),
     HandshakeIncomplete,
-    HttparseError(httparse::Error),
+    HttparseError(nanocode_http::parse::Error),
     SendAfterClosing,
     ReceivedAfterClosing,
     NonZeroReservedBits,

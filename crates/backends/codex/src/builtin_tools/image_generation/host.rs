@@ -193,7 +193,7 @@ impl HostImageGeneration {
 }
 
 fn status_text(status: u16) -> String {
-    http::StatusCode::from_u16(status)
+    nanocode_http::types::StatusCode::from_u16(status)
         .map_or_else(|_| status.to_string(), |status| status.to_string())
 }
 

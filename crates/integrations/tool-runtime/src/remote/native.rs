@@ -232,7 +232,7 @@ async fn connect(
     target: crate::attachment::AttachmentTarget,
     policy: SocketPolicy,
 ) -> Result<DialedSocket, CodeModeHostError> {
-    dial(&target, &http::HeaderMap::new(), policy)
+    dial(&target, &nanocode_http::types::HeaderMap::new(), policy)
         .await
         .map_err(|failure| match failure {
             Dial::Rejected(error, _) | Dial::Failed(error) => error,
@@ -241,24 +241,25 @@ async fn connect(
 
 pub(super) fn request_headers(
     pairs: &[(String, String)],
-) -> Result<http::HeaderMap, CodeModeHostError> {
-    let mut headers = http::HeaderMap::new();
+) -> Result<nanocode_http::types::HeaderMap, CodeModeHostError> {
+    let mut headers = nanocode_http::types::HeaderMap::new();
     for (name, value) in pairs {
-        let header = http::HeaderName::from_bytes(name.as_bytes())
+        let header = nanocode_http::types::HeaderName::from_bytes(name.as_bytes())
             .map_err(|issue| error(format!("invalid hand header name {name:?}: {issue}")))?;
-        let reserved = matches!(
-            header,
-            http::header::AUTHORIZATION
-                | http::header::CONNECTION
-                | http::header::HOST
-                | http::header::UPGRADE
-        ) || header.as_str().starts_with("sec-websocket-");
+        let reserved = [
+            nanocode_http::types::header::AUTHORIZATION,
+            nanocode_http::types::header::CONNECTION,
+            nanocode_http::types::header::HOST,
+            nanocode_http::types::header::UPGRADE,
+        ]
+        .contains(&header)
+            || header.as_str().starts_with("sec-websocket-");
         if reserved {
             return Err(error(format!(
                 "hand header {name:?} is set by the WebSocket upgrade or the runner credential"
             )));
         }
-        let value = http::HeaderValue::from_str(value)
+        let value = nanocode_http::types::HeaderValue::from_str(value)
             .map_err(|issue| error(format!("invalid value for hand header {name:?}: {issue}")))?;
         headers.append(header, value);
     }
@@ -283,7 +284,7 @@ impl DialStages {
 
 pub(super) async fn dial(
     target: &crate::attachment::AttachmentTarget,
-    headers: &http::HeaderMap,
+    headers: &nanocode_http::types::HeaderMap,
     policy: SocketPolicy,
 ) -> Result<DialedSocket, Dial> {
     dial_staged(target, headers, policy)
@@ -293,7 +294,7 @@ pub(super) async fn dial(
 
 pub(super) async fn dial_staged(
     target: &crate::attachment::AttachmentTarget,
-    headers: &http::HeaderMap,
+    headers: &nanocode_http::types::HeaderMap,
     policy: SocketPolicy,
 ) -> Result<(DialedSocket, DialStages), Dial> {
     validate_policy(policy).map_err(|issue| Dial::Rejected(issue, None))?;
@@ -303,15 +304,16 @@ pub(super) async fn dial_staged(
         .as_str()
         .into_client_request()
         .map_err(|issue| Dial::Rejected(error(issue), None))?;
-    let mut bearer = http::HeaderValue::from_str(&format!("Bearer {}", target.bearer()))
-        .map_err(|issue| Dial::Rejected(error(issue), None))?;
+    let mut bearer =
+        nanocode_http::types::HeaderValue::from_str(&format!("Bearer {}", target.bearer()))
+            .map_err(|issue| Dial::Rejected(error(issue), None))?;
     bearer.set_sensitive(true);
     for (name, value) in headers {
         request.headers_mut().append(name, value.clone());
     }
     request
         .headers_mut()
-        .insert(http::header::AUTHORIZATION, bearer);
+        .insert(nanocode_http::types::header::AUTHORIZATION, bearer);
     let mut stages = DialStages::default();
     let mut stage = nanocode_platform::now();
     let mut lap = |at: &mut Duration| {
@@ -432,12 +434,12 @@ async fn handshake(
                         mut response: nanocode_websocket::server::Response| {
         let header = request
             .headers()
-            .get(http::header::AUTHORIZATION)
+            .get(nanocode_http::types::header::AUTHORIZATION)
             .and_then(|h| h.to_str().ok())
             .and_then(|h| h.strip_prefix("Bearer "));
         let protocol = request
             .headers()
-            .get(http::header::SEC_WEBSOCKET_PROTOCOL)
+            .get(nanocode_http::types::header::SEC_WEBSOCKET_PROTOCOL)
             .and_then(|value| value.to_str().ok())
             .and_then(|value| {
                 let mut values = value.split(',').map(str::trim);
@@ -447,8 +449,8 @@ async fn handshake(
             });
         if protocol.is_some() {
             response.headers_mut().insert(
-                http::header::SEC_WEBSOCKET_PROTOCOL,
-                http::HeaderValue::from_static("bearer"),
+                nanocode_http::types::header::SEC_WEBSOCKET_PROTOCOL,
+                nanocode_http::types::HeaderValue::from_static("bearer"),
             );
         }
         if header.or(protocol) == Some(bearer) {
@@ -460,7 +462,7 @@ async fn handshake(
             let mut rejection = nanocode_websocket::server::ErrorResponse::new(Some(
                 "invalid runner credential".into(),
             ));
-            *rejection.status_mut() = http::StatusCode::UNAUTHORIZED;
+            *rejection.status_mut() = nanocode_http::types::StatusCode::UNAUTHORIZED;
             Err(rejection)
         }
     };

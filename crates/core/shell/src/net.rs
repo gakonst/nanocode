@@ -1,5 +1,5 @@
 use crate::fetch::{Failure, Network, Request, Response, current};
-use bytes::Bytes;
+use nanocode_bytes::Bytes;
 use psh_engine::{
     host::{OpenOptions, error_text},
     util::{LocalBoxFuture, Mode, UtilCtx, UtilEntry},

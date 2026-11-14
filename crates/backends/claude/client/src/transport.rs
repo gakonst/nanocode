@@ -29,30 +29,33 @@ const GZIP_PADDING_LENGTHS: usize = 257;
 pub(crate) async fn post(
     client: &HttpClient,
     endpoint: &str,
-    mut headers: http::HeaderMap,
+    mut headers: nanocode_http::types::HeaderMap,
     body: std::sync::Arc<String>,
     gzip: bool,
     layer: Option<&dyn Layer>,
 ) -> Result<HttpResponse, HttpError> {
     headers
-        .entry(http::header::ACCEPT_ENCODING)
-        .or_insert(http::HeaderValue::from_static("gzip, br, deflate, zstd"));
+        .entry(nanocode_http::types::header::ACCEPT_ENCODING)
+        .or_insert(nanocode_http::types::HeaderValue::from_static(
+            "gzip, br, deflate, zstd",
+        ));
     let span = nanocode_trace::Span::current();
     span.record("request.bytes", body.len());
     let body = if gzip {
         let padded = gzip_padded(&body)?;
-        let encoded = nanocode_platform::spawn_blocking(move || nanocode_http::gzip(&padded, GZIP_LEVEL))
-            .await
-            .map_err(|error| encode_error(&error))?
-            .map_err(|error| encode_error(&error))?;
+        let encoded =
+            nanocode_platform::spawn_blocking(move || nanocode_http::gzip(&padded, GZIP_LEVEL))
+                .await
+                .map_err(|error| encode_error(&error))?
+                .map_err(|error| encode_error(&error))?;
         span.record("request.gzip_bytes", encoded.len());
         headers.insert(
-            http::header::CONTENT_ENCODING,
-            http::HeaderValue::from_static("gzip"),
+            nanocode_http::types::header::CONTENT_ENCODING,
+            nanocode_http::types::HeaderValue::from_static("gzip"),
         );
         nanocode_http::Body::from(encoded)
     } else {
-        nanocode_http::Body::from(bytes::Bytes::from_owner(SharedBody(body)))
+        nanocode_http::Body::from(nanocode_bytes::Bytes::from_owner(SharedBody(body)))
     };
     let request = client
         .post(endpoint)
@@ -205,7 +208,10 @@ pub(crate) async fn preconnect(client: &HttpClient, endpoint: &str) -> Result<()
 }
 
 #[cfg(target_family = "wasm")]
-#[expect(clippy::unused_async, reason = "a WebAssembly host opens its own connections")]
+#[expect(
+    clippy::unused_async,
+    reason = "a WebAssembly host opens its own connections"
+)]
 pub(crate) async fn preconnect(_client: &HttpClient, _endpoint: &str) -> Result<(), HttpError> {
     Ok(())
 }
@@ -214,7 +220,7 @@ pub(crate) async fn preconnect(_client: &HttpClient, _endpoint: &str) -> Result<
 pub(crate) async fn post(
     client: &HttpClient,
     endpoint: &str,
-    headers: http::HeaderMap,
+    headers: nanocode_http::types::HeaderMap,
     body: std::sync::Arc<String>,
     _gzip: bool,
     layer: Option<&dyn Layer>,
@@ -232,16 +238,18 @@ pub(crate) async fn post(
 pub(crate) async fn post_with(
     transport: &dyn HttpTransport,
     endpoint: &str,
-    mut headers: http::HeaderMap,
+    mut headers: nanocode_http::types::HeaderMap,
     body: String,
     layer: Option<&dyn Layer>,
 ) -> Result<HttpResponse, HttpError> {
     headers
         .entry("anthropic-version")
-        .or_insert(http::HeaderValue::from_static(crate::ANTHROPIC_VERSION));
+        .or_insert(nanocode_http::types::HeaderValue::from_static(
+            crate::ANTHROPIC_VERSION,
+        ));
     headers.append(
-        http::header::CONTENT_TYPE,
-        http::HeaderValue::from_static("application/json"),
+        nanocode_http::types::header::CONTENT_TYPE,
+        nanocode_http::types::HeaderValue::from_static("application/json"),
     );
     let Some(layer) = layer else {
         return transport
@@ -253,7 +261,7 @@ pub(crate) async fn post_with(
             .await;
     };
     let request = layer::Request {
-        method: http::Method::POST,
+        method: nanocode_http::types::Method::POST,
         url: endpoint.to_owned(),
         headers,
         body: body.into_bytes(),

@@ -28,7 +28,6 @@ nanocode-image.workspace = true
 nanocode-home = { workspace = true  }
 nanocode-url.workspace = true
 nanocode-code-mode = { path = "../../runtime/code-mode", version = "0.7.0"   }
-http.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 nanocode-trace.workspace = true

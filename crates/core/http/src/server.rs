@@ -6,11 +6,11 @@ use std::{
     time::Duration,
 };
 
-use bytes::Bytes;
-use http::{
+use crate::types::{
     HeaderMap, HeaderValue, Method, StatusCode, Version,
     header::{CONTENT_LENGTH, DATE, TRANSFER_ENCODING, UPGRADE},
 };
+use nanocode_bytes::Bytes;
 use nanocode_platform::timeout;
 use nanocode_sync::{
     Stream, StreamExt,

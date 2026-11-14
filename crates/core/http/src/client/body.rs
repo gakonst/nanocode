@@ -1,6 +1,6 @@
 use std::{fmt, pin::Pin};
 
-use bytes::Bytes;
+use nanocode_bytes::Bytes;
 use nanocode_sync::Slot;
 use nanocode_sync::{Stream, TryStreamExt};
 

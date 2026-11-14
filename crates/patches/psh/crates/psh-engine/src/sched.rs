@@ -113,6 +113,7 @@ pub(crate) struct Sched {
     /// Waits of the shell's own vproc that a signal ends (D1903).
     signal_waiters: RefCell<Vec<Waker>>,
     children: Cell<u32>,
+    pub(crate) chld_trap: Cell<bool>,
 }
 
 /// What [`Sched::run`] stopped on.
@@ -139,6 +140,7 @@ impl Sched {
             out_of_budget: Cell::new(false),
             signal_waiters: RefCell::new(Vec::new()),
             children: Cell::new(0),
+            chld_trap: Cell::new(false),
         }
     }
 
@@ -275,6 +277,9 @@ impl Sched {
 
     /// Takes the pending signals (D1284).
     pub(crate) fn child_ended(&self) {
+        if !self.chld_trap.get() {
+            return;
+        }
         self.children.set(self.children.get() + 1);
         self.raise(crate::host::SIGCHLD);
         self.wake_signal_waiters();

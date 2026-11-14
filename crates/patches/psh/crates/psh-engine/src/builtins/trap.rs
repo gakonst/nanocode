@@ -460,6 +460,13 @@ pub(crate) async fn trap(vp: &mut Vp, args: &[Vec<u8>]) -> R {
             None => bad.push(spec.clone()),
         }
     }
+    if vp.top {
+        let on = vp
+            .traps
+            .action(TrapKey::Signal(crate::host::SIGCHLD))
+            .is_some_and(|a| !a.is_empty());
+        vp.sigs.set_chld_trap(&vp.core, on);
+    }
     for spec in bad {
         status = invalid_spec(vp, &spec).await;
     }

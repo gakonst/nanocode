@@ -82,6 +82,7 @@ impl Life {
 #[derive(Debug)]
 pub struct Tracker {
     life: Mutex<Life>,
+    stop: std::sync::atomic::AtomicBool,
     /// Signalled at the exit, for the escalation thread.
     exited: Condvar,
 }
@@ -105,6 +106,7 @@ impl Tracker {
                 waker: None,
             }),
             exited: Condvar::new(),
+            stop: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -130,6 +132,9 @@ impl Tracker {
     }
 
     pub fn poll_stop(&self, cx: &mut Context<'_>) -> Poll<Signal> {
+        if !self.stop.swap(false, std::sync::atomic::Ordering::AcqRel) {
+            return Poll::Pending;
+        }
         let mut life = self.lock();
         match life.stopped.take() {
             Some(sig) => Poll::Ready(sig),
@@ -145,6 +150,7 @@ impl Tracker {
     pub fn stopped(&self, sig: Signal) -> Option<Waker> {
         let mut life = self.lock();
         life.stopped = Some(sig);
+        self.stop.store(true, std::sync::atomic::Ordering::Release);
         life.waker.take()
     }
 

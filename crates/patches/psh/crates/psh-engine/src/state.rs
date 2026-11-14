@@ -64,6 +64,7 @@ pub(crate) enum Sigs {
 pub(crate) struct NestedSigs {
     pending: Cell<u64>,
     children: Cell<u32>,
+    chld_trap: Cell<bool>,
     pub cont: Cell<bool>,
     stop: Cell<Option<i32>>,
     stop_waker: RefCell<Option<std::task::Waker>>,
@@ -159,11 +160,23 @@ impl Sigs {
     pub(crate) fn child_ended(&self, core: &Core) {
         match self {
             Sigs::Shell => core.sched.child_ended(),
-            Sigs::Nested(n) => {
+            Sigs::Nested(n) if n.chld_trap.get() => {
                 n.children.set(n.children.get() + 1);
                 n.raise(crate::host::SIGCHLD);
             }
+            Sigs::Nested(_) => {}
         }
+    }
+
+    pub(crate) fn set_chld_trap(&self, core: &Core, on: bool) {
+        let flag = match self {
+            Sigs::Shell => &core.sched.chld_trap,
+            Sigs::Nested(n) => &n.chld_trap,
+        };
+        if on && !flag.get() {
+            self.take_children(core);
+        }
+        flag.set(on);
     }
 
     pub(crate) fn take_children(&self, core: &Core) -> u32 {

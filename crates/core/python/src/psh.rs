@@ -197,11 +197,6 @@ pub fn serve() -> i32 {
         let _ = writeln!(stderr, "{name}: an argument is not UTF-8");
         return 2;
     };
-    let mut stdin = Vec::new();
-    if let Err(error) = io::stdin().read_to_end(&mut stdin) {
-        let _ = writeln!(stderr, "{name}: read error: {error}");
-        return 1;
-    }
     let cwd = match std::env::current_dir() {
         Ok(cwd) => cwd.into_os_string().into_vec(),
         Err(error) => {
@@ -211,7 +206,7 @@ pub fn serve() -> i32 {
     };
     let run = Run {
         argv,
-        stdin,
+        stdio: crate::Stdio::Process,
         cwd,
         env: std::env::vars_os()
             .map(|(key, value)| (key.into_vec(), value.into_vec()))
@@ -255,7 +250,7 @@ fn body(ctx: &mut SyncCtx, argv: Vec<Vec<u8>>) -> i32 {
     }
     let run = Run {
         argv,
-        stdin,
+        stdio: crate::Stdio::Held(stdin),
         cwd: ctx.cwd().to_vec(),
         env: ctx.env().to_vec(),
         limits: limits(),

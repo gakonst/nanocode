@@ -3,7 +3,7 @@ use std::{cell::RefCell, io, rc::Rc, time::Duration};
 use nanocode_platform::{Instant, UNIX_EPOCH};
 use rustpython_vm::{PyResult, VirtualMachine, builtins::PyBaseExceptionRef, vm::limit::Limiter};
 
-use crate::{Changes, Files, Limit, Limits, Run, Stop};
+use crate::{Changes, Files, Limit, Limits, Run, Stdio, Stop};
 
 const SLICE: u64 = 1 << 12;
 
@@ -11,8 +11,9 @@ pub(crate) use _host::module_def;
 
 pub struct State {
     files: Rc<dyn Files>,
-    stdin: Vec<u8>,
+    stdio: Stdio,
     read: usize,
+    written: u64,
     cwd: Vec<u8>,
     env: Vec<(Vec<u8>, Vec<u8>)>,
     limits: Limits,
@@ -34,8 +35,9 @@ impl State {
     pub fn new(files: Rc<dyn Files>, run: Run) -> Self {
         Self {
             files,
-            stdin: run.stdin,
+            stdio: run.stdio,
             read: 0,
+            written: 0,
             cwd: run.cwd,
             env: run.env,
             limits: run.limits,
@@ -52,6 +54,56 @@ impl State {
             refused: None,
             cancelled: false,
         }
+    }
+
+    fn take(&mut self, size: Option<usize>) -> io::Result<Vec<u8>> {
+        use std::io::Read as _;
+        match &self.stdio {
+            Stdio::Held(bytes) => {
+                let rest = bytes.len() - self.read;
+                let take = size.map_or(rest, |size| size.min(rest));
+                let data = bytes[self.read..self.read + take].to_vec();
+                self.read += take;
+                Ok(data)
+            }
+            Stdio::Process => {
+                let mut stdin = io::stdin().lock();
+                let mut data = Vec::new();
+                match size {
+                    None => {
+                        stdin.read_to_end(&mut data)?;
+                    }
+                    Some(size) => {
+                        data.resize(size, 0);
+                        let read = stdin.read(&mut data)?;
+                        data.truncate(read);
+                    }
+                }
+                Ok(data)
+            }
+        }
+    }
+
+    fn put(&mut self, fd: u8, data: &[u8]) -> io::Result<()> {
+        use std::io::Write as _;
+        self.written = self
+            .written
+            .saturating_add(u64::try_from(data.len()).unwrap_or(u64::MAX));
+        match (&self.stdio, fd) {
+            (Stdio::Held(_), 2) => self.stderr.extend_from_slice(data),
+            (Stdio::Held(_), _) => self.stdout.extend_from_slice(data),
+            (Stdio::Process, 2) => {
+                let mut stderr = io::stderr().lock();
+                stderr.write_all(data)?;
+                stderr.flush()?;
+            }
+            (Stdio::Process, _) => {
+                let mut stdout = io::stdout().lock();
+                stdout.write_all(data)?;
+                stdout.flush()?;
+            }
+        }
+        Ok(())
     }
 
     pub const fn spent(&self, left: u64) -> u64 {
@@ -199,12 +251,7 @@ pub fn memory() -> Option<usize> {
 }
 
 pub fn input() -> Vec<u8> {
-    with(|state| {
-        let rest = state.stdin[state.read..].to_vec();
-        state.read = state.stdin.len();
-        Ok(rest)
-    })
-    .unwrap_or_default()
+    with(|state| state.take(None)).unwrap_or_default()
 }
 
 pub fn source(path: &str) -> io::Result<Vec<u8>> {
@@ -215,17 +262,11 @@ pub fn source(path: &str) -> io::Result<Vec<u8>> {
 }
 
 pub fn say(text: &str) {
-    let _ = with(|state| {
-        state.stdout.extend_from_slice(text.as_bytes());
-        Ok(())
-    });
+    let _ = with(|state| state.put(1, text.as_bytes()));
 }
 
 pub fn print(text: &str) {
-    let _ = with(|state| {
-        state.stderr.extend_from_slice(text.as_bytes());
-        Ok(())
-    });
+    let _ = with(|state| state.put(2, text.as_bytes()));
 }
 
 pub fn text(error: &io::Error) -> String {
@@ -490,31 +531,21 @@ mod _host {
 
     #[pyfunction]
     fn input(size: isize, vm: &VirtualMachine) -> PyResult<PyBytesRef> {
-        state(vm, |state| {
-            let rest = state.stdin.len() - state.read;
-            let take = usize::try_from(size).map_or(rest, |size| size.min(rest));
-            let data = state.stdin[state.read..state.read + take].to_vec();
-            state.read += take;
-            Ok(data)
-        })
-        .map(|data| vm.ctx.new_bytes(data))
+        state(vm, |state| state.take(usize::try_from(size).ok())).map(|data| vm.ctx.new_bytes(data))
     }
 
     #[pyfunction]
     fn output(fd: u8, data: ArgBytesLike, vm: &VirtualMachine) -> PyResult<usize> {
         let data = data.borrow_buf();
         let kept = state(vm, |state| {
-            let used = (state.stdout.len() + state.stderr.len() + data.len()) as u64;
+            let used = state
+                .written
+                .saturating_add(u64::try_from(data.len()).unwrap_or(u64::MAX));
             if used > state.limits.output {
                 state.refused.get_or_insert(Limit::Output);
                 return Ok(false);
             }
-            let stream = if fd == 2 {
-                &mut state.stderr
-            } else {
-                &mut state.stdout
-            };
-            stream.extend_from_slice(&data);
+            state.put(fd, &data)?;
             Ok(true)
         })?;
         if kept { Ok(data.len()) } else { Err(halt(vm)) }

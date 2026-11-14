@@ -155,9 +155,14 @@ pub struct Changes {
     pub moved: Vec<(Vec<u8>, Vec<u8>)>,
 }
 
+pub enum Stdio {
+    Held(Vec<u8>),
+    Process,
+}
+
 pub struct Run {
     pub argv: Vec<String>,
-    pub stdin: Vec<u8>,
+    pub stdio: Stdio,
     pub cwd: Vec<u8>,
     pub env: Vec<(Vec<u8>, Vec<u8>)>,
     pub limits: Limits,

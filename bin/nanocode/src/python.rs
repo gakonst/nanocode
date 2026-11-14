@@ -8,7 +8,7 @@ use std::{
         process::{CommandExt, ExitStatusExt},
     },
     path::PathBuf,
-    process::{Command, Stdio},
+    process::{Child, Command, Stdio},
     sync::mpsc,
     thread,
     time::Duration,
@@ -33,6 +33,8 @@ const RELEASE_VAR: &str = "NANOCODE_RELEASE";
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(600);
 const CANCEL_POLL: Duration = Duration::from_millis(20);
 const UNPACK_CHUNK: usize = 1 << 20;
+const PIPE_CAPACITY_BYTES: usize = 1 << 16;
+const STDIN_CHUNKS_IN_FLIGHT: usize = 1;
 const EXECUTABLE: u32 = 0o755;
 
 fn utility<'a>(ctx: &'a mut UtilCtx<'_>, argv: &'a [Vec<u8>]) -> LocalBoxFuture<'a, i32> {
@@ -52,13 +54,6 @@ fn body(ctx: &mut SyncCtx, argv: Vec<Vec<u8>>) -> i32 {
             return 1;
         }
     };
-    let mut stdin = Vec::new();
-    if ctx.stdin_readable()
-        && let Err(error) = ctx.stdin().read_to_end(&mut stdin)
-    {
-        ctx.error(&format!("read error: {error}"));
-        return 1;
-    }
     let cwd = match native(ctx.cwd()) {
         Ok(cwd) => cwd,
         Err(error) => {
@@ -90,47 +85,20 @@ fn body(ctx: &mut SyncCtx, argv: Vec<Vec<u8>>) -> i32 {
             return 1;
         }
     };
-    if let Some(mut pipe) = child.stdin.take() {
-        thread::spawn(move || pipe.write_all(&stdin));
-    }
-    let (done, finished) = mpsc::channel();
-    let reader = |pipe: Option<Box<dyn Read + Send>>, done: Option<mpsc::Sender<()>>| {
-        thread::spawn(move || {
-            let mut bytes = Vec::new();
-            if let Some(mut pipe) = pipe {
-                drop(pipe.read_to_end(&mut bytes));
-            }
-            if let Some(done) = done {
-                let _ = done.send(());
-            }
-            bytes
-        })
-    };
-    let stdout = reader(
-        child
-            .stdout
-            .take()
-            .map(|pipe| Box::new(pipe) as Box<dyn Read + Send>),
-        Some(done),
-    );
-    let stderr = reader(
-        child
-            .stderr
-            .take()
-            .map(|pipe| Box::new(pipe) as Box<dyn Read + Send>),
-        None,
-    );
+    let stdout = forward(child.stdout.take(), ctx.writer(1));
+    let stderr = forward(child.stderr.take(), ctx.writer(2));
     let stop = ctx.canceller();
-    while let Err(mpsc::RecvTimeoutError::Timeout) = finished.recv_timeout(CANCEL_POLL) {
-        if stop() {
-            drop(child.kill());
-            drop(child.wait());
-            return 128 + psh_engine::host::SIGTERM;
-        }
-    }
-    let status = child.wait();
-    let _ = ctx.write(&stdout.join().unwrap_or_default());
-    ctx.error_raw(&stderr.join().unwrap_or_default());
+    let status = match feed(ctx, &mut child, &*stop) {
+        Fed::Cancelled => None,
+        Fed::Ended => wait(&mut child, &*stop),
+    };
+    let Some(status) = status else {
+        drop(child.kill());
+        drop(child.wait());
+        return 128 + psh_engine::host::SIGTERM;
+    };
+    drop(stdout.join());
+    drop(stderr.join());
     match status {
         Ok(status) => status
             .code()
@@ -139,6 +107,120 @@ fn body(ctx: &mut SyncCtx, argv: Vec<Vec<u8>>) -> i32 {
             ctx.error(&format!("cannot wait for {}: {error}", program.display()));
             1
         }
+    }
+}
+
+enum Fed {
+    Ended,
+    Cancelled,
+}
+
+fn forward(
+    pipe: Option<impl Read + Send + 'static>,
+    mut writer: psh_engine::util::SyncWriter,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        let Some(mut pipe) = pipe else {
+            return;
+        };
+        let mut chunk = vec![0; PIPE_CAPACITY_BYTES];
+        loop {
+            match pipe.read(&mut chunk) {
+                Ok(0) => return,
+                Ok(read) => {
+                    if writer.write_all(&chunk[..read]).is_err() {
+                        return;
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(_) => return,
+            }
+        }
+    })
+}
+
+fn feed(ctx: &mut SyncCtx, child: &mut Child, stop: &dyn Fn() -> bool) -> Fed {
+    let Some(mut pipe) = child.stdin.take() else {
+        return Fed::Ended;
+    };
+    if !ctx.stdin_readable() {
+        return Fed::Ended;
+    }
+    let (chunks, received) = mpsc::sync_channel::<Vec<u8>>(STDIN_CHUNKS_IN_FLIGHT);
+    thread::spawn(move || {
+        while let Ok(chunk) = received.recv() {
+            if pipe.write_all(&chunk).is_err() {
+                return;
+            }
+        }
+    });
+    let mut chunk = vec![0; PIPE_CAPACITY_BYTES];
+    loop {
+        if !matches!(child.try_wait(), Ok(None)) {
+            return Fed::Ended;
+        }
+        let read = match ctx.stdin().read(&mut chunk) {
+            Ok(0) => return Fed::Ended,
+            Ok(read) => read,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted && stop() => {
+                return Fed::Cancelled;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => {
+                ctx.error(&format!("read error: {error}"));
+                return Fed::Ended;
+            }
+        };
+        match hand_over(&chunks, chunk[..read].to_vec(), child, stop) {
+            Handed::Taken => {}
+            Handed::Closed => return Fed::Ended,
+            Handed::Cancelled => return Fed::Cancelled,
+        }
+    }
+}
+
+enum Handed {
+    Taken,
+    Closed,
+    Cancelled,
+}
+
+fn hand_over(
+    chunks: &mpsc::SyncSender<Vec<u8>>,
+    mut chunk: Vec<u8>,
+    child: &mut Child,
+    stop: &dyn Fn() -> bool,
+) -> Handed {
+    loop {
+        match chunks.try_send(chunk) {
+            Ok(()) => return Handed::Taken,
+            Err(mpsc::TrySendError::Disconnected(_)) => return Handed::Closed,
+            Err(mpsc::TrySendError::Full(back)) => chunk = back,
+        }
+        if stop() {
+            return Handed::Cancelled;
+        }
+        if !matches!(child.try_wait(), Ok(None)) {
+            return Handed::Closed;
+        }
+        thread::sleep(CANCEL_POLL);
+    }
+}
+
+fn wait(
+    child: &mut Child,
+    stop: &dyn Fn() -> bool,
+) -> Option<std::io::Result<std::process::ExitStatus>> {
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Some(Ok(status)),
+            Ok(None) => {}
+            Err(error) => return Some(Err(error)),
+        }
+        if stop() {
+            return None;
+        }
+        thread::sleep(CANCEL_POLL);
     }
 }
 

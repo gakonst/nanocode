@@ -115,7 +115,7 @@ impl Kept {
         let fuel = call.shell.fuel();
         let run = Run {
             argv,
-            stdin,
+            stdio: crate::Stdio::Held(stdin),
             cwd: call.cwd.clone(),
             env: call.env.clone(),
             limits: Limits {

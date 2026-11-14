@@ -12,7 +12,7 @@ use super::{
     Entry, JOURNAL_READ_BUFFER_BYTES, Journal, Record, SHARED_RECORD, Spans, backend, encode,
     identity,
     sessions::{Sessions, session_key},
-    summaries::Summary,
+    summaries::{Summary, raw_summary},
     sync_journal, value_digest,
 };
 
@@ -318,12 +318,14 @@ fn summary(
     summaries
         .get(id)
         .filter(|(known, _)| *known == revision)
-        .map(|(_, summary)| Summary {
-            file: file.to_owned(),
-            length,
-            revision,
-            summary: summary.clone(),
-            anchor: None,
+        .and_then(|(_, summary)| {
+            Some(Summary {
+                file: file.to_owned(),
+                length,
+                revision,
+                summary: raw_summary(summary.as_ref()).ok()?,
+                anchor: None,
+            })
         })
 }
 

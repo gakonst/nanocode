@@ -9,6 +9,7 @@ use std::{
 use nanocode_digest::Sha256;
 use nanocode_durability_core::{StateSummary, StoreError};
 use serde::{Deserialize, Serialize};
+use serde_json::value::RawValue;
 
 use super::{
     Documents, JOURNAL_READ_BUFFER_BYTES, Kind, Location, archive, backend, identity,
@@ -40,9 +41,18 @@ pub(super) struct Summary {
     pub(super) file: String,
     pub(super) length: u64,
     pub(super) revision: u64,
-    pub(super) summary: Option<StateSummary>,
+    pub(super) summary: Option<Box<RawValue>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) anchor: Option<Anchor>,
+}
+
+pub(super) fn raw_summary(
+    summary: Option<&StateSummary>,
+) -> Result<Option<Box<RawValue>>, StoreError> {
+    summary
+        .map(serde_json::value::to_raw_value)
+        .transpose()
+        .map_err(backend)
 }
 
 #[derive(Clone, Copy, Deserialize, Serialize)]
@@ -314,11 +324,10 @@ impl Summaries {
         self.loaded = Loaded::Legacy(current);
     }
 
-    pub(super) fn listed(&self, state_id: &str, file: &str, length: u64) -> Option<Summary> {
+    pub(super) fn listed(&self, state_id: &str, file: &str, length: u64) -> Option<&Summary> {
         self.entries
             .get(state_id)
             .filter(|known| known.file == file && known.length == length)
-            .cloned()
     }
 
     pub(super) fn current(&self, state_id: &str, file: &str, length: u64) -> bool {
@@ -333,13 +342,13 @@ impl Summaries {
         file: &str,
         length: u64,
         revision: u64,
-    ) -> Option<Summary> {
+    ) -> Option<&Summary> {
         let known = self
             .entries
             .get_mut(state_id)
             .filter(|known| known.file == file && known.revision == revision)?;
         known.length = length;
-        Some(known.clone())
+        Some(known)
     }
 
     pub(super) fn copied(
@@ -349,7 +358,7 @@ impl Summaries {
         path: &Path,
         length: u64,
         revision: Option<u64>,
-    ) -> Option<Summary> {
+    ) -> Option<&Summary> {
         let known = self
             .entries
             .get_mut(state_id)
@@ -370,7 +379,7 @@ impl Summaries {
         }
         known.file = file.to_owned();
         self.copied.push((state_id.to_owned(), known.clone()));
-        Some(known.clone())
+        Some(known)
     }
 
     pub(super) fn settle(&mut self) -> Result<(), StoreError> {

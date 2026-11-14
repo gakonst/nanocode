@@ -17,7 +17,7 @@ use nanocode_digest::Sha256;
 use super::{
     CompactionStats, Journal, Replacement, archive, backend, identity, process_alive,
     shared::Shared,
-    summaries::{Anchor, Summaries, Summary},
+    summaries::{Anchor, Summaries, Summary, raw_summary},
 };
 
 const OPEN_JOURNALS: usize = 32;
@@ -801,21 +801,32 @@ impl Sessions {
                     }
                     _ => self.summaries.listed(&state_id, &file, length),
                 };
-                let known = known.or_else(|| {
-                    self.summaries
-                        .copied(&state_id, &file, &path, length, revision)
+                let known = match known {
+                    Some(known) => Some(known),
+                    None => self
+                        .summaries
+                        .copied(&state_id, &file, &path, length, revision),
+                };
+                let known = known.and_then(|known| {
+                    let summary = known
+                        .summary
+                        .as_deref()
+                        .map(|summary| serde_json::from_str(summary.get()))
+                        .transpose()
+                        .inspect_err(|error| {
+                            nanocode_trace::warn!(%error, state_id, "ignoring an unreadable JSONL session summary");
+                        })
+                        .ok()?;
+                    Some((known.revision, summary))
                 });
                 if known.is_none() {
                     self.unknown.insert(state_id.clone(), None);
                 }
                 Ok(ListedState {
-                    revision: known.as_ref().map_or(0, |known| known.revision),
+                    revision: known.as_ref().map_or(0, |(revision, _)| *revision),
                     summary: match known {
-                        Some(Summary {
-                            summary: Some(summary),
-                            ..
-                        }) => ListedSummary::Listed(summary),
-                        Some(_) => ListedSummary::Unlisted,
+                        Some((_, Some(summary))) => ListedSummary::Listed(summary),
+                        Some((_, None)) => ListedSummary::Unlisted,
                         None => ListedSummary::Unknown,
                     },
                     state_id,
@@ -839,7 +850,7 @@ impl Sessions {
                 remembered.push((
                     summary.state_id,
                     Summary {
-                        summary: summary.summary,
+                        summary: raw_summary(summary.summary.as_ref())?,
                         ..seen
                     },
                 ));
@@ -858,7 +869,7 @@ impl Sessions {
                         file: journal.index.source.clone(),
                         length: journal.index.offset,
                         revision,
-                        summary: summary.summary,
+                        summary: raw_summary(summary.summary.as_ref())?,
                         anchor: if member { None } else { journal.anchor() },
                     },
                 ));

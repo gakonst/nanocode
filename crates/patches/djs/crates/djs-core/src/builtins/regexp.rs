@@ -490,7 +490,7 @@ pub(crate) fn input(view: StrView<'_>) -> regexp::Input<'_> {
     }
 }
 
-/// RegExp.escape ( S ) of a string, as QuickJS writes it (lowercase hex).
+/// RegExp.escape ( S ) of a string (lowercase hex).
 pub(crate) fn escape(heap: &mut Heap, s: Str) -> Result<Str, Fault> {
     let units = heap.str_to_utf16(s);
     let mut out = String::new();
@@ -504,20 +504,18 @@ pub(crate) fn escape(heap: &mut Heap, s: Str) -> Result<Str, Fault> {
             c = 0x10000 + ((c - 0xD800) << 10) + (units[i] as u32 - 0xDC00);
             i += 1;
         }
-        let hex2 = c < 256
-            && (c < 33 && !(9..=13).contains(&c)
-                || c >= 128
-                || (c as u8).is_ascii_alphanumeric() && i0 == 0
-                || b",-=<>#&!%:;@~'`\"".contains(&(c as u8)));
+        let hex2 = c == 0x20
+            || c == 0xA0
+            || c < 128
+                && ((c as u8).is_ascii_alphanumeric() && i0 == 0
+                    || b",-=<>#&!%:;@~'`\"".contains(&(c as u8)));
         if hex2 {
             crate::text::cat_to!(&mut out, "\\x", crate::text::hex(c, 2));
         } else if (9..=13).contains(&c) {
             out.push_out('\\');
             out.push_out(b"tnvfr"[c as usize - 9] as char);
-        } else if c < 128 {
-            if !(c as u8).is_ascii_alphanumeric() && c != b'_' as u32 {
-                out.push_out('\\');
-            }
+        } else if c < 128 && b"^$\\.*+?()[]{}|/".contains(&(c as u8)) {
+            out.push_out('\\');
             out.push_out(c as u8 as char);
         } else if (0xD800..0xE000).contains(&c)
             || matches!(

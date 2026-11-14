@@ -123,7 +123,9 @@ impl Exec<'_> {
             });
         }
         let rest = limit - out.len() as u32;
-        for r in self.raw_frames(pc, skip_prelude, below, rest) {
+        let mut raw = Vec::new();
+        self.raw_frames(pc, skip_prelude, below, rest, &mut raw);
+        for r in raw {
             out.push_out(describe_frame(self.heap, r));
         }
         out
@@ -137,16 +139,21 @@ impl Exec<'_> {
         mut skip_prelude: bool,
         mut below: Option<Obj>,
         limit: u32,
-    ) -> Vec<RawFrame> {
+        out: &mut Vec<RawFrame>,
+    ) {
         if limit == 0 || !self.has_frame() {
-            return Vec::new();
+            return;
         }
-        let mut out = crate::buf::vec_with_capacity(limit.min(RAW_RESERVE) as usize);
+        out.reserve(limit.min(RAW_RESERVE) as usize);
         let prelude = intrinsic(self.heap, Intrinsic::PreludeScript).as_internal();
         let (mut bp, mut hp, mut pc) = (self.bp, self.hp, pc);
         loop {
             let f = self.get(bp).as_object().expect("frame callee");
-            let flags = self.get(hp + frame::FLAGS).as_int().unwrap_or(0);
+            let [prev_bp, prev_hp, ret_pc, _, flags] = self
+                .heap
+                .arena()
+                .read_values(ValueArray::VALUES.at(self.stack, hp + frame::PREV_BP));
+            let flags = flags.as_int().unwrap_or(0);
             let in_prelude = in_prelude(self.heap, f, prelude);
             skip_prelude &= in_prelude;
             let skipping = below.is_some();
@@ -163,21 +170,19 @@ impl Exec<'_> {
             if cont.is_bottom() || out.len() as u32 >= limit {
                 break;
             }
-            let ret_pc = self.get(hp + frame::RET_PC).as_int().unwrap_or(1) as u32;
+            let ret_pc = ret_pc.as_int().unwrap_or(1) as u32;
             pc = if cont.is_retry() {
                 ret_pc
             } else {
                 ret_pc.saturating_sub(1)
             };
-            let prev_bp = self.get(hp + frame::PREV_BP).as_int().unwrap_or(0) as u32;
-            hp = self.get(hp + frame::PREV_HP).as_int().unwrap_or(0) as u32;
-            bp = prev_bp;
+            hp = prev_hp.as_int().unwrap_or(0) as u32;
+            bp = prev_bp.as_int().unwrap_or(0) as u32;
         }
         if below.is_some() {
             // constructorOpt was not on the stack.
             out.clear();
         }
-        out
     }
 
     /// The default `stack` string: one `    at name (file:line:col)` line per frame.
@@ -202,6 +207,8 @@ impl Exec<'_> {
             return None;
         }
         let ctor = ctor?;
+        self.heap
+            .own_entry_index(ctor, atoms::PREPARE_STACK_TRACE)?;
         let f = match self.heap.get_own_property(ctor, atoms::PREPARE_STACK_TRACE) {
             Some(Property::Data { value, .. }) => value,
             _ => return None,
@@ -239,8 +246,8 @@ impl Exec<'_> {
         below: Option<Obj>,
         input: Option<(u32, u32)>,
     ) -> Result<Value, HeapError> {
-        let ctor = realm::error_constructor(self.heap);
-        let limit = realm::stack_trace_limit(self.heap, ctor);
+        let ctor = realm::error_constructor_cached(self.heap);
+        let limit = realm::stack_trace_limit_cached(self.heap, ctor);
         let prepare = self.prepare_stack_trace(ctor);
         let frames = self.trace_frames(pc, skip_prelude, below, limit, input);
         let default = Value::string(self.heap.alloc_str(&self.format_trace(&frames))?);
@@ -302,12 +309,20 @@ impl Exec<'_> {
         pc: u32,
         skip_prelude: bool,
     ) -> Result<Value, HeapError> {
-        let ctor = realm::error_constructor(self.heap);
+        let ctor = realm::error_constructor_cached(self.heap);
         if self.prepare_stack_trace(ctor).is_some() {
             return self.new_stack(pc, skip_prelude, None, None);
         }
-        let limit = realm::stack_trace_limit(self.heap, ctor);
-        let frames = self.raw_frames(pc, skip_prelude, None, limit);
+        let limit = realm::stack_trace_limit_cached(self.heap, ctor);
+        let mut frames = core::mem::take(&mut self.heap.frame_scratch);
+        frames.clear();
+        self.raw_frames(pc, skip_prelude, None, limit, &mut frames);
+        let arr = self.frames_array(&frames);
+        self.heap.frame_scratch = frames;
+        arr
+    }
+
+    fn frames_array(&mut self, frames: &[RawFrame]) -> Result<Value, HeapError> {
         let arr = self.heap.alloc_value_array(2 * frames.len() as u32)?;
         for (i, &(f, pc, construct)) in frames.iter().enumerate() {
             let i = 2 * i as u32;
@@ -422,9 +437,8 @@ type RawFrame = (Obj, u32, bool);
 /// script (`prelude`).
 fn in_prelude(heap: &Heap, f: Obj, prelude: Option<u32>) -> bool {
     let t = heap.closure_template(f);
-    let script = crate::bytecode::template::debug_info(heap, t).script;
     u32::from(heap.arena().get::<u16>(t, FuncTemplate::FLAGS)) & func_flags::PRIVILEGED != 0
-        || (prelude.is_some() && prelude == script.get())
+        || (prelude.is_some() && prelude == crate::bytecode::template::debug_script(heap, t).get())
 }
 
 /// What a trace shows for a frame of `raw_frames`.

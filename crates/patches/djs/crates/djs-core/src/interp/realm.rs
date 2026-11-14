@@ -734,10 +734,37 @@ pub fn stack_trace_limit(heap: &Heap, ctor: Option<Obj>) -> u32 {
     let Some(ctor) = ctor else {
         return crate::interp::run::STACK_TRACE_LIMIT;
     };
-    let v = match heap.get_own_property(ctor, atoms::STACK_TRACE_LIMIT) {
-        Some(Property::Data { value, .. }) => value,
-        _ => return 0,
+    match heap.get_own_property(ctor, atoms::STACK_TRACE_LIMIT) {
+        Some(Property::Data { value, .. }) => frame_limit(value),
+        _ => 0,
+    }
+}
+
+pub(crate) fn error_constructor_cached(heap: &mut Heap) -> Option<Obj> {
+    let ctors = intrinsic_obj(heap, Intrinsic::Constructors);
+    if let Some(v) = heap.data_at(ctors, heap.error_ctor_slot, atoms::ERROR) {
+        return v.as_object();
+    }
+    if let Some(i) = heap.own_entry_index(ctors, atoms::ERROR) {
+        heap.error_ctor_slot = i;
+    }
+    error_constructor(heap)
+}
+
+pub(crate) fn stack_trace_limit_cached(heap: &mut Heap, ctor: Option<Obj>) -> u32 {
+    let Some(c) = ctor else {
+        return crate::interp::run::STACK_TRACE_LIMIT;
     };
+    if let Some(v) = heap.data_at(c, heap.stack_limit_slot, atoms::STACK_TRACE_LIMIT) {
+        return frame_limit(v);
+    }
+    if let Some(i) = heap.own_entry_index(c, atoms::STACK_TRACE_LIMIT) {
+        heap.stack_limit_slot = i;
+    }
+    stack_trace_limit(heap, ctor)
+}
+
+fn frame_limit(v: Value) -> u32 {
     match v.as_number() {
         Some(d) if d > 0.0 => {
             if d >= i32::MAX as f64 {

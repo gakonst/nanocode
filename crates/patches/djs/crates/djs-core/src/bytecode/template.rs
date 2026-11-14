@@ -263,6 +263,14 @@ pub struct DebugInfo {
     pub names: Ref,
 }
 
+pub fn debug_script(heap: &Heap, t: u32) -> Ref {
+    let a = heap.arena();
+    match a.get::<Ref>(t, FuncTemplate::INFO).get() {
+        Some(info) => a.get(info, FuncInfo::SCRIPT),
+        None => Ref::NULL,
+    }
+}
+
 pub fn debug_info(heap: &Heap, t: u32) -> DebugInfo {
     let a = heap.arena();
     let Some(info) = a.get::<Ref>(t, FuncTemplate::INFO).get() else {

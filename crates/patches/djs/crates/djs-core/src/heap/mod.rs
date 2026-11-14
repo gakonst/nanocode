@@ -208,6 +208,9 @@ pub struct Heap {
     pub(crate) regexp_shape: u32,
     pub(crate) rest_shape: u32,
     pub(crate) iter_result_shape: u32,
+    pub(crate) error_ctor_slot: u32,
+    pub(crate) stack_limit_slot: u32,
+    pub(crate) frame_scratch: alloc::vec::Vec<(crate::value::Obj, u32, bool)>,
     pub(crate) atom_memo: alloc::vec::Vec<[u32; 2]>,
     /// The compiler's buffers, kept between compiles so that each one starts with their
     /// capacity (`resolve::finish`). Not part of the image.
@@ -362,6 +365,9 @@ impl Heap {
             regexp_shape: 0,
             rest_shape: 0,
             iter_result_shape: 0,
+            error_ctor_slot: 0,
+            stack_limit_slot: 0,
+            frame_scratch: Default::default(),
             atom_memo: Default::default(),
             compile_scratch: Default::default(),
             ident_atoms: Default::default(),

@@ -375,7 +375,11 @@ pub fn expect(script: &Script) -> Expected {
             .close
             .as_ref()
             .map_or_else(Vec::new, |(_, payload)| payload.clone());
-        if let Err(failure) = model.step(&ServerFrame::new(OPCODE_CLOSE, true, echo)) {
+        let echo = ServerFrame::new(OPCODE_CLOSE, true, echo);
+        if let Some(failure) = model.header_failure(&echo) {
+            return model.fail(failure);
+        }
+        if let Err(failure) = model.step(&echo) {
             return model.fail(failure);
         }
     }

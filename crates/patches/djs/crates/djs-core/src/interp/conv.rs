@@ -399,6 +399,16 @@ pub(crate) fn pow(base: f64, exp: f64) -> f64 {
     if exp.is_infinite() && (base == 1.0 || base == -1.0) {
         return f64::NAN;
     }
+    if exp == 2.0 {
+        return base * base;
+    }
+    if exp == 0.5 {
+        return if base.is_infinite() {
+            f64::INFINITY
+        } else {
+            djs_libm::sqrt(base + 0.0)
+        };
+    }
     djs_libm::pow(base, exp)
 }
 

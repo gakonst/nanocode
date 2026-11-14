@@ -8,7 +8,9 @@
 //! `assert_no_panic`, `unstable-public-internals`). The `arch` routines libm selects by
 //! default stay (SSE2 and aarch64 `sqrt`), so the code and every result are libm 0.2.16's,
 //! bit for bit; `tests/` compares the two. Updating means copying a newer libm's files the
-//! same way, with a decision.
+//! same way, with a decision. `pow` is the one exception: musl's current `pow` (Arm's, which
+//! glibc also ships), with the multiply-adds glibc's FMA build fuses as `fma` calls, so every
+//! result is glibc's and Node's on Linux, bit for bit.
 #![no_std]
 // libm's own allow-list (its lib.rs), plus `explicit_counter_loop`, which newer clippy
 // finds in rem_pio2_large: the copied code keeps its style.

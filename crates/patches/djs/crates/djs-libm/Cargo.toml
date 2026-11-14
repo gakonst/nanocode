@@ -5,7 +5,7 @@ version.workspace = true
 # libm's license (LICENSE.txt): MIT.
 license = "MIT"
 publish.workspace = true
-description = "The math functions djs-core uses, copied from libm 0.2.16 (D3174)."
+description = "The math functions djs-core uses, copied from libm 0.2.16 (D3174), and pow from musl."
 
 [lib]
 # No doctests (scripts/gate.py `targets` fails if one appears): none to compile (0197).

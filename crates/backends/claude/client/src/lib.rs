@@ -738,6 +738,10 @@ pub struct MessageDigests {
 }
 
 impl MessageDigests {
+    fn marked(&self) -> bool {
+        self.read != self.sent
+    }
+
     #[must_use]
     pub fn of(json: &str) -> Self {
         let sent = nanocode_digest::blake3(json.as_bytes());
@@ -2701,16 +2705,11 @@ fn api_body<M: WireMessage>(
     let kept = cache
         .and_then(WireCache::assembled)
         .filter(|kept| kept.start == start && kept.body.starts_with(opening))
-        .and_then(|kept| Some((Arc::try_unwrap(kept.body).ok()?, kept.ends, kept.hashed)));
-    let shared = kept.as_ref().map_or(0, |(_, _, hashed)| {
-        hashed
-            .digests
-            .iter()
-            .zip(&digests)
-            .take_while(|(kept, message)| kept.sent == message.sent)
-            .count()
-    });
-    let encoded = messages[shared..]
+        .and_then(|kept| Some((Arc::try_unwrap(kept.body).ok()?, kept.ends)));
+    let previous = cache.and_then(WireCache::hashed).unwrap_or_default();
+    let shared = previous.shared(&digests);
+    let reused = kept.as_ref().map_or(0, |(_, ends)| shared.min(ends.len()));
+    let encoded = messages[reused..]
         .iter()
         .map(|message| message.encoded(false, &encode))
         .collect::<Result<Vec<_>, _>>()?;
@@ -2720,30 +2719,21 @@ fn api_body<M: WireMessage>(
             .iter()
             .map(|message| message.len() + 1)
             .sum::<usize>();
-    let (mut body, mut ends, hashed) = match kept {
-        Some((mut body, mut ends, hashed)) => {
-            body.truncate(shared.checked_sub(1).map_or(start, |last| ends[last]));
-            ends.truncate(shared);
+    let (mut body, mut ends) = match kept {
+        Some((mut body, mut ends)) => {
+            body.truncate(reused.checked_sub(1).map_or(start, |last| ends[last]));
+            ends.truncate(reused);
             body.reserve(added);
-            (
-                body,
-                ends,
-                Some(hashed).filter(|hashed| hashed.digests.len() == shared),
-            )
+            (body, ends)
         }
         None => {
             let mut body = String::with_capacity(start + added);
             body.push_str(opening);
             body.push_str(OPEN);
-            (body, Vec::with_capacity(messages.len()), None)
+            (body, Vec::with_capacity(messages.len()))
         }
     };
-    let mut hashed = hashed.unwrap_or_default();
-    for message in &digests[hashed.digests.len()..] {
-        hashed.read.update(message.read.as_bytes());
-        hashed.sent.update(message.sent.as_bytes());
-    }
-    hashed.digests = digests;
+    let hashed = previous.resume(shared, digests);
     for message in &encoded {
         if !ends.is_empty() {
             body.push(',');
@@ -2778,8 +2768,8 @@ fn api_body<M: WireMessage>(
             body: Arc::clone(&body),
             start,
             ends,
-            hashed,
         });
+        cache.keep_hashed(hashed);
     }
     Ok(WireBody {
         body,

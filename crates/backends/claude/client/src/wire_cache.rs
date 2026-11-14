@@ -18,18 +18,81 @@ pub(crate) struct Encoded<T> {
 
 type Entries<T> = Atom<Vec<Weak<Encoded<T>>>>;
 
+#[derive(Clone, Default)]
+struct Chain {
+    at: usize,
+    read: nanocode_digest::Blake3,
+    sent: nanocode_digest::Blake3,
+}
+
 #[derive(Default)]
 pub(crate) struct Hashed {
-    pub(crate) digests: Vec<MessageDigests>,
+    digests: Vec<MessageDigests>,
     pub(crate) read: nanocode_digest::Blake3,
     pub(crate) sent: nanocode_digest::Blake3,
+    marks: Vec<Chain>,
+}
+
+impl Hashed {
+    pub(crate) fn shared(&self, digests: &[MessageDigests]) -> usize {
+        self.digests
+            .iter()
+            .zip(digests)
+            .take_while(|(kept, message)| kept.sent == message.sent)
+            .count()
+    }
+
+    pub(crate) fn resume(self, shared: usize, digests: Vec<MessageDigests>) -> Self {
+        let start = if self.digests.len() <= shared {
+            Chain {
+                at: self.digests.len(),
+                read: self.read,
+                sent: self.sent,
+            }
+        } else {
+            self.marks
+                .iter()
+                .rev()
+                .find(|mark| mark.at <= shared)
+                .cloned()
+                .unwrap_or_default()
+        };
+        let mut marks = self
+            .marks
+            .into_iter()
+            .filter(|mark| {
+                mark.at < start.at && digests.get(mark.at).is_some_and(MessageDigests::marked)
+            })
+            .collect::<Vec<_>>();
+        let Chain {
+            at,
+            mut read,
+            mut sent,
+        } = start;
+        for (index, message) in digests.iter().enumerate().skip(at) {
+            if message.marked() {
+                marks.push(Chain {
+                    at: index,
+                    read: read.clone(),
+                    sent: sent.clone(),
+                });
+            }
+            read.update(message.read.as_bytes());
+            sent.update(message.sent.as_bytes());
+        }
+        Self {
+            digests,
+            read,
+            sent,
+            marks,
+        }
+    }
 }
 
 pub(crate) struct Assembled {
     pub(crate) body: Arc<String>,
     pub(crate) start: usize,
     pub(crate) ends: Vec<usize>,
-    pub(crate) hashed: Hashed,
 }
 
 #[derive(Default)]
@@ -37,6 +100,7 @@ pub struct WireCache {
     tools: Atom<Option<Arc<Encoded<Vec<ClaudeToolSpec>>>>>,
     system: Atom<Option<Arc<Encoded<Arc<Value>>>>>,
     body: Slot<Assembled>,
+    hashed: Slot<Hashed>,
     keepers: AtomicUsize,
 }
 
@@ -64,6 +128,14 @@ impl WireCache {
 
     pub(crate) fn assembled(&self) -> Option<Assembled> {
         self.body.take()
+    }
+
+    pub(crate) fn hashed(&self) -> Option<Hashed> {
+        self.hashed.take()
+    }
+
+    pub(crate) fn keep_hashed(&self, hashed: Hashed) {
+        self.hashed.put(hashed);
     }
 
     pub(crate) fn assemble(&self, assembled: Assembled) {

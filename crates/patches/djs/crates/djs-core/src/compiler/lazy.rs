@@ -253,7 +253,7 @@ impl Lazy<'_> {
         } else {
             FuncKind::Normal
         };
-        let mut outer = FuncState::new(0, owner, None);
+        let mut outer = FuncState::reusing(0, owner, None, Default::default());
         outer.src_end = p.src.len() as u32;
         for (&n, &w) in self.names.iter().zip(self.words) {
             let kind = match (

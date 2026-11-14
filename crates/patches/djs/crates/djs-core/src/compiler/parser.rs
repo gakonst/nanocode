@@ -490,7 +490,7 @@ impl<'a, 'h> Parser<'a, 'h> {
     pub fn free_names(mut self) -> PResult<Vec<super::FreeNames>> {
         self.parse_top()?;
         self.end_async_region();
-        let top = core::mem::replace(&mut self.f, FuncState::new(0, FuncKind::Script, None));
+        let top = core::mem::replace(&mut self.f, FuncState::vacant());
         self.done[0] = Some(top);
         let funcs = core::mem::take(&mut self.done)
             .into_iter()
@@ -603,7 +603,7 @@ impl<'a, 'h> Parser<'a, 'h> {
         #[cfg(feature = "dump")] globals: Option<&mut Vec<super::resolve::LazyGlobals>>,
     ) -> PResult<(Ref, Option<Erased>, Option<Vec<crate::heap::Atom>>)> {
         self.end_async_region();
-        let top = core::mem::replace(&mut self.f, FuncState::new(0, FuncKind::Script, None));
+        let top = core::mem::replace(&mut self.f, FuncState::vacant());
         self.done[0] = Some(top);
         let mut funcs = core::mem::take(&mut self.heap.compile_scratch.funcs);
         funcs.clear();

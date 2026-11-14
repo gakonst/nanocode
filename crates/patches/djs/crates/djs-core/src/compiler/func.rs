@@ -454,15 +454,25 @@ pub(super) struct Spare {
 }
 
 impl FuncState {
-    pub fn new(id: FuncId, kind: FuncKind, parent: Option<(FuncId, ScopeId)>) -> Self {
-        Self::reusing(id, kind, parent, Spare::default())
-    }
-
     pub fn reusing(
         id: FuncId,
         kind: FuncKind,
         parent: Option<(FuncId, ScopeId)>,
         spare: Spare,
+    ) -> Self {
+        Self::build(id, kind, parent, spare, true)
+    }
+
+    pub fn vacant() -> Self {
+        Self::build(0, FuncKind::Script, None, Spare::default(), false)
+    }
+
+    fn build(
+        id: FuncId,
+        kind: FuncKind,
+        parent: Option<(FuncId, ScopeId)>,
+        spare: Spare,
+        open: bool,
     ) -> Self {
         let Spare {
             children,
@@ -482,19 +492,25 @@ impl FuncState {
             temps,
             mut scope_pool,
         } = spare;
-        scopes.push(Self::pooled_scope(
-            &mut scope_pool,
-            None,
-            ScopeKind::Body,
-            0,
-        ));
+        if open {
+            scopes.push(Self::pooled_scope(
+                &mut scope_pool,
+                None,
+                ScopeKind::Body,
+                0,
+            ));
+        }
         FuncState {
             id,
             kind,
             parent,
             children,
             name: Atom::NULL,
-            code: CodeBuf::phase1_from(code),
+            code: if open {
+                CodeBuf::phase1_from(code)
+            } else {
+                code
+            },
             scopes,
             vars,
             refs,

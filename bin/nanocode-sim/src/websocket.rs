@@ -16,14 +16,19 @@ use std::{
 };
 
 use futures_util::{SinkExt as _, StreamExt as _};
-use nanocode_websocket::{CloseCode, CloseFrame, Message, Utf8Bytes, client_async_with_config};
+use nanocode::codex::transport::InflateStream;
+use nanocode_websocket::{
+    CloseCode, CloseFrame, IntoClientRequest, Message, Utf8Bytes, WebSocketStream,
+    client_async_with_config,
+};
+use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::{
     executor::{Clock, Ended, Executor, Task},
     rng::{FNV_OFFSET, Rng, fnv},
 };
 use model::{Expected, Seen, expect, failure_name, reset};
-use script::{Cut, Ending, Script, SendKind};
+use script::{Cut, DEFLATE_OFFER, Ending, Script, SendKind};
 use socket::{ClientSide, Wire};
 use wire::{
     OPCODE_CLOSE, OPCODE_PING, OPCODE_PONG, ServerFrame, accept_key, decode_client, is_valid_key,
@@ -222,14 +227,33 @@ fn client_message(kind: SendKind, payload: &[u8]) -> Message {
 }
 
 async fn client(script: &Script, side: ClientSide, log: &RefCell<ClientLog>, trace: &Trace) {
-    let connected = client_async_with_config(REQUEST_URL, side, Some(script.config)).await;
-    let mut socket = match connected {
-        Ok((socket, _response)) => socket,
-        Err(error) => {
-            record(log, trace, Seen::Failed(failure_name(&error)));
-            return;
+    if script.deflate.is_none() {
+        match client_async_with_config(REQUEST_URL, side, Some(script.config)).await {
+            Ok((socket, _response)) => drive(script, socket, log, trace).await,
+            Err(error) => record(log, trace, Seen::Failed(failure_name(&error))),
         }
-    };
+        return;
+    }
+    let mut request = REQUEST_URL
+        .into_client_request()
+        .expect("the simulated URL is a WebSocket request");
+    request.headers_mut().insert(
+        http::header::SEC_WEBSOCKET_EXTENSIONS,
+        http::HeaderValue::from_static(DEFLATE_OFFER),
+    );
+    let stream = InflateStream::new(side);
+    match client_async_with_config(request, stream, Some(script.config)).await {
+        Ok((socket, _response)) => drive(script, socket, log, trace).await,
+        Err(error) => record(log, trace, Seen::Failed(failure_name(&error))),
+    }
+}
+
+async fn drive<S: AsyncRead + AsyncWrite + Unpin>(
+    script: &Script,
+    mut socket: WebSocketStream<S>,
+    log: &RefCell<ClientLog>,
+    trace: &Trace,
+) {
     trace.line("client connected");
     let mut received = 0;
     let mut next_send = 0;
@@ -366,7 +390,7 @@ async fn serve(
     }
 }
 
-fn parse_request(head: &[u8]) -> Result<String, String> {
+fn parse_request(head: &[u8], deflate: bool) -> Result<String, String> {
     let text = std::str::from_utf8(head)
         .map_err(|error| format!("the request head is not UTF-8: {error}"))?;
     let mut lines = text.split("\r\n");
@@ -406,6 +430,13 @@ fn parse_request(head: &[u8]) -> Result<String, String> {
         return Err(format!(
             "the request's version is {:?}",
             header("sec-websocket-version")
+        ));
+    }
+    let offer = if deflate { DEFLATE_OFFER } else { "" };
+    if header("sec-websocket-extensions") != offer {
+        return Err(format!(
+            "the request's extensions are {:?}",
+            header("sec-websocket-extensions")
         ));
     }
     let key = header("sec-websocket-key");
@@ -498,7 +529,7 @@ async fn listen(
             let head: Vec<u8> = buffer.drain(..end + HEAD_END.len()).collect();
             head_done = true;
             let mut log = log.borrow_mut();
-            match parse_request(&head) {
+            match parse_request(&head, script.deflate.is_some()) {
                 Ok(key) => log.key = Some(key),
                 Err(violation) => {
                     log.violations.push(violation);

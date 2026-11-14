@@ -3,8 +3,9 @@ use nanocode_websocket::{CapacityError, Error, OpCode, ProtocolError, SubProtoco
 use super::{
     script::{Cut, Ending, Head, Script},
     wire::{
-        CLOSE_CODE_BYTES, CONTROL_PAYLOAD_BYTES_MAX, OPCODE_BINARY, OPCODE_CLOSE, OPCODE_CONTINUE,
-        OPCODE_PING, OPCODE_PONG, OPCODE_TEXT, ServerFrame, close_payload, is_control, is_known,
+        CLOSE_CODE_BYTES, CONTROL_PAYLOAD_BYTES_MAX, Inflated, OPCODE_BINARY, OPCODE_CLOSE,
+        OPCODE_CONTINUE, OPCODE_PING, OPCODE_PONG, OPCODE_TEXT, RSV1_BIT, ServerFrame,
+        close_payload, is_control, is_known,
     },
 };
 
@@ -53,6 +54,10 @@ pub fn reset() -> String {
     failure_name(&Error::Io(std::io::ErrorKind::ConnectionReset.into()))
 }
 
+fn invalid_data() -> String {
+    failure_name(&Error::Io(std::io::ErrorKind::InvalidData.into()))
+}
+
 const fn close_code_allowed(code: u16) -> bool {
     matches!(code, 1000..=1003 | 1007..=1013 | 3000..=4999)
 }
@@ -83,8 +88,9 @@ pub struct Expected {
 struct Model {
     frame_max: usize,
     message_max: usize,
+    negotiated: bool,
     phase: Phase,
-    incomplete: Option<(u8, Vec<u8>)>,
+    incomplete: Option<(u8, bool, Vec<u8>)>,
     data: usize,
     close: Option<(usize, Vec<u8>)>,
     expected: Expected,
@@ -126,8 +132,17 @@ impl Model {
         if matches!(self.phase, Phase::ClosedByPeer | Phase::Acknowledged) {
             return Err(protocol(ProtocolError::ReceivedAfterClosing));
         }
-        if frame.reserved != 0 {
+        let compressed = frame.reserved & RSV1_BIT != 0;
+        if frame.reserved & !RSV1_BIT != 0
+            || (compressed && (!self.negotiated || is_control(frame.opcode)))
+        {
             return Err(protocol(ProtocolError::NonZeroReservedBits));
+        }
+        if compressed && frame.opcode == OPCODE_CONTINUE {
+            return match self.incomplete {
+                Some((_, true, _)) => Err(invalid_data()),
+                Some((_, false, _)) | None => Err(protocol(ProtocolError::NonZeroReservedBits)),
+            };
         }
         if frame.mask.is_some() {
             return Err(protocol(ProtocolError::MaskedFrameFromServer));
@@ -203,12 +218,44 @@ impl Model {
         Ok(())
     }
 
+    fn inflated(&mut self, opcode: u8, inflated: &Inflated) -> Result<(), String> {
+        match inflated {
+            Inflated::To(bytes) if bytes.len() > self.message_max => Err(invalid_data()),
+            Inflated::To(bytes) => {
+                if opcode == OPCODE_TEXT && std::str::from_utf8(bytes).is_err() {
+                    return Err(UTF8.to_owned());
+                }
+                self.deliver(opcode, bytes.clone());
+                Ok(())
+            }
+            Inflated::Over(_) | Inflated::Corrupt => Err(invalid_data()),
+            Inflated::Plain => unreachable!("a compressed message ends on a frame that knows its bytes"),
+        }
+    }
+
     fn data_frame(&mut self, frame: &ServerFrame) -> Result<(), String> {
         let payload = &frame.payload;
         let max = self.message_max;
+        let compressed = frame.reserved & RSV1_BIT != 0;
         match (frame.opcode, self.incomplete.take()) {
             (OPCODE_CONTINUE, None) => Err(protocol(ProtocolError::UnexpectedContinueFrame)),
-            (OPCODE_CONTINUE, Some((opcode, mut collected))) => {
+            (OPCODE_CONTINUE, Some((opcode, true, mut collected))) => {
+                collected.extend_from_slice(payload);
+                if frame.fin {
+                    return self.inflated(opcode, &frame.inflated);
+                }
+                self.incomplete = Some((opcode, true, collected));
+                Ok(())
+            }
+            (_, Some((_, true, _))) => Err(invalid_data()),
+            (opcode, None) if compressed => {
+                if frame.fin {
+                    return self.inflated(opcode, &frame.inflated);
+                }
+                self.incomplete = Some((opcode, true, payload.clone()));
+                Ok(())
+            }
+            (OPCODE_CONTINUE, Some((opcode, false, mut collected))) => {
                 if collected.len() > max || payload.len() > max - collected.len() {
                     return Err(too_long(count(collected.len()) + count(payload.len()), max));
                 }
@@ -217,7 +264,7 @@ impl Model {
                     return Err(UTF8.to_owned());
                 }
                 if !frame.fin {
-                    self.incomplete = Some((opcode, collected));
+                    self.incomplete = Some((opcode, false, collected));
                     return Ok(());
                 }
                 if opcode == OPCODE_TEXT && std::str::from_utf8(&collected).is_err() {
@@ -252,7 +299,7 @@ impl Model {
                 if opcode == OPCODE_TEXT && definitely_invalid(payload) {
                     return Err(UTF8.to_owned());
                 }
-                self.incomplete = Some((opcode, payload.clone()));
+                self.incomplete = Some((opcode, false, payload.clone()));
                 Ok(())
             }
         }
@@ -314,6 +361,7 @@ pub fn expect(script: &Script) -> Expected {
     let mut model = Model {
         frame_max: script.config.frame_bytes_max,
         message_max: script.config.message_bytes_max,
+        negotiated: script.deflate.is_some_and(|deflate| deflate.negotiated),
         phase: Phase::Active,
         incomplete: None,
         data: 0,

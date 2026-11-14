@@ -62,7 +62,7 @@ struct Header {
     payload: usize,
 }
 
-pub(crate) struct InflateStream<S> {
+pub struct InflateStream<S> {
     inner: S,
     mode: Mode,
     scratch: Box<[u8]>,
@@ -75,7 +75,7 @@ pub(crate) struct InflateStream<S> {
 }
 
 impl<S> InflateStream<S> {
-    pub(crate) fn new(inner: S) -> Self {
+    pub fn new(inner: S) -> Self {
         Self {
             inner,
             mode: Mode::Handshake,

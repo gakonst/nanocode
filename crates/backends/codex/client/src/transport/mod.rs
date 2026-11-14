@@ -8,6 +8,8 @@ pub use connector::connect_async;
 mod crypto;
 #[cfg(not(target_family = "wasm"))]
 pub(crate) mod deflate;
+#[cfg(not(target_family = "wasm"))]
+pub use deflate::InflateStream;
 pub(crate) mod error;
 pub(crate) mod freeform;
 pub(crate) mod gateway;

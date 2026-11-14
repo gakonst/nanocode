@@ -1,9 +1,10 @@
+use nanocode_compression::miniz::{Format, Level, Writer};
 use nanocode_websocket::{READ_BUFFER_BYTES, WebSocketConfig};
 
 use super::wire::{
     CLOSE_CODE_BYTES, CONTROL_PAYLOAD_BYTES_MAX, LENGTH_16_MAX, LengthForm, MASK_BYTES,
     OPCODE_BINARY, OPCODE_CLOSE, OPCODE_CONTINUE, OPCODE_PING, OPCODE_PONG, OPCODE_TEXT, RSV1_BIT,
-    RSV2_BIT, RSV3_BIT, ServerFrame, close_payload,
+    RSV2_BIT, RSV3_BIT, ServerFrame, close_payload, Inflated,
 };
 use crate::rng::{PPM, Rng};
 
@@ -98,6 +99,25 @@ const BURSTY_GAP_PPM: u64 = 500_000;
 const OVERSIZED_CONTROL_BYTES_MAX: u64 = 400;
 const CLOSE_REASON_BYTES_MAX: usize = CONTROL_PAYLOAD_BYTES_MAX - CLOSE_CODE_BYTES;
 const NORMAL_CLOSE: u16 = 1000;
+pub const DEFLATE_PPM: u64 = 300_000;
+pub const NEGOTIATED_PPM: u64 = 900_000;
+pub const TAKEOVER_PPM: u64 = 500_000;
+pub const COMPRESSED_PPM: u64 = 700_000;
+pub const HUGE_PPM: u64 = 3_000;
+pub const DEFLATE_VIOLATION_PPM: u64 = 500_000;
+pub const OVER_LIMIT_BYTES_MAX: u64 = 1 << 20;
+const DEFLATE_LEVEL_MAX: u64 = 9;
+const UNNEGOTIATED_LEVEL: u32 = 1;
+const MESSAGE_TAIL: [u8; 4] = [0x00, 0x00, 0xff, 0xff];
+const CORRUPT_DEFLATE: [u8; 4] = [0xff, 0xff, 0xff, 0xff];
+const HUGE_PATTERN_BYTES: usize = 1024;
+pub const DEFLATE_OFFER: &str = "permessage-deflate; client_no_context_takeover";
+const DEFLATE_ANSWERS: [&str; 3] = [
+    "permessage-deflate",
+    "permessage-deflate; client_no_context_takeover",
+    "permessage-deflate; server_no_context_takeover; client_no_context_takeover",
+];
+const EXTENSIONS_HEADER: &str = "Sec-WebSocket-Extensions";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Head {
@@ -133,6 +153,7 @@ impl Head {
 
 pub struct HeadPlan {
     pub kind: Head,
+    extension: Option<&'static str>,
     connection: &'static str,
     upgrade: &'static str,
     names_lower: bool,
@@ -172,6 +193,7 @@ impl HeadPlan {
         }
         Self {
             kind,
+            extension: None,
             connection: CONNECTION_VALUES[rng.pick(CONNECTION_VALUES.len())],
             upgrade: UPGRADE_VALUES[rng.pick(UPGRADE_VALUES.len())],
             names_lower: rng.chance(PPM / 2),
@@ -203,6 +225,9 @@ impl HeadPlan {
                 headers.push(("Sec-WebSocket-Accept".to_owned(), wrong));
             }
             _ => headers.push(("Sec-WebSocket-Accept".to_owned(), accept.to_owned())),
+        }
+        if let Some(extension) = self.extension {
+            headers.push((EXTENSIONS_HEADER.to_owned(), extension.to_owned()));
         }
         if self.kind == Head::SubProtocol {
             headers.push((PROTOCOL_HEADER.to_owned(), "chat".to_owned()));
@@ -240,7 +265,21 @@ pub enum Violation {
     ContinueWithoutStart,
     NewMessageMidFragment,
     AfterClose,
+    Rsv1Continuation,
+    DataInsideCompressed,
+    CorruptDeflate,
+    Rsv1Control,
+    Unnegotiated,
+    Bomb,
 }
+
+const NEGOTIATED_VIOLATIONS: [Violation; 5] = [
+    Violation::Rsv1Continuation,
+    Violation::DataInsideCompressed,
+    Violation::CorruptDeflate,
+    Violation::Rsv1Control,
+    Violation::Bomb,
+];
 
 const VIOLATIONS: [Violation; 13] = [
     Violation::Reserved,
@@ -313,8 +352,50 @@ pub enum PieceStyle {
     Large,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct Deflate {
+    pub negotiated: bool,
+    pub takeover: bool,
+    level: u32,
+}
+
+struct Compressor {
+    takeover: bool,
+    level: Level,
+    writer: Option<Writer>,
+}
+
+impl Compressor {
+    fn new(takeover: bool, level: u32) -> Self {
+        Self {
+            takeover,
+            level: Level::new(level).expect("the script draws a miniz level"),
+            writer: None,
+        }
+    }
+
+    fn compress(&mut self, payload: &[u8]) -> Vec<u8> {
+        let level = self.level;
+        let writer = if self.takeover {
+            self.writer
+                .get_or_insert_with(|| Writer::new(level, Format::Raw))
+        } else {
+            self.writer.insert(Writer::new(level, Format::Raw))
+        };
+        writer.write(payload);
+        let mut compressed = writer.flush();
+        assert!(
+            compressed.ends_with(&MESSAGE_TAIL),
+            "a sync flush ends with an empty stored block"
+        );
+        compressed.truncate(compressed.len() - MESSAGE_TAIL.len());
+        compressed
+    }
+}
+
 pub struct Script {
     pub config: WebSocketConfig,
+    pub deflate: Option<Deflate>,
     pub head: HeadPlan,
     pub head_len: usize,
     pub frames: Vec<ServerFrame>,
@@ -396,6 +477,8 @@ struct Builder<'r> {
     frames: Vec<ServerFrame>,
     data_messages: usize,
     corrupt: Option<(usize, usize)>,
+    compressor: Option<Compressor>,
+    limits: WebSocketConfig,
 }
 
 impl Builder<'_> {
@@ -418,6 +501,11 @@ impl Builder<'_> {
     }
 
     fn message(&mut self, opcode: u8, payload: &[u8]) {
+        self.fragments(opcode, payload);
+        self.data_messages += 1;
+    }
+
+    fn fragments(&mut self, opcode: u8, payload: &[u8]) {
         let pieces = if self.rng.chance(FRAGMENTED_PPM) {
             usize::try_from(self.rng.range(2, FRAGMENTS_MAX)).expect("fits")
         } else {
@@ -441,26 +529,147 @@ impl Builder<'_> {
             ));
             from = end;
         }
+    }
+
+    fn compressed(&mut self, payload: &[u8]) -> Vec<u8> {
+        self.compressor
+            .as_mut()
+            .expect("only a negotiated script compresses")
+            .compress(payload)
+    }
+
+    fn mark_compressed(&mut self, first: usize, inflated: Inflated) {
+        self.frames[first].reserved |= RSV1_BIT;
+        self.frames
+            .last_mut()
+            .expect("a message has at least one frame")
+            .inflated = inflated;
+    }
+
+    fn compressed_message(&mut self, opcode: u8, payload: Vec<u8>) {
+        let first = self.frames.len();
+        let wire = self.compressed(&payload);
+        self.fragments(opcode, &wire);
+        self.mark_compressed(first, Inflated::To(payload));
         self.data_messages += 1;
     }
 
+    fn huge(&mut self) -> Vec<u8> {
+        let low = u64::try_from(self.limits.frame_bytes_max + 1).expect("fits");
+        let bytes =
+            usize::try_from(self.rng.range(low, low + OVER_LIMIT_BYTES_MAX)).expect("fits");
+        let pattern = text(self.rng, HUGE_PATTERN_BYTES);
+        let mut payload = pattern.repeat(bytes.div_ceil(HUGE_PATTERN_BYTES));
+        payload.truncate(bytes);
+        while std::str::from_utf8(&payload).is_err() {
+            payload.pop();
+            payload.push(b'a');
+            payload.truncate(bytes);
+        }
+        payload
+    }
+
     fn data(&mut self) {
+        let compress = self.compressor.is_some() && self.rng.chance(COMPRESSED_PPM);
+        if compress && self.rng.chance(HUGE_PPM) {
+            let payload = self.huge();
+            self.compressed_message(OPCODE_TEXT, payload);
+            return;
+        }
         let bytes = size(self.rng);
-        if self.rng.chance(PPM / 2) {
-            let payload = text(self.rng, bytes);
-            self.message(OPCODE_TEXT, &payload);
+        let (opcode, payload) = if self.rng.chance(PPM / 2) {
+            (OPCODE_TEXT, text(self.rng, bytes))
         } else {
-            let payload = binary(self.rng, bytes);
-            self.message(OPCODE_BINARY, &payload);
+            (OPCODE_BINARY, binary(self.rng, bytes))
+        };
+        if compress {
+            self.compressed_message(opcode, payload);
+        } else {
+            self.message(opcode, &payload);
+        }
+    }
+
+    fn deflate_violation(&mut self, violation: Violation) {
+        let bytes = usize::try_from(self.rng.range(0, SMALL_BYTES_MAX)).expect("fits");
+        let payload = text(self.rng, bytes);
+        match violation {
+            Violation::Rsv1Continuation => {
+                let first = self.frames.len();
+                let wire = self.compressed(&payload);
+                let pieces = usize::try_from(self.rng.range(2, FRAGMENTS_MAX)).expect("fits");
+                let ends = cuts(self.rng, wire.len(), pieces);
+                let marked = 1 + self.rng.pick(ends.len() - 1);
+                let last = ends.len() - 1;
+                let mut from = 0;
+                for (index, end) in ends.into_iter().enumerate() {
+                    let code = if index == 0 { OPCODE_TEXT } else { OPCODE_CONTINUE };
+                    let mut frame =
+                        ServerFrame::new(code, index == last, wire[from..end].to_vec());
+                    if index == marked {
+                        frame.reserved = RSV1_BIT;
+                    }
+                    self.frames.push(frame);
+                    from = end;
+                }
+                self.mark_compressed(first, Inflated::To(payload));
+            }
+            Violation::DataInsideCompressed => {
+                let wire = self.compressed(&payload);
+                let mut frame = ServerFrame::new(OPCODE_TEXT, false, wire);
+                frame.reserved = RSV1_BIT;
+                self.frames.push(frame);
+                let other = binary(self.rng, bytes);
+                self.frames.push(ServerFrame::new(OPCODE_BINARY, true, other));
+            }
+            Violation::CorruptDeflate => {
+                let mut wire = CORRUPT_DEFLATE.to_vec();
+                wire.extend(binary(self.rng, bytes));
+                let mut frame = ServerFrame::new(OPCODE_BINARY, true, wire);
+                frame.reserved = RSV1_BIT;
+                frame.inflated = Inflated::Corrupt;
+                self.frames.push(frame);
+            }
+            Violation::Rsv1Control => {
+                let ping = binary(self.rng, bytes.min(CONTROL_PAYLOAD_BYTES_MAX));
+                let mut frame = ServerFrame::new(OPCODE_PING, true, ping);
+                frame.reserved = RSV1_BIT;
+                self.frames.push(frame);
+            }
+            Violation::Unnegotiated => {
+                let mut compressor = Compressor::new(false, UNNEGOTIATED_LEVEL);
+                let mut frame =
+                    ServerFrame::new(OPCODE_TEXT, true, compressor.compress(&payload));
+                frame.reserved = RSV1_BIT;
+                frame.inflated = Inflated::To(payload);
+                self.frames.push(frame);
+            }
+            Violation::Bomb => {
+                let low = u64::try_from(self.limits.message_bytes_max + 1).expect("fits");
+                let bytes = usize::try_from(self.rng.range(low, low + OVER_LIMIT_BYTES_MAX))
+                    .expect("fits");
+                let wire = self.compressed(&vec![0; bytes]);
+                let first = self.frames.len();
+                self.fragments(OPCODE_BINARY, &wire);
+                self.mark_compressed(first, Inflated::Over(bytes));
+            }
+            other => unreachable!("{other:?} is not a permessage-deflate violation"),
         }
     }
 
     fn violation(&mut self, violation: Violation) {
+        if NEGOTIATED_VIOLATIONS.contains(&violation) || violation == Violation::Unnegotiated {
+            self.deflate_violation(violation);
+            return;
+        }
         let rng = &mut *self.rng;
         let small = usize::try_from(rng.range(0, SMALL_BYTES_MAX)).expect("fits");
         match violation {
             Violation::Reserved => {
-                let bits = [RSV1_BIT, RSV2_BIT, RSV3_BIT];
+                let bits = if self.compressor.is_some() {
+                    [RSV2_BIT, RSV3_BIT, RSV2_BIT | RSV3_BIT]
+                } else {
+                    [RSV1_BIT, RSV2_BIT, RSV3_BIT]
+                };
                 let reserved = bits[rng.pick(bits.len())];
                 let opcode = [OPCODE_TEXT, OPCODE_BINARY, OPCODE_PING][rng.pick(3)];
                 let mut frame = ServerFrame::new(
@@ -547,6 +756,12 @@ impl Builder<'_> {
                 self.frames
                     .push(ServerFrame::new(OPCODE_CONTINUE, true, second));
             }
+            Violation::Rsv1Continuation
+            | Violation::DataInsideCompressed
+            | Violation::CorruptDeflate
+            | Violation::Rsv1Control
+            | Violation::Unnegotiated
+            | Violation::Bomb => unreachable!("permessage-deflate violations returned above"),
             Violation::AfterClose => {
                 self.frames.push(ServerFrame::new(
                     OPCODE_CLOSE,
@@ -672,18 +887,43 @@ impl Script {
     pub fn of(seed: u64) -> Self {
         let mut rng = Rng::derive(seed, "websocket-script");
         let config = config(&mut rng);
-        let head = HeadPlan::of(&mut rng);
+        let deflate = rng.chance(DEFLATE_PPM).then(|| Deflate {
+            negotiated: rng.chance(NEGOTIATED_PPM),
+            takeover: rng.chance(TAKEOVER_PPM),
+            level: u32::try_from(rng.range(0, DEFLATE_LEVEL_MAX)).expect("fits"),
+        });
+        let config = match deflate {
+            Some(_) => WebSocketConfig::default().read_buffer_bytes(config.read_buffer_bytes),
+            None => config,
+        };
+        let mut head = HeadPlan::of(&mut rng);
+        if deflate.is_some_and(|deflate| deflate.negotiated) {
+            head.extension = Some(DEFLATE_ANSWERS[rng.pick(DEFLATE_ANSWERS.len())]);
+        }
         let head_len = head.render(PLACEHOLDER_ACCEPT).len();
         let messages = rng.range(0, MESSAGES_MAX);
-        let violation = rng
-            .chance(VIOLATION_PPM)
-            .then(|| VIOLATIONS[rng.pick(VIOLATIONS.len())]);
+        let violation = rng.chance(VIOLATION_PPM).then(|| {
+            match deflate {
+                Some(deflate) if rng.chance(DEFLATE_VIOLATION_PPM) => {
+                    if deflate.negotiated {
+                        NEGOTIATED_VIOLATIONS[rng.pick(NEGOTIATED_VIOLATIONS.len())]
+                    } else {
+                        Violation::Unnegotiated
+                    }
+                }
+                _ => VIOLATIONS[rng.pick(VIOLATIONS.len())],
+            }
+        });
         let violation_at = rng.range(0, messages);
         let mut builder = Builder {
             rng: &mut rng,
             frames: Vec::new(),
             data_messages: 0,
             corrupt: None,
+            compressor: deflate
+                .filter(|deflate| deflate.negotiated)
+                .map(|deflate| Compressor::new(deflate.takeover, deflate.level)),
+            limits: config,
         };
         for index in 0..=messages {
             if index == violation_at
@@ -752,6 +992,7 @@ impl Script {
         let pieces = [PieceStyle::Tiny, PieceStyle::Small, PieceStyle::Large][rng.pick(3)];
         Self {
             config,
+            deflate,
             head,
             head_len,
             frames,
@@ -797,7 +1038,8 @@ impl Script {
 
     pub fn describe(&self) -> String {
         format!(
-            "scenario=websocket head={:?} head_bytes={} frames={} frame_bytes={} data_messages={} violation={:?} ending={:?} frame_max={} message_max={} read_buffer={} pieces={:?} gap_ms<={} sends={} close={:?} capacity={:?} vectored={}",
+            "scenario=websocket deflate={:?} head={:?} head_bytes={} frames={} frame_bytes={} data_messages={} violation={:?} ending={:?} frame_max={} message_max={} read_buffer={} pieces={:?} gap_ms<={} sends={} close={:?} capacity={:?} vectored={}",
+            self.deflate,
             self.head.kind,
             self.head_len,
             self.frames.len(),

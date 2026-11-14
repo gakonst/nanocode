@@ -77,6 +77,14 @@ enum Extended {
     SixtyFour,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Inflated {
+    Plain,
+    To(Vec<u8>),
+    Over(usize),
+    Corrupt,
+}
+
 #[derive(Clone, Debug)]
 pub struct ServerFrame {
     pub fin: bool,
@@ -85,6 +93,7 @@ pub struct ServerFrame {
     pub mask: Option<[u8; MASK_BYTES]>,
     pub form: LengthForm,
     pub payload: Vec<u8>,
+    pub inflated: Inflated,
 }
 
 impl ServerFrame {
@@ -96,6 +105,7 @@ impl ServerFrame {
             mask: None,
             form: LengthForm::Minimal,
             payload,
+            inflated: Inflated::Plain,
         }
     }
 

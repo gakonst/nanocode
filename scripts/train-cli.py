@@ -40,6 +40,7 @@ fn main() {
 SENTINEL = b"zebracorn"
 SHELL_STEPS = re.compile(r"steps=(\d+)")
 WINDOW = (40, 120)
+MEMORY_AFTER_FIRST_FRAME = 1.0
 
 
 def user_text(item):
@@ -153,12 +154,17 @@ def interactive(command, env, cwd, prompt, keys, leave):
             pass
 
     settle(10)
-    for ch in prompt:
-        os.write(fd, ch.encode())
-    start = len(seen)
-    os.write(fd, b"\r")
-    wait_for(SENTINEL, start, 60)
-    settle(2)
+    if prompt is None:
+        end = time.monotonic() + MEMORY_AFTER_FIRST_FRAME
+        while time.monotonic() < end and pump(0.1):
+            pass
+    else:
+        for ch in prompt:
+            os.write(fd, ch.encode())
+        start = len(seen)
+        os.write(fd, b"\r")
+        wait_for(SENTINEL, start, 60)
+        settle(2)
     for key in keys:
         os.write(fd, key)
         settle(1)
@@ -200,6 +206,12 @@ def main():
         home = os.path.join(scratch, ".nanocode")
         session = ["--home", home, "--gateway", "vercel", "--gateway-base-url", base, "-m", "luna"]
         leave = [b"\x03", b"\x03"]
+    if sys.argv[2:] == ["startup"]:
+        interactive([binary, *session], env, work, None, [], leave)
+        server.shutdown()
+        shutil.rmtree(scratch)
+        print("trained %s to its first frame" % binary)
+        return
     runs = [
         [binary, "--version"],
         [binary, "--help"],

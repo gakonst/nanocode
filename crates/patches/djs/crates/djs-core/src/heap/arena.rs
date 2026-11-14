@@ -458,12 +458,22 @@ impl Arena {
             if FAIL_NEXT_RESERVE.with(|f| f.replace(false)) {
                 return Err(HeapError::HostOutOfMemory);
             }
+            #[cfg(target_arch = "wasm32")]
+            self.make_room_after(want - cap);
             // Below the cap, so the host's refusal is not the program's (D1690).
             self.bytes
                 .try_reserve_exact(want - self.bytes.len())
                 .map_err(|_| HeapError::HostOutOfMemory)?;
         }
         Ok(())
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn make_room_after(&self, more: usize) {
+        let cap = self.bytes.capacity();
+        if cap > 0 {
+            hold_until_past(more, self.bytes.as_ptr() as usize + cap);
+        }
     }
 
     // Field accesses are checked against the Vec (the zeroed frontier), not `len`: one
@@ -658,6 +668,16 @@ impl Arena {
 fn zero_to(bytes: &mut Vec<u8>, len: usize) {
     if len > bytes.len() {
         bytes.resize(len, 0);
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn hold_until_past(more: usize, end: usize) {
+    let mut probe = Vec::<u8>::new();
+    if probe.try_reserve_exact(more).is_ok()
+        && (core::hint::black_box(probe.as_ptr()) as usize) < end
+    {
+        hold_until_past(more, end);
     }
 }
 

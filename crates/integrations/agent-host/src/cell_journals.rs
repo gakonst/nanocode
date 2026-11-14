@@ -28,6 +28,7 @@ enum Session {
         owned: OwnedState,
         cells: BTreeMap<u64, Cell>,
         catalogs: HashSet<String>,
+        stored: Option<String>,
     },
 }
 
@@ -43,6 +44,8 @@ struct Head {
     cells: BTreeMap<u64, String>,
     #[serde(default)]
     numbered: BTreeMap<u64, BTreeSet<u64>>,
+    #[serde(default)]
+    stored: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -56,6 +59,8 @@ struct HeadRef<'a> {
     cells: BTreeMap<u64, &'a str>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     numbered: BTreeMap<u64, &'a BTreeSet<u64>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stored: Option<&'a str>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -147,6 +152,7 @@ async fn owned<'a>(
         &'a mut OwnedState,
         &'a mut BTreeMap<u64, Cell>,
         &'a mut HashSet<String>,
+        &'a mut Option<String>,
     ),
     String,
 > {
@@ -162,6 +168,7 @@ async fn owned<'a>(
                 version: VERSION,
                 cells: BTreeMap::new(),
                 numbered: BTreeMap::new(),
+                stored: None,
             },
             Some(payload) => {
                 let versioned = serde_json::from_str::<Versioned>(payload)
@@ -176,6 +183,7 @@ async fn owned<'a>(
                         cells: BTreeMap::new(),
                         numbered: serde_json::from_str(payload)
                             .map_err(|error| error.to_string())?,
+                        stored: None,
                     }
                 }
             }
@@ -198,6 +206,7 @@ async fn owned<'a>(
             owned,
             cells,
             catalogs: HashSet::new(),
+            stored: head.stored,
         };
     }
     match session {
@@ -205,7 +214,8 @@ async fn owned<'a>(
             owned,
             cells,
             catalogs,
-        } => Ok((owned, cells, catalogs)),
+            stored,
+        } => Ok((owned, cells, catalogs, stored)),
         Session::Unread => Err("cell journals were not read".to_owned()),
     }
 }
@@ -215,6 +225,7 @@ async fn replace(
     session_id: &str,
     owned: &mut OwnedState,
     cells: &BTreeMap<u64, Cell>,
+    stored: Option<&str>,
     records: &[StoreRecord],
     settle: Settle,
 ) -> Result<(), String> {
@@ -222,6 +233,7 @@ async fn replace(
         version: VERSION,
         cells: BTreeMap::new(),
         numbered: BTreeMap::new(),
+        stored,
     };
     for (cell, journal) in cells {
         match journal {
@@ -291,7 +303,8 @@ impl CellJournalSink for DurableCellJournals {
         };
         Box::pin(async move {
             let mut session = session.acquire().await;
-            let (owned, cells, catalogs) = owned(&store, &update.session_id, &mut session).await?;
+            let (owned, cells, catalogs, stored) =
+                owned(&store, &update.session_id, &mut session).await?;
             let mut records = Vec::new();
             let (mut keys, catalog) = match catalog {
                 Some(catalog) => {
@@ -329,7 +342,16 @@ impl CellJournalSink for DurableCellJournals {
             keys.push(link.key().to_owned());
             link.stage(&mut records);
             cells.insert(cell_id, Cell::Chained(keys));
-            replace(&store, &session_id, owned, cells, &records, settle).await
+            replace(
+                &store,
+                &session_id,
+                owned,
+                cells,
+                stored.as_deref(),
+                &records,
+                settle,
+            )
+            .await
         })
     }
 
@@ -340,12 +362,21 @@ impl CellJournalSink for DurableCellJournals {
         Box::pin(async move {
             let mut session = session.acquire().await;
             let forgotten = async {
-                let (owned, cells, _) = owned(&store, &session_id, &mut session).await?;
+                let (owned, cells, _, stored) = owned(&store, &session_id, &mut session).await?;
                 let Some(cell) = cells.remove(&cell_id) else {
                     return Ok(());
                 };
                 let records = blanked(cell_id, cell);
-                replace(&store, &session_id, owned, cells, &records, Settle::Ordered).await
+                replace(
+                    &store,
+                    &session_id,
+                    owned,
+                    cells,
+                    stored.as_deref(),
+                    &records,
+                    Settle::Ordered,
+                )
+                .await
             };
             if let Err(error) = forgotten.await {
                 nanocode_trace::warn!(cell_id, %error, "a Code Mode cell journal could not be forgotten");
@@ -359,7 +390,7 @@ impl CellJournalSink for DurableCellJournals {
         let session_id = session_id.to_owned();
         Box::pin(async move {
             let mut session = session.acquire().await;
-            let (_, cells, _) = owned(&store, &session_id, &mut session).await?;
+            let (_, cells, _, _) = owned(&store, &session_id, &mut session).await?;
             let state = state_id(&session_id);
             let mut journals = Vec::new();
             for (cell_id, cell) in cells.iter() {
@@ -413,6 +444,64 @@ impl CellJournalSink for DurableCellJournals {
                 journals.extend(CellJournal::fold(updates));
             }
             Ok(journals)
+        })
+    }
+
+    fn save_stored(
+        &self,
+        session_id: &str,
+        stored: String,
+    ) -> HostFuture<'static, Result<(), String>> {
+        let store = self.store.clone();
+        let session = self.session(session_id);
+        let session_id = session_id.to_owned();
+        Box::pin(async move {
+            let mut session = session.acquire().await;
+            let (owned, cells, _, saved) = owned(&store, &session_id, &mut session).await?;
+            let mut payload = EncodedPayload::from_json(stored.into());
+            if saved.as_deref() == Some(payload.key()) {
+                return Ok(());
+            }
+            let mut records = Vec::new();
+            if let Some(previous) = saved.clone() {
+                records.push(StoreRecord {
+                    key: previous,
+                    value: String::new(),
+                });
+            }
+            let key = payload.key().to_owned();
+            payload.stage(&mut records);
+            replace(
+                &store,
+                &session_id,
+                owned,
+                cells,
+                Some(&key),
+                &records,
+                Settle::Ordered,
+            )
+            .await?;
+            *saved = Some(key);
+            Ok(())
+        })
+    }
+
+    fn load_stored(&self, session_id: &str) -> HostFuture<'static, Result<Option<String>, String>> {
+        let store = self.store.clone();
+        let session = self.session(session_id);
+        let session_id = session_id.to_owned();
+        Box::pin(async move {
+            let mut session = session.acquire().await;
+            let (_, _, _, saved) = owned(&store, &session_id, &mut session).await?;
+            let Some(key) = saved.clone() else {
+                return Ok(None);
+            };
+            EncodedPayload::by_key(&key)
+                .load(&mut store.clone(), &state_id(&session_id))
+                .await
+                .and_then(|payload| payload.json().map(str::to_owned))
+                .map(Some)
+                .map_err(|error| error.to_string())
         })
     }
 }

@@ -636,6 +636,7 @@ impl CodeModeRuntime {
             return;
         };
         journals.load(&context.session_id).await;
+        self.restore_stored(journals, &context.session_id);
         if !journals.has_restored(&context.session_id) {
             return;
         }
@@ -664,6 +665,19 @@ impl CodeModeRuntime {
             }
             self.revive(&tools, context, journals, journal, &restored, turn);
         }
+    }
+
+    fn restore_stored(&self, journals: &CellJournals, session_id: &str) {
+        let Some(restored) = journals.take_stored(session_id) else {
+            return;
+        };
+        self.stored.update(|stored| {
+            for (key, value) in &restored {
+                stored
+                    .entry(key.clone())
+                    .or_insert_with(|| Arc::clone(value));
+            }
+        });
     }
 
     fn revive(
@@ -956,6 +970,7 @@ impl CodeModeRuntime {
         }
         if let Some(journals) = &self.journals {
             journals.load(&context.session_id).await;
+            self.restore_stored(journals, &context.session_id);
             journals.discard_restored(&context.session_id).await;
             journals.release_finished(&context.session_id).await;
         }
@@ -3064,6 +3079,9 @@ async fn run_cell_actor(
                         .map(|(key, value)| (key.clone(), Arc::clone(value))),
                 )
             });
+            if let Some(record) = record.as_ref().filter(|_| !stored.is_empty()) {
+                record.save_stored(&shared_stored).await;
+            }
             let _ = updates.send(CellUpdate::Completed);
         }
         Ok(CellTerminal::ScriptFailed { message, stored }) => {
@@ -3074,6 +3092,9 @@ async fn run_cell_actor(
                         .map(|(key, value)| (key.clone(), Arc::clone(value))),
                 )
             });
+            if let Some(record) = record.as_ref().filter(|_| !stored.is_empty()) {
+                record.save_stored(&shared_stored).await;
+            }
             let _ = updates.send(CellUpdate::ScriptFailed { message });
         }
         Ok(CellTerminal::Diverged { message }) => {

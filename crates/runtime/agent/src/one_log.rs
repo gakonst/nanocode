@@ -38,6 +38,7 @@ use crate::{
 };
 
 const TOOLS_MARK: &str = "$nanocode_tools";
+const STORED_MARK: &str = "$nanocode_stored";
 
 #[derive(Clone, Debug, Default)]
 pub struct Policy {
@@ -1263,6 +1264,28 @@ impl CellJournalSink for OneLogJournals {
                 .remove(&session)
                 .unwrap_or_default())
         })
+    }
+
+    fn save_stored(
+        &self,
+        session_id: &str,
+        stored: String,
+    ) -> HostFuture<'static, Result<(), String>> {
+        let log = Arc::clone(&self.0);
+        let key = stored_key(STORED_MARK, session_id);
+        Box::pin(async move {
+            log.log
+                .lease()
+                .await
+                .push(Record::Stored { key, value: stored })
+                .map_err(|error| error.to_string())
+        })
+    }
+
+    fn load_stored(&self, session_id: &str) -> HostFuture<'static, Result<Option<String>, String>> {
+        let log = Arc::clone(&self.0);
+        let key = stored_key(STORED_MARK, session_id);
+        Box::pin(async move { Ok(log.read(|fold| fold.stored(&key).map(str::to_owned)).await) })
     }
 }
 

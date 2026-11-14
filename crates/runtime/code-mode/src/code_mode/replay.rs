@@ -112,6 +112,21 @@ pub trait CellJournalSink: Send + Sync + 'static {
     fn load(&self, _session_id: &str) -> HostFuture<'static, Result<Vec<CellJournal>, String>> {
         Box::pin(async { Ok(Vec::new()) })
     }
+
+    fn save_stored(
+        &self,
+        _session_id: &str,
+        _stored: String,
+    ) -> HostFuture<'static, Result<(), String>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn load_stored(
+        &self,
+        _session_id: &str,
+    ) -> HostFuture<'static, Result<Option<String>, String>> {
+        Box::pin(async { Ok(None) })
+    }
 }
 
 impl CellJournal {
@@ -264,12 +279,15 @@ struct Journals {
     finished: Atom<Vec<Arc<CellRecord>>>,
     dormant: Atom<Vec<(Arc<CellJournal>, Arc<Restored>)>>,
     loaded: Atom<HashSet<String>>,
+    stored: Atom<HashMap<String, HashMap<String, Arc<RawValue>>>>,
+    saving_stored: Arc<Owned<()>>,
     sink: Option<Arc<dyn CellJournalSink>>,
 }
 
 pub(super) struct Persistence {
     sink: Arc<dyn CellJournalSink>,
     saving: Owned<Saving>,
+    saving_stored: Arc<Owned<()>>,
     queued: Inbox<Arc<JournaledCall>>,
 }
 
@@ -320,6 +338,7 @@ impl CellJournals {
         self.0.sink.as_ref().map(|sink| Persistence {
             sink: Arc::clone(sink),
             saving: Owned::new(Saving::Unsaved),
+            saving_stored: Arc::clone(&self.0.saving_stored),
             queued: Inbox::default(),
         })
     }
@@ -380,6 +399,38 @@ impl CellJournals {
                 "stored Code Mode cell journals could not be loaded"
             ),
         }
+        let stored = sink.load_stored(session_id).await.and_then(|stored| {
+            stored.map_or_else(
+                || Ok(HashMap::new()),
+                |stored| {
+                    serde_json::from_str::<HashMap<String, Box<RawValue>>>(&stored)
+                        .map_err(|error| error.to_string())
+                },
+            )
+        });
+        match stored {
+            Ok(stored) if stored.is_empty() => {}
+            Ok(stored) => {
+                let stored = stored
+                    .into_iter()
+                    .map(|(key, value)| (key, Arc::from(value)))
+                    .collect::<HashMap<_, _>>();
+                self.0.stored.update(|sessions| {
+                    sessions.insert(session_id.to_owned(), stored.clone());
+                });
+            }
+            Err(error) => nanocode_trace::warn!(
+                target: "nanocode_code_mode",
+                %error,
+                "stored Code Mode values could not be loaded"
+            ),
+        }
+    }
+
+    pub(super) fn take_stored(&self, session_id: &str) -> Option<HashMap<String, Arc<RawValue>>> {
+        self.0
+            .stored
+            .try_update(|sessions| sessions.remove(session_id))
     }
 
     pub(super) async fn discard_restored(&self, session_id: &str) {
@@ -917,6 +968,37 @@ impl CellRecord {
                     .forget(&self.session_id, self.cell_id)
                     .await;
             }
+        }
+    }
+
+    pub(super) async fn save_stored(&self, stored: &Atom<HashMap<String, Arc<RawValue>>>) {
+        let Some(persistence) = &self.persistence else {
+            return;
+        };
+        let _saving = persistence.saving_stored.acquire().await;
+        let values = stored.get();
+        let encoded = serde_json::to_string(
+            &values
+                .iter()
+                .map(|(key, value)| (key.as_str(), &**value))
+                .collect::<BTreeMap<_, _>>(),
+        );
+        let saved = match encoded {
+            Ok(encoded) => {
+                persistence
+                    .sink
+                    .save_stored(&self.session_id, encoded)
+                    .await
+            }
+            Err(error) => Err(error.to_string()),
+        };
+        if let Err(error) = saved {
+            nanocode_trace::warn!(
+                target: "nanocode_code_mode",
+                cell_id = self.cell_id,
+                %error,
+                "Code Mode stored values could not be saved, so load() after a restart reads the values saved before"
+            );
         }
     }
 

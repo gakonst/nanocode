@@ -1037,6 +1037,8 @@ struct PagedConversation {
     messages: Sequence,
     code_calls: Sequence,
     #[serde(skip_serializing_if = "Option::is_none")]
+    compacted: Option<Sequence>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     admitted_base: Option<EncodedPayload>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     admitted_tool_ids: Vec<Arc<str>>,
@@ -1075,6 +1077,7 @@ struct AdmittedBase<'a> {
 struct Detached {
     messages: Vec<HistoryMessage>,
     code_calls: Vec<history::CodeRound>,
+    compacted: Vec<HistoryMessage>,
     admitted_tool_ids: history::AdmittedIds,
 }
 
@@ -1083,6 +1086,7 @@ impl Detached {
         Self {
             messages: std::mem::take(&mut conversation.messages),
             code_calls: std::mem::take(&mut conversation.code_calls),
+            compacted: std::mem::take(&mut conversation.compacted),
             admitted_tool_ids: std::mem::take(&mut conversation.admitted_tool_ids),
         }
     }
@@ -1090,6 +1094,7 @@ impl Detached {
     fn restore(self, conversation: &mut Conversation) {
         conversation.messages = self.messages;
         conversation.code_calls = self.code_calls;
+        conversation.compacted = self.compacted;
         conversation.admitted_tool_ids = self.admitted_tool_ids;
     }
 
@@ -1130,6 +1135,16 @@ impl Detached {
                 paging
                     .code_calls
                     .page(&self.code_calls, unchanged, records)?
+            },
+            compacted: if self.compacted.is_empty() {
+                None
+            } else {
+                let unchanged = paging.compacted.unchanged(&self.compacted);
+                Some(
+                    paging
+                        .compacted
+                        .page(&self.compacted, unchanged, records)?,
+                )
             },
             admitted_base: admitted_base.as_ref().map(EncodedPayload::reference),
             admitted_tool_ids: tools.recent.iter().cloned().collect(),
@@ -1328,6 +1343,7 @@ impl<T: Paged> Pages<T> {
 pub(super) struct Paging {
     messages: Pages<HistoryMessage>,
     code_calls: Pages<history::CodeRound>,
+    compacted: Pages<HistoryMessage>,
     pending: Pages<HistoryMessage>,
     tools: ToolIds,
     template: Option<Arc<EncodedTemplate>>,

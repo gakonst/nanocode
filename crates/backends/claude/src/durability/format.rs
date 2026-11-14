@@ -45,6 +45,8 @@ struct PagedConversation {
     #[serde(default)]
     code_calls: Option<Sequence>,
     #[serde(default)]
+    compacted: Option<Sequence>,
+    #[serde(default)]
     admitted_base: Option<EncodedPayload>,
     #[serde(default)]
     admitted_tool_ids: Vec<String>,
@@ -68,6 +70,10 @@ impl PagedConversation {
         if let Some(code_calls) = self.code_calls {
             let rounds = load_sequence(reader, code_calls, read).await?;
             conversation.insert("code_calls".into(), Value::Array(rounds));
+        }
+        if let Some(compacted) = self.compacted {
+            let compacted = load_sequence(reader, compacted, read).await?;
+            conversation.insert("compacted".into(), Value::Array(compacted));
         }
         if self.version >= 3 {
             let mut admitted = match self.admitted_base {
@@ -491,16 +497,43 @@ fn claude_assistant_rows(message: &Value, items: &mut Vec<TranscriptItem>) {
     }
 }
 
+fn summary_message(message: &Value) -> Option<String> {
+    if message["role"] != "user" {
+        return None;
+    }
+    blocks(message).find_map(|block| match block["type"].as_str() {
+        Some("compaction") => Some(block["content"].as_str().unwrap_or_default().to_owned()),
+        Some("text") => block["text"]
+            .as_str()?
+            .strip_prefix(crate::agent::COMPACT_CONTINUED)
+            .map(|summary| summary.trim_start().to_owned()),
+        _ => None,
+    })
+}
+
 fn claude_transcript(checkpoint: &Value, prompts: &[AdmittedPrompt]) -> Vec<TranscriptItem> {
     let mut items = Vec::new();
     let conversation = &checkpoint["conversation"];
-    if let Some(summary) = conversation["summary"]
-        .as_str()
-        .filter(|summary| !summary.is_empty())
-    {
-        items.push(TranscriptItem::Assistant(format!(
-            "Retained conversation summary:\n{summary}"
-        )));
+    let compacted = conversation["compacted"]
+        .as_array()
+        .map_or(&[][..], Vec::as_slice);
+    let summaries = conversation["messages"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(summary_message)
+        .chain(
+            conversation["summary"]
+                .as_str()
+                .filter(|summary| !summary.is_empty())
+                .map(str::to_owned),
+        );
+    if compacted.is_empty() {
+        for summary in summaries {
+            items.push(TranscriptItem::Assistant(format!(
+                "Retained conversation summary:\n{summary}"
+            )));
+        }
     }
     let notices = conversation["recovery_notices"]
         .as_array()
@@ -508,9 +541,13 @@ fn claude_transcript(checkpoint: &Value, prompts: &[AdmittedPrompt]) -> Vec<Tran
         .flatten()
         .filter_map(Value::as_str)
         .collect::<Vec<_>>();
-    let messages = conversation["messages"]
-        .as_array()
-        .map_or(&[][..], Vec::as_slice);
+    let messages = compacted
+        .iter()
+        .chain(conversation["messages"].as_array().into_iter().flatten())
+        .filter(|message| summary_message(message).is_none())
+        .cloned()
+        .collect::<Vec<_>>();
+    let messages = messages.as_slice();
     let receipt = |message: &Value| blocks(message).any(|block| block["type"] == "tool_result");
 
     let mut children = std::collections::HashMap::<&str, Vec<(&str, &Value)>>::new();

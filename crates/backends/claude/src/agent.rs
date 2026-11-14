@@ -2581,7 +2581,7 @@ fn recovery_thinking(model: &str) -> RecoveryThinking {
 }
 
 const COMPACTION_INSTRUCTIONS: &str = include_str!("../prompts/compact.md");
-const COMPACT_CONTINUED: &str = "This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.";
+pub(crate) const COMPACT_CONTINUED: &str = "This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.";
 const COMPACT_TOOLS_OPEN: &str = "<tools-used-before-summary>";
 const COMPACT_TOOLS_CLOSE: &str = "</tools-used-before-summary>";
 const COMPACT_RESUME: &str = "Continue the conversation from where it left off without asking the user any further questions. Resume directly \u{2014} do not acknowledge the summary, do not recap what was happening, do not preface with \"I'll continue\" or similar. Pick up the last task as if the break never happened.";
@@ -2642,6 +2642,15 @@ fn stopped_background_notices(
             )
         })
         .collect()
+}
+
+fn summary_message(message: &HistoryMessage) -> bool {
+    message.role == Role::User
+        && message.content.iter().any(|block| match block {
+            ContentBlock::Compaction { .. } => true,
+            ContentBlock::Text { text, .. } => text.starts_with(COMPACT_CONTINUED),
+            _ => false,
+        })
 }
 
 fn compact_summary(raw: &str) -> String {
@@ -2753,6 +2762,8 @@ struct Conversation {
     #[serde(default, skip_serializing_if = "is_zero")]
     code_calls_omitted_rounds: u64,
     messages: Vec<HistoryMessage>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    compacted: Vec<HistoryMessage>,
     summary: String,
     active_context_tokens: u64,
 
@@ -6334,6 +6345,7 @@ impl State {
         } else {
             Vec::new()
         };
+        let retained_count = retained.len();
         let tools = cursor.template.tools.clone();
         let mut template = cursor.template.clone();
         if matches!(mode, CompactionMode::ContextRecovery) {
@@ -6510,7 +6522,14 @@ impl State {
 
         self.kept.set(None);
         self.kept_changed.notify_waiters();
-        context.messages = kept;
+        let replaced = std::mem::replace(&mut context.messages, kept);
+        let dropped = replaced.len().saturating_sub(retained_count);
+        context.compacted.extend(
+            replaced
+                .into_iter()
+                .take(dropped)
+                .filter(|message| !summary_message(message)),
+        );
         context.previous_message_id = Some(response.id);
         context.summary = continued;
         context.recovery_notices.drain(..summarized_notices);

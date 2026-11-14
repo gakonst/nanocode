@@ -96,7 +96,7 @@ const EXEC_DESCRIPTION: &str = r#"Run JavaScript code to orchestrate/compose too
 - You may optionally start the tool input with a first-line pragma like `// @exec: {"yield_time_ms": 10000, "max_output_tokens": 1000}`.
 - `yield_time_ms` asks `exec` to yield early if the script is still running. Defaults to 10000 ms.
 - `max_output_tokens` sets the token budget for direct `exec` results. Omit for unlimited output.
-- When the JS code is fully evaluated, the isolate's lifetime ends and unawaited promises are silently discarded.
+- When the JS code is fully evaluated, the isolate's lifetime ends: unawaited work still waiting on a timer or a nested call is discarded, a nested call that had not returned is reported as abandoned with an unknown outcome, and an unhandled promise rejection fails the script.
 
 - Global helpers:
 - `exit()`: Immediately ends the current script successfully (like an early return from the top level, except that no enclosing `catch` or `finally` block runs).
@@ -116,7 +116,7 @@ const EXEC_DESCRIPTION_COMPACT: &str = r#"Run JavaScript to orchestrate tool cal
 - Nested tools are async functions on the global `tools` object, named as JavaScript identifiers, for example `await tools.example_tool(...)` or `await tools.mcp__ologs__get_profile(...)`. Each takes a string or an object and returns a string or an object.
 - Send raw JavaScript source, not JSON, a quoted string or a markdown code fence.
 - An optional first line `// @exec: {"yield_time_ms": 10000, "max_output_tokens": 1000}` sets when a cell that is still running yields (default 10000 ms) and the output token budget (default unlimited).
-- Await every promise: when the code finishes, the cell ends and unawaited promises are discarded.
+- Await every promise: when the code finishes, the cell ends, unawaited work still waiting on a timer or a nested call is discarded (a nested call is reported as abandoned, its outcome unknown) and an unhandled rejection fails the script.
 - Cells run in a strict-mode JavaScript engine, not Node: there is no `require`, `import()` or npm, and assigning to an undeclared name throws. Exports of a `WebAssembly` instance, when the host provides one, are async functions to await.
 - Globals: `text(value)` appends output (other values as JSON); `image(urlOrItem, detail?)` appends an image from a base64 `data:` URL, `{ image_url }`, `{ file_id }` or an MCP `ImageContent` block; `audio(urlOrItem)` appends audio the same way; `generatedImage(result)` appends an image-generation result; `notify(value)` sends an extra output for this call at once; `store(key, value)` and `load(key)` keep serializable values across cells; `yield_control()` returns the output so far while the cell keeps running; `exit()` ends the cell successfully at once, running no `catch` or `finally`; `setTimeout` and `clearTimeout` (pending timers do not keep the cell alive); `ALL_TOOLS` lists `{ name, description }` of every nested tool."#;
 

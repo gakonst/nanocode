@@ -116,14 +116,21 @@ pub enum Record {
 }
 
 pub fn encode(records: &[Record]) -> Result<String, StoreError> {
-    let mut body = String::new();
+    String::from_utf8(encode_all(records)?)
+        .map_err(|error| StoreError::NotCommitted(format!("encode turn log record: {error}")))
+}
+
+pub(crate) fn encode_all<'a>(
+    records: impl IntoIterator<Item = &'a Record>,
+) -> Result<Vec<u8>, StoreError> {
+    let mut body = Vec::new();
     for record in records {
         if !body.is_empty() {
-            body.push('\n');
+            body.push(b'\n');
         }
-        body.push_str(&serde_json::to_string(record).map_err(|error| {
+        serde_json::to_writer(&mut body, record).map_err(|error| {
             StoreError::NotCommitted(format!("encode turn log record: {error}"))
-        })?);
+        })?;
     }
     Ok(body)
 }

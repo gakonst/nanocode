@@ -384,18 +384,12 @@ impl Lease<'_> {
             })
             .collect::<Vec<_>>();
         let floor = writer.floor.map(|seq| Record::Floor { seq });
-        let plain = crate::encode(
-            &floor
-                .iter()
-                .chain(&writer.buffer)
-                .cloned()
-                .collect::<Vec<_>>(),
-        )?;
+        let plain = crate::record::encode_all(floor.iter().chain(&writer.buffer))?;
         let mut stream = match writer.stream.take() {
             Some(stream) => stream,
             None => Stream::new(writer.history.bytes())?,
         };
-        let body = stream.pack(RECORDS, plain.as_bytes())?;
+        let body = stream.pack(RECORDS, &plain)?;
         let keep = writer
             .buffer
             .iter()
@@ -448,7 +442,7 @@ impl Lease<'_> {
         if snapshot.is_none() && writer.fold.hot_bytes() > writer.state {
             writer.state = writer.fold.snapshot(keep)?.len();
             if writer.fold.hot_bytes() > writer.state {
-                boundary = Some(codec::pack(BOUNDARY, plain.as_bytes(), &[])?);
+                boundary = Some(codec::pack(BOUNDARY, &plain, &[])?);
             }
         }
         let written = match (&snapshot, &boundary) {
@@ -506,7 +500,7 @@ impl Lease<'_> {
                 if boundary.is_none() {
                     writer.stream = Some(stream);
                 }
-                writer.history.extend(plain.as_bytes());
+                writer.history.extend(&plain);
                 writer.tail += bytes;
                 writer.tail_rows += stored.len();
                 writer.stats.row_bytes += bytes as u64;

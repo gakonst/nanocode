@@ -339,6 +339,7 @@ pub(super) struct FuncState {
     /// The construct temporaries (`VarKind::Temp`, compiler/temps.rs): the binding, the
     /// construct and its source offset, which name its slot (D2721, D2732).
     pub temps: Vec<(VarId, &'static str, u32)>,
+    scope_pool: Vec<Scope>,
     /// Recording for a suspension map (D2563, compiler/smap.rs), when requested.
     #[cfg(feature = "dump")]
     pub smap: Option<alloc::boxed::Box<super::smap::Recorder>>,
@@ -449,6 +450,7 @@ pub(super) struct Spare {
     param_props: Vec<Atom>,
     index: VarIndex,
     temps: Vec<(VarId, &'static str, u32)>,
+    scope_pool: Vec<Scope>,
 }
 
 impl FuncState {
@@ -478,16 +480,14 @@ impl FuncState {
             param_props,
             index,
             temps,
+            mut scope_pool,
         } = spare;
-        scopes.push(Scope {
-            parent: None,
-            #[cfg(feature = "dump")]
-            pos: 0,
-            kind: ScopeKind::Body,
-            vars: Vec::new(),
-            funcs: Vec::new(),
-            copies: Vec::new(),
-        });
+        scopes.push(Self::pooled_scope(
+            &mut scope_pool,
+            None,
+            ScopeKind::Body,
+            0,
+        ));
         FuncState {
             id,
             kind,
@@ -534,6 +534,7 @@ impl FuncState {
             var_scope: BODY_SCOPE,
             index,
             temps,
+            scope_pool,
             #[cfg(feature = "dump")]
             smap: None,
             #[cfg(feature = "lazy")]
@@ -566,10 +567,16 @@ impl FuncState {
             mut param_props,
             mut index,
             mut temps,
+            mut scope_pool,
             ..
         } = self;
         children.clear();
-        scopes.clear();
+        scope_pool.extend(scopes.drain(..).map(|mut scope| {
+            scope.vars.clear();
+            scope.funcs.clear();
+            scope.copies.clear();
+            scope
+        }));
         vars.clear();
         refs.clear();
         captures.clear();
@@ -598,22 +605,44 @@ impl FuncState {
             param_props,
             index,
             temps,
+            scope_pool,
         }
     }
 
     pub fn new_scope(&mut self, parent: ScopeId, kind: ScopeKind, pos: u32) -> ScopeId {
+        let scope = Self::pooled_scope(&mut self.scope_pool, Some(parent), kind, pos);
+        self.scopes.push_out(scope);
+        (self.scopes.len() - 1) as ScopeId
+    }
+
+    fn pooled_scope(
+        pool: &mut Vec<Scope>,
+        parent: Option<ScopeId>,
+        kind: ScopeKind,
+        pos: u32,
+    ) -> Scope {
         #[cfg(not(feature = "dump"))]
         let _ = pos;
-        self.scopes.push_out(Scope {
-            parent: Some(parent),
-            #[cfg(feature = "dump")]
-            pos,
-            kind,
-            vars: Vec::new(),
-            funcs: Vec::new(),
-            copies: Vec::new(),
-        });
-        (self.scopes.len() - 1) as ScopeId
+        match pool.pop() {
+            Some(mut scope) => {
+                scope.parent = parent;
+                scope.kind = kind;
+                #[cfg(feature = "dump")]
+                {
+                    scope.pos = pos;
+                }
+                scope
+            }
+            None => Scope {
+                parent,
+                #[cfg(feature = "dump")]
+                pos,
+                kind,
+                vars: Vec::new(),
+                funcs: Vec::new(),
+                copies: Vec::new(),
+            },
+        }
     }
 
     pub fn add_var(&mut self, name: Atom, kind: VarKind, scope: ScopeId) -> VarId {

@@ -192,8 +192,7 @@ fn alloc_info(heap: &mut Heap, p: &TemplateParts<'_>) -> Result<Ref, HeapError> 
         (Ref::NULL, 0, 0)
     };
     let lines = nonempty(p.lines, |l| alloc_bytes(heap, l))?;
-    let ids: Vec<u32> = p.names.iter().map(|a| a.id()).collect();
-    let names = nonempty(&ids, |n| alloc_u32_array(heap, n))?;
+    let names = nonempty(p.names, |n| alloc_u32_array(heap, n))?;
     let n = u32::try_from(p.children.len()).map_err(|_| HeapError::OutOfMemory)?;
     let size = FuncInfo::CHILDREN
         .cell_size(n)
@@ -364,7 +363,7 @@ fn alloc_value_array(heap: &mut Heap, values: &[Value]) -> Result<Ref, HeapError
     Ok(Ref(off))
 }
 
-fn alloc_u32_array(heap: &mut Heap, words: &[u32]) -> Result<Ref, HeapError> {
+fn alloc_u32_array(heap: &mut Heap, words: &[Atom]) -> Result<Ref, HeapError> {
     let len = u32::try_from(words.len()).map_err(|_| HeapError::OutOfMemory)?;
     let size = U32Array::DATA
         .cell_size(len)
@@ -372,8 +371,8 @@ fn alloc_u32_array(heap: &mut Heap, words: &[u32]) -> Result<Ref, HeapError> {
     let off = heap.alloc_cell(CellKind::U32Array, size)?;
     let a = heap.arena_mut();
     a.set(off, U32Array::LEN, len);
-    for (i, &w) in words.iter().enumerate() {
-        a.write(U32Array::DATA.at(off, i as u32), w);
+    for (i, w) in words.iter().enumerate() {
+        a.write(U32Array::DATA.at(off, i as u32), w.id());
     }
     Ok(Ref(off))
 }

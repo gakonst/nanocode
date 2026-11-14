@@ -53,6 +53,7 @@ use serde::Deserialize;
 use serde_json::{Value, value::RawValue};
 
 use nanocode_platform::Instant;
+use nanocode_process_contracts::MIN_POLL_YIELD_MS;
 use nanocode_sync::{Atom, InOrder, Leased, Owned, Sequencer, Signal, Slot, Turn};
 use nanocode_sync::{Notify, mpsc, oneshot, watch};
 use nanocode_trace::{Instrument, info_span};
@@ -847,7 +848,7 @@ impl CodeModeRuntime {
             &cell,
             observation,
             started_at,
-            ObservationMode::YieldAfter(yield_after, preempt),
+            ObservationMode::YieldAfter(yield_after, yield_after, preempt),
             record.max_output_tokens,
             Some(call_id),
             observer,
@@ -1200,11 +1201,12 @@ impl CodeModeRuntime {
         }
         let yield_time = Duration::from_millis(yield_time_ms);
         let yield_time = observer_yield_timeout(yield_time);
+        let quiet_until = yield_time.max(Duration::from_millis(MIN_POLL_YIELD_MS));
         let (mut execution, running) = observe_cell(
             &cell,
             observation,
             started_at,
-            ObservationMode::YieldAfter(yield_time, preempt),
+            ObservationMode::YieldAfter(yield_time, quiet_until, preempt),
             output_token_budget,
             Some(call_id),
             observer,
@@ -1759,7 +1761,7 @@ impl Preemption {
 
 enum ObservationMode {
     Started(Duration, Preemption),
-    YieldAfter(Duration, Preemption),
+    YieldAfter(Duration, Duration, Preemption),
     Terminate,
 }
 
@@ -1873,14 +1875,14 @@ async fn observe_updates(
     observer: &mut dyn CodeModeObserver,
 ) -> (CodeModeExecution, bool) {
     let tools = cell.tools.as_ref();
-    let (yield_after, terminating, mut preempt, started) = match mode {
+    let (yield_after, quiet_until, terminating, mut preempt, started) = match mode {
         ObservationMode::Started(yield_after, preempt) => {
-            (Some(yield_after), false, Some(preempt), true)
+            (Some(yield_after), None, false, Some(preempt), true)
         }
-        ObservationMode::YieldAfter(yield_after, preempt) => {
-            (Some(yield_after), false, Some(preempt), false)
+        ObservationMode::YieldAfter(yield_after, quiet_until, preempt) => {
+            (Some(yield_after), Some(quiet_until), false, Some(preempt), false)
         }
-        ObservationMode::Terminate => (None, true, None, false),
+        ObservationMode::Terminate => (None, None, true, None, false),
     };
     let mut notice = (!terminating).then(|| tools.session_notice(&cell.session_id));
     if started
@@ -1890,16 +1892,33 @@ async fn observe_updates(
     {
         notice = None;
     }
-    let yield_deadline =
+    let mut yield_deadline =
         yield_after.and_then(|yield_after| nanocode_platform::now().checked_add(yield_after));
+    let mut quiet_deadline = quiet_until
+        .and_then(|quiet_until| nanocode_platform::now().checked_add(quiet_until))
+        .filter(|quiet_deadline| yield_deadline.is_some_and(|deadline| *quiet_deadline > deadline));
     let mut yield_timer =
         yield_after.map(|yield_after| Box::pin(nanocode_platform::sleep(yield_after)));
     let mut preempt_remaining = None;
+    let mut yield_fired = false;
+    let mut holding = false;
     let mut stream_open = false;
     let mut stream_timer = Box::pin(nanocode_platform::sleep(STREAM_OUTPUT_AFTER));
     loop {
-        let yield_deadline_elapsed =
-            yield_deadline.is_some_and(|yield_deadline| yield_deadline <= nanocode_platform::now());
+        let mut yield_deadline_elapsed = yield_fired
+            || yield_deadline.is_some_and(|yield_deadline| yield_deadline <= nanocode_platform::now());
+        if yield_deadline_elapsed
+            && preempt_remaining.is_none()
+            && nothing_to_report(observation)
+            && let Some(deadline) = quiet_deadline.take()
+            && let Some(remaining) = deadline.checked_duration_since(nanocode_platform::now())
+        {
+            yield_deadline = Some(deadline);
+            yield_timer = Some(Box::pin(nanocode_platform::sleep(remaining)));
+            yield_fired = false;
+            yield_deadline_elapsed = false;
+            holding = true;
+        }
         if preempt_remaining.is_none()
             && (preempt.as_ref().is_some_and(Preemption::take) || yield_deadline_elapsed)
         {
@@ -1945,7 +1964,7 @@ async fn observe_updates(
                     None => std::future::pending().await,
                 }
             } => {
-                preempt_remaining = Some(observation.updates.len() + observation.replay.len());
+                yield_fired = true;
                 continue;
             }
             () = stream_timer.as_mut(), if !terminating && !stream_open => {
@@ -1959,6 +1978,15 @@ async fn observe_updates(
         if let Some(remaining) = &mut preempt_remaining {
             *remaining = remaining.saturating_sub(1);
         }
+        let reported = holding
+            && matches!(
+                update,
+                Some(
+                    CellUpdate::NestedCall(_)
+                        | CellUpdate::Content(_)
+                        | CellUpdate::Notification { .. }
+                )
+            );
         if stream_open
             && matches!(
                 update,
@@ -2198,6 +2226,9 @@ async fn observe_updates(
                 );
             }
         }
+        if reported && preempt_remaining.is_none() {
+            preempt_remaining = Some(observation.updates.len() + observation.replay.len());
+        }
     }
 }
 
@@ -2290,6 +2321,14 @@ fn abandoned_calls(observation: &mut CellObservationState, when: &str, advice: &
     format!(
         "\n\nNested calls that had not returned when {when} were abandoned: {names}. Whether each took effect is unknown. {advice}"
     )
+}
+
+fn nothing_to_report(observation: &CellObservationState) -> bool {
+    observation.buffered.content.is_empty()
+        && observation.buffered.returned == 0
+        && observation.buffered.notifications.is_empty()
+        && observation.updates.is_empty()
+        && observation.replay.is_empty()
 }
 
 fn yielded_observation(

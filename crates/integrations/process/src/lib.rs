@@ -50,7 +50,7 @@ use tokio::task::JoinHandle;
 
 pub use nanocode_process_contracts::{
     DEFAULT_EXEC_YIELD_MS, DEFAULT_POLL_YIELD_MS, DEFAULT_WRITE_YIELD_MS, MAX_EXEC_YIELD_MS,
-    MAX_POLL_YIELD_MS,
+    MAX_POLL_YIELD_MS, MIN_POLL_YIELD_MS,
 };
 
 static COMMAND_ENVIRONMENT: std::sync::LazyLock<Atom<Vec<(OsString, OsString)>>> =
@@ -562,7 +562,7 @@ impl ShellSessions {
                 );
             }
             let (default, minimum, maximum) = if request.chars.is_empty() {
-                (DEFAULT_POLL_YIELD_MS, 5_000, MAX_POLL_YIELD_MS)
+                (DEFAULT_POLL_YIELD_MS, MIN_POLL_YIELD_MS, MAX_POLL_YIELD_MS)
             } else {
                 (DEFAULT_WRITE_YIELD_MS, 250, MAX_EXEC_YIELD_MS)
             };

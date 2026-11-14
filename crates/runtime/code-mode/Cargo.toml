@@ -22,6 +22,7 @@ nanocode-types-core.workspace = true
 nanocode-audio.workspace = true
 nanocode-image.workspace = true
 nanocode-platform.workspace = true
+nanocode-process-contracts.workspace = true
 nanocode-sync.workspace = true
 nanocode-tool-contracts.workspace = true
 nanocode-tools.workspace = true

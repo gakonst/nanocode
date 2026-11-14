@@ -273,6 +273,7 @@ pub const DEFAULT_EXEC_YIELD_MS: u64 = 10_000;
 pub const DEFAULT_MAX_OUTPUT_TOKENS: usize = 10_000;
 pub const DEFAULT_WRITE_YIELD_MS: u64 = 250;
 pub const DEFAULT_POLL_YIELD_MS: u64 = 5_000;
+pub const MIN_POLL_YIELD_MS: u64 = 5_000;
 pub const MAX_EXEC_YIELD_MS: u64 = 30_000;
 pub const MAX_POLL_YIELD_MS: u64 = 300_000;
 

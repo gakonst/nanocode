@@ -89,7 +89,7 @@ const INITIAL_YIELD: Duration = spec::DEFAULT_YIELD;
 const DEFAULT_WAIT_YIELD: Duration = spec::DEFAULT_YIELD;
 const OBSERVER_YIELD_GRACE: Duration = Duration::from_secs(1);
 const MIN_YIELD_FOR_OBSERVER_GRACE: Duration = Duration::from_secs(10);
-use spec::{EXEC_PRAGMA_PREFIX, MAX_JS_SAFE_INTEGER};
+use spec::EXEC_PRAGMA_PREFIX;
 const CELL_RUNNING: u8 = 0;
 const CELL_TERMINATING: u8 = 1;
 const CELL_COMPLETION_CLAIMED: u8 = 2;
@@ -1348,15 +1348,6 @@ impl CodeModeControl {
     }
 }
 
-#[derive(Debug, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ExecPragma {
-    #[serde(default)]
-    yield_time_ms: Option<u64>,
-    #[serde(default)]
-    max_output_tokens: Option<usize>,
-}
-
 struct ParsedExecSource {
     code: String,
     yield_time_ms: Option<u64>,
@@ -1415,31 +1406,20 @@ fn parse_exec_source(input: &str) -> Result<ParsedExecSource, String> {
             "exec pragma only supports `yield_time_ms` and `max_output_tokens`; got `{key}`"
         ));
     }
-    let pragma: ExecPragma = serde_json::from_value(value).map_err(|error| {
-        format!(
-            "exec pragma fields `yield_time_ms` and `max_output_tokens` must be non-negative safe integers: {error}"
-        )
-    })?;
-    if pragma
-        .yield_time_ms
-        .is_some_and(|yield_time_ms| yield_time_ms > MAX_JS_SAFE_INTEGER)
-    {
-        return Err(
-            "exec pragma field `yield_time_ms` must be a non-negative safe integer".to_owned(),
-        );
-    }
-    if pragma.max_output_tokens.is_some_and(|max_output_tokens| {
-        u64::try_from(max_output_tokens).map_or(true, |max_output_tokens| {
-            max_output_tokens > MAX_JS_SAFE_INTEGER
-        })
-    }) {
-        return Err(
-            "exec pragma field `max_output_tokens` must be a non-negative safe integer".to_owned(),
-        );
-    }
+    let field = |name: &str| {
+        object
+            .get(name)
+            .filter(|value| !value.is_null())
+            .map(|value| {
+                spec::integer_value(value).map_err(|_| {
+                    format!("exec pragma field `{name}` must be a non-negative safe integer, got {value}")
+                })
+            })
+            .transpose()
+    };
+    source.yield_time_ms = field("yield_time_ms")?;
+    source.max_output_tokens = field("max_output_tokens")?.map(token_budget);
     rest.clone_into(&mut source.code);
-    source.yield_time_ms = pragma.yield_time_ms;
-    source.max_output_tokens = pragma.max_output_tokens;
     Ok(source)
 }
 
@@ -1475,12 +1455,13 @@ fn optional_integer<'de, D: serde::Deserializer<'de>>(
     match Value::deserialize(deserializer)? {
         Value::Null => Ok(None),
         value => spec::integer_value(&value)
-            .and_then(|integer| {
-                usize::try_from(integer).map_err(|_| format!("{integer} is out of range"))
-            })
-            .map(Some)
+            .map(|integer| Some(token_budget(integer)))
             .map_err(serde::de::Error::custom),
     }
+}
+
+fn token_budget(tokens: u64) -> usize {
+    usize::try_from(tokens).unwrap_or(usize::MAX)
 }
 
 fn requested_yield<'de, D: serde::Deserializer<'de>>(

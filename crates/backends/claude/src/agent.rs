@@ -4413,6 +4413,7 @@ struct ResponseContext<'a> {
 }
 const DEVELOPER_NOTICE_OPEN: &str = "<system-reminder>\n";
 const ATTRIBUTION: &str = "<system-reminder>\nAttribution for git commits and pull requests you create from here on (this replaces Claude Code's own earlier attribution guidance, such as a previous copy of this reminder; the user's own instructions about these lines, such as a CLAUDE.md or memory rule, take precedence over this reminder, but do not add attribution lines this reminder leaves out):\n- End git commit messages with:\nCo-Authored-By: Claude Code <noreply@anthropic.com>\n- End pull request descriptions with:\n\u{1f916} Generated with [Claude Code](https://claude.com/claude-code)\n</system-reminder>\n";
+const REFUSAL_RECOVERY: &str = "Your response above was stopped by a safety classifier \u{2014} this is not a tool or API error. The rest of it was withheld, and tool calls in it that had not finished did not run. Do not produce that content again, even reworded.";
 const TOKEN_BUDGET: u64 = 15_000_000;
 const NO_VISIBLE_OUTPUT: &str = "[Your previous response had no visible output. Please continue and produce a user-visible response.]";
 const DEVELOPER_NOTICE_CLOSE: &str = "\n</system-reminder>";
@@ -7736,6 +7737,56 @@ impl State {
             if cursor.model_step_offset == 0 {
                 cursor.model_step_offset = 1;
                 cursor.model_receipt_start = Some(index.saturating_add(2));
+            }
+            if response.stop_reason == Some(StopReason::Refusal) && !cursor.refusal_recovered {
+                if cancel.is_cancelled() {
+                    return Err(NanocodeError::TurnCancelled);
+                }
+                nanocode_trace::warn!(
+                    target: "nanocode_claude",
+                    session_id = %self.session_id,
+                    model_call_index = index.saturating_add(1),
+                    "Claude's safety classifier stopped the response; keeping its finished text and asking again once, as Claude Code does"
+                );
+                cursor.refusal_recovered = true;
+                add_usage(&mut usage, &response.usage);
+                if let Some(refreshed) = self.refreshed.update(Option::take) {
+                    add_usage(&mut usage, &refreshed);
+                }
+                let kept = assistant
+                    .content
+                    .iter()
+                    .filter(|block| {
+                        matches!(
+                            block,
+                            ContentBlock::Thinking { .. }
+                                | ContentBlock::RedactedThinking { .. }
+                                | ContentBlock::Text { .. }
+                        )
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if kept
+                    .iter()
+                    .any(|block| matches!(block, ContentBlock::Text { .. }))
+                {
+                    pending.push(
+                        Message {
+                            role: Role::Assistant,
+                            content: kept,
+                            output_config: None,
+                        }
+                        .into(),
+                    );
+                    pending.push(Message::text(Role::User, REFUSAL_RECOVERY).into());
+                }
+                conversation.messages = pending.clone();
+                cursor.index = index + 1;
+                self.retain_pending(&mut cursor, &pending);
+                cursor.usage = usage.clone();
+                self.defer_cursor(&mut cursor, conversation, journal)
+                    .await?;
+                continue;
             }
             previous_message_id = Some(response.id.clone());
             add_usage(&mut usage, &response.usage);

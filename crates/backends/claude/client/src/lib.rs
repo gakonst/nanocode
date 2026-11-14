@@ -3568,7 +3568,11 @@ impl MessageAccumulator {
             return Err(ClaudeError::Protocol("missing final stop_reason".into()));
         }
         let truncated = message.stop_reason == Some(StopReason::MaxTokens);
+        let refused = message.stop_reason == Some(StopReason::Refusal);
         for (index, block) in active {
+            if refused {
+                continue;
+            }
             let block = match block {
                 BlockAccumulator::Text { .. } | BlockAccumulator::ToolUse { .. } if truncated => {
                     block

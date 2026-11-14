@@ -181,6 +181,8 @@ pub(super) struct Cursor {
     pub(super) output_continuations: u32,
     #[serde(default)]
     pub(super) thinking_only_nudged: bool,
+    #[serde(default)]
+    pub(super) refusal_recovered: bool,
 }
 impl Cursor {
     pub(super) fn host_context(&self, state: &State) -> Option<Arc<str>> {
@@ -592,6 +594,7 @@ impl State {
             context_recovery_attempted: false,
             output_continuations: 0,
             thinking_only_nudged: false,
+            refusal_recovered: false,
         };
 
         #[cfg(not(target_family = "wasm"))]

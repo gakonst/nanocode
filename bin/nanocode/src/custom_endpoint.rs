@@ -35,23 +35,14 @@ pub fn apply(clients: ModelClients) -> Result<ModelClients, String> {
     nanocode::codex::transport::install_default_rustls_crypto_provider();
     let key = env("NANOCODE_OPENAI_API_KEY").or_else(|| env("OPENAI_API_KEY"));
     if let Some(url) = models_url {
-        let ids = fetch_models(&url, key.as_deref())?;
-        if ids.is_empty() {
-            return Err(format!("{url} listed no models"));
-        }
-        clients = clients.models(
-            ids.iter()
-                .map(|(id, _)| nanocode::Model::Custom(nanocode::CustomModel::new(id))),
-        );
-        clients = clients.context_windows(ids.iter().filter_map(|(id, window)| {
-            match (
-                id.parse::<nanocode::Model>(),
-                id.parse::<nanocode::ClaudeModel>(),
-            ) {
-                (Ok(model), Err(_)) if model.is_custom() => window.map(|tokens| (model, tokens)),
-                _ => None,
-            }
-        }));
+        let listing = crate::host::Listing::default();
+        let filled = std::sync::Arc::clone(&listing);
+        let (listed_url, listed_key) = (url.clone(), key.clone());
+        std::thread::Builder::new()
+            .name("nanocode-models".to_owned())
+            .spawn(move || drop(filled.set(list(&listed_url, listed_key.as_deref()))))
+            .map_err(|error| format!("failed to start listing models from {url}: {error}"))?;
+        clients = clients.listing(url, listing);
     }
     if let Some(base) = base {
         clients = clients.unlisted_models(nanocode::HarnessFamily::Codex);
@@ -123,6 +114,33 @@ fn behind_login(clients: ModelClients) -> Result<ModelClients, String> {
         nanocode::claude::ClaudeClient::subscription_or_key(&key)
             .expect("the Anthropic API key was checked when the clients were built")
     }))
+}
+
+fn list(url: &str, key: Option<&str>) -> Result<crate::host::Listed, String> {
+    let ids = fetch_models(url, key)?;
+    if ids.is_empty() {
+        return Err(format!("{url} listed no models"));
+    }
+    Ok(crate::host::Listed {
+        models: ids
+            .iter()
+            .map(|(id, _)| nanocode::Model::Custom(nanocode::CustomModel::new(id)))
+            .collect(),
+        windows: ids
+            .iter()
+            .filter_map(|(id, window)| {
+                match (
+                    id.parse::<nanocode::Model>(),
+                    id.parse::<nanocode::ClaudeModel>(),
+                ) {
+                    (Ok(model), Err(_)) if model.is_custom() => {
+                        window.map(|tokens| (model, tokens))
+                    }
+                    _ => None,
+                }
+            })
+            .collect(),
+    })
 }
 
 fn fetch_models(url: &str, key: Option<&str>) -> Result<Vec<(String, Option<u64>)>, String> {

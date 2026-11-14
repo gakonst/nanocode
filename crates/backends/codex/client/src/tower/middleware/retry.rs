@@ -151,7 +151,9 @@ impl ResponsesRetryPolicy {
             failure.is_checkpoint_missing() && request.previous_response_id().is_some();
         let advice = failure.retry_advice;
         if failure.responses_error().is_some_and(|error| {
-            error.is_terminal_provider_error() || error.is_empty_incomplete()
+            error.is_terminal_provider_error()
+                || error.is_empty_incomplete()
+                || error.cut_output().is_some()
         }) {
             return None;
         }
@@ -336,10 +338,13 @@ impl ResponsesRetryPolicy {
     }
 }
 
-const STREAM_MAX_RETRIES: u32 = 5;
+pub const STREAM_MAX_RETRIES: u32 = 5;
 
 fn reconnectable(error: &ResponsesError) -> bool {
-    if error.is_terminal_provider_error() || error.is_empty_incomplete() {
+    if error.is_terminal_provider_error()
+        || error.is_empty_incomplete()
+        || error.cut_output().is_some()
+    {
         return false;
     }
     match error {

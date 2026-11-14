@@ -21,7 +21,7 @@ pub use call::{BoxError, Layer, Policy, Retry, Retrying, Service, ready};
 #[doc(inline)]
 pub use client::ResponsesClient;
 #[doc(inline)]
-pub use middleware::{DefaultResponsesService, ResponsesRetryPolicy};
+pub use middleware::{DefaultResponsesService, ResponsesRetryPolicy, STREAM_MAX_RETRIES};
 #[doc(inline)]
 pub use service_error::ResponsesServiceError;
 #[doc(inline)]

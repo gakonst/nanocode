@@ -19,15 +19,17 @@ pub fn catalog(clients: &crate::host::ModelClients) -> Vec<Group> {
     let mut groups = HarnessFamily::builtin()
         .into_iter()
         .map(|family| {
-            let models: Vec<ModelSelection> = match clients.codex_models() {
-                Some(served) if family == HarnessFamily::Codex => {
-                    served.iter().copied().map(ModelSelection::Codex).collect()
-                }
-                _ => family.models().collect(),
+            let (models, note): (Vec<ModelSelection>, _) = match clients.codex_models() {
+                Some(Ok(served)) if family == HarnessFamily::Codex => (
+                    served.iter().copied().map(ModelSelection::Codex).collect(),
+                    None,
+                ),
+                Some(Err(note)) if family == HarnessFamily::Codex => (Vec::new(), Some(note)),
+                _ => (family.models().collect(), None),
             };
             Group {
                 title: harness_title(&family),
-                note: None,
+                note,
                 models: models
                     .into_iter()
                     .map(|model| (Route::Native, model, None))

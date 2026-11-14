@@ -153,7 +153,8 @@ impl ModelRun {
         let (recorded_result, transport_continuation_valid) = if let Some(output) = recovered {
             (output, false)
         } else {
-            let request = build(&inline_images(&self.images, sent.clone()).await?)
+            let mut current = sent.clone();
+            let request = build(&inline_images(&self.images, current.clone()).await?)
                 .with_input_trace(trace.clone());
             let preparation_ns = elapsed_ns(started_at);
             let mut outcome = self.client.execute(request).instrument(span.clone()).await;
@@ -161,13 +162,35 @@ impl ModelRun {
                 && error
                     .responses_error()
                     .is_some_and(ResponsesError::is_empty_incomplete)
-                && let Some(omitted) = omit_images(&sent)
+                && let Some(omitted) = omit_images(&current)
             {
-                let request =
-                    build(&inline_images(&self.images, omitted).await?).with_input_trace(trace);
+                current = omitted;
+                images_omitted = true;
+                let request = build(&inline_images(&self.images, current.clone()).await?)
+                    .with_input_trace(trace.clone());
                 outcome = self.client.execute(request).instrument(span.clone()).await;
-                images_omitted = outcome.is_ok();
             }
+            let mut cut = Vec::new();
+            let mut cuts = 0;
+            while cuts < STREAM_MAX_RETRIES
+                && let Err(error) = &outcome
+                && let Some(items) = error.responses_error().and_then(ResponsesError::cut_output)
+            {
+                cuts += 1;
+                let answered = items
+                    .iter()
+                    .any(|item| !matches!(item, ResponseItem::Reasoning { .. }));
+                for item in items {
+                    if answered {
+                        cut.push(item.clone());
+                    }
+                    current.push(item);
+                }
+                let request = build(&inline_images(&self.images, current.clone()).await?)
+                    .with_input_trace(trace.clone());
+                outcome = self.client.execute(request).instrument(span.clone()).await;
+            }
+            images_omitted &= outcome.is_ok();
             let success = match outcome {
                 Ok(success) => success,
                 Err(error) => {
@@ -184,13 +207,14 @@ impl ModelRun {
             let attempt = success.attempt();
             let connection_generation = success.connection_generation();
             let server_reasoning_included = success.server_reasoning_included();
-            let ResponsesOutput::Generation(response) = success.into_output() else {
+            let ResponsesOutput::Generation(mut response) = success.into_output() else {
                 span.record("status", "failed");
                 span.record("otel.status_code", "ERROR");
                 return Err(NanocodeError::InvalidAttemptState {
                     detail: "generation returned a non-generation response",
                 });
             };
+            response.output_items.splice(0..0, cut);
             let output = RecordedModelResult {
                 response,
                 attempt,

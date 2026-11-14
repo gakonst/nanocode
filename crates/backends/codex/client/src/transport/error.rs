@@ -425,10 +425,44 @@ impl ResponsesError {
             let response = &event["response"];
             event["type"] == "response.incomplete"
                 && response["incomplete_details"]["reason"] == "max_output_tokens"
-                && response["usage"]["output_tokens"]
-                    .as_u64()
-                    .is_some_and(|tokens| tokens <= 1)
+                && match response["usage"]["output_tokens"].as_u64() {
+                    Some(1) => true,
+                    Some(0) | None => !response["output"]
+                        .as_array()
+                        .is_some_and(|items| items.iter().any(produced_output)),
+                    Some(_) => false,
+                }
         })
+    }
+
+    #[must_use]
+    pub fn cut_output(&self) -> Option<Vec<crate::client::ResponseItem>> {
+        let Self::Api { event, .. } = self else {
+            return None;
+        };
+        if self.is_empty_incomplete() {
+            return None;
+        }
+        let event = serde_json::from_str::<serde_json::Value>(event).ok()?;
+        let response = &event["response"];
+        if event["type"] != "response.incomplete"
+            || response["incomplete_details"]["reason"] != "max_output_tokens"
+        {
+            return None;
+        }
+        let items = response["output"].as_array()?;
+        if items
+            .iter()
+            .any(|item| !matches!(item["type"].as_str(), Some("reasoning" | "message")))
+        {
+            return None;
+        }
+        items
+            .iter()
+            .filter(|item| produced_output(item))
+            .map(|item| serde_json::from_value(item.clone()).ok())
+            .collect::<Option<Vec<_>>>()
+            .filter(|items| !items.is_empty())
     }
 
     #[must_use]
@@ -643,6 +677,21 @@ impl ResponsesError {
             | Self::EncodeRequest(_)
             | Self::GatewayUnsupported { .. } => {}
         }
+    }
+}
+
+fn produced_output(item: &serde_json::Value) -> bool {
+    match item["type"].as_str() {
+        Some("reasoning" | "message") => ["content", "summary"].iter().any(|key| {
+            item[*key].as_array().is_some_and(|parts| {
+                parts.iter().any(|part| {
+                    part["text"]
+                        .as_str()
+                        .is_some_and(|text| !text.trim().is_empty())
+                })
+            })
+        }),
+        _ => true,
     }
 }
 

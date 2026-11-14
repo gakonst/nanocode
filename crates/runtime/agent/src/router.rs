@@ -420,7 +420,7 @@ impl AgentFactory for RoutedFactory {
                         parent.harness_family()
                     );
                     if let Some(remote) = &remote {
-                        let spawned = futures_util::future::join_all((0..count).map(|_| {
+                        let spawned = nanocode_sync::join_in_order((0..count).map(|_| {
                             Arc::clone(remote).spawn(
                                 parent.clone(),
                                 SpawnOptions::new(),

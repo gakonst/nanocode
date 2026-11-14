@@ -62,12 +62,6 @@ const ALLOWED: &[Allowed] = &[
     },
     Allowed {
         path: "crates/backends/claude/src/claude_bash.rs",
-        call: "tokio::spawn",
-        uses: 5,
-        why: "Claude Code's Bash tool reads and reaps real shell processes from Tokio tasks; the simulator registers no Bash tool",
-    },
-    Allowed {
-        path: "crates/backends/claude/src/claude_bash.rs",
         call: "tokio::time",
         uses: 6,
         why: "Claude Code's Bash tool times real shell processes on Tokio's clock; the simulator registers no Bash tool",
@@ -77,12 +71,6 @@ const ALLOWED: &[Allowed] = &[
         call: "Handle::try_current",
         uses: 1,
         why: "a dropped tool runtime guard cancels its real tool runtime on the caller's Tokio runtime; the simulator builds no tool runtime",
-    },
-    Allowed {
-        path: "crates/backends/claude/src/host_tools.rs",
-        call: "tokio::spawn",
-        uses: 1,
-        why: "Claude Code's host tools run real files and processes in the background on Tokio; the simulator registers no host tools",
     },
     Allowed {
         path: "crates/core/agent/src/agent/handle.rs",
@@ -131,12 +119,6 @@ const ALLOWED: &[Allowed] = &[
         call: "Handle::try_current",
         uses: 2,
         why: "without a host, an Actor's server and a Mailbox hand-off run on the caller's Tokio runtime, and a hand-off outside one delivers in place; both go to an installed host first",
-    },
-    Allowed {
-        path: "crates/core/sync/src/lib.rs",
-        call: "tokio::spawn",
-        uses: 1,
-        why: "without a host, a Recent read runs as a Tokio task whose panic resumes in its reader; detached gives it to an installed host first",
     },
     Allowed {
         path: "crates/core/sync/src/session.rs",

@@ -330,6 +330,10 @@ impl Summaries {
             .filter(|known| known.file == file && known.length == length)
     }
 
+    pub(super) fn known(&self, state_id: &str) -> Option<&Summary> {
+        self.entries.get(state_id)
+    }
+
     pub(super) fn current(&self, state_id: &str, file: &str, length: u64) -> bool {
         self.entries
             .get(state_id)

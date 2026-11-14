@@ -9,14 +9,15 @@ use std::{
 };
 
 use nanocode_durability_core::{
-    KnownSummary, ListedState, ListedSummary, OwnedState, OwnerId, OwnerToken, StoreError,
-    StoreRecord, StoreReplacement, StoreUpdate, StoredState,
+    KnownSummary, ListedState, ListedSummary, OwnedState, OwnerId, OwnerToken, StateSummary,
+    StoreError, StoreRecord, StoreReplacement, StoreUpdate, StoredState,
 };
 
 use nanocode_digest::Sha256;
 
 use super::{
-    CompactionStats, Journal, Replacement, archive, backend, identity, process_alive,
+    CompactionStats, JOURNAL_READ_BUFFER_BYTES, Journal, Replacement, archive, backend, cores,
+    identity, process_alive,
     shared::Shared,
     summaries::{Anchor, Summaries, Summary, raw_summary},
 };
@@ -149,6 +150,19 @@ fn files(directory: &Path) -> Result<Vec<(String, Metadata, PathBuf)>, StoreErro
     }
     files.sort_by_cached_key(|(_, metadata, _)| Reverse(created(metadata)));
     Ok(files)
+}
+
+fn decoded(state_id: &str, known: &Summary) -> Option<(u64, Option<StateSummary>)> {
+    let summary = known
+        .summary
+        .as_deref()
+        .map(|summary| serde_json::from_str(summary.get()))
+        .transpose()
+        .inspect_err(|error| {
+            nanocode_trace::warn!(%error, state_id, "ignoring an unreadable JSONL session summary");
+        })
+        .ok()?;
+    Some((known.revision, summary))
 }
 
 fn created(metadata: &Metadata) -> std::time::SystemTime {
@@ -792,6 +806,7 @@ impl Sessions {
         let listed = self.listed(files)?;
         self.unknown.clear();
         self.release();
+        let mut bytes = 0;
         let listed = listed
             .into_iter()
             .take(limit)
@@ -817,22 +832,47 @@ impl Sessions {
                         .summaries
                         .copied(&state_id, &file, &path, length, revision),
                 };
-                let known = known.and_then(|known| {
-                    let summary = known
-                        .summary
-                        .as_deref()
-                        .map(|summary| serde_json::from_str(summary.get()))
-                        .transpose()
-                        .inspect_err(|error| {
-                            nanocode_trace::warn!(%error, state_id, "ignoring an unreadable JSONL session summary");
-                        })
-                        .ok()?;
-                    Some((known.revision, summary))
-                });
+                bytes += known
+                    .and_then(|known| known.summary.as_ref())
+                    .map_or(0, |summary| summary.get().len());
+                Ok((state_id, known.is_some()))
+            })
+            .collect::<Result<Vec<_>, StoreError>>()?;
+        let summaries = &self.summaries;
+        let decode = |part: &[(String, bool)]| {
+            part.iter()
+                .map(|(state_id, known)| {
+                    decoded(state_id, summaries.known(state_id).filter(|_| *known)?)
+                })
+                .collect::<Vec<_>>()
+        };
+        let workers = cores().min(bytes / JOURNAL_READ_BUFFER_BYTES);
+        let decoded = if workers < 2 {
+            decode(&listed)
+        } else {
+            thread::scope(|scope| {
+                let running = listed
+                    .chunks(listed.len().div_ceil(workers))
+                    .map(|part| scope.spawn(move || decode(part)))
+                    .collect::<Vec<_>>();
+                let mut decoded = Vec::with_capacity(listed.len());
+                for part in running {
+                    decoded.extend(
+                        part.join()
+                            .map_err(|_| backend("a JSONL summary worker stopped"))?,
+                    );
+                }
+                Ok::<_, StoreError>(decoded)
+            })?
+        };
+        let listed = listed
+            .into_iter()
+            .zip(decoded)
+            .map(|((state_id, _), known)| {
                 if known.is_none() {
                     self.unknown.insert(state_id.clone(), None);
                 }
-                Ok(ListedState {
+                ListedState {
                     revision: known.as_ref().map_or(0, |(revision, _)| *revision),
                     summary: match known {
                         Some((_, Some(summary))) => ListedSummary::Listed(summary),
@@ -840,9 +880,9 @@ impl Sessions {
                         None => ListedSummary::Unknown,
                     },
                     state_id,
-                })
+                }
             })
-            .collect::<Result<Vec<_>, StoreError>>()?;
+            .collect();
         self.summaries.settle()?;
         Ok(listed)
     }

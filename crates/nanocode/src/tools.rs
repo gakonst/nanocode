@@ -1,5 +1,5 @@
 pub use nanocode_backend_codex::tools::*;
-pub use nanocode_code_mode::code_mode::{cell_memory, set_cell_memory};
+pub use nanocode_code_mode::code_mode::{cell_memory, set_cell_memory, set_interrupt_checks};
 
 #[cfg(target_family = "wasm")]
 pub use nanocode_tool_runtime::mcp;

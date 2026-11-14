@@ -1,6 +1,9 @@
 use std::{
     collections::{HashMap, VecDeque},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     time::Duration,
 };
 
@@ -19,17 +22,16 @@ use crate::{
 #[cfg(target_family = "wasm")]
 pub const DEFAULT_INTERRUPT_CHECKS: u64 = 10_000;
 
-#[cfg(target_family = "wasm")]
 const EXHAUSTED: &str = "Script stopped: one synchronous run exceeded this host's CPU budget for a cell. Split long loops with await (for example await new Promise((resolve) => setTimeout(resolve, 0))).";
 
 #[cfg(target_family = "wasm")]
-thread_local! {
-    static INTERRUPT_CHECKS: std::cell::Cell<u64> = const { std::cell::Cell::new(DEFAULT_INTERRUPT_CHECKS) };
-}
+static INTERRUPT_CHECKS: AtomicU64 = AtomicU64::new(DEFAULT_INTERRUPT_CHECKS);
 
-#[cfg(target_family = "wasm")]
+#[cfg(not(target_family = "wasm"))]
+static INTERRUPT_CHECKS: AtomicU64 = AtomicU64::new(u64::MAX);
+
 pub fn set_interrupt_checks(checks: u64) {
-    INTERRUPT_CHECKS.set(checks.max(1));
+    INTERRUPT_CHECKS.store(checks.max(1), Ordering::Relaxed);
 }
 
 fn random_seed() -> Result<u64, String> {
@@ -80,7 +82,6 @@ struct Machine {
     results: VecDeque<(u64, String, bool)>,
     held: bool,
     settled: Option<Settled>,
-    #[cfg(target_family = "wasm")]
     slices: u64,
 }
 
@@ -178,10 +179,7 @@ impl Machine {
         instance.resolve(pump, Ok(value)).map_err(failure)?;
         self.phase = Phase::Running;
         self.settled = Some(settled);
-        #[cfg(target_family = "wasm")]
-        {
-            self.slices = 0;
-        }
+        self.slices = 0;
         Ok(())
     }
 
@@ -386,7 +384,6 @@ impl EmbeddedHost {
             results: VecDeque::new(),
             held: false,
             settled: Some(Settled::Checkpoint),
-            #[cfg(target_family = "wasm")]
             slices: 0,
         });
         Ok(())
@@ -500,16 +497,10 @@ impl EmbeddedHost {
         Ok(())
     }
 
-    #[cfg(not(target_family = "wasm"))]
-    async fn sliced(&mut self) {
-        tokio::task::yield_now().await;
-    }
-
-    #[cfg(target_family = "wasm")]
     async fn sliced(&mut self) {
         if self.machine.as_mut().is_some_and(|machine| {
             machine.slices += 1;
-            machine.slices >= INTERRUPT_CHECKS.get()
+            machine.slices >= INTERRUPT_CHECKS.load(Ordering::Relaxed)
         }) {
             let stored = self.state.take_written();
             self.state.send(RuntimeEvent::Error {
@@ -519,6 +510,8 @@ impl EmbeddedHost {
             });
             self.stop();
         }
+        #[cfg(not(target_family = "wasm"))]
+        tokio::task::yield_now().await;
     }
 
     fn stop(&mut self) {

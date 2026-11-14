@@ -65,15 +65,15 @@ pub use crate::embedded::{
 };
 pub use crate::{CodeModeToolObservation, CodeModeToolset};
 pub use local::LocalCells;
+#[cfg(target_family = "wasm")]
+pub use nanocode_code_mode_engine::DEFAULT_INTERRUPT_CHECKS;
 pub use nanocode_code_mode_engine::JournalEntry;
 pub use nanocode_code_mode_engine::bytes;
 use nanocode_code_mode_engine::{
     CellTools, EmbeddedHost as ExecutionWorker, Interrupt, RuntimeEvent,
 };
-#[cfg(target_family = "wasm")]
-pub use nanocode_code_mode_engine::{DEFAULT_INTERRUPT_CHECKS, set_interrupt_checks};
 pub use nanocode_code_mode_engine::{
-    SnapshotStore, cell_memory, set_cell_memory, set_snapshot_store,
+    SnapshotStore, cell_memory, set_cell_memory, set_interrupt_checks, set_snapshot_store,
 };
 use nanocode_tool_contracts::{ToolProcessTraceWire, ToolReceipt};
 pub use replay::{

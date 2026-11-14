@@ -21,7 +21,7 @@ psh-classify.workspace = true
 # nanocode's embedding of the engine and the utilities over a host file system: the
 # shell module is its JS host.
 nanocode-shell = { path = "../../../../core/shell" }
-bytes = "1.12.1"
+bytes = { package = "nanocode-bytes", path = "../../../../core/bytes" }
 
 # The export layer is the one place outside psh-os with `unsafe`: the JS imports and the
 # `no_mangle` exports (D1110). Every use is allowed where it is and says why it is sound.

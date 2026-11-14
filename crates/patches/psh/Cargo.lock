@@ -3,12 +3,6 @@
 version = 4
 
 [[package]]
-name = "bytes"
-version = "1.12.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
-
-[[package]]
 name = "libc"
 version = "0.2.191"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -22,10 +16,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "nanocode-bytes"
+version = "0.7.0"
+
+[[package]]
 name = "nanocode-shell"
 version = "0.7.0"
 dependencies = [
- "bytes",
+ "nanocode-bytes",
  "psh-classify",
  "psh-engine",
  "psh-syntax",
@@ -107,7 +105,7 @@ dependencies = [
 name = "psh-wasm"
 version = "0.0.0"
 dependencies = [
- "bytes",
+ "nanocode-bytes",
  "nanocode-shell",
  "psh-classify",
  "psh-syntax",
@@ -117,7 +115,7 @@ dependencies = [
 name = "psh-wasm-core"
 version = "0.0.0"
 dependencies = [
- "bytes",
+ "nanocode-bytes",
  "nanocode-shell",
  "psh-classify",
  "psh-syntax",

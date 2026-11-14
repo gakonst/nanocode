@@ -11,8 +11,6 @@ use std::{
 
 const MAX_SOURCE: usize = 16 * 1024 * 1024;
 const MAX_IMAGE: usize = 5 * 1024 * 1024;
-const MAX_DECODE_BYTES: u64 = 256 * 1024 * 1024;
-const MAX_DIMENSION: u32 = 32768;
 const MAX_MEDIA: usize = 20 * 1024 * 1024;
 const MAX_PDF: u64 = 20 * 1024 * 1024;
 const PDF_PAGES_AT_ONCE: u32 = 10;
@@ -109,25 +107,9 @@ fn image_block(bytes: &[u8]) -> Result<ToolResultBlock, String> {
             nanocode_image::DecodeError::UnknownFormat
         )
     })?;
-    let mut mime = match format {
-        nanocode_image::Format::Png => "image/png",
-        nanocode_image::Format::Jpeg => "image/jpeg",
-        nanocode_image::Format::Gif => "image/gif",
-        nanocode_image::Format::WebP => "image/webp",
-        _ => return Err("unsupported image format; use PNG, JPEG, GIF or WebP".into()),
-    };
-
-    let limits = nanocode_image::Limits {
-        alloc_bytes_max: MAX_DECODE_BYTES,
-        dimension_max: Some(MAX_DIMENSION),
-    };
-    let decoded = nanocode_image::Decoder::new(bytes, format, limits)
-        .and_then(|mut decoder| {
-            decoder.reserve()?;
-            decoder.decode()
-        })
-        .map_err(|e| format!("invalid or oversized image: {e}"))?
-        .image;
+    let source = super::image::media_type(format)?;
+    let mut mime = source.unwrap_or("image/png");
+    let decoded = super::image::decode(bytes, format)?;
 
     let pixels = f64::from(decoded.width()) * f64::from(decoded.height());
     let scale = (1568.0 / f64::from(decoded.width().max(decoded.height())))
@@ -143,7 +125,7 @@ fn image_block(bytes: &[u8]) -> Result<ToolResultBlock, String> {
         decoded
     };
     let mut encoded = bytes.to_vec();
-    if scale < 1.0 {
+    if scale < 1.0 || source.is_none() {
         encoded.clear();
         encoded = nanocode_image::encode_png(&resized);
         mime = "image/png";

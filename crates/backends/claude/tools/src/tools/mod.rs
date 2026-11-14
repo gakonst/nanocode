@@ -1,5 +1,6 @@
 pub mod bash;
 pub mod host;
+pub mod image;
 pub mod input;
 pub mod tasks;
 pub mod text_files;

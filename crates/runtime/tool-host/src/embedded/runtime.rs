@@ -168,10 +168,11 @@ impl EmbeddedToolRuntime {
             }
         });
         definitions.retain(|definition| {
-            !self
-                .local
-                .iter()
-                .any(|tool| tool.name.as_ref() == definition.name())
+            !self.hidden_host_tool(definition.name())
+                && !self
+                    .local
+                    .iter()
+                    .any(|tool| tool.name.as_ref() == definition.name())
         });
         crate::code_mode_order::sort_definitions(&mut definitions);
         self.callable_tool_names.store(Arc::new(
@@ -376,6 +377,12 @@ impl EmbeddedToolRuntime {
         false
     }
 
+    fn hidden_host_tool(&self, name: &str) -> bool {
+        self.policies
+            .iter()
+            .any(|policy| policy.hidden_host_tool(name))
+    }
+
     #[must_use]
     pub fn is_code_only(&self) -> bool {
         !self.direct
@@ -396,15 +403,13 @@ impl EmbeddedToolRuntime {
         if let (Some(host), Some(session_id)) = (&self.host, &self.session_id)
             && let Ok(definitions) = host.tool_definitions(session_id)
         {
-            let found = definitions
-                .iter()
-                .any(|definition| definition.name() == name);
-            self.callable_tool_names.store(Arc::new(
-                definitions
-                    .into_iter()
-                    .map(|definition| definition.name().to_owned())
-                    .collect(),
-            ));
+            let names = definitions
+                .into_iter()
+                .map(|definition| definition.name().to_owned())
+                .filter(|name| !self.hidden_host_tool(name))
+                .collect::<HashSet<_>>();
+            let found = names.contains(name);
+            self.callable_tool_names.store(Arc::new(names));
             return found;
         }
         false

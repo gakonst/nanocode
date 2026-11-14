@@ -24,7 +24,7 @@ use nanocode_tool_host::{
 };
 use serde_json::{Value, json};
 
-const IMAGE_EXTENSIONS: [&str; 5] = ["png", "jpg", "jpeg", "gif", "webp"];
+const IMAGE_EXTENSIONS: [&str; 6] = ["png", "jpg", "jpeg", "gif", "webp", "bmp"];
 
 const BACKGROUND_NOTE: &str = "Nothing notifies you when it finishes, and it stops if this session's host shuts down, which can happen once your turn ends: check on it with TaskOutput (with block: true it waits up to timeout milliseconds) and stop it with TaskStop, and wait for it before your final response if you need its result.";
 
@@ -187,22 +187,24 @@ impl HostFileTool {
             .read_bytes(path)
             .await?
             .ok_or_else(|| self.missing())?;
-        let media_type = match nanocode_image::guess_format(&bytes) {
-            Some(nanocode_image::Format::Png) => "image/png",
-            Some(nanocode_image::Format::Jpeg) => "image/jpeg",
-            Some(nanocode_image::Format::Gif) => "image/gif",
-            Some(nanocode_image::Format::WebP) => "image/webp",
-            Some(_) => return Err("unsupported image format; use PNG, JPEG, GIF or WebP".into()),
-            None => {
-                return Err(format!(
-                    "invalid image: {}",
-                    nanocode_image::DecodeError::UnknownFormat
-                ));
-            }
+        let format = nanocode_image::guess_format(&bytes).ok_or_else(|| {
+            format!(
+                "invalid image: {}",
+                nanocode_image::DecodeError::UnknownFormat
+            )
+        })?;
+        let (media_type, encoded) = match crate::tools::image::media_type(format)? {
+            Some(media_type) => (media_type, STANDARD.encode(&bytes)),
+            None => (
+                "image/png",
+                STANDARD.encode(nanocode_image::encode_png(&crate::tools::image::decode(
+                    &bytes, format,
+                )?)),
+            ),
         };
         Ok(
             crate::claude_output::media(vec![ToolOutputContent::InputImage {
-                image_url: format!("data:{media_type};base64,{}", STANDARD.encode(&bytes)),
+                image_url: format!("data:{media_type};base64,{encoded}"),
                 detail: ImageDetail::Auto,
             }])
             .with_metadata(json!({"kind": "image", "bytes": bytes.len()})),

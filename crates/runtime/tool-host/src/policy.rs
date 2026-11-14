@@ -44,6 +44,10 @@ pub trait CodeModeToolPolicy: Send + Sync {
         false
     }
 
+    fn hidden_host_tool(&self, _name: &str) -> bool {
+        false
+    }
+
     fn workspace_routing(&self, _name: &str) -> Option<WorkspaceToolRouting> {
         None
     }

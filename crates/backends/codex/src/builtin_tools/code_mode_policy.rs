@@ -50,6 +50,10 @@ impl CodeModeToolPolicy for StandardToolPolicy {
         .any(|tool| tool.name() == name)
     }
 
+    fn hidden_host_tool(&self, name: &str) -> bool {
+        ["Bash", "Read", "Edit", "Write", "TaskOutput", "TaskStop"].contains(&name)
+    }
+
     fn append_observation_content(
         &self,
         calls: &[CodeModeToolObservation<'_>],

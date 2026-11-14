@@ -12,6 +12,7 @@ description = "Claude tool definitions and handlers independent of the Messages 
 
 [dependencies]
 nanocode-home.workspace = true
+nanocode-image.workspace = true
 nanocode-platform.workspace = true
 nanocode-sync.workspace = true
 nanocode-sys.workspace = true
@@ -20,7 +21,6 @@ serde.workspace = true
 serde_json.workspace = true
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-nanocode-image.workspace = true
 nanocode-jpeg.workspace = true
 
 [target.'cfg(unix)'.dependencies]

@@ -56,6 +56,7 @@ const ORIGINS: [Origin; 2] = [Origin::Alarm, Origin::Completion];
 pub enum TurnMutation {
     None,
     AckBufferedAdmission,
+    ArchiveDropsEvents,
     DurableSeqBeforeCommit,
     FinishBeforeRow,
     GateReleasesEarly,
@@ -69,9 +70,10 @@ pub enum TurnMutation {
 }
 
 impl TurnMutation {
-    const ALL: [Self; 12] = [
+    const ALL: [Self; 13] = [
         Self::None,
         Self::AckBufferedAdmission,
+        Self::ArchiveDropsEvents,
         Self::DurableSeqBeforeCommit,
         Self::FinishBeforeRow,
         Self::GateReleasesEarly,
@@ -94,6 +96,7 @@ impl TurnMutation {
         match self {
             Self::None => "none",
             Self::AckBufferedAdmission => "ack_buffered_admission",
+            Self::ArchiveDropsEvents => "archive_drops_events",
             Self::DurableSeqBeforeCommit => "durable_seq_before_commit",
             Self::FinishBeforeRow => "finish_before_row",
             Self::GateReleasesEarly => "gate_releases_early",
@@ -119,6 +122,7 @@ pub enum Invariant {
     CellLost,
     CellModelOnce,
     CellRows,
+    EventKept,
     ExternalOnce,
     FinishOnce,
     IdempotentKnown,
@@ -136,6 +140,7 @@ impl Invariant {
             Self::CellLost => "cell_lost",
             Self::CellModelOnce => "cell_model_once",
             Self::CellRows => "cell_rows",
+            Self::EventKept => "event_kept",
             Self::ExternalOnce => "external_once",
             Self::FinishOnce => "finish_once",
             Self::IdempotentKnown => "idempotent_known",
@@ -150,6 +155,7 @@ impl Invariant {
 #[derive(Clone, Copy, Debug)]
 pub struct TurnOptions {
     pub calm: bool,
+    pub event_bytes: Option<usize>,
     pub long: Option<u64>,
     pub retain: Option<usize>,
     pub snapshot_ratio: usize,
@@ -158,6 +164,7 @@ pub struct TurnOptions {
     pub mutation: TurnMutation,
     pub policy: PolicyKind,
     pub row_limit: Option<usize>,
+    pub reopen_row_limit: Option<usize>,
     pub protections: Protections,
     pub verbose: bool,
 }
@@ -709,6 +716,7 @@ struct Oracle {
     active: BTreeMap<String, String>,
     applied_external: BTreeMap<String, u64>,
     asked: BTreeMap<(String, u64), u64>,
+    committed: BTreeMap<(String, EventId), String>,
     finishes: BTreeMap<String, String>,
     idempotent: BTreeMap<String, String>,
     idempotent_logical: BTreeMap<String, u64>,
@@ -970,6 +978,30 @@ impl Sim {
             .unwrap_or_else(|error| panic!("a committed turn log row does not decode: {error}"))
     }
 
+    fn judge_history(&mut self, scope: &str, state: &ScopeState) {
+        let held = state
+            .events
+            .iter()
+            .filter_map(|(id, text)| id.map(|id| (id, text)))
+            .collect::<BTreeMap<_, _>>();
+        let lost = self
+            .oracle
+            .committed
+            .iter()
+            .find(|((owner, id), text)| owner == scope && held.get(id) != Some(text))
+            .map(|((_, id), text)| {
+                let held = held.get(id).map_or("nothing", |held| held.as_str());
+                format!(
+                    "event {id:?} of {scope} was committed as {}, but history after the reopen holds {}",
+                    &text[..text.len().min(48)],
+                    &held[..held.len().min(48)]
+                )
+            });
+        if let Some(message) = lost {
+            self.wrong(Invariant::EventKept, message);
+        }
+    }
+
     fn judge_observed(&mut self) {
         let mut durable: BTreeMap<(String, EventId), String> = BTreeMap::new();
         let policy = self.options.policy;
@@ -1015,6 +1047,19 @@ impl Sim {
             });
         if let Some(message) = diverged {
             self.wrong(Invariant::SeqUnique, message);
+        }
+        if policy == PolicyKind::Turnlog {
+            let lost = self
+                .oracle
+                .committed
+                .keys()
+                .find(|key| !durable.contains_key(*key))
+                .map(|(scope, id)| {
+                    format!("event {id:?} of {scope} was committed, but the durable log no longer holds it")
+                });
+            if let Some(message) = lost {
+                self.wrong(Invariant::EventKept, message);
+            }
         }
     }
 
@@ -1130,7 +1175,11 @@ impl Sim {
                 TurnLogPolicy::new(
                     Arc::clone(&self.disk),
                     self.options.protections,
-                    self.options.row_limit,
+                    if incarnation.is_multiple_of(2) {
+                        self.options.reopen_row_limit.or(self.options.row_limit)
+                    } else {
+                        self.options.row_limit
+                    },
                     self.options.snapshot_ratio,
                     if self.options.mutation == TurnMutation::RetireSkipped {
                         None
@@ -1150,7 +1199,9 @@ impl Sim {
                 .state_bytes(
                     self.options.state_bytes,
                     self.options.mutation == TurnMutation::SnapshotKept,
-                ),
+                    self.options.mutation == TurnMutation::ArchiveDropsEvents,
+                )
+                .single_snapshot(self.options.reopen_row_limit.is_none()),
             ),
         };
         let mut object = Object {
@@ -1167,6 +1218,9 @@ impl Sim {
         for scope in scopes {
             let mut log = TickLog { disk: &self.disk };
             let state = object.policy.load(&mut log, &scope);
+            if self.options.policy == PolicyKind::Turnlog {
+                self.judge_history(&scope, &state);
+            }
             object.scopes.insert(scope, state);
         }
         self.stats.cold_reads += self.disk.with(|rows| std::mem::take(&mut rows.reads));
@@ -1259,6 +1313,13 @@ impl Sim {
     }
 
     fn emit(&mut self, scope: &str, text: String) {
+        let text = match self.options.event_bytes {
+            Some(bytes) => {
+                let padding = crate::turnlog::padding(&text, bytes);
+                format!("{text}:{padding}")
+            }
+            None => text,
+        };
         let mutated = self.options.mutation == TurnMutation::DurableSeqBeforeCommit;
         let object = self.object();
         let state = object.scopes.entry(scope.to_owned()).or_default();
@@ -1686,7 +1747,12 @@ impl Sim {
                     self.oracle.terminal.insert(request.clone(), status);
                     self.finish(&request, &text);
                 }
-                Seen::Event { .. } | Seen::Other | Seen::Restart => {}
+                Seen::Event { id, text } => {
+                    if self.options.policy == PolicyKind::Turnlog {
+                        self.oracle.committed.insert((scope.to_owned(), id), text);
+                    }
+                }
+                Seen::Other | Seen::Restart => {}
             }
         }
     }

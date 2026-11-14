@@ -72,7 +72,7 @@ type Caught = BTreeMap<Invariant, (u64, u64, (u64, u64))>;
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: nanocode-sim --tidy | (--seed S | --seeds A..B) [--scenario store|agents|turns|runtime|websocket|http_server|alloc] [--ops N] [--twice] [--mutation {}] [--records content|slots] [--verbose]\n       turns: [--mutation {}] [--without {}]... [--live-seqs temporary|floor|gap|reuse] [--calm] [--policy reference|turnlog] [--row-limit BYTES] [--long TURNS] [--snapshot-ratio K] [--snapshot-rows N] [--retain TURNS] [--state-bytes N]\n       runtime: [--store memory|kv] [--calm] [--wire transport|http] [--mutation {}]\n       websocket: [--mutation {}]
+        "usage: nanocode-sim --tidy | (--seed S | --seeds A..B) [--scenario store|agents|turns|runtime|websocket|http_server|alloc] [--ops N] [--twice] [--mutation {}] [--records content|slots] [--verbose]\n       turns: [--mutation {}] [--without {}]... [--live-seqs temporary|floor|gap|reuse] [--calm] [--policy reference|turnlog] [--row-limit BYTES] [--reopen-row-limit BYTES] [--long TURNS] [--snapshot-ratio K] [--snapshot-rows N] [--retain TURNS] [--state-bytes N] [--event-bytes N]\n       runtime: [--store memory|kv] [--calm] [--wire transport|http] [--mutation {}]\n       websocket: [--mutation {}]
        http_server: [--mutation {}]
        alloc: [--mutation overstate_size|forget_free|scribble]",
         Mutation::names(),
@@ -106,6 +106,7 @@ fn parse_args(args: &[String]) -> Option<Args> {
     let mut mutation = None;
     let mut turns = TurnOptions {
         calm: false,
+        event_bytes: None,
         long: None,
         retain: None,
         snapshot_ratio: 2,
@@ -114,6 +115,7 @@ fn parse_args(args: &[String]) -> Option<Args> {
         mutation: TurnMutation::None,
         policy: PolicyKind::Reference,
         row_limit: None,
+        reopen_row_limit: None,
         protections: Protections::ALL,
         verbose: false,
     };
@@ -132,11 +134,13 @@ fn parse_args(args: &[String]) -> Option<Args> {
             "--wire" => whole.wire = WireKind::parse(rest.next()?)?,
             "--policy" => turns.policy = PolicyKind::parse(rest.next()?)?,
             "--row-limit" => turns.row_limit = Some(rest.next()?.parse().ok()?),
+            "--reopen-row-limit" => turns.reopen_row_limit = Some(rest.next()?.parse().ok()?),
             "--long" => turns.long = Some(rest.next()?.parse().ok()?),
             "--snapshot-ratio" => turns.snapshot_ratio = rest.next()?.parse().ok()?,
             "--snapshot-rows" => turns.snapshot_rows = Some(rest.next()?.parse().ok()?),
             "--retain" => turns.retain = Some(rest.next()?.parse().ok()?),
             "--state-bytes" => turns.state_bytes = Some(rest.next()?.parse().ok()?),
+            "--event-bytes" => turns.event_bytes = Some(rest.next()?.parse().ok()?),
             "--without" => turns.protections = turns.protections.without(rest.next()?)?,
             "--live-seqs" => turns.protections.live_seqs = LiveSeqs::parse(rest.next()?)?,
             "--seed" | "--seeds" => seeds = Some(parse_seeds(rest.next()?)?),
@@ -241,6 +245,9 @@ fn replay(seed: u64, args: &Args) -> String {
         if let Some(limit) = args.turns.row_limit {
             command.push_str(&format!(" --row-limit {limit}"));
         }
+        if let Some(limit) = args.turns.reopen_row_limit {
+            command.push_str(&format!(" --reopen-row-limit {limit}"));
+        }
         if let Some(turns) = args.turns.long {
             command.push_str(&format!(" --long {turns}"));
         }
@@ -255,6 +262,9 @@ fn replay(seed: u64, args: &Args) -> String {
         }
         if let Some(bytes) = args.turns.state_bytes {
             command.push_str(&format!(" --state-bytes {bytes}"));
+        }
+        if let Some(bytes) = args.turns.event_bytes {
+            command.push_str(&format!(" --event-bytes {bytes}"));
         }
         for name in args.turns.protections.off() {
             command.push_str(" --without ");

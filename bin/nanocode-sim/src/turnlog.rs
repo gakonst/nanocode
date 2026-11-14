@@ -4,8 +4,10 @@ use std::{
     sync::Arc,
 };
 
+use nanocode_compression::miniz::{Format, Level, compress};
 use nanocode_durability_core::{StoreError, StoreFuture};
 use nanocode_sync::FutureExt;
+use nanocode_sys::base64::STANDARD_NO_PAD;
 use nanocode_turnlog::{
     Compaction, EffectClass, LogHost, Outcome as LogOutcome, Phase, Point as LogPoint,
     Record as LogRecord, Status as LogStatus, TurnLog,
@@ -20,9 +22,59 @@ use crate::{
     },
 };
 
+const WINDOW: usize = 1 << 15;
+
 pub struct SimHost {
     disk: Arc<Disk>,
     kept: bool,
+    limit: Option<usize>,
+    short: bool,
+}
+
+fn window_only(archived: &[(u64, String)], limit: Option<usize>) -> Vec<(u64, String)> {
+    let Some((first, _)) = archived.first() else {
+        return Vec::new();
+    };
+    let plain = nanocode_turnlog::rows(archived)
+        .ok()
+        .and_then(|rows| rows.into_iter().next())
+        .map(|row| row.plain)
+        .unwrap_or_default();
+    let floor = plain.len().saturating_sub(WINDOW);
+    let (mut start, mut cut) = (plain.len(), plain.len());
+    while start > floor {
+        let Some(newline) = plain[..cut].rfind('\n') else {
+            return archived.to_vec();
+        };
+        let boundary = newline + 1;
+        if nanocode_turnlog::decode(&plain[boundary..start]).is_ok() {
+            start = boundary;
+        }
+        cut = newline;
+    }
+    let mut body = String::from("a");
+    STANDARD_NO_PAD.encode_string(
+        compress(&plain.as_bytes()[start..], Level::DEFAULT, Format::Raw),
+        &mut body,
+    );
+    let mut parts = Vec::new();
+    let mut rest = body.as_str();
+    while !rest.is_empty() {
+        let room = match (limit, parts.is_empty()) {
+            (Some(limit), true) => limit,
+            (Some(limit), false) => limit - 1,
+            (None, _) => rest.len(),
+        };
+        let (part, next) = rest.split_at(rest.len().min(room));
+        let seq = first + parts.len() as u64;
+        parts.push(if parts.is_empty() {
+            (seq, part.to_owned())
+        } else {
+            (seq, format!("+{part}"))
+        });
+        rest = next;
+    }
+    parts
 }
 
 impl LogHost for SimHost {
@@ -104,6 +156,21 @@ impl LogHost for SimHost {
                 "the archive of {scope} row {first} is not a suffix of its snapshot holding every event"
             );
         }
+        let mut compaction = compaction;
+        let shortened;
+        if self.short
+            && let Some((first, _)) = compaction.archived.first()
+        {
+            let end = compaction
+                .dropped
+                .end
+                .max(first + compaction.archived.len() as u64);
+            shortened = window_only(compaction.archived, self.limit);
+            compaction = Compaction {
+                archived: &shortened,
+                dropped: first + shortened.len() as u64..end,
+            };
+        }
         let inserted = self.disk.with(|disk| {
             let inserted = disk.insert(scope, rows);
             if inserted && !kept {
@@ -125,7 +192,7 @@ impl LogHost for SimHost {
     }
 }
 
-fn padding(scope: &str, bytes: usize) -> String {
+pub fn padding(scope: &str, bytes: usize) -> String {
     let mut seed = scope.bytes().fold(0x9e37_79b9_7f4a_7c15_u64, |hash, byte| {
         (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
     });
@@ -169,6 +236,7 @@ pub struct TurnLogPolicy {
     retain: Option<usize>,
     retention: Option<usize>,
     rows: Option<usize>,
+    single: bool,
     state: Option<usize>,
     unsealed: BTreeSet<String>,
 }
@@ -185,7 +253,12 @@ impl TurnLogPolicy {
         Self {
             bound: None,
             disk: Arc::clone(&disk),
-            host: Arc::new(SimHost { disk, kept: false }),
+            host: Arc::new(SimHost {
+                disk,
+                kept: false,
+                limit,
+                short: false,
+            }),
             limit,
             logs: BTreeMap::new(),
             ratio,
@@ -194,17 +267,25 @@ impl TurnLogPolicy {
             retain,
             retention,
             rows: None,
+            single: true,
             state: None,
             unsealed: BTreeSet::new(),
         }
     }
 
-    pub fn state_bytes(mut self, bytes: Option<usize>, kept: bool) -> Self {
+    pub fn state_bytes(mut self, bytes: Option<usize>, kept: bool, short: bool) -> Self {
         self.state = bytes;
         self.host = Arc::new(SimHost {
             disk: Arc::clone(&self.disk),
             kept,
+            limit: self.limit,
+            short,
         });
+        self
+    }
+
+    pub const fn single_snapshot(mut self, single: bool) -> Self {
+        self.single = single;
         self
     }
 
@@ -471,7 +552,7 @@ impl TurnDurability for TurnLogPolicy {
                 "a cold open of {scope} reads {loaded} rows past a snapshot row bound of {bound}"
             );
         }
-        if self.state.is_some() {
+        if self.state.is_some() && self.single {
             let snapshots = self.disk.with(|rows| {
                 rows.view(scope)
                     .iter()

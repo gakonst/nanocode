@@ -195,10 +195,15 @@ pub(crate) fn install_default_tools_with_providers(
         .build()
         .map_err(|error| NanocodeError::InvalidRequest(error.to_string()))?;
     selected = selected.add_shared_tools(additive)?;
-    let delivery = match (handle.root_session_id() != handle.session_id(), headless) {
-        (true, _) => crate::claude_bash::Delivery::EndsWithTurn,
-        (false, true) => crate::claude_bash::Delivery::Held,
-        (false, false) => crate::claude_bash::Delivery::Prompted,
+    let delivery = match (
+        handle.root_session_id() != handle.session_id(),
+        headless,
+        direct,
+    ) {
+        (true, _, _) => crate::claude_bash::Delivery::EndsWithTurn,
+        (false, true, true) => crate::claude_bash::Delivery::Merged,
+        (false, true, false) => crate::claude_bash::Delivery::Held,
+        (false, false, _) => crate::claude_bash::Delivery::Prompted,
     };
     let bound = jobs.clone();
     let reaped = jobs.clone();
@@ -217,6 +222,16 @@ pub(crate) fn install_default_tools_with_providers(
     };
     let tools = match delivery {
         crate::claude_bash::Delivery::Held => tools.turn_hold(move || held.hold()),
+        crate::claude_bash::Delivery::Merged => {
+            let merged = held.clone();
+            tools.turn_hold(move || held.hold()).round_notices(move || {
+                merged
+                    .round_notices()
+                    .iter()
+                    .map(|notice| crate::claude_bash::round_notice(notice))
+                    .collect()
+            })
+        }
         _ => tools,
     };
     Ok(if !matches!(delivery, crate::claude_bash::Delivery::Prompted) {

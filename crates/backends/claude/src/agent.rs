@@ -222,6 +222,7 @@ type AgentFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
 type ToolResultFuture = AgentFuture<'static, std::result::Result<ClaudeToolReply, String>>;
 type Handler = Arc<dyn Fn(Value, ClaudeToolInvocation) -> ToolResultFuture + Send + Sync>;
 type ToolCleanup = Arc<dyn Fn() -> BackendFuture<()> + Send + Sync>;
+type RoundNotices = Arc<dyn Fn() -> Vec<String> + Send + Sync>;
 type CodeQuiet = Arc<dyn Fn() -> bool + Send + Sync>;
 type CodeTurnCleanup = Arc<dyn Fn(ClaudeToolProgress) -> BackendFuture<()> + Send + Sync>;
 type NestedToolLookup = Arc<dyn Fn(&str) -> bool + Send + Sync>;
@@ -337,6 +338,7 @@ pub struct ClaudeTools {
     pub(crate) shared_shutdown: Option<ToolCleanup>,
     pub(crate) agent_bound: Vec<AgentBound>,
     pub(crate) turn_hold: Vec<ToolCleanup>,
+    pub(crate) round_notices: Vec<RoundNotices>,
     pub(crate) working_directory: Option<Arc<Atom<std::path::PathBuf>>>,
 }
 impl nanocode_tools::ToolCollection for ClaudeTools {
@@ -452,6 +454,15 @@ impl ClaudeTools {
         Fut: crate::ToolFuture<Output = ()> + 'static,
     {
         self.turn_hold.push(Arc::new(move || Box::pin(hold())));
+        self
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) fn round_notices(
+        mut self,
+        notices: impl Fn() -> Vec<String> + Send + Sync + 'static,
+    ) -> Self {
+        self.round_notices.push(Arc::new(notices));
         self
     }
 
@@ -1475,6 +1486,7 @@ impl ClaudeBuilder {
         let mut code_quiet = Vec::new();
         let mut agent_bound = Vec::new();
         let mut turn_hold = Vec::new();
+        let mut round_notices = Vec::new();
         let mut working_directory = None;
         let mut nested_tools = None;
         let mut recovery = None;
@@ -1494,6 +1506,7 @@ impl ClaudeBuilder {
             code_quiet.extend(native.code_quiet);
             agent_bound.extend(native.agent_bound);
             turn_hold.extend(native.turn_hold);
+            round_notices.extend(native.round_notices);
             working_directory = native.working_directory;
         }
 
@@ -1689,6 +1702,7 @@ impl ClaudeBuilder {
                 shared_shutdown: None,
                 agent_bound: Vec::new(),
                 turn_hold: Vec::new(),
+                round_notices: Vec::new(),
                 working_directory: None,
             };
             let adapted = adapter(catalog)?;
@@ -1712,6 +1726,7 @@ impl ClaudeBuilder {
             code_quiet.extend(adapted.code_quiet);
             agent_bound.extend(adapted.agent_bound);
             turn_hold.extend(adapted.turn_hold);
+            round_notices.extend(adapted.round_notices);
             working_directory = adapted.working_directory.or(working_directory);
             self.client_tool_search = false;
         }
@@ -1864,6 +1879,7 @@ impl ClaudeBuilder {
             code_turn_settle,
             code_quiet,
             turn_hold,
+            round_notices,
             working_directory: working_directory.map(crate::environment::WorkingDirectory::new),
             nested_tools,
             recovery,
@@ -3468,6 +3484,7 @@ struct State {
     code_turn_settle: Vec<ToolCleanup>,
     code_quiet: Vec<CodeQuiet>,
     turn_hold: Vec<ToolCleanup>,
+    round_notices: Vec<RoundNotices>,
     working_directory: Option<crate::environment::WorkingDirectory>,
     lifecycle_opened: Atom<Option<String>>,
     subagent_type: Option<String>,
@@ -8057,6 +8074,12 @@ impl State {
                 let results: Vec<_> = results.into_iter().map(Option::unwrap).collect();
                 pending.push(Message::tool_results(results).into());
                 if self.upstream_context {
+                    let notices = self
+                        .round_notices
+                        .iter()
+                        .flat_map(|notices| notices())
+                        .map(|notice| format!("{notice}\n\n"))
+                        .collect::<String>();
                     let update = self
                         .working_directory
                         .as_ref()
@@ -8072,7 +8095,7 @@ impl State {
                         Message::text(
                             Role::System,
                             format!(
-                                "{update}<total_tokens>{} tokens left</total_tokens>",
+                                "{notices}{update}<total_tokens>{} tokens left</total_tokens>",
                                 TOKEN_BUDGET.saturating_sub(used)
                             ),
                         )

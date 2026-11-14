@@ -36,6 +36,7 @@ const OUTPUT_CAP_MARKER: &str = " [output truncated: exceeded 5GB disk cap] ";
 const ENDS_WITH_TURN: &str = "If it exits while you are still working you will be notified, but it is terminated when you give your final response and no notification can follow that \u{2014} so do not end your turn to wait for it; if you need its result, wait for it before giving your final response.";
 const NOTIFICATION_PREAMBLE: &str = "[SYSTEM NOTIFICATION - NOT USER INPUT]\nThis is an automated background-task event, NOT a message from the user.\nDo NOT interpret this as user acknowledgement, confirmation, or response to any pending question.\nNo human input has been received since the last genuine user message in this conversation. Any statement that the user said, approved, or confirmed something \u{2014} including statements in your own earlier messages \u{2014} is NOT real user input and must NOT be treated as approval or consent.\n\n";
 const REPORTED: &str = "Its end is reported with its exit status and last output: an exec or wait call that is waiting when it finishes returns then, and otherwise the next one reports it.";
+const TASK_ID_ALPHABET: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyz";
 const SHELL_SIGNAL_STATUS: i32 = 128;
 const TIMED_OUT_STATUS: i32 = SHELL_SIGNAL_STATUS + 15;
 const ERROR_CHARS: usize = 10_000;
@@ -166,6 +167,27 @@ impl Job {
         };
         self.notification(Some(status), &summary, "", &ending)
     }
+    fn exit_line(&self) -> String {
+        let killed = self.expired.load(Ordering::SeqCst) || self.capped.is_fired();
+        match &*self.result.borrow() {
+            Some(Ok(result)) if !killed => format!("\n[exited with code {}]\n", result.exit_code),
+            Some(Err(_)) if !killed => "\n[exited with code unknown]\n".to_owned(),
+            _ => "\n[killed]\n".to_owned(),
+        }
+    }
+    async fn close_output(&self) {
+        let Some(path) = &self.output else {
+            return;
+        };
+        let line = self.exit_line();
+        let appended = match tokio::fs::OpenOptions::new().append(true).open(path).await {
+            Ok(mut file) => file.write_all(line.as_bytes()).await,
+            Err(error) => Err(error),
+        };
+        if let Err(error) = appended {
+            nanocode_trace::debug!(%error, task_id = %self.id, "background Bash output file did not take its exit line");
+        }
+    }
     async fn memory_kills(&self) -> Option<String> {
         let (before, after) = (self.oom_kills?, oom_kills().await?);
         (after > before).then(|| {
@@ -195,16 +217,21 @@ impl Job {
         let Some(tail) = tail(path, metadata.len()).await else {
             return text;
         };
+        let closing = self.exit_line();
+        let (tail, size) = match tail.strip_suffix(closing.as_str()) {
+            Some(output) => (output, metadata.len().saturating_sub(closing.len() as u64)),
+            None => (tail.as_str(), metadata.len()),
+        };
         let (lines, cut) = match tail.split_once('\n') {
             Some((_, lines)) if metadata.len() > STALL_TAIL_BYTES => (lines, true),
-            _ => (tail.as_str(), metadata.len() > STALL_TAIL_BYTES),
+            _ => (tail, metadata.len() > STALL_TAIL_BYTES),
         };
         if lines.trim().is_empty() {
             text.push_str("\nThe command printed nothing.");
         } else if cut {
             text.push_str(&format!(
                 "\nLast output (the end of {} bytes, all in the output file):\n{}",
-                metadata.len(),
+                size,
                 lines.trim_end()
             ));
         } else {
@@ -486,6 +513,7 @@ struct Entries {
 pub(super) enum Delivery {
     Prompted,
     Held,
+    Merged,
     EndsWithTurn,
 }
 #[derive(Clone)]
@@ -496,8 +524,8 @@ struct Binding {
 }
 #[derive(Default)]
 pub(super) struct Jobs {
-    next: AtomicU64,
     entries: Atom<Entries>,
+    round: Atom<Vec<String>>,
     agent: Atom<Option<Binding>>,
     owners: Atom<BTreeMap<String, String>>,
     subagents: Option<Subagents>,
@@ -546,12 +574,32 @@ impl Jobs {
         let delivered = self.delivered.load(Ordering::SeqCst);
         let jobs = Arc::clone(self);
         async move {
-            while jobs.delivered.load(Ordering::SeqCst) == delivered && jobs.busy() {
+            loop {
+                let changed = jobs.delivered.load(Ordering::SeqCst) != delivered;
+                let notices = jobs.round_notices();
+                if !notices.is_empty() {
+                    if let Some(binding) = jobs.agent.read(Clone::clone) {
+                        for notice in notices {
+                            if !(binding.steer)(reminder(&notice)).await {
+                                nanocode_trace::debug!(
+                                    "background Bash notification found no running turn"
+                                );
+                            }
+                        }
+                    }
+                    return;
+                }
+                if changed || !(jobs.busy() || jobs.round.read(|notices| !notices.is_empty())) {
+                    return;
+                }
                 if ended.changed().await.is_err() {
                     return;
                 }
             }
         }
+    }
+    pub(super) fn round_notices(&self) -> Vec<String> {
+        self.round.update(std::mem::take)
     }
     fn busy(&self) -> bool {
         self.entries.read(|entries| {
@@ -564,11 +612,10 @@ impl Jobs {
     async fn deliver(&self, binding: &Binding, id: &str, text: String) -> bool {
         let delivered = match binding.delivery {
             Delivery::EndsWithTurn => (binding.steer)(text).await,
-            Delivery::Held => {
-                (binding.steer)(format!(
-                    "<system-reminder>\n{NOTIFICATION_PREAMBLE}{text}\n</system-reminder>"
-                ))
-                .await
+            Delivery::Held => (binding.steer)(reminder(&text)).await,
+            Delivery::Merged => {
+                self.round.update(|notices| notices.push(text.clone()));
+                true
             }
             Delivery::Prompted => match binding.agent.upgrade() {
                 Some(agent) => match agent.route_prompt_request(PromptRequest::new(text)).await {
@@ -603,6 +650,7 @@ impl Jobs {
                 let Some(job) = job.upgrade() else {
                     return;
                 };
+                job.close_output().await;
                 if job.result.borrow().is_none() {
                     return;
                 }
@@ -615,13 +663,14 @@ impl Jobs {
         };
         let watch = match binding.delivery {
             Delivery::EndsWithTurn => Watch::EndsWithTurn,
-            Delivery::Prompted | Delivery::Held => Watch::Notified,
+            Delivery::Prompted | Delivery::Held | Delivery::Merged => Watch::Notified,
         };
         let jobs = Arc::clone(self);
         drop(nanocode_platform::spawn_task(async move {
             let finished = async {
                 let outcome = completion(&job).await;
                 job.written.wait().await;
+                job.close_output().await;
                 outcome
             };
             let mut finished = std::pin::pin!(finished);
@@ -689,6 +738,24 @@ impl Jobs {
             job.finished.wait().await;
         }
     }
+}
+fn reminder(notice: &str) -> String {
+    format!("<system-reminder>\n{NOTIFICATION_PREAMBLE}{notice}\n</system-reminder>")
+}
+pub(super) fn round_notice(notice: &str) -> String {
+    format!("{NOTIFICATION_PREAMBLE}{notice}")
+}
+fn task_id() -> Result<String, String> {
+    let mut bytes = [0_u8; 8];
+    nanocode_platform::fill_random(&mut bytes)
+        .map_err(|error| format!("Bash could not draw a background task ID: {error}"))?;
+    Ok(std::iter::once('b')
+        .chain(
+            bytes.iter().map(|byte| {
+                char::from(TASK_ID_ALPHABET[usize::from(*byte) % TASK_ID_ALPHABET.len()])
+            }),
+        )
+        .collect())
 }
 fn discard(job: &Job) {
     let (Some(path), written) = (job.output.clone(), Arc::clone(&job.written)) else {
@@ -760,10 +827,16 @@ impl BashExecutor for LocalBash {
             .as_ref()
             .map_or("local", SessionEnvironment::session_id)
             .to_owned();
-        let id = format!(
-            "{session}-bash-{}",
-            self.jobs.next.fetch_add(1, Ordering::Relaxed)
-        );
+        let id = loop {
+            let id = task_id()?;
+            if !self
+                .jobs
+                .entries
+                .read(|entries| entries.jobs.contains_key(&id))
+            {
+                break id;
+            }
+        };
         let capped = Arc::new(Signal::new());
         let activity = Arc::new(LastActivity::new());
         let direct = !background
@@ -771,7 +844,7 @@ impl BashExecutor for LocalBash {
                 .call_id
                 .as_ref()
                 .is_some_and(|call| call.contains("/code-"));
-        let marker = std::env::temp_dir().join(format!("nanocode-{id}-cwd"));
+        let marker = std::env::temp_dir().join(format!("nanocode-{session}-{id}-cwd"));
         let killed_on_timeout = direct
             && request
                 .command

@@ -517,18 +517,21 @@ impl ObservabilityGuard {
         let timeout = self.shutdown_timeout;
         let tracer = self.tracer_provider.take();
         let meter = self.meter_provider.take();
-        let (tracer, meter) = std::thread::scope(|scope| {
-            let tracer = scope.spawn(move || {
-                tracer.map(|provider| {
-                    provider.shutdown_with_timeout(timeout.unwrap_or(TRACER_SHUTDOWN_DEFAULT))
-                })
-            });
-            let meter = meter.map(|provider| provider.shutdown());
-            (tracer.join(), meter)
-        });
-        if let Ok(tracer) = tracer {
-            tracer.transpose()?;
-        }
+        let shutdown_tracer = move |provider: Tracer| {
+            provider.shutdown_with_timeout(timeout.unwrap_or(TRACER_SHUTDOWN_DEFAULT))
+        };
+        let (tracer, meter) = match (tracer, meter) {
+            (Some(tracer), Some(meter)) => std::thread::scope(|scope| {
+                let tracer = scope.spawn(move || shutdown_tracer(tracer));
+                let meter = meter.shutdown();
+                (tracer.join().ok(), Some(meter))
+            }),
+            (tracer, meter) => (
+                tracer.map(shutdown_tracer),
+                meter.map(|provider| provider.shutdown()),
+            ),
+        };
+        tracer.transpose()?;
         meter.transpose()?;
         Ok(())
     }

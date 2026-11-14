@@ -195,7 +195,9 @@ impl ProcessRoutes {
                             .handles
                             .get(&id)
                             .cloned()
-                            .ok_or_else(|| "unknown logical process session".into())
+                            .ok_or_else(|| {
+                                format!("write_stdin failed: Unknown process id {id}").into()
+                            })
                     })
                 })
                 .await

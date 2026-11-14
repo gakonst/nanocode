@@ -74,7 +74,6 @@ impl Tool for HostViewImageHandler {
 }
 
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 pub(crate) struct ViewImageArguments {
     pub(crate) path: String,
     #[serde(default)]

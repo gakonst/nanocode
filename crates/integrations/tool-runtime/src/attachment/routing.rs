@@ -623,6 +623,7 @@ impl RoutedTool {
         let mut selected = routes
             .iter()
             .position(|route| route.mode == RemoteMode::Replace);
+        let mut requested = None;
         let input = match input {
             ToolInput::Function(raw) => {
                 let mut value: Value = serde_json::from_str(raw.get())?;
@@ -691,6 +692,7 @@ impl RoutedTool {
                             }
                             None
                         };
+                        requested = Some((session, stored.original));
                         value["session_id"] = stored.original.into();
                     }
                 } else {
@@ -820,6 +822,14 @@ impl RoutedTool {
         } else {
             (self.local.execute(input, context).await?, None)
         };
+        if let Some((session, original)) = requested
+            && let crate::contract::ToolOutputBody::Text(text) = &output.output
+            && *text == format!("write_stdin failed: Unknown process id {original}")
+        {
+            output.output = crate::contract::ToolOutputBody::Text(format!(
+                "write_stdin failed: Unknown process id {session}"
+            ));
+        }
         if matches!(
             self.routing,
             Some(WorkspaceToolRouting::ProcessStart | WorkspaceToolRouting::ProcessInput)

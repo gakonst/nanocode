@@ -1156,7 +1156,7 @@ impl ModelRun {
                             .await
                             .map_err(interrupted_tool_host)?,
                         Err(error) => ToolOutput::error(format!(
-                            "failed to encode {qualified_name} arguments: {error}"
+                            "failed to parse function arguments: {error}"
                         )),
                     },
                     CodeCallKind::Custom => tools

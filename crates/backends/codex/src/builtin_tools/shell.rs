@@ -192,7 +192,6 @@ fn shell_response_text(result: &ExecCommandResult) -> String {
 }
 
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct ExecCommandArguments {
     cmd: String,
 
@@ -217,7 +216,6 @@ struct ExecCommandArguments {
 }
 
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct WriteStdinArguments {
     session_id: i32,
     #[serde(default)]

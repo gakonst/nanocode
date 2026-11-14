@@ -703,6 +703,13 @@ fn forward_subagents(mut updates: nanocode::SubagentUpdates, tx: UnboundedSender
     });
 }
 
+const fn ends_output(kind: AgentEventKind) -> bool {
+    matches!(
+        kind,
+        AgentEventKind::AssistantMessage | AgentEventKind::ModelCallCompleted
+    )
+}
+
 async fn next_agent_event(events: &mut Option<(u64, AgentEvents)>) -> Option<(u64, AgentEvent)> {
     match events {
         Some((generation, events)) => events.recv().await.map(|event| (*generation, event)),
@@ -728,6 +735,7 @@ impl App {
         let mut dirty = true;
         let mut full_at: Option<Instant> = None;
         let mut first = true;
+        let mut held: Option<(u64, AgentEvent)> = None;
         while !self.quit {
             while let Some(result) = self.submissions.try_join_next() {
                 if let Err(error) = result {
@@ -802,6 +810,13 @@ impl App {
                     }
                 }
             }
+            if let Some((generation, event)) = held.take()
+                && self.generated_event(generation, &event) != Redraw::None
+            {
+                metrics.stream();
+                dirty = true;
+                scheduler.request_immediate(Instant::now());
+            }
             if let Some(at) = self.autoscroll_at {
                 scheduler.request_at(at);
             }
@@ -844,12 +859,22 @@ impl App {
                         self.events = None;
                         continue;
                     };
+                    if dirty && ends_output(event.kind) {
+                        held = Some((generation, event));
+                        scheduler.request_immediate(Instant::now());
+                        continue;
+                    }
                     let until = scheduler.next_frame_at(Instant::now());
                     let mut redraw = self.generated_event(generation, &event);
                     while !self.quit
                         && Instant::now() < until
                         && let Some((generation, event)) = self.next_buffered_event()
                     {
+                        if redraw != Redraw::None && ends_output(event.kind) {
+                            held = Some((generation, event));
+                            redraw = Redraw::Immediate;
+                            break;
+                        }
                         redraw = redraw.max(self.generated_event(generation, &event));
                     }
                     match redraw {

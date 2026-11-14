@@ -91,6 +91,8 @@ nanocode is ahead on every gpt-6-luna turn and on the first gpt-6.1-sol turn, an
 
 Throughput on the mock, same day and host, 6 samples: 20,000 tokens unpaced, nanocode draws 298,766 / 524,190 tok/s on Responses (provider 356,939 / 587,056) and 347,406 / 582,336 on Claude (provider 362,452 / 659,854), tail 11.7 / 39.3 and 5.3 / 8.0 ms; Codex CLI draws 920 / 1,347 tok/s with a 20.1 s tail and Claude Code draws the whole reply at the end (tail 365 / 604 ms). Paced at 1,000 tok/s (5,000 tokens): nanocode draws 1,000 tok/s on both providers, render 0.56 / 5.72 ms, tail 2.8 / 4.1 ms; Claude Code tail 57.5 / 182 ms, Codex CLI 24.2 / 65.8 ms.
 
+Render tail, 2026-11-14: the TUI now draws streamed text before it applies `assistant.message` or `model_call.completed` (DECISIONS.md, perf(tui) entry of this date). On the hosted Hand this removes the final-message parse (0.13 to 0.45 ms) and, on Claude, the 0.2 to 1.3 ms between `model_call.completed` and `assistant.message` from the 20,000-token unpaced tail. What remains of the unpaced tail is the client reading the socket backlog and, on Responses, parsing the `.done` events that repeat the reply.
+
 The deployed Worker, 2026-11-14, from gak-9, a new session per round, 12 rounds of 3 turns per provider, all 72 turns completed, p50 / p99 ms. durable-cloudflare fbc9a2b with nanocode-ts build-3a5564a, whose responses carry `server-timing` from the Worker (`worker`), the app's dispatch to the session (`session_response`) and the session object (`session`):
 
 | | Claude cold | Claude warm | Responses cold | Responses warm |

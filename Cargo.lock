@@ -874,10 +874,10 @@ dependencies = [
  "nanocode-platform",
  "nanocode-sync",
  "nanocode-sys",
+ "nanocode-tls",
  "nanocode-trace",
  "nanocode-x509",
  "rustls",
- "rustls-graviola",
  "rustls-platform-verifier",
  "serde",
  "serde_json",
@@ -1018,11 +1018,11 @@ version = "0.7.0"
 name = "nanocode-tls"
 version = "0.7.0"
 dependencies = [
+ "graviola",
  "nanocode-platform",
  "nanocode-sync",
  "nanocode-trace",
  "rustls",
- "rustls-graviola",
  "rustls-platform-verifier",
 ]
 
@@ -1333,16 +1333,6 @@ dependencies = [
  "rustls-webpki",
  "subtle",
  "zeroize",
-]
-
-[[package]]
-name = "rustls-graviola"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bf5d0a370be690f7f1aa4e1b912fde3f5f9a5c53285062fd2d6ac1a52ab3e883"
-dependencies = [
- "graviola",
- "rustls",
 ]
 
 [[package]]

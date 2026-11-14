@@ -1,5 +1,9 @@
 #![cfg(not(target_family = "wasm"))]
 
+mod provider;
+
+pub use provider::provider;
+
 use nanocode_sync::{SingleFlight, SwapOption};
 use rustls::{ClientConfig, RootCertStore};
 use std::{
@@ -177,6 +181,6 @@ pub fn peer_discarded_record(error: &(dyn std::error::Error + 'static)) -> bool 
 
 pub fn install_default_rustls_crypto_provider() {
     if rustls::crypto::CryptoProvider::get_default().is_none() {
-        drop(rustls_graviola::default_provider().install_default());
+        drop(provider().install_default());
     }
 }

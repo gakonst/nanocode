@@ -170,7 +170,6 @@ proc-macro2 = "1.0.106"
 quote = "1.0.46"
 graviola = "0.4.1"
 rustls = { version = "0.23.45", default-features = false, features = ["std"] }
-rustls-graviola = "0.4.0"
 djs-embed = { path = "crates/patches/djs/crates/djs-embed" }
 psh-engine = { path = "crates/patches/psh/crates/psh-engine" }
 psh-utils = { path = "crates/patches/psh/crates/psh-utils" }

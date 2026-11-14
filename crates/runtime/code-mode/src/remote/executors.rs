@@ -951,6 +951,15 @@ impl CodeModeHost for CodeModeExecutors {
         EmbeddedToolMode::CodeOnly
     }
 
+    fn working_directory(&self, session_id: &str) -> Option<String> {
+        match self.read(session_id, |state| state.placement(session_id)) {
+            Placement::Hand(HandRoute {
+                host: Some(host), ..
+            }) => host.working_directory(session_id),
+            Placement::Hand(_) | Placement::Local => None,
+        }
+    }
+
     fn supports_cells(&self) -> bool {
         true
     }

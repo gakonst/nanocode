@@ -185,10 +185,11 @@ pub(super) fn free_names(
     atom_undefined: Atom,
 ) -> Vec<super::FreeNames> {
     let mut resolved: Vec<Vec<Resolved>> = (0..funcs.len()).map(|_| Vec::new()).collect();
+    let mut path = Vec::new();
     for id in (0..funcs.len()).rev() {
         let mut r = 0;
         while r < funcs[id].refs.len() {
-            let res = classify(&mut funcs, id, r, decls, privileged);
+            let res = classify(&mut funcs, id, r, decls, privileged, &mut path);
             resolved[id].push(res);
             r += 1;
         }
@@ -481,10 +482,11 @@ pub(super) fn finish(
     // 1. Classify references, children first. (Member references add a reference to
     // their namespace parameter, classified in turn.)
     let mut resolved: Vec<Vec<Resolved>> = (0..funcs.len()).map(|_| Vec::new()).collect();
+    let mut path = Vec::new();
     for id in (0..funcs.len()).rev() {
         let mut r = 0;
         while r < funcs[id].refs.len() {
-            let res = classify(&mut funcs, id, r, decls, opts.privileged);
+            let res = classify(&mut funcs, id, r, decls, opts.privileged, &mut path);
             resolved[id].push(res);
             r += 1;
         }
@@ -725,6 +727,7 @@ fn classify(
     r: usize,
     decls: &[TsDecl],
     privileged: bool,
+    path: &mut Vec<usize>,
 ) -> Resolved {
     let nr = funcs[id].refs[r];
     // A member of the namespace of function `f`'s closure: a property of its
@@ -774,7 +777,8 @@ fn classify(
         return m;
     }
     // A free name: find the enclosing function that binds it.
-    let mut path = vec![id];
+    path.clear();
+    path.push(id);
     let mut at = funcs[id].parent;
     while let Some((pf, ps)) = at {
         let pf = pf as usize;

@@ -73,6 +73,9 @@ const EFFECT: [u32; OP_COUNT] = {
         if info.no_fallthrough() {
             t[i] |= NO_FALLTHROUGH;
         }
+        if info.has(flags::PHASE1) {
+            t[i] |= PHASE1_OP;
+        }
         if info.pop_imm.is_some()
             || info.pop_arity.is_some()
             || info.push_imm.is_some()
@@ -84,6 +87,7 @@ const EFFECT: [u32; OP_COUNT] = {
     }
     t
 };
+const PHASE1_OP: u32 = 1 << 29;
 const NO_FALLTHROUGH: u32 = 1 << 30;
 const DECODE: u32 = 1 << 31;
 
@@ -173,22 +177,23 @@ fn walk(
     let mut at = 0usize;
     while let Some(&byte) = code.get(at) {
         let pc = at as u32;
-        let op =
-            Op::from_u8(byte).ok_or(StackError::Decode(DecodeError::InvalidOpcode { pc, byte }))?;
-        let info = op.info();
-        if at + info.size as usize > code.len() {
+        let Some(&effect) = EFFECT.get(usize::from(byte)) else {
+            return Err(StackError::Decode(DecodeError::InvalidOpcode { pc, byte }));
+        };
+        let size = (effect >> 16 & 0xFF) as usize;
+        if at + size > code.len() {
             return Err(StackError::Decode(DecodeError::Truncated { pc }));
         }
-        if info.has(flags::PHASE1) {
+        if effect & PHASE1_OP != 0 {
             return Err(StackError::Phase1Op { pc });
         }
-        let mut cache = CACHE_AT[op as usize];
+        let mut cache = CACHE_AT[usize::from(byte)];
         while cache != 0 {
             caches.push(pc + u32::from(cache & 0xF));
             cache >>= 4;
         }
         starts[at / 64] |= 1 << (at % 64);
-        at += info.size as usize;
+        at += size;
     }
     let is_start = |pc: usize| starts[pc / 64] & (1 << (pc % 64)) != 0;
     let len = code.len() as u32;
@@ -284,8 +289,22 @@ fn walk(
             {
                 work.push(target);
             }
+            if effect & NO_FALLTHROUGH != 0 {
+                break;
+            }
             let next = pc + (effect >> 16 & 0xFF);
-            if effect & NO_FALLTHROUGH != 0 || !reach(depth, pc, next, after)? {
+            let Some(slot) = depth.get_mut(next as usize) else {
+                return Err(StackError::FallsOffEnd { pc });
+            };
+            if *slot == UNKNOWN {
+                *slot = after;
+            } else if *slot != after {
+                return Err(StackError::Mismatch {
+                    pc: next,
+                    depth: *slot,
+                    other: after,
+                });
+            } else {
                 break;
             }
             pc = next;

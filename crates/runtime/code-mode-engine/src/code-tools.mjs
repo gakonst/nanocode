@@ -9,7 +9,7 @@ export function createCodeTools(names, invoke) {
       return promise;
     },
     dispatch(name, input) {
-      try { return invoke(name, input); } catch (error) { return Promise.reject(error); }
+      try { return invoke(name, input); } catch (error) { return helpers.observe(Promise.reject(error)); }
     },
     async unavailable(name) {
       const error = new Error(`TOOL_NOT_AVAILABLE: Tool "${name}" is not available in this Code Mode execution. Check ALL_TOOLS for callable names. A tool exposed directly by the host may need to be called through its direct tool entry instead.`);
@@ -33,7 +33,7 @@ export function createCodeTools(names, invoke) {
           if (name in Object.prototype || name === "toJSON") {
             return helpers.observe(helpers.unavailable(name));
           }
-          return helpers.observe(helpers.dispatch(name, input));
+          return helpers.dispatch(name, input);
         },
       }.missing;
     },
@@ -43,7 +43,7 @@ export function createCodeTools(names, invoke) {
     Object.defineProperty(target, name, {
       enumerable: true,
       value(input) {
-        return helpers.observe(helpers.dispatch(name, input));
+        return helpers.dispatch(name, input);
       },
     });
   }

@@ -86,6 +86,7 @@
     ? () => globalThis.performance.now()
     : () => Date.now();
   const EXIT = Symbol("exit");
+  const ignore = () => {};
   const pendingTools = [];
   const timers = new Map();
   let stopCell = () => {};
@@ -426,11 +427,21 @@
     nativeClearTimeout(id);
   }
 
-  function callTool(name, encodedInput, host) {
+  function callTool(name, encodedInput, host, observed) {
     const id = nativeTool(name, encodedInput, host);
-    return new Promise((resolve, reject) => {
-      pendingTools[id] = [resolve, reject, name];
+    const settlers = [undefined, undefined, name, undefined];
+    const promise = new Promise((resolve, reject) => {
+      settlers[0] = resolve;
+      settlers[1] = reject;
     });
+    if (observed) settlers[3] = promise;
+    pendingTools[id] = settlers;
+    return promise;
+  }
+
+  function reject(settlers, error) {
+    settlers[3]?.catch(ignore);
+    settlers[1](error);
   }
 
   async function pump() {
@@ -451,9 +462,9 @@
           try {
             const value = jsonParse(event.value);
             if (event.ok) settlers[0](value);
-            else settlers[1](toolFailure(settlers[2], value));
+            else reject(settlers, toolFailure(settlers[2], value));
           } catch (error) {
-            settlers[1](error);
+            reject(settlers, error);
           }
         }
       }
@@ -492,19 +503,21 @@
     const terminal = () => failure === undefined
       ? storedWrites.size ? jsonStringify({ type: "done", stored: written() }) : done
       : jsonStringify({ type: "error", message: failure, stored: written() });
-    const invokeTool = (name, input, host = false) => {
+    const invokeTool = (name, input, host = false, observed = false) => {
       const encodedInput = input === undefined ? "null" : jsonStringify(input);
-      return callTool(name, encodedInput, host);
+      return callTool(name, encodedInput, host, observed);
     };
     for (const definition of definitions) {
       declaredTools[definition.name] = (input) => invokeTool(
         definition.tool_name,
         input === undefined && definition.kind === "function" ? {} : input,
+        false,
+        true,
       );
     }
     const tools = createCodeTools(
       Object.keys(declaredTools),
-      (name, input) => declaredTools[name] ? declaredTools[name](input) : invokeTool(name, input),
+      (name, input) => declaredTools[name] ? declaredTools[name](input) : invokeTool(name, input, false, true),
     );
 
     function text(value) {

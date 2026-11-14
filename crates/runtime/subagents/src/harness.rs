@@ -119,6 +119,12 @@ struct Harness {
     parked: u64,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Started {
+    Prompt,
+    RecoveryOnly,
+}
+
 enum Contract {
     Pending { assignment: Option<String> },
     Delivered,
@@ -548,7 +554,14 @@ impl Harness {
                 capacity,
                 response,
             } => {
-                let _ = response.send(self.start_turn(prompt, capacity, false).await);
+                let started = self.start_turn(prompt, capacity, false).await;
+                let _ = response.send(started.and_then(|started| match started {
+                    Started::Prompt => Ok(()),
+                    Started::RecoveryOnly => Err(std::io::Error::other(format!(
+                        "agent {} resumed a recovered turn that does not take the prompt",
+                        self.id
+                    ))),
+                }));
                 false
             }
             HarnessCommand::Interrupt { response } => {
@@ -647,20 +660,36 @@ impl Harness {
         {
             let delegation = self.begin_delegation(command.message.id).await;
             let from_peers = from_peers(std::slice::from_ref(&command.message));
-            if let Err(error) = self
+            match self
                 .start_turn(command.message.prompt(), capacity, from_peers)
                 .await
             {
-                self.rollback_delegation(delegation).await;
-                self.reject(command, error.to_string()).await;
-                return;
+                Ok(Started::Prompt) => {
+                    self.admit(
+                        command.message.id,
+                        command.response,
+                        MessageDisposition::Started,
+                    )
+                    .await;
+                }
+                Ok(Started::RecoveryOnly) if resumes(&command.message) => {
+                    self.rollback_delegation(delegation).await;
+                    self.admit(
+                        command.message.id,
+                        command.response,
+                        MessageDisposition::Started,
+                    )
+                    .await;
+                }
+                Ok(Started::RecoveryOnly) => {
+                    self.rollback_delegation(delegation).await;
+                    self.queue_delivery(command, priority).await;
+                }
+                Err(error) => {
+                    self.rollback_delegation(delegation).await;
+                    self.reject(command, error.to_string()).await;
+                }
             }
-            self.admit(
-                command.message.id,
-                command.response,
-                MessageDisposition::Started,
-            )
-            .await;
             return;
         }
 
@@ -699,7 +728,28 @@ impl Harness {
                 .collect::<Vec<_>>()
                 .join("\n\n");
             match self.start_turn(prompt, capacity, from_peers(&batch)).await {
-                Ok(()) => {
+                Ok(Started::RecoveryOnly) => {
+                    self.rollback_delegation(delegation).await;
+                    let (resumed, batch): (Vec<_>, Vec<_>) = batch.into_iter().partition(resumes);
+                    if let Some(registry) = self.registry.upgrade() {
+                        for message in &resumed {
+                            registry
+                                .message_delivered(
+                                    &self.root_session_id,
+                                    message.id,
+                                    MessageDisposition::Started,
+                                )
+                                .await;
+                        }
+                    }
+                    for message in batch.into_iter().rev() {
+                        match message.priority {
+                            MessagePriority::Deferred => self.pending_deferred.push_front(message),
+                            MessagePriority::Urgent => self.pending_urgent.push_front(message),
+                        }
+                    }
+                }
+                Ok(Started::Prompt) => {
                     if let Some(registry) = self.registry.upgrade() {
                         for message in &batch {
                             registry
@@ -830,7 +880,7 @@ impl Harness {
         prompt: String,
         capacity: TurnCapacity,
         from_peers: bool,
-    ) -> std::io::Result<()> {
+    ) -> std::io::Result<Started> {
         if self.active.is_some() {
             return Err(std::io::Error::other(format!(
                 "agent {} is not idle",
@@ -950,12 +1000,15 @@ impl Harness {
                 "subagent-recovery:{request_id}:{}",
                 super::durable::checkpoint_key(&encoded)
             );
-            control
-                .steer_with_id(message_id, prompt)
-                .await
-                .map_err(std::io::Error::other)?;
+            return match control.steer_with_id(message_id, prompt).await {
+                Ok(()) => Ok(Started::Prompt),
+                Err(NanocodeError::TurnNotSteerable | NanocodeError::TurnStopped) => {
+                    Ok(Started::RecoveryOnly)
+                }
+                Err(error) => Err(std::io::Error::other(error)),
+            };
         }
-        Ok(())
+        Ok(Started::Prompt)
     }
 
     async fn stop_active(&mut self) -> std::io::Result<()> {
@@ -1016,6 +1069,11 @@ impl Harness {
         }
         shutdown_result
     }
+}
+
+fn resumes(message: &AgentMessage) -> bool {
+    matches!(message.from, MessageSender::Root)
+        && message.body.starts_with(super::durable::RESUME_MESSAGE)
 }
 
 fn from_peers(messages: &[AgentMessage]) -> bool {

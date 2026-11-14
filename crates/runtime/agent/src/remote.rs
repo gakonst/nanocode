@@ -76,7 +76,6 @@ struct Child {
 pub struct RemoteChildren {
     children: AtomMap<Arc<str>, Child>,
     host: Arc<dyn ChildHost>,
-    recovering: AtomMap<Arc<str>, String>,
     registry: Weak<nanocode_subagents::Registry>,
     restored: AtomMap<Arc<str>, ()>,
     spawn_factory: Atom<Option<Arc<dyn AgentFactory>>>,
@@ -90,7 +89,6 @@ impl RemoteChildren {
         let children = Arc::new(Self {
             children: AtomMap::new(),
             host,
-            recovering: AtomMap::new(),
             registry: Arc::downgrade(registry),
             restored: AtomMap::new(),
             spawn_factory: Atom::new(None),
@@ -101,15 +99,11 @@ impl RemoteChildren {
             remote.restored.remove_if(session_id, |()| true)?;
             let session_id: Arc<str> = session_id.into();
             Some(Box::pin(async move {
-                let pending = remote
+                remote
                     .host
-                    .pending(Arc::clone(&session_id))
+                    .pending(session_id)
                     .await
-                    .map_err(std::io::Error::other)?;
-                if let Some((request_id, _)) = &pending {
-                    remote.recovering.insert(session_id, request_id.clone());
-                }
-                Ok(pending)
+                    .map_err(std::io::Error::other)
             }))
         }));
         children
@@ -369,22 +363,9 @@ impl RemoteBackend {
         let Some(request_id) = self.requests.get(&key.0) else {
             return Box::pin(async { Err(NanocodeError::TurnNotSteerable) });
         };
-        let recovered = id.is_some()
-            && self
-                .children
-                .recovering
-                .remove_if(&self.session_id, |recovering| *recovering == request_id)
-                .is_some();
-        let steered =
-            self.children
-                .host
-                .steer(Arc::clone(&self.session_id), request_id, id, prompt);
-        Box::pin(async move {
-            match steered.await {
-                Err(NanocodeError::TurnNotSteerable) if recovered => Ok(()),
-                steered => steered,
-            }
-        })
+        self.children
+            .host
+            .steer(Arc::clone(&self.session_id), request_id, id, prompt)
     }
 }
 

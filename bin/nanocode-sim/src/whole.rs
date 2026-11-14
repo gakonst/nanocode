@@ -1,4 +1,10 @@
-use std::{cell::RefCell, collections::VecDeque, path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    cell::RefCell,
+    collections::{BTreeSet, VecDeque},
+    path::PathBuf,
+    sync::Arc,
+    time::Duration,
+};
 
 use nanocode::{
     ClaudeClient, Nanocode, PromptRequest, Thinking, Tools,
@@ -8,13 +14,16 @@ use nanocode_durability_core::KeyValueStore;
 use serde_json::{Value, json};
 
 use crate::{
+    children::{ChildDisk, ChildFaults, ChildMutation, Host, SimChildren},
+    disk::Disk,
     executor::{Clock, Ended, Executor, Task},
     faults::Profile,
     httpd::{Connector, HttpFaults, HttpServer, WireMutation},
     network::{Network, NetworkFaults, Transport},
     rng::Rng,
-    server::{EFFECT_TOOL, final_text, root_prompt},
+    server::{CHILD_MARK, EFFECT_TOOL, final_text, root_prompt, word_after},
     store::{Mutation, SimKv},
+    turnlog::SimHost,
     world::{World, WorldCounts},
 };
 
@@ -42,6 +51,7 @@ const EPOCHS_MAX: u64 = CRASHES_MAX + 1;
 pub enum StoreKind {
     Memory,
     Kv,
+    Log,
 }
 
 impl StoreKind {
@@ -49,6 +59,7 @@ impl StoreKind {
         match name {
             "memory" => Some(Self::Memory),
             "kv" => Some(Self::Kv),
+            "log" => Some(Self::Log),
             _ => None,
         }
     }
@@ -57,6 +68,7 @@ impl StoreKind {
         match self {
             Self::Memory => "memory",
             Self::Kv => "kv",
+            Self::Log => "log",
         }
     }
 }
@@ -85,6 +97,30 @@ impl WireKind {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ChildMode {
+    #[default]
+    Local,
+    Remote,
+}
+
+impl ChildMode {
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "local" => Some(Self::Local),
+            "remote" => Some(Self::Remote),
+            _ => None,
+        }
+    }
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::Remote => "remote",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct WholeOptions {
     pub store: Option<StoreKind>,
@@ -92,6 +128,8 @@ pub struct WholeOptions {
     pub verbose: bool,
     pub wire: WireKind,
     pub mutation: WireMutation,
+    pub children: ChildMode,
+    pub child_mutation: ChildMutation,
 }
 
 impl Default for WholeOptions {
@@ -102,6 +140,8 @@ impl Default for WholeOptions {
             verbose: false,
             wire: WireKind::Transport,
             mutation: WireMutation::None,
+            children: ChildMode::Local,
+            child_mutation: ChildMutation::None,
         }
     }
 }
@@ -130,6 +170,8 @@ struct Shape {
     http_faults: HttpFaults,
     wire: WireKind,
     cancel_turn: Option<(u64, u64)>,
+    children: ChildMode,
+    child_faults: ChildFaults,
 }
 
 impl Shape {
@@ -137,14 +179,14 @@ impl Shape {
         let mut rng = Rng::derive(seed, "whole-shape");
         let roots = rng.range(1, ROOTS_MAX);
         let turns = rng.range(1, TURNS_MAX);
-        let store = options.store.unwrap_or(if rng.chance(crate::rng::PPM / 2) {
-            StoreKind::Memory
-        } else {
-            StoreKind::Kv
+        let store = options.store.unwrap_or_else(|| match options.children {
+            ChildMode::Remote => StoreKind::Log,
+            ChildMode::Local if rng.chance(crate::rng::PPM / 2) => StoreKind::Memory,
+            ChildMode::Local => StoreKind::Kv,
         });
         let crashes = match store {
             StoreKind::Memory => Vec::new(),
-            StoreKind::Kv => {
+            StoreKind::Kv | StoreKind::Log => {
                 let count = rng.range(0, CRASHES_MAX);
                 let mut crashes: Vec<u64> = (0..count)
                     .map(|_| rng.range(0, CRASH_HORIZON_MS) * 1_000_000)
@@ -180,13 +222,16 @@ impl Shape {
             http_faults: HttpFaults::of(seed, options.calm),
             wire: options.wire,
             cancel_turn,
+            children: options.children,
+            child_faults: ChildFaults::of(seed, options.calm),
         }
     }
 
     fn describe(&self) -> String {
         format!(
-            "scenario=runtime wire={} stop={:?} stop_after_ms={} resident<={:?} roots={} turns={} store={} crashes_ms={:?} calm_network={} cancel_turn={:?}",
+            "scenario=runtime wire={} children={} stop={:?} stop_after_ms={} resident<={:?} roots={} turns={} store={} crashes_ms={:?} calm_network={} cancel_turn={:?}{}",
             self.wire.name(),
+            self.children.name(),
             self.stop,
             self.stop_after.as_millis(),
             self.hibernation,
@@ -198,7 +243,16 @@ impl Shape {
                 WireKind::Transport => self.faults.calm(),
                 WireKind::Http => self.http_faults.calm(),
             },
-            self.cancel_turn
+            self.cancel_turn,
+            match self.children {
+                ChildMode::Local => String::new(),
+                ChildMode::Remote => format!(
+                    " child_crashes_ms={:?} kill_after_ms={} calm_children={}",
+                    self.child_faults.crashes.iter().map(|at| at / 1_000_000).collect::<Vec<_>>(),
+                    self.child_faults.kill_after.as_millis(),
+                    self.child_faults.calm()
+                ),
+            }
         )
     }
 }
@@ -229,6 +283,8 @@ impl WholeStats {
         self.world.faults += other.world.faults;
         self.world.connections += other.world.connections;
         self.world.reuses += other.world.reuses;
+        self.world.child_crashes += other.world.child_crashes;
+        self.world.child_model_calls += other.world.child_model_calls;
     }
 }
 
@@ -260,27 +316,35 @@ impl nanocode::FunctionHandler for EffectTool {
     }
 }
 
-fn tools(world: &Arc<World>) -> Tools {
-    Tools::builder()
+fn tools(world: &Arc<World>, parts: Option<&nanocode::turnlog::Parts>) -> Tools {
+    let builder = Tools::builder()
         .without_defaults()
         .tool(nanocode::FunctionTool::new(
             EFFECT_TOOL,
             "Apply a simulated external effect once",
             json!({"type": "object", "properties": {"key": {"type": "string"}}, "required": ["key"]}),
             Arc::new(EffectTool(Arc::clone(world))),
-        ))
-        .build()
-        .expect("the simulated tools build")
+        ));
+    let builder = match parts {
+        Some(parts) => builder
+            .effect_gate(Arc::clone(&parts.gate))
+            .cell_journals(parts.journals.clone()),
+        None => builder,
+    };
+    builder.build().expect("the simulated tools build")
 }
 
 struct Durable {
     kind: StoreKind,
     kv: Option<SimKv>,
+    disk: Arc<Disk>,
+    settle_durably: bool,
+    world: Arc<World>,
 }
 
 impl Durable {
-    fn session_store(&self) -> Result<SessionStore, String> {
-        match self.kind {
+    async fn session_store(&self) -> Result<(SessionStore, Option<nanocode::turnlog::Parts>), String> {
+        let store = match self.kind {
             StoreKind::Memory => MemoryStore::new()
                 .map_err(|error| format!("MemoryStore::new failed: {error}"))
                 .and_then(|store| {
@@ -290,9 +354,86 @@ impl Durable {
                 self.kv.clone().expect("a kv seed has a kv"),
             ))
             .map_err(|error| format!("session store: {error}")),
-        }
+            StoreKind::Log => {
+                let host: Arc<dyn nanocode::turnlog::LogHost> =
+                    Arc::new(TracedHost(SimHost::new(Arc::clone(&self.disk)), Arc::clone(&self.world)));
+                let policy = nanocode::turnlog::Policy {
+                    effects: nanocode::turnlog::Effects::default(),
+                    max_row_bytes: None,
+                    restarts: u64::MAX,
+                    retain_finished: None,
+                    snapshot_ratio: 2,
+                    snapshot_rows: None,
+                };
+                let parts = nanocode::turnlog(host, "sim", policy)
+                    .await
+                    .map_err(|error| format!("turn log: {error}"))?;
+                if self.settle_durably {
+                    parts.log.settle_durably();
+                }
+                return Ok((parts.store.clone(), Some(parts)));
+            }
+        };
+        store.map(|store| (store, None))
     }
 }
+
+struct TracedHost(SimHost, Arc<World>);
+
+impl nanocode::turnlog::LogHost for TracedHost {
+    fn scan<'a>(
+        &'a self,
+        scope: &'a str,
+        from: u64,
+        to: u64,
+    ) -> nanocode_durability_core::StoreFuture<'a, Result<Vec<(u64, String)>, nanocode_durability_core::StoreError>> {
+        self.0.scan(scope, from, to)
+    }
+
+    fn load<'a>(
+        &'a self,
+        scope: &'a str,
+    ) -> nanocode_durability_core::StoreFuture<'a, Result<Vec<(u64, String)>, nanocode_durability_core::StoreError>> {
+        self.0.load(scope)
+    }
+
+    fn append<'a>(
+        &'a self,
+        scope: &'a str,
+        rows: &'a [(u64, String)],
+    ) -> nanocode_durability_core::StoreFuture<'a, Result<(), nanocode_durability_core::StoreError>> {
+        self.1.trace(&format!(
+            "log append {} rows {}",
+            rows.len(),
+            rows.iter().map(|(_, body)| body.chars().take(60).collect::<String>()).collect::<Vec<_>>().join(" | ")
+        ));
+        self.0.append(scope, rows)
+    }
+}
+
+struct Remote {
+    seed: u64,
+    clock: Arc<Clock>,
+    disk: Arc<ChildDisk>,
+    faults: ChildFaults,
+    mutation: ChildMutation,
+}
+
+impl Remote {
+    fn children(&self, epoch: u64, world: &Arc<World>) -> Arc<SimChildren> {
+        SimChildren::new(
+            self.seed,
+            epoch,
+            Arc::clone(&self.clock),
+            Arc::clone(&self.disk),
+            Arc::clone(world),
+            self.faults.clone(),
+            self.mutation,
+        )
+    }
+}
+
+type Listing = Vec<(String, Vec<String>)>;
 
 fn claude(wire: &Wire) -> Result<ClaudeClient, String> {
     match wire {
@@ -315,17 +456,37 @@ fn claude(wire: &Wire) -> Result<ClaudeClient, String> {
     }
 }
 
-fn runtime(store: SessionStore, wire: &Wire, world: &Arc<World>) -> Result<Nanocode, String> {
+fn runtime(
+    store: SessionStore,
+    parts: Option<&nanocode::turnlog::Parts>,
+    wire: &Wire,
+    world: &Arc<World>,
+    children: Option<&Arc<SimChildren>>,
+) -> Result<Nanocode, String> {
     let claude = claude(wire)?;
-    Nanocode::builder()
+    let builder = Nanocode::builder()
         .claude(claude)
-        .tools(tools(world))
+        .tools(tools(world, parts))
         .runner_management(false)
         .thinking(Thinking::Low)
         .workspace(PathBuf::from("/nonexistent/nanocode-sim"))
-        .durability(store)
+        .durability(store);
+    let builder = match children {
+        Some(children) => builder.child_host(Host(Arc::clone(children))),
+        None => builder,
+    };
+    let runtime = builder
         .build()
-        .map_err(|error| format!("runtime build: {error}"))
+        .map_err(|error| format!("runtime build: {error}"))?;
+    if let Some(children) = children {
+        children.attach(
+            runtime
+                .remote_children()
+                .ok_or_else(|| "a runtime with a child host has no remote children".to_owned())?,
+        );
+        children.start();
+    }
+    Ok(runtime)
 }
 
 fn session_of(root: u64) -> String {
@@ -597,6 +758,96 @@ async fn settled(runtime: &Nanocode, shape: &Shape, world: &World) -> Result<(),
     Ok(())
 }
 
+async fn listing(runtime: &Nanocode, shape: &Shape) -> Result<(Listing, BTreeSet<String>), String> {
+    let Some(control) = runtime.subagents() else {
+        return Ok((Vec::new(), BTreeSet::new()));
+    };
+    let mut listing = Vec::new();
+    let mut completed = BTreeSet::new();
+    for root in 0..shape.roots {
+        let session = session_of(root);
+        let entries = control
+            .agents(&session)
+            .await
+            .map_err(|error| format!("the directory of {session} did not answer: {error}"))?;
+        let mut lines = Vec::new();
+        for entry in &entries {
+            if matches!(entry.status, nanocode::AgentStatus::Completed { .. })
+                && let Some(label) = word_after(&entry.task, CHILD_MARK)
+            {
+                completed.insert(label.to_owned());
+            }
+            lines.push(
+                serde_json::to_string(entry)
+                    .map_err(|error| format!("agent {} does not encode: {error}", entry.agent_id))?,
+            );
+        }
+        listing.push((session, lines));
+    }
+    Ok((listing, completed))
+}
+
+fn difference(before: &Listing, after: &Listing) -> Option<String> {
+    for ((session, lines), (_, restored)) in before.iter().zip(after) {
+        if let Some(at) = (0..lines.len().max(restored.len())).find(|at| lines.get(*at) != restored.get(*at)) {
+            return Some(format!(
+                "{session} entry {at}: {:?} before the restart, {:?} after",
+                lines.get(at),
+                restored.get(at)
+            ));
+        }
+    }
+    (before.len() != after.len()).then(|| format!("{} roots before the restart, {} after", before.len(), after.len()))
+}
+
+async fn verify(
+    durable: &Durable,
+    shape: &Shape,
+    number: u64,
+    wire: &Wire,
+    world: &Arc<World>,
+    remote: Option<&Remote>,
+    before: Listing,
+) -> Result<(), String> {
+    world.trace(&format!("epoch {number} verifies the restart"));
+    nanocode::claude::durability::forget_templates();
+    let (store, parts) = durable.session_store().await?;
+    let children = remote.map(|remote| remote.children(number, world));
+    let runtime = runtime(store.clone(), parts.as_ref(), wire, world, children.as_ref())?;
+    let mut agents = Vec::new();
+    for root in 0..shape.roots {
+        agents.push(open_root(&runtime, root, number, world).await?);
+    }
+    let (after, completed) = listing(&runtime, shape).await?;
+    if shape.stop != Stop::Close
+        && let Some(difference) = difference(&before, &after)
+    {
+        world.wrong(format!("remote_list_changed: {difference}"));
+    }
+    settle(&runtime, &store, shape, world).await?;
+    if let Some(children) = &children {
+        let runs = children.run_calls();
+        if shape.stop != Stop::Close && runs > 0 {
+            world.wrong(format!(
+                "remote_restart_reran: the parent ran {runs} child turns after a restart of settled roots"
+            ));
+        }
+        if shape.stop == Stop::Never
+            && shape.cancel_turn.is_none()
+            && let Some(lost) = children.lost(&completed)
+        {
+            world.wrong(format!("remote_turn_lost: {lost}"));
+        }
+    }
+    drop(agents);
+    runtime
+        .shutdown()
+        .await
+        .map_err(|error| format!("shutdown: {error}"))?;
+    world.trace("shut down");
+    Ok(())
+}
+
 async fn epoch(
     durable: &Durable,
     shape: &Shape,
@@ -604,11 +855,13 @@ async fn epoch(
     wire: &Wire,
     world: &Arc<World>,
     client: &Client,
-) -> Result<(), String> {
+    remote: Option<&Remote>,
+) -> Result<Option<Listing>, String> {
     world.trace(&format!("epoch {epoch}"));
     nanocode::claude::durability::forget_templates();
-    let store = durable.session_store()?;
-    let runtime = runtime(store.clone(), wire, world)?;
+    let (store, parts) = durable.session_store().await?;
+    let children = remote.map(|remote| remote.children(epoch, world));
+    let runtime = runtime(store.clone(), parts.as_ref(), wire, world, children.as_ref())?;
     if let (Some(control), Some(resident_max)) = (runtime.subagents(), shape.hibernation) {
         control.set_hibernation(true);
         control.set_max_resident(resident_max);
@@ -626,13 +879,20 @@ async fn epoch(
     stopped?;
     settle(&runtime, &store, shape, world).await?;
     settled(&runtime, shape, world).await?;
+    if children.is_some() && durable.kind != StoreKind::Memory {
+        let (before, _) = listing(&runtime, shape).await?;
+        nanocode_platform::sleep(shape.child_faults.kill_after).await;
+        world.trace("killed after the roots settled");
+        drop(agents);
+        return Ok(Some(before));
+    }
     drop(agents);
     runtime
         .shutdown()
         .await
         .map_err(|error| format!("shutdown: {error}"))?;
     world.trace("shut down");
-    Ok(())
+    Ok(None)
 }
 
 fn drop_spawned() {
@@ -657,7 +917,17 @@ pub fn simulate(seed: u64, options: WholeOptions) -> WholeOutcome {
         WireKind::Transport => Wire::Transport(Arc::new(Network::new(seed, Arc::clone(&world), shape.faults, options.mutation))),
         WireKind::Http => Wire::Http(Arc::new(HttpServer::new(seed, Arc::clone(&world), shape.http_faults, options.mutation, IDLE_TIMEOUT))),
     };
+    let remote = (shape.children == ChildMode::Remote).then(|| Remote {
+        seed,
+        clock: Arc::clone(&clock),
+        disk: ChildDisk::new(),
+        faults: shape.child_faults.clone(),
+        mutation: options.child_mutation,
+    });
     let durable = Durable {
+        world: Arc::clone(&world),
+        disk: Disk::new(),
+        settle_durably: remote.is_some() && options.child_mutation != ChildMutation::SettlesLazily,
         kind: shape.store,
         kv: (shape.store == StoreKind::Kv).then(|| {
             let mut profile = Profile::of(seed);
@@ -687,7 +957,7 @@ pub fn simulate(seed: u64, options: WholeOptions) -> WholeOutcome {
             Rng::derive(seed, &format!("scheduler {number}")),
         );
         let task: Task<'_> = Box::pin(async {
-            let outcome = epoch(&durable, &shape, number, &wire, &world, &client).await;
+            let outcome = epoch(&durable, &shape, number, &wire, &world, &client, remote.as_ref()).await;
             result.replace(Some(outcome));
         });
         let crash_at = crashes.pop_front();
@@ -722,7 +992,28 @@ pub fn simulate(seed: u64, options: WholeOptions) -> WholeOutcome {
             }
         }
     }
-    let verdict = verdict.unwrap_or_else(|| Err("the run never ended".to_owned()));
+    let verdict = match verdict {
+        Some(Ok(Some(before))) => {
+            stats.epochs += 1;
+            if let Some(kv) = &durable.kv {
+                kv.with(crate::store::Kv::power_loss);
+            }
+            let result = RefCell::new(None);
+            let mut executor = Executor::new(Arc::clone(&clock), Rng::derive(seed, "scheduler verify"));
+            let task: Task<'_> = Box::pin(async {
+                let outcome = verify(&durable, &shape, EPOCHS_MAX, &wire, &world, remote.as_ref(), before).await;
+                result.replace(Some(outcome));
+            });
+            let ended = executor.run(vec![task], None);
+            drop(executor);
+            drop_spawned();
+            result
+                .into_inner()
+                .unwrap_or_else(|| Err(format!("the verification epoch ended {ended:?} without a verdict")))
+        }
+        Some(outcome) => outcome.map(drop),
+        None => Err("the run never ended".to_owned()),
+    };
     stats.world = world.counts();
     stats.failed_turns = u64::try_from(client.failed.borrow().len()).expect("a count fits in u64");
     stats.turns = shape.roots * shape.turns;

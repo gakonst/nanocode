@@ -50,16 +50,16 @@ pub fn final_text(label: &str, turn: u64) -> String {
     format!("done {label} turn {turn}")
 }
 
-fn child_task(label: &str, depth: u64) -> String {
+pub fn child_task(label: &str, depth: u64) -> String {
     format!("{CHILD_MARK} {label} depth {depth}")
 }
 
-fn word_after<'a>(text: &'a str, marker: &str) -> Option<&'a str> {
+pub fn word_after<'a>(text: &'a str, marker: &str) -> Option<&'a str> {
     let at = text.find(marker)? + marker.len();
     text[at..].split_whitespace().next()
 }
 
-fn number_after(text: &str, marker: &str) -> Option<u64> {
+pub fn number_after(text: &str, marker: &str) -> Option<u64> {
     word_after(text, marker)?
         .trim_end_matches(|character: char| !character.is_ascii_digit())
         .parse()

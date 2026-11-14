@@ -21,6 +21,8 @@ pub struct WorldCounts {
     pub faults: u64,
     pub connections: u64,
     pub reuses: u64,
+    pub child_crashes: u64,
+    pub child_model_calls: u64,
 }
 
 #[derive(Default)]

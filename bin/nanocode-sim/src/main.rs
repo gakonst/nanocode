@@ -2,6 +2,7 @@ mod agents;
 #[cfg(unix)]
 mod alloc;
 mod cells;
+mod children;
 mod disk;
 #[cfg(unix)]
 mod egress;
@@ -44,7 +45,8 @@ use crate::{
     mpp::{MppMutation, MppStats},
     sync::{SyncMutation, SyncStats},
     websocket::{WebSocketMutation, WebSocketStats},
-    whole::{StoreKind, WholeOptions, WholeStats, WireKind},
+    whole::{ChildMode, StoreKind, WholeOptions, WholeStats, WireKind},
+    children::ChildMutation,
 };
 
 const DEFAULT_OPS: u64 = 1000;
@@ -85,7 +87,7 @@ type Caught = BTreeMap<Invariant, (u64, u64, (u64, u64))>;
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: nanocode-sim --tidy | (--seed S | --seeds A..B) [--scenario store|agents|turns|runtime|websocket|http_server|alloc|egress|mpp|sync] [--ops N] [--twice] [--mutation {}] [--records content|slots] [--verbose]\n       turns: [--mutation {}] [--without {}]... [--live-seqs temporary|floor|gap|reuse] [--calm] [--policy reference|turnlog] [--row-limit BYTES] [--reopen-row-limit BYTES] [--long TURNS] [--snapshot-ratio K] [--snapshot-rows N] [--retain TURNS] [--state-bytes N] [--event-bytes N]\n       runtime: [--store memory|kv] [--calm] [--wire transport|http] [--mutation {}]\n       websocket: [--mutation {}]
+        "usage: nanocode-sim --tidy | (--seed S | --seeds A..B) [--scenario store|agents|turns|runtime|websocket|http_server|alloc|egress|mpp|sync] [--ops N] [--twice] [--mutation {}] [--records content|slots] [--verbose]\n       turns: [--mutation {}] [--without {}]... [--live-seqs temporary|floor|gap|reuse] [--calm] [--policy reference|turnlog] [--row-limit BYTES] [--reopen-row-limit BYTES] [--long TURNS] [--snapshot-ratio K] [--snapshot-rows N] [--retain TURNS] [--state-bytes N] [--event-bytes N]\n       runtime: [--store memory|kv|log] [--calm] [--wire transport|http] [--children local|remote] [--mutation {}|{}]\n       websocket: [--mutation {}]
        http_server: [--mutation {}]
        alloc: [--mutation overstate_size|forget_free|scribble]
        egress: [--mutation widen_allowlist|corrupt_tunnel_byte]
@@ -95,6 +97,7 @@ fn usage() -> ExitCode {
         TurnMutation::names(),
         onelog::PROTECTIONS.join("|"),
         WireMutation::NAMES,
+        ChildMutation::NAMES,
         WebSocketMutation::names(),
         HttpServerMutation::names(),
         MppMutation::names(),
@@ -154,6 +157,7 @@ fn parse_args(args: &[String]) -> Option<Args> {
             "--calm" => turns.calm = true,
             "--store" => whole.store = Some(StoreKind::parse(rest.next()?)?),
             "--wire" => whole.wire = WireKind::parse(rest.next()?)?,
+            "--children" => whole.children = ChildMode::parse(rest.next()?)?,
             "--policy" => turns.policy = PolicyKind::parse(rest.next()?)?,
             "--row-limit" => turns.row_limit = Some(rest.next()?.parse().ok()?),
             "--reopen-row-limit" => turns.reopen_row_limit = Some(rest.next()?.parse().ok()?),
@@ -199,7 +203,10 @@ fn parse_args(args: &[String]) -> Option<Args> {
         (_, None) => {}
         (Scenario::Store, Some(name)) => options.mutation = Mutation::parse(name)?,
         (Scenario::Turns, Some(name)) => turns.mutation = TurnMutation::parse(name)?,
-        (Scenario::Runtime, Some(name)) => whole.mutation = WireMutation::parse(name)?,
+        (Scenario::Runtime, Some(name)) => match WireMutation::parse(name) {
+            Some(mutation) => whole.mutation = mutation,
+            None => whole.child_mutation = ChildMutation::parse(name)?,
+        },
         (Scenario::Websocket, Some(name)) => websocket = WebSocketMutation::parse(name)?,
         (Scenario::HttpServer, Some(name)) => http_server = HttpServerMutation::parse(name)?,
         (Scenario::Mpp, Some(name)) => mpp = MppMutation::parse(name)?,
@@ -273,9 +280,17 @@ fn replay(seed: u64, args: &Args) -> String {
             command.push_str(" --wire ");
             command.push_str(args.whole.wire.name());
         }
+        if args.whole.children != ChildMode::Local {
+            command.push_str(" --children ");
+            command.push_str(args.whole.children.name());
+        }
         if args.whole.mutation != WireMutation::None {
             command.push_str(" --mutation ");
             command.push_str(args.whole.mutation.name());
+        }
+        if args.whole.child_mutation != ChildMutation::None {
+            command.push_str(" --mutation ");
+            command.push_str(args.whole.child_mutation.name());
         }
         return command;
     }
@@ -500,6 +515,13 @@ const fn alloc_experiment(_args: &Args) -> bool {
     false
 }
 
+const fn mutation_name(whole: &WholeOptions) -> &'static str {
+    match whole.child_mutation {
+        ChildMutation::None => whole.mutation.name(),
+        mutation => mutation.name(),
+    }
+}
+
 fn tidy() -> ExitCode {
     match tidy::check(&tidy::workspace_root()) {
         Ok(problems) if problems.is_empty() => {
@@ -536,7 +558,9 @@ fn main() -> ExitCode {
     let experiment = (args.scenario == Scenario::Turns
         && (args.turns.mutation != TurnMutation::None
             || args.turns.protections != Protections::ALL))
-        || (args.scenario == Scenario::Runtime && args.whole.mutation != WireMutation::None)
+        || (args.scenario == Scenario::Runtime
+            && (args.whole.mutation != WireMutation::None
+                || args.whole.child_mutation != ChildMutation::None))
         || (args.scenario == Scenario::Websocket && args.websocket != WebSocketMutation::None)
         || (args.scenario == Scenario::HttpServer && args.http_server != HttpServerMutation::None)
         || (args.scenario == Scenario::Mpp && args.mpp != MppMutation::None)
@@ -663,19 +687,20 @@ fn main() -> ExitCode {
     }
     if args.scenario == Scenario::Runtime {
         println!(
-            "RESULT seeds={}..{} scenario=runtime wire={} mutation={} passed={passed} failed={failed} twice={} stats={whole_totals:?}",
+            "RESULT seeds={}..{} scenario=runtime wire={} children={} mutation={} passed={passed} failed={failed} twice={} stats={whole_totals:?}",
             args.seeds.start,
             args.seeds.end,
             args.whole.wire.name(),
-            args.whole.mutation.name(),
+            args.whole.children.name(),
+            mutation_name(&args.whole),
             args.twice
         );
-        if args.whole.mutation != WireMutation::None {
+        if args.whole.mutation != WireMutation::None || args.whole.child_mutation != ChildMutation::None {
             if failed > 0 {
-                println!("MUTATION {} caught by {failed} seeds", args.whole.mutation.name());
+                println!("MUTATION {} caught by {failed} seeds", mutation_name(&args.whole));
                 return ExitCode::SUCCESS;
             }
-            println!("MUTATION {} NOT caught", args.whole.mutation.name());
+            println!("MUTATION {} NOT caught", mutation_name(&args.whole));
             return ExitCode::FAILURE;
         }
         return if failed == 0 {

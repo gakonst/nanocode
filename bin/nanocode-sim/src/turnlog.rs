@@ -77,6 +77,17 @@ fn window_only(archived: &[(u64, String)], limit: Option<usize>) -> Vec<(u64, St
     parts
 }
 
+impl SimHost {
+    pub const fn new(disk: Arc<Disk>) -> Self {
+        Self {
+            disk,
+            kept: false,
+            limit: None,
+            short: false,
+        }
+    }
+}
+
 impl LogHost for SimHost {
     fn scan<'a>(
         &'a self,

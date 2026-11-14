@@ -130,6 +130,20 @@ pub struct CodeModeExecution {
     pub notifications: Vec<CodeModeNotification>,
 }
 
+impl CodeModeExecution {
+    pub(crate) fn failed(wall_time: f64, message: &str, nested_calls: Vec<NestedToolCall>) -> Self {
+        Self {
+            cell: None,
+            output: ToolOutputBody::Text(format!(
+                "Script failed\nWall time {wall_time:.1} seconds\nOutput:\n{message}"
+            )),
+            success: false,
+            nested_calls,
+            notifications: Vec::new(),
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CodeModeNotification {

@@ -160,6 +160,68 @@ pub(crate) fn integer_value(value: &Value) -> Result<u64, String> {
         .ok_or_else(|| format!("expected a non-negative safe integer, got {value}"))
 }
 
+#[derive(serde::Deserialize)]
+#[cfg_attr(
+    all(target_family = "wasm", not(feature = "local-cells")),
+    expect(
+        dead_code,
+        reason = "only local cells read the wait options; a hand without them validates them"
+    )
+)]
+pub(crate) struct WaitArguments {
+    #[serde(deserialize_with = "cell_id")]
+    pub(crate) cell_id: String,
+    #[serde(default, deserialize_with = "requested_yield")]
+    pub(crate) yield_time_ms: Option<u64>,
+    #[serde(default, deserialize_with = "optional_integer")]
+    pub(crate) max_tokens: Option<usize>,
+    #[serde(default)]
+    pub(crate) terminate: bool,
+}
+
+pub(crate) fn wait_arguments(input: &str) -> Result<(WaitArguments, u64), String> {
+    let arguments = serde_json::from_str::<WaitArguments>(input)
+        .map_err(|error| format!("failed to parse wait arguments: {error}"))?;
+    let cell_id = arguments
+        .cell_id
+        .parse::<u64>()
+        .map_err(|error| format!("invalid exec cell ID `{}`: {error}", arguments.cell_id))?;
+    Ok((arguments, cell_id))
+}
+
+fn cell_id<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
+    match <Value as serde::Deserialize>::deserialize(deserializer)? {
+        Value::String(text) => Ok(text),
+        Value::Number(number) => Ok(number.to_string()),
+        other => Err(serde::de::Error::custom(format!(
+            "expected an exec cell ID, got {other}"
+        ))),
+    }
+}
+
+fn optional_integer<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<usize>, D::Error> {
+    match <Value as serde::Deserialize>::deserialize(deserializer)? {
+        Value::Null => Ok(None),
+        value => integer_value(&value)
+            .map(|integer| Some(token_budget(integer)))
+            .map_err(serde::de::Error::custom),
+    }
+}
+
+pub(crate) fn token_budget(tokens: u64) -> usize {
+    usize::try_from(tokens).unwrap_or(usize::MAX)
+}
+
+fn requested_yield<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<u64>, D::Error> {
+    integer_value(&<Value as serde::Deserialize>::deserialize(deserializer)?)
+        .map(Some)
+        .map_err(serde::de::Error::custom)
+}
+
 pub fn source_with_options<'a>(
     source: &'a str,
     yield_time_ms: Option<&Value>,

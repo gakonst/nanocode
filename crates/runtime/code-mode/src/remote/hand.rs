@@ -2520,9 +2520,22 @@ async fn run(
 ) -> Result<Option<Value>, CodeModeHostError> {
     let Some((session, catalog, turn)) = session else {
         return match operation {
-            RemoteOperation::Execute { .. }
-            | RemoteOperation::Wait { .. }
-            | RemoteOperation::Call { .. } => Err(error(NO_CELLS)),
+            RemoteOperation::Wait { input, .. } => {
+                let started = Instant::now();
+                match crate::code_mode_spec::wait_arguments(&input) {
+                    Ok(_) => Err(error(NO_CELLS)),
+                    Err(message) => {
+                        let execution = CodeModeExecution::failed(
+                            started.elapsed().as_secs_f64(),
+                            &message,
+                            Vec::new(),
+                        );
+                        *status = Some(status_line(&execution));
+                        Ok(Some(SentCalls::new(compact).execution(execution)))
+                    }
+                }
+            }
+            RemoteOperation::Execute { .. } | RemoteOperation::Call { .. } => Err(error(NO_CELLS)),
             _ => Ok(None),
         };
     };

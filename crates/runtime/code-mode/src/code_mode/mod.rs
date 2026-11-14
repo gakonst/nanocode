@@ -49,7 +49,6 @@ fn spawn(future: impl std::future::Future<Output = ()> + Send + 'static) {
 fn spawn(future: impl std::future::Future<Output = ()> + 'static) {
     nanocode_platform::spawn_local(future);
 }
-use serde::Deserialize;
 use serde_json::{Value, value::RawValue};
 
 use nanocode_platform::Instant;
@@ -1121,25 +1120,9 @@ impl CodeModeRuntime {
             seen: self.preempt_consumed.load(Ordering::Acquire),
             consumed: Arc::clone(&self.preempt_consumed),
         };
-        let arguments = match serde_json::from_str::<WaitArguments>(input) {
-            Ok(arguments) => arguments,
-            Err(error) => {
-                return failed_execution(
-                    started_at,
-                    &format!("failed to parse wait arguments: {error}"),
-                    Vec::new(),
-                );
-            }
-        };
-        let cell_id = match arguments.cell_id.parse::<u64>() {
-            Ok(cell_id) => cell_id,
-            Err(error) => {
-                return failed_execution(
-                    started_at,
-                    &format!("invalid exec cell ID `{}`: {error}", arguments.cell_id),
-                    Vec::new(),
-                );
-            }
+        let (arguments, cell_id) = match spec::wait_arguments(input) {
+            Ok(parsed) => parsed,
+            Err(message) => return failed_execution(started_at, &message, Vec::new()),
         };
         let span = nanocode_trace::Span::current();
         span.record("cell.id", cell_id);
@@ -1445,56 +1428,9 @@ fn parse_exec_source(input: &str) -> Result<ParsedExecSource, String> {
             .transpose()
     };
     source.yield_time_ms = field("yield_time_ms")?;
-    source.max_output_tokens = field("max_output_tokens")?.map(token_budget);
+    source.max_output_tokens = field("max_output_tokens")?.map(spec::token_budget);
     rest.clone_into(&mut source.code);
     Ok(source)
-}
-
-#[derive(Deserialize)]
-struct WaitArguments {
-    #[serde(deserialize_with = "cell_id")]
-    cell_id: String,
-    #[serde(default, deserialize_with = "requested_yield")]
-    yield_time_ms: Option<u64>,
-    #[serde(default, deserialize_with = "optional_integer")]
-    max_tokens: Option<usize>,
-    #[serde(default)]
-    terminate: bool,
-}
-
-fn cell_id<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
-    match Value::deserialize(deserializer)? {
-        Value::String(text) => Ok(text),
-        Value::Number(number) => Ok(number.to_string()),
-        other => Err(serde::de::Error::custom(format!(
-            "expected an exec cell ID, got {other}"
-        ))),
-    }
-}
-
-fn integer<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<u64, D::Error> {
-    spec::integer_value(&Value::deserialize(deserializer)?).map_err(serde::de::Error::custom)
-}
-
-fn optional_integer<'de, D: serde::Deserializer<'de>>(
-    deserializer: D,
-) -> Result<Option<usize>, D::Error> {
-    match Value::deserialize(deserializer)? {
-        Value::Null => Ok(None),
-        value => spec::integer_value(&value)
-            .map(|integer| Some(token_budget(integer)))
-            .map_err(serde::de::Error::custom),
-    }
-}
-
-fn token_budget(tokens: u64) -> usize {
-    usize::try_from(tokens).unwrap_or(usize::MAX)
-}
-
-fn requested_yield<'de, D: serde::Deserializer<'de>>(
-    deserializer: D,
-) -> Result<Option<u64>, D::Error> {
-    integer(deserializer).map(Some)
 }
 
 fn millis(duration: Duration) -> u64 {
@@ -3352,16 +3288,7 @@ fn failed_execution(
     message: &str,
     nested_calls: Vec<NestedToolCall>,
 ) -> CodeModeExecution {
-    let wall_time = started_at.elapsed().as_secs_f64();
-    CodeModeExecution {
-        cell: None,
-        output: ToolOutputBody::Text(format!(
-            "Script failed\nWall time {wall_time:.1} seconds\nOutput:\n{message}"
-        )),
-        success: false,
-        nested_calls,
-        notifications: Vec::new(),
-    }
+    CodeModeExecution::failed(started_at.elapsed().as_secs_f64(), message, nested_calls)
 }
 
 fn with_status(

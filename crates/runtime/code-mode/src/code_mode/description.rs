@@ -95,7 +95,7 @@ const EXEC_DESCRIPTION: &str = r#"Run JavaScript code to orchestrate/compose too
 - Accepts raw JavaScript source text, not JSON, quoted strings, or markdown code fences.
 - You may optionally start the tool input with a first-line pragma like `// @exec: {"yield_time_ms": 10000, "max_output_tokens": 1000}`.
 - `yield_time_ms` asks `exec` to yield early if the script is still running. Defaults to 10000 ms.
-- `max_output_tokens` sets the token budget for direct `exec` results. Omit for unlimited output.
+- `max_output_tokens` sets the token budget for direct `exec` results. Omit it for no budget of its own; the agent may still shorten a long result in its context, marking the cut with `…N tokens truncated…`.
 - When the JS code is fully evaluated, the isolate's lifetime ends: unawaited work still waiting on a timer or a nested call is discarded, a nested call that had not returned is reported as abandoned with an unknown outcome, and an unhandled promise rejection fails the script.
 
 - Global helpers:
@@ -115,7 +115,7 @@ const EXEC_DESCRIPTION: &str = r#"Run JavaScript code to orchestrate/compose too
 const EXEC_DESCRIPTION_COMPACT: &str = r#"Run JavaScript to orchestrate tool calls. Each call evaluates the code as a fresh async module.
 - Nested tools are async functions on the global `tools` object, named as JavaScript identifiers, for example `await tools.example_tool(...)` or `await tools.mcp__ologs__get_profile(...)`. Each takes a string or an object and returns a string or an object.
 - Send raw JavaScript source, not JSON, a quoted string or a markdown code fence.
-- An optional first line `// @exec: {"yield_time_ms": 10000, "max_output_tokens": 1000}` sets when a cell that is still running yields (default 10000 ms) and the output token budget (default unlimited).
+- An optional first line `// @exec: {"yield_time_ms": 10000, "max_output_tokens": 1000}` sets when a cell that is still running yields (default 10000 ms) and the output token budget (default none, though the agent may still cut a long result, marked `…N tokens truncated…`).
 - Await every promise: when the code finishes, the cell ends, unawaited work still waiting on a timer or a nested call is discarded (a nested call is reported as abandoned, its outcome unknown) and an unhandled rejection fails the script.
 - Cells run in a strict-mode JavaScript engine, not Node: there is no `require`, `import()` or npm, and assigning to an undeclared name throws. Exports of a `WebAssembly` instance, when the host provides one, are async functions to await.
 - Globals: `text(value)` appends output (other values as JSON); `image(urlOrItem, detail?)` appends an image from a base64 `data:` URL, `{ image_url }`, `{ file_id }` or an MCP `ImageContent` block; `audio(urlOrItem)` appends audio the same way, which reaches the model only as a note that it was omitted; `generatedImage(result)` appends an image-generation result; `notify(value)` adds a separate output item for this call to the next result the cell returns; `store(key, value)` and `load(key)` keep serializable values across cells; `yield_control()` returns the output so far while the cell keeps running; `exit()` ends the cell successfully at once, running no `catch` or `finally`; `setTimeout` and `clearTimeout` (pending timers do not keep the cell alive); `ALL_TOOLS` lists `{ name, description }` of every nested tool."#;

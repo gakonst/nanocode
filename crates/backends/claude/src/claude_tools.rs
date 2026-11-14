@@ -3,6 +3,7 @@ use std::{path::PathBuf, sync::Arc};
 use crate::{
     ClaudeNestedToolUpdate, ClaudeToolInvocation, ClaudeToolProgress, ClaudeToolReply, ClaudeTools,
     ToolDefinition, ToolResultContent,
+    agent::TOOL_RESULT_TOKEN_LIMIT,
     prompt::{AUDIO_UNSUPPORTED, IMAGE_FILE_UNSUPPORTED, IMAGE_UNPROCESSABLE},
 };
 use nanocode_agent_core::{AgentHandle, NanocodeError, Result};
@@ -47,7 +48,7 @@ fn build_exec_schema(after: std::time::Duration) -> Arc<Value> {
         "properties": {
             "code": {"type": "string", "description": "JavaScript source to evaluate."},
             "yield_time_ms": {"type": "number", "description": format!("Same as the pragma's `yield_time_ms`: how long to wait before a script that is still running yields. Defaults to {} ms.", after.as_millis())},
-            "max_output_tokens": {"type": "number", "description": "Same as the pragma's `max_output_tokens`: the token budget for this call's direct results. Omit for unlimited output."}
+            "max_output_tokens": {"type": "number", "description": "Same as the pragma's `max_output_tokens`: the token budget for this call's direct results. Omit for no budget of its own."}
         },
         "required": ["code"],
         "additionalProperties": false,
@@ -92,7 +93,7 @@ fn exec_description(description: &Arc<str>) -> Arc<str> {
     let shared = shared_description(
         "exec",
         format!(
-            "{description}\n\nPass the complete JavaScript source as the `code` string. `yield_time_ms` and `max_output_tokens` may be given as arguments beside `code` instead of in the pragma.\n\nImages reach you at the size the model accepts, whatever their `detail`; an image `file_id` arrives as a note that it was omitted."
+            "{description}\n\nPass the complete JavaScript source as the `code` string. `yield_time_ms` and `max_output_tokens` may be given as arguments beside `code` instead of in the pragma.\n\nImages reach you at the size the model accepts, whatever their `detail`; an image `file_id` arrives as a note that it was omitted. A result keeps at most {TOOL_RESULT_TOKEN_LIMIT} tokens of text (about 4 characters each), cut in the middle at `…N tokens truncated…`."
         ),
     );
     LATEST.set(Some(ExecDescription {

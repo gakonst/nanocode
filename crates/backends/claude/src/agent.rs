@@ -61,7 +61,7 @@ fn estimate_text_tokens(text: &str) -> u64 {
     (text.encode_utf16().count() as u64).div_ceil(4)
 }
 
-const TOOL_RESULT_TOKEN_LIMIT: u64 = 12_000;
+pub(crate) const TOOL_RESULT_TOKEN_LIMIT: u64 = 12_000;
 const DIRECT_TOOL_RESULT_TOKEN_LIMIT: u64 = 25_000;
 const RETRY_BASE_MS: u64 = 500;
 const RETRY_CAP_MS: u64 = 32_000;

@@ -25,7 +25,7 @@ use serde_json::Value;
 use super::{
     Answers, HAND_RESTARTED, LOCAL_TOOLS_UNKNOWN, NOT_RECEIVED, REQUEST_IN_USE, ReceivedCalls,
     RemoteCodeModeHost, RemoteContext, RemoteFrame as Frame, RemoteOperation, RemoteTransport,
-    answer_key, asked_key, encode_output, local_tools_key,
+    answer_key, asked_key, encode_output, hand::fit_images, local_tools_key,
 };
 use crate::{
     Tool, ToolDefinition, ToolInput,
@@ -900,15 +900,22 @@ impl Client {
                 };
                 let text = match fits(&frame, max_frame_bytes) {
                     Ok(text) => text,
-                    Err(issue) => {
-                        frame = Frame::CallbackResult {
-                            id,
-                            result: Err(format!(
-                                "{issue}; the brain callback's result was not sent"
-                            )),
-                        };
-                        None
-                    }
+                    Err(issue) => match max_frame_bytes.and_then(|limit| fit_images(&frame, limit))
+                    {
+                        Some((fitted, text)) => {
+                            frame = fitted;
+                            Some(text)
+                        }
+                        None => {
+                            frame = Frame::CallbackResult {
+                                id,
+                                result: Err(format!(
+                                    "{issue}; the brain callback's result was not sent"
+                                )),
+                            };
+                            None
+                        }
+                    },
                 };
                 let _ = outgoing.send(Outgoing::Send {
                     frames: vec![(frame, text)],

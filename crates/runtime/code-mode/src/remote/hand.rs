@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     collections::{HashMap, HashSet, VecDeque},
     sync::{
         Arc, Weak,
@@ -11,7 +12,7 @@ use nanocode_sync::future::{AbortHandle, Abortable, select_all};
 use nanocode_sync::{Atom, Signal, Slot};
 use nanocode_sync::{mpsc, oneshot, watch};
 use nanocode_tool_contracts::RunningTask;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
 use super::{
     Answers, HandCapability, HandEnvironment, HandHostInfo, HandPermission, LOCAL_TOOLS_UNKNOWN,
@@ -479,7 +480,7 @@ impl Outgoing {
         let limit = self.limit.load(Ordering::Relaxed);
         frame
             .encode(limit)
-            .or_else(|issue| fit_images(frame, limit).ok_or(issue))
+            .or_else(|issue| fit_images(frame, limit).map(|(_, text)| text).ok_or(issue))
     }
     fn epoch(&self) -> u64 {
         self.epoch.load(Ordering::SeqCst)
@@ -514,7 +515,7 @@ impl Outgoing {
     }
 }
 
-fn fit_images(frame: &Frame, limit: usize) -> Option<String> {
+pub(super) fn fit_images(frame: &Frame, limit: usize) -> Option<(Frame, String)> {
     let bytes = serde_json::to_string(frame).ok()?.len();
     let fitted = |value: &Value| {
         let mut value = value.clone();
@@ -541,18 +542,38 @@ fn fit_images(frame: &Frame, limit: usize) -> Option<String> {
             origin_call_id: origin_call_id.clone(),
             update: fitted(update)?,
         },
+        Frame::CallbackResult {
+            id,
+            result: Ok(value),
+        } => Frame::CallbackResult {
+            id: *id,
+            result: Ok(fitted(value)?),
+        },
         _ => return None,
     };
-    frame.encode(limit).ok()
+    let text = frame.encode(limit).ok()?;
+    Some((frame, text))
 }
 
-fn image_data_urls<'a>(value: &'a Value, urls: &mut HashMap<&'a str, usize>) {
+fn image_block_url(fields: &Map<String, Value>) -> Option<String> {
+    if fields.get("type")?.as_str()? != "image" {
+        return None;
+    }
+    let mime_type = fields.get("mimeType")?.as_str()?;
+    let data = fields.get("data")?.as_str()?;
+    Some(format!("data:{mime_type};base64,{data}"))
+}
+
+fn image_data_urls<'a>(value: &'a Value, urls: &mut HashMap<Cow<'a, str>, usize>) {
     match value {
         Value::String(text) if text.starts_with("data:image/") && text.contains(";base64,") => {
-            *urls.entry(text).or_default() += 1;
+            *urls.entry(Cow::Borrowed(text.as_str())).or_default() += 1;
         }
         Value::Array(items) => items.iter().for_each(|item| image_data_urls(item, urls)),
-        Value::Object(fields) => fields.values().for_each(|item| image_data_urls(item, urls)),
+        Value::Object(fields) => match image_block_url(fields) {
+            Some(url) => *urls.entry(Cow::Owned(url)).or_default() += 1,
+            None => fields.values().for_each(|item| image_data_urls(item, urls)),
+        },
         _ => {}
     }
 }
@@ -567,9 +588,20 @@ fn replace_strings(value: &mut Value, replacements: &HashMap<String, String>) {
         Value::Array(items) => items
             .iter_mut()
             .for_each(|item| replace_strings(item, replacements)),
-        Value::Object(fields) => fields
-            .values_mut()
-            .for_each(|item| replace_strings(item, replacements)),
+        Value::Object(fields) => match image_block_url(fields) {
+            Some(url) => {
+                if let Some((mime_type, data)) = replacements
+                    .get(&url)
+                    .and_then(|fitted| fitted.strip_prefix("data:")?.split_once(";base64,"))
+                {
+                    fields.insert("mimeType".into(), Value::from(mime_type));
+                    fields.insert("data".into(), Value::from(data));
+                }
+            }
+            None => fields
+                .values_mut()
+                .for_each(|item| replace_strings(item, replacements)),
+        },
         _ => {}
     }
 }
@@ -595,8 +627,8 @@ fn shrink_images(value: &mut Value, frame_bytes: usize, limit: usize) -> bool {
             let share = usize::try_from(share).ok()?;
             (url.len() > share).then(|| {
                 let fitted =
-                    nanocode_image::fit_data_url(url, share).unwrap_or_else(|_| (*url).to_owned());
-                ((*url).to_owned(), fitted)
+                    nanocode_image::fit_data_url(url, share).unwrap_or_else(|_| url.to_string());
+                (url.to_string(), fitted)
             })
         })
         .collect::<HashMap<_, _>>();

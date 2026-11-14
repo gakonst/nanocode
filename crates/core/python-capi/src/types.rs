@@ -624,6 +624,34 @@ fn slots(
             }),
         ));
     }
+    if !t.descr_get.is_null() {
+        let f = unsafe {
+            transmute::<
+                *const c_void,
+                unsafe extern "C" fn(*mut Object, *mut Object, *mut Object) -> *mut Object,
+            >(t.descr_get)
+        };
+        out.push((
+            "__get__",
+            method(vm, class, "__get__", move |vm, zelf, args| {
+                let instance = args.args.first().cloned().unwrap_or_else(|| vm.ctx.none());
+                let owner = args.args.get(1).cloned();
+                enter(vm, || {
+                    let instance = if vm.is_none(&instance) {
+                        null_mut()
+                    } else {
+                        borrowed(vm, &instance)
+                    };
+                    let owner = owner
+                        .as_ref()
+                        .map_or(null_mut(), |owner| borrowed(vm, owner));
+                    finish(vm, unsafe {
+                        call3(f, borrowed(vm, &zelf), instance, owner)
+                    })
+                })
+            }),
+        ));
+    }
     if let Some(f) = t.init {
         out.push((
             "__init__",
@@ -647,12 +675,16 @@ fn slots(
     if let Some(f) = t.new {
         let ty = ty as usize;
         let new = function(vm, "__new__", move |vm, mut args| {
-            let _cls = first(vm, &mut args)?;
+            let cls = first(vm, &mut args)?;
+            let target = match cls.downcast_ref::<PyType>() {
+                Some(class) => bridge::type_pointer(vm, class),
+                None => ty as *mut Type,
+            };
             enter(vm, || {
                 let tuple = vm.ctx.new_tuple(args.args.clone());
                 let kwargs = keywords(vm, &args)?;
                 finish(vm, unsafe {
-                    call3(f, ty as *mut Type, borrowed(vm, tuple.as_object()), kwargs)
+                    call3(f, target, borrowed(vm, tuple.as_object()), kwargs)
                 })
             })
         });
@@ -682,6 +714,12 @@ pub fn ready_type(ty: *mut Type) {
     }
 }
 
+const SPECIAL_MEMBERS: [&str; 3] = [
+    "__weaklistoffset__",
+    "__dictoffset__",
+    "__vectorcalloffset__",
+];
+
 pub fn c_type(vm: &VirtualMachine, ty: *mut Type) -> PyResult<PyTypeRef> {
     if let Some(class) = bridge::static_type(ty) {
         return Ok(class);
@@ -690,6 +728,11 @@ pub fn c_type(vm: &VirtualMachine, ty: *mut Type) -> PyResult<PyTypeRef> {
     let full = text(unsafe { (*ty).name }).unwrap_or("?");
     let (module, name) = full.rsplit_once('.').unwrap_or(("builtins", full));
     let base_type = unsafe { (*ty).base_type };
+    if base_type == bridge::PyType_Type.get() {
+        let class = vm.ctx.types.type_type.to_owned();
+        bridge::register_c_type(ty, &class);
+        return Ok(class);
+    }
     let base = if base_type.is_null() || base_type == bridge::PyBaseObject_Type.get() {
         CObject::class(&vm.ctx).to_owned()
     } else {
@@ -704,6 +747,9 @@ pub fn c_type(vm: &VirtualMachine, ty: *mut Type) -> PyResult<PyTypeRef> {
     };
     let class = vm.ctx.new_class(Some(module), name, base, {
         let mut slots = PyTypeSlots::heap_default();
+        if unsafe { (*ty).flags } & TPFLAGS_BASETYPE != 0 {
+            slots.flags |= PyTypeFlags::from_slice(&[PyTypeFlags::BASETYPE]);
+        }
         if unsafe { (*ty).weaklistoffset } != 0 {
             slots.flags |=
                 PyTypeFlags::from_slice(&[PyTypeFlags::HAS_WEAKREF, PyTypeFlags::MANAGED_WEAKREF]);
@@ -711,6 +757,9 @@ pub fn c_type(vm: &VirtualMachine, ty: *mut Type) -> PyResult<PyTypeRef> {
         slots
     });
     bridge::register_c_type(ty, &class);
+    if crate::buffer::procs(ty).is_some() {
+        class.slots.as_buffer.store(Some(crate::buffer::export));
+    }
     let leaked: &'static Py<PyType> = PyRef::leak(class.clone());
     let mut attributes: Vec<(&'static str, PyObjectRef)> = Vec::new();
     if let Some(doc) = text(unsafe { (*ty).doc }) {
@@ -757,6 +806,11 @@ pub fn c_type(vm: &VirtualMachine, ty: *mut Type) -> PyResult<PyTypeRef> {
     }
     let mut def = unsafe { (*ty).members };
     while !def.is_null() && !unsafe { (*def).name }.is_null() {
+        let member_name = text(unsafe { (*def).name }).unwrap_or("?");
+        if SPECIAL_MEMBERS.contains(&member_name) {
+            def = unsafe { def.add(1) };
+            continue;
+        }
         attributes.push((
             text(unsafe { (*def).name }).unwrap_or("?"),
             member(vm, unsafe { &*def })?,
@@ -773,9 +827,27 @@ pub fn c_type(vm: &VirtualMachine, ty: *mut Type) -> PyResult<PyTypeRef> {
     }
     attributes.extend(slots(vm, ty, leaked));
     for (name, value) in attributes {
-        class
-            .as_object()
-            .set_attr(vm.ctx.intern_str(name), value, vm)?;
+        let name = vm.ctx.intern_str(name);
+        class.set_attr(name, value);
+        if name.as_str().starts_with("__") {
+            class.update_slot::<true>(name, &vm.ctx);
+        }
+    }
+    unsafe {
+        if (*ty).bases.is_null() {
+            let bases = class
+                .bases
+                .read()
+                .iter()
+                .map(|base| base.clone().into())
+                .collect();
+            (*ty).bases = new_ref(vm, vm.ctx.new_tuple(bases).as_object());
+        }
+        if (*ty).dict.is_null()
+            && let Some(dict) = class.attributes.as_dict()
+        {
+            (*ty).dict = new_ref(vm, dict.as_object());
+        }
     }
     Ok(class)
 }
@@ -783,7 +855,10 @@ pub fn c_type(vm: &VirtualMachine, ty: *mut Type) -> PyResult<PyTypeRef> {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyType_Ready(ty: *mut Type) -> c_int {
     ready_type(ty);
-    0
+    if bridge::machine().is_none() {
+        return 0;
+    }
+    bridge::guard(-1, |vm| c_type(vm, ty).map(|_| 0))
 }
 
 #[unsafe(no_mangle)]
@@ -905,4 +980,8 @@ pub unsafe extern "C" fn PyType_GetFlags(ty: *mut Type) -> std::ffi::c_ulong {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn PyType_Modified(_ty: *mut Type) {}
+pub unsafe extern "C" fn PyType_Modified(ty: *mut Type) {
+    if let Some(class) = bridge::static_type(ty) {
+        class.modified();
+    }
+}

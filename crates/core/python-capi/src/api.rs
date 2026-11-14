@@ -864,6 +864,11 @@ pub extern "C" fn PyLong_AsLong(pointer: *mut Object) -> c_long {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn PyLong_AsInt(pointer: *mut Object) -> c_int {
+    guard(-1, |vm| index(vm, pointer)?.try_to_primitive(vm))
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn PyLong_AsLongLong(pointer: *mut Object) -> c_longlong {
     guard(-1, |vm| index(vm, pointer)?.try_to_primitive(vm))
 }
@@ -2364,6 +2369,12 @@ pub unsafe extern "C" fn PyObject_GetBuffer(
             )
         };
     }
+    if !pointer.is_null()
+        && let Some(getbuffer) =
+            crate::buffer::procs(unsafe { (*pointer).ty }).and_then(|procs| procs.getbuffer)
+    {
+        return unsafe { getbuffer(pointer, view, flags) };
+    }
     guard(-1, |vm| {
         let value = arg(vm, pointer)?;
         let buffer = PyBuffer::try_from_borrowed_object(vm, &value)?;
@@ -2389,9 +2400,20 @@ pub unsafe extern "C" fn PyObject_GetBuffer(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyBuffer_Release(view: *mut Buffer) {
     unsafe {
-        heap::release((*view).internal);
-        (*view).internal = null_mut();
         let owner = (*view).obj;
+        match crate::buffer::procs(if owner.is_null() {
+            null_mut()
+        } else {
+            (*owner).ty
+        }) {
+            Some(procs) => {
+                if let Some(release) = procs.release {
+                    release(owner, view);
+                }
+            }
+            None => heap::release((*view).internal),
+        }
+        (*view).internal = null_mut();
         (*view).obj = null_mut();
         xdecref(owner);
     }
@@ -2468,3 +2490,758 @@ pub extern "C" fn Py_EnterRecursiveCall(_location: *const c_char) -> c_int {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Py_LeaveRecursiveCall() {}
+
+fn optional(
+    vm: &VirtualMachine,
+    pointer: *mut Object,
+    attribute: &str,
+) -> PyResult<Option<PyObjectRef>> {
+    let value = arg(vm, pointer)?;
+    vm.get_attribute_opt(&value, vm.ctx.intern_str(attribute))
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyObject_GetOptionalAttr(
+    pointer: *mut Object,
+    attribute: *mut Object,
+    result: *mut *mut Object,
+) -> c_int {
+    unsafe { *result = null_mut() };
+    guard(-1, |vm| {
+        let attribute = string(vm, attribute)?;
+        Ok(match optional(vm, pointer, &attribute.to_string_lossy())? {
+            Some(value) => {
+                unsafe { *result = new_ref(vm, &value) };
+                1
+            }
+            None => 0,
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyObject_GetOptionalAttrString(
+    pointer: *mut Object,
+    attribute: *const c_char,
+    result: *mut *mut Object,
+) -> c_int {
+    unsafe { *result = null_mut() };
+    guard(-1, |vm| {
+        Ok(match optional(vm, pointer, name(vm, attribute)?)? {
+            Some(value) => {
+                unsafe { *result = new_ref(vm, &value) };
+                1
+            }
+            None => 0,
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn PyObject_HasAttrWithError(pointer: *mut Object, attribute: *mut Object) -> c_int {
+    guard(-1, |vm| {
+        let attribute = string(vm, attribute)?;
+        Ok(c_int::from(
+            optional(vm, pointer, &attribute.to_string_lossy())?.is_some(),
+        ))
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn PyObject_GenericGetDict(
+    pointer: *mut Object,
+    _context: *mut c_void,
+) -> *mut Object {
+    object(|vm| arg(vm, pointer)?.get_attr("__dict__", vm))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn PyObject_GenericSetDict(
+    pointer: *mut Object,
+    value: *mut Object,
+    _context: *mut c_void,
+) -> c_int {
+    status(|vm| arg(vm, pointer)?.set_attr("__dict__", arg(vm, value)?, vm))
+}
+
+macro_rules! binary_numbers {
+    ($($name:ident => $method:ident),* $(,)?) => {
+        $(
+            #[unsafe(no_mangle)]
+            pub extern "C" fn $name(a: *mut Object, b: *mut Object) -> *mut Object {
+                object(|vm| vm.$method(&*arg(vm, a)?, &*arg(vm, b)?))
+            }
+        )*
+    };
+}
+
+binary_numbers! {
+    PyNumber_Add => _add,
+    PyNumber_Subtract => _sub,
+    PyNumber_Multiply => _mul,
+    PyNumber_Remainder => _mod,
+    PyNumber_TrueDivide => _truediv,
+    PyNumber_FloorDivide => _floordiv,
+    PyNumber_Or => _or,
+    PyNumber_And => _and,
+    PyNumber_Xor => _xor,
+    PyNumber_Lshift => _lshift,
+    PyNumber_Rshift => _rshift,
+    PyNumber_InPlaceAdd => _iadd,
+    PyNumber_InPlaceSubtract => _isub,
+    PyNumber_InPlaceMultiply => _imul,
+    PyUnicode_Format => _mod,
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn PySequence_Repeat(pointer: *mut Object, count: isize) -> *mut Object {
+    object(|vm| vm._mul(&*arg(vm, pointer)?, vm.ctx.new_int(count).as_object()))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn PyList_GetItemRef(pointer: *mut Object, at: isize) -> *mut Object {
+    object(|vm| {
+        let list = arg(vm, pointer)?
+            .downcast::<PyList>()
+            .map_err(|_| vm.new_type_error("expected a list".to_owned()))?;
+        let items = list.borrow_vec();
+        usize::try_from(at)
+            .ok()
+            .and_then(|at| items.get(at).cloned())
+            .ok_or_else(|| vm.new_index_error("list index out of range".to_owned()))
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn PyArg_ValidateKeywordArguments(keywords: *mut Object) -> c_int {
+    guard(0, |vm| {
+        let keywords = dict(vm, keywords)?;
+        if keywords
+            .keys_vec()
+            .iter()
+            .any(|key| !key.fast_isinstance(vm.ctx.types.str_type))
+        {
+            return Err(vm.new_type_error("keywords must be strings".to_owned()));
+        }
+        Ok(1)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn PyUnicode_AsASCIIString(pointer: *mut Object) -> *mut Object {
+    object(|vm| vm.call_method(&*arg(vm, pointer)?, "encode", ("ascii",)))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn PyUnicode_DecodeASCII(
+    data: *const c_char,
+    length: isize,
+    errors: *const c_char,
+) -> *mut Object {
+    object(|vm| {
+        let bytes = unsafe { slice::from_raw_parts(data.cast::<u8>(), length.unsigned_abs()) };
+        let errors = text(errors).unwrap_or("strict");
+        vm.call_method(
+            vm.ctx.new_bytes(bytes.to_vec()).as_object(),
+            "decode",
+            ("ascii", errors),
+        )
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn PyUnicode_FindChar(
+    pointer: *mut Object,
+    character: u32,
+    start: isize,
+    end: isize,
+    direction: c_int,
+) -> isize {
+    guard(-2, |vm| {
+        let text = string(vm, pointer)?;
+        let length = text.char_len() as isize;
+        let start = start.clamp(0, length).unsigned_abs();
+        let end = end.clamp(0, length).unsigned_abs();
+        let points: Vec<u32> = text
+            .as_wtf8()
+            .code_points()
+            .skip(start)
+            .take(end.saturating_sub(start))
+            .map(|point| point.to_u32())
+            .collect();
+        let found = if direction > 0 {
+            points.iter().position(|&point| point == character)
+        } else {
+            points.iter().rposition(|&point| point == character)
+        };
+        Ok(found.map_or(-1, |at| (start + at) as isize))
+    })
+}
+
+#[unsafe(no_mangle)]
+pub static _PyByteArray_empty_string: [c_char; 1] = [0];
+
+#[unsafe(no_mangle)]
+pub extern "C" fn PyByteArray_Size(pointer: *mut Object) -> isize {
+    size(|vm| arg(vm, pointer)?.length(vm))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn PyByteArray_AsString(pointer: *mut Object) -> *mut c_char {
+    guard(null_mut(), |vm| {
+        let value = arg(vm, pointer)?;
+        let array = value
+            .downcast_ref::<rustpython_vm::builtins::PyByteArray>()
+            .ok_or_else(|| vm.new_type_error("expected a bytearray".to_owned()))?;
+        let data = array.borrow_buf();
+        Ok(if data.is_empty() {
+            _PyByteArray_empty_string.as_ptr().cast_mut()
+        } else {
+            data.as_ptr().cast::<c_char>().cast_mut()
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn PyMemoryView_FromObject(pointer: *mut Object) -> *mut Object {
+    object(|vm| {
+        vm.ctx
+            .types
+            .memoryview_type
+            .as_object()
+            .call((arg(vm, pointer)?,), vm)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn PyMemoryView_GetContiguous(
+    pointer: *mut Object,
+    _buffer_type: c_int,
+    order: c_char,
+) -> *mut Object {
+    object(|vm| {
+        let view = vm
+            .ctx
+            .types
+            .memoryview_type
+            .as_object()
+            .call((arg(vm, pointer)?,), vm)?;
+        let attribute = if order as u8 == b'F' {
+            "f_contiguous"
+        } else {
+            "c_contiguous"
+        };
+        if view.get_attr(attribute, vm)?.try_to_bool(vm)? {
+            return Ok(view);
+        }
+        let order = char::from(order as u8).to_string();
+        let bytes = vm.call_method(&view, "tobytes", (order,))?;
+        vm.ctx.types.memoryview_type.as_object().call((bytes,), vm)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyBuffer_IsContiguous(view: *const Buffer, order: c_char) -> c_int {
+    let view = unsafe { &*view };
+    if !view.suboffsets.is_null() {
+        return 0;
+    }
+    if view.strides.is_null() {
+        return 1;
+    }
+    let dimensions = view.ndim.unsigned_abs() as usize;
+    let shape = unsafe { slice::from_raw_parts(view.shape, dimensions) };
+    let strides = unsafe { slice::from_raw_parts(view.strides, dimensions) };
+    let walk = |order: &mut dyn Iterator<Item = usize>| {
+        let mut expected = view.itemsize;
+        for at in order {
+            if shape[at] > 1 && strides[at] != expected {
+                return false;
+            }
+            expected *= shape[at];
+        }
+        true
+    };
+    let c = walk(&mut (0..dimensions).rev());
+    let f = walk(&mut (0..dimensions));
+    c_int::from(match order as u8 {
+        b'C' => c,
+        b'F' => f,
+        _ => c || f,
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn PyFloat_Pack8(value: f64, data: *mut c_char, little: c_int) -> c_int {
+    let bytes = if little != 0 {
+        value.to_le_bytes()
+    } else {
+        value.to_be_bytes()
+    };
+    unsafe {
+        data.cast::<u8>()
+            .copy_from_nonoverlapping(bytes.as_ptr(), bytes.len())
+    };
+    0
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn PyFloat_Pack4(value: f64, data: *mut c_char, little: c_int) -> c_int {
+    let single = value as f32;
+    if single.is_infinite() && value.is_finite() {
+        return guard(-1, |vm| {
+            Err(vm.new_overflow_error("float too large to pack with f format".to_owned()))
+        });
+    }
+    let bytes = if little != 0 {
+        single.to_le_bytes()
+    } else {
+        single.to_be_bytes()
+    };
+    unsafe {
+        data.cast::<u8>()
+            .copy_from_nonoverlapping(bytes.as_ptr(), bytes.len())
+    };
+    0
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn PyFloat_Unpack8(data: *const c_char, little: c_int) -> f64 {
+    let mut bytes = [0; size_of::<f64>()];
+    unsafe {
+        bytes
+            .as_mut_ptr()
+            .copy_from_nonoverlapping(data.cast::<u8>(), bytes.len())
+    };
+    if little != 0 {
+        f64::from_le_bytes(bytes)
+    } else {
+        f64::from_be_bytes(bytes)
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn PyFloat_Unpack4(data: *const c_char, little: c_int) -> f64 {
+    let mut bytes = [0; size_of::<f32>()];
+    unsafe {
+        bytes
+            .as_mut_ptr()
+            .copy_from_nonoverlapping(data.cast::<u8>(), bytes.len())
+    };
+    f64::from(if little != 0 {
+        f32::from_le_bytes(bytes)
+    } else {
+        f32::from_be_bytes(bytes)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyErr_GetExcInfo(
+    ty: *mut *mut Object,
+    value: *mut *mut Object,
+    traceback: *mut *mut Object,
+) {
+    let (class, error, trace) = bridge::machine()
+        .and_then(|vm| vm.current_exception().map(|error| (vm, error)))
+        .map_or((null_mut(), null_mut(), null_mut()), |(vm, error)| {
+            let trace = error
+                .__traceback__()
+                .map_or(null_mut(), |trace| new_ref(vm, trace.as_object()));
+            (
+                new_ref(vm, error.class().as_object()),
+                new_ref(vm, error.as_object()),
+                trace,
+            )
+        });
+    unsafe {
+        *ty = class;
+        *value = error;
+        *traceback = trace;
+    }
+}
+
+fn handled(vm: &VirtualMachine, value: *mut Object) -> PyResult<Option<PyBaseExceptionRef>> {
+    if value.is_null() || value == none() {
+        return Ok(None);
+    }
+    arg(vm, value)?
+        .downcast::<PyBaseException>()
+        .map(Some)
+        .map_err(|_| vm.new_type_error("the handled exception must be an exception".to_owned()))
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyErr_SetExcInfo(
+    ty: *mut Object,
+    value: *mut Object,
+    traceback: *mut Object,
+) {
+    guard((), |vm| {
+        vm.set_exception(handled(vm, value)?);
+        Ok(())
+    });
+    unsafe {
+        xdecref(ty);
+        xdecref(value);
+        xdecref(traceback);
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn PyErr_GetHandledException() -> *mut Object {
+    bridge::machine()
+        .and_then(|vm| {
+            vm.current_exception()
+                .map(|error| new_ref(vm, error.as_object()))
+        })
+        .unwrap_or(null_mut())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn PyErr_SetHandledException(value: *mut Object) {
+    guard((), |vm| {
+        vm.set_exception(handled(vm, value)?);
+        Ok(())
+    });
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn PyException_GetTraceback(pointer: *mut Object) -> *mut Object {
+    guard(null_mut(), |vm| {
+        let value = arg(vm, pointer)?.get_attr("__traceback__", vm)?;
+        Ok(if vm.is_none(&value) {
+            null_mut()
+        } else {
+            new_ref(vm, &value)
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn PyTraceBack_Here(_frame: *mut Object) -> c_int {
+    guard(-1, |vm| {
+        let (Some(error), Some(frame)) = (bridge::current_error(), vm.current_frame()) else {
+            return Ok(0);
+        };
+        let next = error.as_object().get_attr("__traceback__", vm)?;
+        let lasti = frame.as_object().get_attr("f_lasti", vm)?;
+        let lineno = frame.as_object().get_attr("f_lineno", vm)?;
+        let lineno = if vm.is_none(&lineno) {
+            frame
+                .as_object()
+                .get_attr("f_code", vm)?
+                .get_attr("co_firstlineno", vm)?
+        } else {
+            lineno
+        };
+        let traceback = vm
+            .ctx
+            .types
+            .traceback_type
+            .as_object()
+            .call((next, frame, lasti, lineno), vm)?;
+        error.as_object().set_attr("__traceback__", traceback, vm)?;
+        Ok(0)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn PyErr_PrintEx(_set_last: c_int) {
+    PyErr_Print();
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn PySys_GetObject(attribute: *const c_char) -> *mut Object {
+    guard(null_mut(), |vm| {
+        Ok(vm
+            .get_attribute_opt(
+                vm.sys_module.as_object(),
+                vm.ctx.intern_str(name(vm, attribute)?),
+            )
+            .ok()
+            .flatten()
+            .map_or(null_mut(), |value| borrowed(vm, &value)))
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn PyEval_GetBuiltins() -> *mut Object {
+    bridge::borrowed_object(|vm| Ok(vm.builtins.dict().into()))
+}
+
+fn modules(vm: &VirtualMachine) -> PyResult {
+    vm.sys_module.get_attr("modules", vm)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn PyImport_GetModuleDict() -> *mut Object {
+    bridge::borrowed_object(modules)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn PyImport_GetModule(module: *mut Object) -> *mut Object {
+    guard(null_mut(), |vm| {
+        Ok(modules(vm)?
+            .get_item(&*arg(vm, module)?, vm)
+            .map_or(null_mut(), |module| new_ref(vm, &module)))
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn PyImport_AddModuleRef(module: *const c_char) -> *mut Object {
+    object(|vm| {
+        let module = name(vm, module)?;
+        let modules = modules(vm)?;
+        if let Ok(found) = modules.get_item(module, vm) {
+            return Ok(found);
+        }
+        let created: PyObjectRef = vm.new_module(module, vm.ctx.new_dict(), None).into();
+        modules.set_item(module, created.clone(), vm)?;
+        Ok(created)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn PyImport_ImportModuleLevelObject(
+    module: *mut Object,
+    globals: *mut Object,
+    locals: *mut Object,
+    fromlist: *mut Object,
+    level: c_int,
+) -> *mut Object {
+    object(|vm| {
+        let part = |pointer: *mut Object| {
+            if pointer.is_null() {
+                Ok(vm.ctx.none())
+            } else {
+                arg(vm, pointer)
+            }
+        };
+        vm.builtins.get_attr("__import__", vm)?.call(
+            (
+                arg(vm, module)?,
+                part(globals)?,
+                part(locals)?,
+                part(fromlist)?,
+                level,
+            ),
+            vm,
+        )
+    })
+}
+
+static INTERPRETER: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+#[unsafe(no_mangle)]
+pub extern "C" fn PyInterpreterState_Get() -> *mut c_void {
+    INTERPRETER.as_ptr().cast()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn PyInterpreterState_GetID(_interpreter: *mut c_void) -> i64 {
+    0
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn PyObject_GC_Track(_pointer: *mut c_void) {}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn PyObject_GC_UnTrack(_pointer: *mut c_void) {}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyObject_GC_Del(pointer: *mut c_void) {
+    unsafe { heap::PyObject_Free(pointer) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn _PyObject_GC_New(ty: *mut Type) -> *mut Object {
+    unsafe { crate::types::_PyObject_New(ty) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn _PyObject_GC_NewVar(ty: *mut Type, items: isize) -> *mut Object {
+    unsafe { crate::types::_PyObject_NewVar(ty, items) }
+}
+
+fn capsule(
+    vm: &VirtualMachine,
+    pointer: *mut Object,
+) -> PyResult<PyRef<rustpython_vm::builtins::PyCapsule>> {
+    arg(vm, pointer)?
+        .downcast::<rustpython_vm::builtins::PyCapsule>()
+        .map_err(|_| vm.new_value_error("the object is not a capsule".to_owned()))
+}
+
+fn same_name(left: Option<&CStr>, right: *const c_char) -> bool {
+    match (left, right.is_null()) {
+        (None, true) => true,
+        (Some(left), false) => left == unsafe { CStr::from_ptr(right) },
+        _ => false,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn PyCapsule_New(
+    pointer: *mut c_void,
+    capsule_name: *const c_char,
+    _destructor: *mut c_void,
+) -> *mut Object {
+    object(|vm| {
+        if pointer.is_null() {
+            return Err(vm.new_value_error("PyCapsule_New called with null pointer".to_owned()));
+        }
+        let capsule_name =
+            (!capsule_name.is_null()).then(|| unsafe { CStr::from_ptr(capsule_name) });
+        Ok(
+            rustpython_vm::builtins::PyCapsule::new(pointer, capsule_name, None)
+                .into_ref(&vm.ctx)
+                .into(),
+        )
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn PyCapsule_GetPointer(
+    pointer: *mut Object,
+    capsule_name: *const c_char,
+) -> *mut c_void {
+    guard(null_mut(), |vm| {
+        let capsule = capsule(vm, pointer)?;
+        if !same_name(capsule.name(), capsule_name) {
+            return Err(
+                vm.new_value_error("PyCapsule_GetPointer called with incorrect name".to_owned())
+            );
+        }
+        Ok(capsule.pointer())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn PyCapsule_GetName(pointer: *mut Object) -> *const c_char {
+    guard(null(), |vm| {
+        Ok(capsule(vm, pointer)?.name().map_or(null(), CStr::as_ptr))
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn PyCapsule_GetContext(pointer: *mut Object) -> *mut c_void {
+    guard(null_mut(), |vm| Ok(capsule(vm, pointer)?.context()))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn PyCapsule_SetContext(pointer: *mut Object, context: *mut c_void) -> c_int {
+    status(|vm| {
+        capsule(vm, pointer)?.set_context(context);
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn PyCapsule_SetPointer(pointer: *mut Object, value: *mut c_void) -> c_int {
+    status(|vm| {
+        capsule(vm, pointer)?.set_pointer(value);
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn PyCapsule_IsValid(pointer: *mut Object, capsule_name: *const c_char) -> c_int {
+    let Some(vm) = bridge::machine() else {
+        return 0;
+    };
+    if pointer.is_null() {
+        return 0;
+    }
+    let Ok(value) = arg(vm, pointer) else {
+        return 0;
+    };
+    value
+        .downcast_ref::<rustpython_vm::builtins::PyCapsule>()
+        .map_or(0, |capsule| {
+            c_int::from(!capsule.pointer().is_null() && same_name(capsule.name(), capsule_name))
+        })
+}
+
+thread_local! {
+    static FUNCTIONS: RefCell<HashMap<usize, (usize, usize)>> = RefCell::new(HashMap::new());
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyCMethod_New(
+    def: *mut MethodDef,
+    zelf: *mut Object,
+    module: *mut Object,
+    _class: *mut Type,
+) -> *mut Object {
+    object(|vm| {
+        let function_name = text(unsafe { (*def).name }).unwrap_or("?");
+        if !zelf.is_null() {
+            unsafe { incref(zelf) };
+        }
+        let address = def as usize;
+        let owner = zelf as usize;
+        let f = crate::types::function(vm, function_name, move |vm, args| {
+            crate::types::invoke(
+                vm,
+                address as *const MethodDef,
+                &|_| owner as *mut Object,
+                args,
+            )
+        });
+        if !module.is_null() {
+            let module = arg(vm, module)?;
+            if let Ok(module) = module.get_attr("__name__", vm) {
+                let _ = f.set_attr("__module__", module, vm);
+            }
+        }
+        FUNCTIONS.with_borrow_mut(|functions| {
+            functions.insert(f.as_object() as *const PyObject as usize, (address, owner))
+        });
+        Ok(f)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyCFunction_NewEx(
+    def: *mut MethodDef,
+    zelf: *mut Object,
+    module: *mut Object,
+) -> *mut Object {
+    unsafe { PyCMethod_New(def, zelf, module, null_mut()) }
+}
+
+fn native(pointer: *mut Object) -> Option<(usize, usize)> {
+    let vm = bridge::machine()?;
+    let value = arg(vm, pointer).ok()?;
+    FUNCTIONS.with_borrow(|functions| {
+        functions
+            .get(&(value.as_object() as *const PyObject as usize))
+            .copied()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn PyCFunction_GetFunction(pointer: *mut Object) -> Option<unsafe extern "C" fn()> {
+    native(pointer).and_then(|(def, _)| unsafe { (*(def as *const MethodDef)).meth })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn PyCFunction_GetSelf(pointer: *mut Object) -> *mut Object {
+    native(pointer).map_or(null_mut(), |(_, owner)| owner as *mut Object)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn PyCFunction_GetFlags(pointer: *mut Object) -> c_int {
+    native(pointer).map_or(0, |(def, _)| unsafe { (*(def as *const MethodDef)).flags })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn PyMethod_New(function: *mut Object, zelf: *mut Object) -> *mut Object {
+    object(|vm| {
+        vm.ctx
+            .types
+            .bound_method_type
+            .as_object()
+            .call((arg(vm, function)?, arg(vm, zelf)?), vm)
+    })
+}

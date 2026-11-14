@@ -253,7 +253,12 @@ fn main() {
             command.arg("-fPIC");
         }
         command
-            .args(["-O2", "-DNDEBUG", "-fvisibility=hidden"])
+            .args([
+                "-O2",
+                "-DNDEBUG",
+                "-DCYTHON_LIMITED_API=1",
+                "-fvisibility=hidden",
+            ])
             .args(defines)
             .arg("-I")
             .arg(&include)
@@ -286,7 +291,15 @@ fn main() {
         for source in sorted(&dir, |path| {
             path.extension().is_some_and(|extension| extension == "c")
         }) {
-            let defines = [format!("-DPyInit_{last}={symbol}")];
+            let mut defines = vec![
+                format!("-DPyInit_{last}={symbol}"),
+                format!("-I{}", dir.display()),
+            ];
+            defines.extend(
+                sorted(&dir, |path| path.is_dir())
+                    .iter()
+                    .map(|include| format!("-I{}", include.display())),
+            );
             let object = out.join(format!("{}.o", objects.len()));
             compile(&source, &object, &defines);
             if wasm {

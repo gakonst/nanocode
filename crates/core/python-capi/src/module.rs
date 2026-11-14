@@ -49,7 +49,7 @@ pub fn module_defs(ctx: &rustpython_vm::Context) -> Vec<&'static PyModuleDef> {
 
 fn create(
     vm: &VirtualMachine,
-    _spec: &PyObject,
+    spec: &PyObject,
     def: &'static PyModuleDef,
 ) -> PyResult<PyRef<PyModule>> {
     let name = def.name.as_str();
@@ -74,7 +74,7 @@ fn create(
             }));
         }
         if unsafe { (*result).ty } == bridge::PyModuleDef_Type.get() {
-            multi_phase(vm, result.cast(), name)
+            multi_phase(vm, result.cast(), name, spec)
         } else {
             finish(vm, result)
         }
@@ -84,19 +84,13 @@ fn create(
     })
 }
 
-fn multi_phase(vm: &VirtualMachine, def: *mut ModuleDef, name: &str) -> PyResult {
+fn multi_phase(vm: &VirtualMachine, def: *mut ModuleDef, name: &str, spec: &PyObject) -> PyResult {
+    let mut creator = None;
     let mut slot = unsafe { (*def).slots };
     while !slot.is_null() && unsafe { (*slot).slot } != 0 {
         match unsafe { (*slot).slot } {
             MOD_EXEC | MOD_MULTIPLE_INTERPRETERS | MOD_GIL => {}
-            MOD_CREATE => {
-                return Err(vm.new_import_error(
-                    format!(
-                        "{name} creates its own module object, which the C API does not run yet"
-                    ),
-                    vm.ctx.new_str(name),
-                ));
-            }
+            MOD_CREATE => creator = Some(unsafe { (*slot).value }),
             other => {
                 return Err(vm.new_import_error(
                     format!("{name} has module slot {other}, which the C API does not run yet"),
@@ -106,7 +100,26 @@ fn multi_phase(vm: &VirtualMachine, def: *mut ModuleDef, name: &str) -> PyResult
         }
         slot = unsafe { slot.add(1) };
     }
-    let pointer = new_module(vm, def, name)?;
+    let pointer = match creator {
+        Some(creator) => {
+            let creator = unsafe {
+                std::mem::transmute::<
+                    *mut c_void,
+                    unsafe extern "C" fn(*mut Object, *mut ModuleDef) -> *mut Object,
+                >(creator)
+            };
+            let pointer = unsafe { crate::cast::call2(creator, bridge::borrowed(vm, spec), def) };
+            if pointer.is_null() {
+                return Err(take_error().unwrap_or_else(|| {
+                    vm.new_system_error(format!(
+                        "creation of {name} failed without raising an exception"
+                    ))
+                }));
+            }
+            adopt(vm, def, pointer)?
+        }
+        None => new_module(vm, def, name)?,
+    };
     let module = arg(vm, pointer)?;
     let mut slot = unsafe { (*def).slots };
     while !slot.is_null() && unsafe { (*slot).slot } != 0 {
@@ -134,6 +147,11 @@ fn new_module(vm: &VirtualMachine, def: *mut ModuleDef, name: &str) -> PyResult<
     let module = vm.new_module(name, vm.ctx.new_dict(), doc);
     let pointer = new_ref(vm, module.as_object());
     unsafe { incref(pointer) };
+    adopt(vm, def, pointer)
+}
+
+fn adopt(vm: &VirtualMachine, def: *mut ModuleDef, pointer: *mut Object) -> PyResult<*mut Object> {
+    let module = arg(vm, pointer)?;
     let address = pointer as usize;
     let mut method = unsafe { (*def).methods };
     while !method.is_null() && !unsafe { (*method).name }.is_null() {
@@ -341,5 +359,35 @@ pub extern "C" fn PyModule_AddFunctions(module: *mut Object, methods: *mut Metho
             method = unsafe { method.add(1) };
         }
         Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn PyModule_GetDef(module: *mut Object) -> *mut ModuleDef {
+    MODULES
+        .with_borrow(|modules| {
+            modules
+                .iter()
+                .find(|&(_, &address)| address == module as usize)
+                .map(|(&def, _)| def)
+        })
+        .map_or(null_mut(), |def| def as *mut ModuleDef)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn PyModule_GetName(module: *mut Object) -> *const c_char {
+    guard(std::ptr::null(), |vm| {
+        let name = arg(vm, module)?.get_attr("__name__", vm)?;
+        Ok(unsafe { crate::api::PyUnicode_AsUTF8(bridge::borrowed(vm, &name)) })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn PyModule_NewObject(name: *mut Object) -> *mut Object {
+    bridge::object(|vm| {
+        let name = arg(vm, name)?.str(vm)?;
+        Ok(vm
+            .new_module(&name.to_string_lossy(), vm.ctx.new_dict(), None)
+            .into())
     })
 }

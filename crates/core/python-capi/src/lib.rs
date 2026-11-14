@@ -9,6 +9,7 @@
 mod abi;
 pub mod api;
 mod bridge;
+mod buffer;
 mod cast;
 mod heap;
 #[cfg(target_family = "wasm")]

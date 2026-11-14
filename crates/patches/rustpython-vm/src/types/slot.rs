@@ -549,7 +549,7 @@ pub(crate) type GetattroFunc = fn(&PyObject, &Py<PyStr>, &VirtualMachine) -> PyR
 pub(crate) type SetattroFunc =
     fn(&PyObject, &Py<PyStr>, PySetterValue, &VirtualMachine) -> PyResult<()>;
 /// bf_getbuffer
-pub(crate) type AsBufferFunc = fn(&PyObject, BufferFlags, &VirtualMachine) -> PyResult<PyBuffer>;
+pub type AsBufferFunc = fn(&PyObject, BufferFlags, &VirtualMachine) -> PyResult<PyBuffer>;
 pub(crate) type RichCompareFunc = fn(
     &PyObject,
     &PyObject,
@@ -1012,7 +1012,7 @@ impl PyType {
     ///
     /// Iterates SLOT_DEFS to find all slots matching the given name and updates them.
     /// Also recursively updates subclasses that don't have their own definition.
-    pub(crate) fn update_slot<const ADD: bool>(&self, name: &'static PyStrInterned, ctx: &Context) {
+    pub fn update_slot<const ADD: bool>(&self, name: &'static PyStrInterned, ctx: &Context) {
         debug_assert!(name.as_str().starts_with("__"));
         debug_assert!(name.as_str().ends_with("__"));
 

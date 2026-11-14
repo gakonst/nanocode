@@ -1,4 +1,8 @@
-use std::{cell::OnceCell, ffi::c_int};
+use std::{
+    cell::OnceCell,
+    ffi::{c_char, c_int},
+    ptr::null_mut,
+};
 
 use nanocode_platform::Instant;
 
@@ -84,4 +88,66 @@ pub extern "C" fn clock() -> i64 {
     START.with(|start| {
         i64::try_from(start.get_or_init(Instant::now).elapsed().as_micros()).unwrap_or(i64::MAX)
     })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn strcmp(left: *const c_char, right: *const c_char) -> c_int {
+    unsafe { strncmp(left, right, usize::MAX) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn strncmp(left: *const c_char, right: *const c_char, limit: usize) -> c_int {
+    for at in 0..limit {
+        let (a, b) = unsafe { (*left.add(at) as u8, *right.add(at) as u8) };
+        if a != b || a == 0 {
+            return c_int::from(a) - c_int::from(b);
+        }
+    }
+    0
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn strchr(text: *const c_char, wanted: c_int) -> *mut c_char {
+    let wanted = wanted as u8;
+    let mut at = text;
+    loop {
+        let byte = unsafe { *at } as u8;
+        if byte == wanted {
+            return at.cast_mut();
+        }
+        if byte == 0 {
+            return null_mut();
+        }
+        at = unsafe { at.add(1) };
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn strrchr(text: *const c_char, wanted: c_int) -> *mut c_char {
+    let wanted = wanted as u8;
+    let mut found = null_mut();
+    let mut at = text;
+    loop {
+        let byte = unsafe { *at } as u8;
+        if byte == wanted {
+            found = at.cast_mut();
+        }
+        if byte == 0 {
+            return found;
+        }
+        at = unsafe { at.add(1) };
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn strstr(haystack: *const c_char, needle: *const c_char) -> *mut c_char {
+    let needle = unsafe { std::ffi::CStr::from_ptr(needle) }.to_bytes();
+    let haystack_bytes = unsafe { std::ffi::CStr::from_ptr(haystack) }.to_bytes();
+    if needle.is_empty() {
+        return haystack.cast_mut();
+    }
+    haystack_bytes
+        .windows(needle.len())
+        .position(|window| window == needle)
+        .map_or(null_mut(), |at| unsafe { haystack.add(at) }.cast_mut())
 }

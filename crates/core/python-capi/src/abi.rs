@@ -236,6 +236,40 @@ pub struct SliceObject {
 }
 
 #[repr(C)]
+pub struct DateTimeObject<const N: usize> {
+    pub base: Object,
+    pub hashcode: isize,
+    pub hastzinfo: c_char,
+    pub data: [u8; N],
+    pub fold: u8,
+    pub tzinfo: *mut Object,
+}
+
+#[repr(C)]
+pub struct DeltaObject {
+    pub base: Object,
+    pub hashcode: isize,
+    pub days: c_int,
+    pub seconds: c_int,
+    pub microseconds: c_int,
+}
+
+#[repr(C)]
+pub struct ByteArray {
+    pub base: VarObject,
+    pub alloc: isize,
+    pub bytes: *mut c_char,
+    pub start: *mut c_char,
+    pub exports: isize,
+}
+
+#[repr(C)]
+pub struct BufferProcs {
+    pub getbuffer: Option<unsafe extern "C" fn(*mut Object, *mut Buffer, c_int) -> c_int>,
+    pub release: Option<unsafe extern "C" fn(*mut Object, *mut Buffer)>,
+}
+
+#[repr(C)]
 pub struct Buffer {
     pub buf: *mut c_void,
     pub obj: *mut Object,

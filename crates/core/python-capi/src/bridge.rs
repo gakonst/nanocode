@@ -11,8 +11,8 @@ use std::{
 use rustpython_vm::{
     AsObject, Py, PyObject, PyObjectRef, PyPayload, PyRef, PyResult, VirtualMachine,
     builtins::{
-        PyBaseExceptionRef, PyBytes, PyDict, PyFloat, PyInt, PyList, PySlice, PyStr, PyTuple,
-        PyType, PyTypeRef,
+        PyBaseExceptionRef, PyByteArray, PyBytes, PyDict, PyFloat, PyInt, PyList, PySlice, PyStr,
+        PyTuple, PyType, PyTypeRef,
     },
     class::PyClassImpl,
     common::wtf8::{CodePoint, Wtf8Buf},
@@ -122,6 +122,11 @@ static_types! {
     PyModule_Type = c"module", Object, TPFLAGS_BASETYPE, module_type;
     PyProperty_Type = c"property", Object, TPFLAGS_BASETYPE, property_type;
     PyCapsule_Type = c"PyCapsule", Object, 0, capsule_type;
+    PyCFunction_Type = c"builtin_function_or_method", Object, 0, builtin_function_or_method_type;
+    PyMethod_Type = c"method", Object, 0, bound_method_type;
+    PyMethodDescr_Type = c"method_descriptor", Object, 0, method_descriptor_type;
+    PyStaticMethod_Type = c"staticmethod", Object, TPFLAGS_BASETYPE, staticmethod_type;
+    PyClassMethod_Type = c"classmethod", Object, TPFLAGS_BASETYPE, classmethod_type;
     _PyNone_Type = c"NoneType", Object, 0, none_type;
     PyEllipsis_Type = c"ellipsis", Object, 0, ellipsis_type;
     _PyNotImplemented_Type = c"NotImplementedType", Object, 0, not_implemented_type;
@@ -286,7 +291,35 @@ fn ready(vm: &VirtualMachine) {
         return;
     }
     let _ = CObject::make_static_type();
+    let _ = crate::buffer::CBuffer::make_static_type();
     register_types(vm);
+    let dict_offset = crate::types::function(vm, "__dictoffset__", |vm, args| {
+        let class = args
+            .args
+            .first()
+            .cloned()
+            .ok_or_else(|| vm.new_type_error("__dictoffset__ needs a type".to_owned()))?
+            .downcast::<PyType>()
+            .map_err(|_| vm.new_type_error("__dictoffset__ needs a type".to_owned()))?;
+        let offset = if class.fast_issubclass(vm.ctx.types.type_type) {
+            offset_of!(Type, dict) as isize
+        } else {
+            unsafe { (*type_pointer(vm, &class)).dictoffset }
+        };
+        Ok(vm.ctx.new_int(offset).into())
+    });
+    if let Ok(property) = vm
+        .ctx
+        .types
+        .property_type
+        .as_object()
+        .call((dict_offset,), vm)
+    {
+        vm.ctx
+            .types
+            .type_type
+            .set_attr(vm.ctx.intern_str("__dictoffset__"), property);
+    }
     let object = PyBaseObject_Type.get();
     for pointer in STATIC_TYPES.with_borrow(|types| types.keys().copied().collect::<Vec<_>>()) {
         let ty = pointer as *mut Type;
@@ -810,6 +843,14 @@ fn proxy(vm: &VirtualMachine, object: &PyObject) -> *mut Object {
         }
         return pointer;
     }
+    if object.downcast_ref::<PyByteArray>().is_some() {
+        let pointer = allocate_object(size_of::<ByteArray>(), ty, 0);
+        refresh(vm, object, pointer);
+        return pointer;
+    }
+    if let Some(pointer) = datetime_object(vm, object, ty) {
+        return pointer;
+    }
     if let Some(dict) = object.downcast_ref::<PyDict>() {
         let pointer = allocate_object(size_of::<Dict>(), ty, 0);
         unsafe { (*pointer.cast::<Dict>()).used = dict.__len__() as isize };
@@ -837,6 +878,131 @@ fn proxy(vm: &VirtualMachine, object: &PyObject) -> *mut Object {
     allocate_object(size_of::<Object>(), ty, 0)
 }
 
+unsafe extern "C" {
+    fn _Py_datetime_type(which: c_int) -> *mut Type;
+}
+
+fn datetime_kind(vm: &VirtualMachine, class: &Py<PyType>) -> Option<c_int> {
+    if unsafe { _Py_datetime_type(0) }.is_null() {
+        return None;
+    }
+    (0..4).find(|&which| {
+        static_type(unsafe { _Py_datetime_type(which) })
+            .or_else(|| {
+                arg(vm, unsafe { _Py_datetime_type(which) }.cast())
+                    .ok()
+                    .and_then(|class| class.downcast::<PyType>().ok())
+            })
+            .is_some_and(|base| class.fast_issubclass(&base))
+    })
+}
+
+fn datetime_fields(
+    vm: &VirtualMachine,
+    object: &PyObject,
+    names: &[&'static str],
+) -> PyResult<Vec<u32>> {
+    names
+        .iter()
+        .map(|name| object.get_attr(*name, vm)?.try_into_value::<u32>(vm))
+        .collect()
+}
+
+fn datetime_object(vm: &VirtualMachine, object: &PyObject, ty: *mut Type) -> Option<*mut Object> {
+    let kind = datetime_kind(vm, object.class())?;
+    let tzinfo = |pointer: *mut Object, hastzinfo: *mut c_char, slot: *mut *mut Object| {
+        let tz = object
+            .get_attr("tzinfo", vm)
+            .ok()
+            .filter(|tz| !vm.is_none(tz));
+        unsafe {
+            *hastzinfo = c_char::from(tz.is_some());
+            *slot = tz.map_or(null_mut(), |tz| borrowed(vm, &tz));
+        }
+        pointer
+    };
+    let fold = || {
+        object
+            .get_attr("fold", vm)
+            .and_then(|fold| fold.try_into_value::<u8>(vm))
+            .unwrap_or(0)
+    };
+    match kind {
+        0 | 1 => {
+            let mut names = vec!["year", "month", "day"];
+            if kind == 0 {
+                names.extend(["hour", "minute", "second", "microsecond"]);
+            }
+            let values = datetime_fields(vm, object, &names).ok()?;
+            let mut data = [0u8; 10];
+            data[..2].copy_from_slice(&(values[0] as u16).to_be_bytes());
+            data[2] = values[1] as u8;
+            data[3] = values[2] as u8;
+            if kind == 0 {
+                data[4] = values[3] as u8;
+                data[5] = values[4] as u8;
+                data[6] = values[5] as u8;
+                data[7..].copy_from_slice(&values[6].to_be_bytes()[1..]);
+            }
+            let pointer = allocate_object(size_of::<DateTimeObject<10>>(), ty, 0);
+            let target = pointer.cast::<DateTimeObject<10>>();
+            unsafe {
+                (*target).hashcode = -1;
+                (*target).data = data;
+            }
+            if kind == 1 {
+                return Some(pointer);
+            }
+            unsafe { (*target).fold = fold() };
+            Some(tzinfo(
+                pointer,
+                unsafe { &raw mut (*target).hastzinfo },
+                unsafe { &raw mut (*target).tzinfo },
+            ))
+        }
+        2 => {
+            let values =
+                datetime_fields(vm, object, &["hour", "minute", "second", "microsecond"]).ok()?;
+            let mut data = [0u8; 6];
+            data[0] = values[0] as u8;
+            data[1] = values[1] as u8;
+            data[2] = values[2] as u8;
+            data[3..].copy_from_slice(&values[3].to_be_bytes()[1..]);
+            let pointer = allocate_object(size_of::<DateTimeObject<6>>(), ty, 0);
+            let target = pointer.cast::<DateTimeObject<6>>();
+            unsafe {
+                (*target).hashcode = -1;
+                (*target).data = data;
+                (*target).fold = fold();
+            }
+            Some(tzinfo(
+                pointer,
+                unsafe { &raw mut (*target).hastzinfo },
+                unsafe { &raw mut (*target).tzinfo },
+            ))
+        }
+        _ => {
+            let field = |name: &'static str| {
+                object
+                    .get_attr(name, vm)
+                    .and_then(|value| value.try_into_value::<c_int>(vm))
+                    .ok()
+            };
+            let (days, seconds, microseconds) =
+                (field("days")?, field("seconds")?, field("microseconds")?);
+            let pointer = allocate_object(size_of::<DeltaObject>(), ty, 0);
+            let target = pointer.cast::<DeltaObject>();
+            unsafe {
+                (*target).hashcode = -1;
+                (*target).days = days;
+                (*target).seconds = seconds;
+                (*target).microseconds = microseconds;
+            }
+            Some(pointer)
+        }
+    }
+}
+
 pub fn refresh(vm: &VirtualMachine, object: &PyObject, pointer: *mut Object) {
     if let Some(list) = object.downcast_ref::<PyList>() {
         let items: Vec<PyObjectRef> = list.borrow_vec().to_vec();
@@ -854,6 +1020,20 @@ pub fn refresh(vm: &VirtualMachine, object: &PyObject, pointer: *mut Object) {
         }
     } else if let Some(dict) = object.downcast_ref::<PyDict>() {
         unsafe { (*pointer.cast::<Dict>()).used = dict.__len__() as isize };
+    } else if let Some(array) = object.downcast_ref::<PyByteArray>() {
+        let data = array.borrow_buf();
+        let start = if data.is_empty() {
+            crate::api::_PyByteArray_empty_string.as_ptr().cast_mut()
+        } else {
+            data.as_ptr().cast::<c_char>().cast_mut()
+        };
+        let target = pointer.cast::<ByteArray>();
+        unsafe {
+            (*target).base.size = data.len() as isize;
+            (*target).alloc = data.len() as isize + 1;
+            (*target).bytes = start;
+            (*target).start = start;
+        }
     }
 }
 
@@ -893,10 +1073,29 @@ pub fn type_pointer(vm: &VirtualMachine, class: &Py<PyType>) -> *mut Type {
         .unwrap_or_default()
         .into_raw();
     let pointer = heap::allocate(size_of::<Type>(), true).cast::<Type>();
-    let mut template = type_object(c"", size_of::<Object>(), subclass_flags(vm, class));
+    let derived = !base.is_null()
+        && static_type(base).is_some()
+        && class.fast_issubclass(CObject::class(&vm.ctx));
+    let mut template = if derived {
+        let mut copy = unsafe { base.read() };
+        copy.base = type_object(c"", 0, 0).base;
+        copy.flags |= TPFLAGS_BASETYPE | TPFLAGS_HEAPTYPE;
+        copy.dict = null_mut();
+        copy.bases = null_mut();
+        copy.mro = null_mut();
+        copy.cache = null_mut();
+        copy.subclasses = null_mut();
+        copy.weaklist = null_mut();
+        copy
+    } else {
+        type_object(c"", size_of::<Object>(), subclass_flags(vm, class))
+    };
     template.name = name;
     template.base_type = base;
     unsafe { pointer.write(template) };
+    if derived {
+        STATIC_TYPES.with_borrow_mut(|types| types.insert(pointer as usize, class.to_owned()));
+    }
     attach(pointer.cast(), class.as_object());
     PROXIES.with_borrow_mut(|proxies| proxies.remove(&key));
     C_TYPES.with_borrow_mut(|types| types.insert(key, pointer as usize));

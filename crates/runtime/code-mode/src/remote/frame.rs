@@ -58,6 +58,8 @@ struct Request {
     answers: bool,
     #[serde(default)]
     asks: bool,
+    #[serde(default)]
+    shared_images: bool,
 }
 
 #[derive(Deserialize)]
@@ -184,6 +186,7 @@ fn body<'de, D: Deserializer<'de>>(tag: &str, body: D) -> Result<RemoteFrame, D:
                 resumable,
                 answers,
                 asks,
+                shared_images,
             } = Request::deserialize(body)?;
             RemoteFrame::Request {
                 id,
@@ -194,6 +197,7 @@ fn body<'de, D: Deserializer<'de>>(tag: &str, body: D) -> Result<RemoteFrame, D:
                 resumable,
                 answers,
                 asks,
+                shared_images,
             }
         }
         "reply" => {

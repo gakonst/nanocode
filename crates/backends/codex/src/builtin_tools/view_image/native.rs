@@ -110,7 +110,7 @@ impl Tool for ViewImageHandler {
                         }
                     }
                 };
-                Ok(output(&bytes, detail))
+                Ok(output(&path, bytes, detail))
             };
             output
         })

@@ -13,30 +13,6 @@ use super::super::{
     ToolResult,
 };
 
-const fn media_type(bytes: &[u8]) -> &'static str {
-    match bytes {
-        [0x89, b'P', b'N', b'G', ..] => "image/png",
-        [0xff, 0xd8, 0xff, ..] => "image/jpeg",
-        [b'G', b'I', b'F', b'8', ..] => "image/gif",
-        [
-            b'R',
-            b'I',
-            b'F',
-            b'F',
-            _,
-            _,
-            _,
-            _,
-            b'W',
-            b'E',
-            b'B',
-            b'P',
-            ..,
-        ] => "image/webp",
-        _ => "application/octet-stream",
-    }
-}
-
 pub(crate) struct HostViewImageHandler {
     workspace: PathBuf,
     files: Arc<dyn FileHost>,
@@ -90,7 +66,7 @@ impl Tool for HostViewImageHandler {
                         )));
                     }
                 };
-                Ok(output(&bytes, detail))
+                Ok(output(&path, bytes, detail))
             };
             output
         })
@@ -115,15 +91,16 @@ pub(crate) fn detail(detail: Option<&str>) -> Result<ImageDetail, ToolOutput> {
     }
 }
 
-pub(crate) fn output(bytes: &[u8], detail: ImageDetail) -> ToolOutput {
-    let prefix = format!("data:{};base64,", media_type(bytes));
-    let mut image_url = String::with_capacity(
-        prefix.len()
-            + nanocode_sys::base64::encoded_length(bytes.len(), true)
-                .expect("base64 length of an in-memory buffer fits in usize"),
-    );
-    image_url.push_str(&prefix);
-    nanocode_sys::base64::STANDARD.encode_string(bytes, &mut image_url);
+pub(crate) fn output(path: &Path, bytes: Vec<u8>, detail: ImageDetail) -> ToolOutput {
+    let image_url = match nanocode_image::load_for_prompt_data_url(path, bytes, detail) {
+        Ok(image_url) => image_url,
+        Err(error) => {
+            return ToolOutput::error(format!(
+                "unable to process image at `{}`: {error}",
+                path.display()
+            ));
+        }
+    };
     ToolOutput::content(vec![ToolOutputContent::InputImage {
         image_url: image_url.clone(),
         detail,

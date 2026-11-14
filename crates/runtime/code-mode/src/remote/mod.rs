@@ -18,8 +18,8 @@ pub use client::{
     ResumedReply,
 };
 pub use compact::{
-    Answers, ReceivedCalls, SentCalls, answer_key, asked_key, encode_output, output_from_wire,
-    output_to_wire,
+    Answers, ReceivedCalls, SentCalls, answer_key, asked_key, encode_output,
+    encode_output_sharing_images, output_from_wire, output_to_wire,
 };
 pub use executors::{
     CodeModeExecutors, ExecutorSelection, HandAuthorizer, HandCallDecision, HandRequestDecision,
@@ -955,6 +955,8 @@ pub enum RemoteFrame {
         answers: bool,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         asks: bool,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        shared_images: bool,
     },
     Reply {
         id: u64,

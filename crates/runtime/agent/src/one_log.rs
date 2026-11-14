@@ -8,7 +8,8 @@ use nanocode_sync::Atom;
 use nanocode_tool_host::{
     ToolInput, ToolOutput,
     code_mode::{
-        CellJournal, CellJournalSink, CellJournalUpdate, CellJournals, JournaledCallState,
+        CellJournal, CellJournalSink, CellJournalUpdate, CellJournals, JournalEntry,
+        JournaledCallState,
     },
     effects::{EffectCall, EffectGate},
     embedded::HostFuture,
@@ -54,6 +55,7 @@ pub struct OneLog {
     owners: Atom<BTreeMap<String, OwnerToken>>,
     recovering: Atom<BTreeSet<String>>,
     restarts: u64,
+    unsaved: Atom<BTreeMap<(String, u64), u64>>,
 }
 
 #[derive(Clone)]
@@ -257,6 +259,7 @@ impl OneLog {
             owners: Atom::default(),
             recovering: Atom::new(recovering),
             restarts: policy.restarts,
+            unsaved: Atom::default(),
         }))
     }
 
@@ -1167,9 +1170,24 @@ impl CellJournalSink for OneLogJournals {
                     update: raw(&update).map_err(|error| error.to_string())?,
                 })
                 .map_err(|error| error.to_string())?;
-            if external.is_empty() && !fresh {
+            let cell = (update.session_id.clone(), update.cell_id);
+            let seq = lease.fold().seq();
+            let timed = update
+                .entries
+                .iter()
+                .any(|entry| matches!(entry, JournalEntry::Timeout { .. }));
+            let pending = log.unsaved.read(|unsaved| unsaved.get(&cell) == Some(&seq));
+            if external.is_empty() && !(timed && (fresh || pending)) {
+                log.unsaved.update(|unsaved| {
+                    if update.finished {
+                        unsaved.remove(&cell);
+                    } else if fresh {
+                        unsaved.insert(cell.clone(), seq);
+                    }
+                });
                 return Ok(());
             }
+            log.unsaved.update(|unsaved| unsaved.remove(&cell));
             for call in external {
                 lease.push(call).map_err(|error| error.to_string())?;
             }
@@ -1184,6 +1202,8 @@ impl CellJournalSink for OneLogJournals {
     fn forget(&self, session_id: &str, cell_id: u64) -> HostFuture<'static, ()> {
         let log = Arc::clone(&self.0);
         let session = session_id.to_owned();
+        log.unsaved
+            .update(|unsaved| unsaved.remove(&(session.clone(), cell_id)));
         Box::pin(async move {
             if let Err(error) = log.log.lease().await.push(Record::Forget {
                 cell: cell_id,

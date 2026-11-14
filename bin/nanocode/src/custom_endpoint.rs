@@ -41,10 +41,20 @@ pub fn apply(clients: ModelClients) -> Result<ModelClients, String> {
         }
         clients = clients.models(
             ids.iter()
-                .map(|id| nanocode::Model::Custom(nanocode::CustomModel::new(id))),
+                .map(|(id, _)| nanocode::Model::Custom(nanocode::CustomModel::new(id))),
         );
+        clients = clients.context_windows(ids.iter().filter_map(|(id, window)| {
+            match (
+                id.parse::<nanocode::Model>(),
+                id.parse::<nanocode::ClaudeModel>(),
+            ) {
+                (Ok(model), Err(_)) if model.is_custom() => window.map(|tokens| (model, tokens)),
+                _ => None,
+            }
+        }));
     }
     if let Some(base) = base {
+        clients = clients.unlisted_models(nanocode::HarnessFamily::Codex);
         let auth = match key {
             Some(key) => nanocode::codex::OpenAiAuth::api_key(key),
             None => nanocode::codex::OpenAiAuth::gateway_managed(),
@@ -70,6 +80,7 @@ fn anthropic(clients: ModelClients) -> Result<ModelClients, String> {
             "{ANTHROPIC_BASE_URL} needs NANOCODE_ANTHROPIC_API_KEY, NANOCODE_ANTHROPIC_AUTH_TOKEN, ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN"
         ));
     };
+    let clients = clients.unlisted_models(nanocode::HarnessFamily::Claude);
     let url = format!("{}/messages", base.trim_end_matches('/'));
     nanocode::codex::transport::install_default_rustls_crypto_provider();
     let http = nanocode_http::client();
@@ -94,7 +105,7 @@ fn anthropic(clients: ModelClients) -> Result<ModelClients, String> {
     }
 }
 
-fn fetch_models(url: &str, key: Option<&str>) -> Result<Vec<String>, String> {
+fn fetch_models(url: &str, key: Option<&str>) -> Result<Vec<(String, Option<u64>)>, String> {
     #[derive(serde::Deserialize)]
     struct List {
         data: Vec<Entry>,
@@ -102,6 +113,7 @@ fn fetch_models(url: &str, key: Option<&str>) -> Result<Vec<String>, String> {
     #[derive(serde::Deserialize)]
     struct Entry {
         id: String,
+        context_window: Option<u64>,
     }
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -128,8 +140,8 @@ fn fetch_models(url: &str, key: Option<&str>) -> Result<Vec<String>, String> {
         let mut ids = Vec::new();
         for entry in list.data {
             let id = entry.id.trim();
-            if !id.is_empty() && !ids.iter().any(|known: &String| known == id) {
-                ids.push(id.to_owned());
+            if !id.is_empty() && !ids.iter().any(|(known, _): &(String, _)| known == id) {
+                ids.push((id.to_owned(), entry.context_window));
             }
         }
         Ok(ids)

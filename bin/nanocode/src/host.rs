@@ -32,6 +32,8 @@ pub struct ModelClients {
     tool_environment: Vec<(String, String)>,
     mcp_servers: Vec<(String, nanocode::tools::mcp::McpServer)>,
     models: Option<std::sync::Arc<[Model]>>,
+    unlisted: Option<nanocode::HarnessFamily>,
+    context_windows: std::sync::Arc<[(Model, u64)]>,
     tempo: Option<Tempo>,
 }
 
@@ -274,6 +276,21 @@ impl ModelClients {
         self
     }
 
+    #[must_use]
+    pub(crate) fn unlisted_models(mut self, family: nanocode::HarnessFamily) -> Self {
+        self.unlisted = Some(family);
+        self
+    }
+
+    #[must_use]
+    pub(crate) fn context_windows(
+        mut self,
+        windows: impl IntoIterator<Item = (Model, u64)>,
+    ) -> Self {
+        self.context_windows = windows.into_iter().collect();
+        self
+    }
+
     pub(crate) fn codex_models(&self) -> Option<&[Model]> {
         self.models.as_deref()
     }
@@ -337,6 +354,16 @@ impl ModelClients {
     }
 
     pub fn parse_model(&self, value: &str) -> Result<ModelSelection> {
+        let listed = self.listed_model(value);
+        match &self.unlisted {
+            Some(family) if listed.is_err() && !value.trim().is_empty() => {
+                Ok(ModelSelection::new(family.clone(), value.trim()))
+            }
+            _ => listed,
+        }
+    }
+
+    fn listed_model(&self, value: &str) -> Result<ModelSelection> {
         let Some(served) = &self.models else {
             return parse_model(value);
         };
@@ -652,6 +679,7 @@ impl Host {
             Route::of(request.options.selected_provider()).ok()
         };
         let context_window = config.context_window;
+        let listed = std::sync::Arc::clone(&config.clients.context_windows);
         let max_output = config.max_output_tokens;
         if let (Some(tokens), Some(maximum)) = (
             context_window,
@@ -675,7 +703,9 @@ impl Host {
             .direct_tools_for(|request| !native_model(&request.model))
             .direct_subagents(config.subagents == Subagents::AllModels)
             .configure(move |builder| {
-                let builder = match context_window {
+                let window = context_window
+                    .or_else(|| listed_window(&listed, builder.selected_model().as_str()));
+                let builder = match window {
                     Some(tokens) => builder.context_window_tokens(tokens),
                     None => builder,
                 };
@@ -685,6 +715,7 @@ impl Host {
                 })
             });
         let described = std::sync::Arc::clone(&hand);
+        let listed = std::sync::Arc::clone(&config.clients.context_windows);
         let claude = ClaudeHarness::new(
             config
                 .clients
@@ -706,7 +737,9 @@ impl Host {
                 None if builder.knows_max_tokens() => builder,
                 None => builder.max_tokens(Tempo::OUTPUT_TOKENS),
             };
-            let builder = match context_window {
+            let window =
+                context_window.or_else(|| listed_window(&listed, builder.selected_model()));
+            let builder = match window {
                 Some(tokens) => builder.context_window_tokens(tokens),
                 None => builder,
             };
@@ -793,6 +826,13 @@ impl Host {
         self.replacement_hand().await;
         Ok(self.runtime.open_loaded(store, stored).await?)
     }
+}
+
+fn listed_window(windows: &[(Model, u64)], model: &str) -> Option<u64> {
+    windows
+        .iter()
+        .find(|(listed, _)| listed.as_str() == model)
+        .map(|(_, tokens)| *tokens)
 }
 
 pub fn parse_model(value: &str) -> Result<ModelSelection> {

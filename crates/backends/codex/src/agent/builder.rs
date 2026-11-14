@@ -394,6 +394,11 @@ impl<F> CodexBuilder<F> {
         self.resume.as_ref()
     }
 
+    #[must_use]
+    pub const fn selected_model(&self) -> Model {
+        self.config.model
+    }
+
     pub(crate) fn initial_developer_messages(mut self, messages: Vec<String>) -> Self {
         self.codex.initial_developer_messages = messages;
         self

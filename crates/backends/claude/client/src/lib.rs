@@ -58,6 +58,12 @@ const INVALID_JSON_MESSAGES: [&str; 2] = [
     "Failed to parse request: could not parse request body as JSON",
 ];
 
+const TRANSIENT_PAYMENT_PROBLEMS: [&str; 3] = [
+    "/reference#description/payment-failed",
+    "https://paymentauth.org/problems/verification-failed",
+    "https://paymentauth.org/problems/session/delta-too-small",
+];
+
 #[derive(Debug)]
 pub enum ClaudeError {
     Http {
@@ -143,9 +149,12 @@ impl ClaudeError {
         match self {
             Self::Http {
                 status,
+                body,
                 should_retry,
                 ..
-            } => should_retry.unwrap_or_else(|| retry::retryable_status(*status)),
+            } => should_retry.unwrap_or_else(|| {
+                retry::retryable_status(*status) || (*status == 402 && transient_payment(body))
+            }),
             Self::Transport(error) => transport::is_transient(error),
             Self::StreamError { kind, .. } => matches!(
                 kind.as_str(),
@@ -187,6 +196,14 @@ fn retry_after(headers: &http::header::HeaderMap) -> Option<Duration> {
         .duration_since(nanocode_platform::UNIX_EPOCH)
         .ok()?;
     Some(deadline.saturating_sub(now))
+}
+
+fn transient_payment(body: &str) -> bool {
+    serde_json::from_str::<Value>(body).is_ok_and(|value| {
+        value["type"]
+            .as_str()
+            .is_some_and(|kind| TRANSIENT_PAYMENT_PROBLEMS.contains(&kind))
+    })
 }
 
 fn rejects_gzip(status: u16, from_anthropic: bool, body: &str) -> bool {

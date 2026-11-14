@@ -114,8 +114,7 @@ impl ClaudeTokenSource for FederatedToken {
 
 impl ClaudeClient {
     pub fn workload_identity(identity: ClaudeWorkloadIdentity) -> Self {
-        nanocode_tls::install_default_rustls_crypto_provider();
-        Self::federated(nanocode_http::client(), ANTHROPIC_API_URL, identity)
+        Self::federated(Self::http_client(), ANTHROPIC_API_URL, identity)
     }
 
     pub fn messages_api_federated(

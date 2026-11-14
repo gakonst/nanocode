@@ -46,6 +46,12 @@ pub const ANTHROPIC_SUBSCRIPTION_MESSAGES_URL: &str =
     "https://api.anthropic.com/v1/messages?beta=true";
 pub const ANTHROPIC_VERSION: &str = "2023-06-01";
 
+#[cfg(not(target_family = "wasm"))]
+pub const MESSAGES_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+
+#[cfg(not(target_family = "wasm"))]
+pub const MESSAGES_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
+
 const FAST_MODE_BETA: &str = "fast-mode-2026-02-01";
 const THINKING_BINDING_BETA: &str = "thinking-binding-controls-2026-08-01";
 const EFFORT_UPDATES_BETA: &str = "mid-conversation-output-config-2026-07-01";
@@ -1710,6 +1716,20 @@ impl ClaudeClient {
             gzip_rejected: Arc::default(),
             http_layer: None,
         }
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[must_use]
+    pub fn http_client() -> HttpClient {
+        nanocode_tls::install_default_rustls_crypto_provider();
+        nanocode_http::Client::builder()
+            .connect_timeout(MESSAGES_CONNECT_TIMEOUT)
+            .read_timeout(MESSAGES_STREAM_IDLE_TIMEOUT)
+            .default_headers(nanocode_http::accept_encoding(
+                nanocode_http::header::HeaderMap::new(),
+            ))
+            .build()
+            .expect("the Claude HTTP client builds")
     }
 
     #[cfg(not(target_family = "wasm"))]

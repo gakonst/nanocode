@@ -489,15 +489,13 @@ fn unavailable(reason: &str) -> ClaudeAuthUnavailable {
 
 impl ClaudeClient {
     pub fn with_api_key(endpoint: impl Into<String>, api_key: impl Into<String>) -> Self {
-        nanocode_tls::install_default_rustls_crypto_provider();
-        Self::new(nanocode_http::client(), endpoint, api_key)
+        Self::new(Self::http_client(), endpoint, api_key)
     }
 }
 
 impl Default for ClaudeClient {
     fn default() -> Self {
-        nanocode_tls::install_default_rustls_crypto_provider();
-        let http = nanocode_http::client();
+        let http = Self::http_client();
         let claude_code = Arc::new(RefreshingClaudeAuth::new(
             Arc::new(ClaudeCodeLogin { http: http.clone() }),
             REFRESH_MARGIN,

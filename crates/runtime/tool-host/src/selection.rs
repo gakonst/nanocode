@@ -440,6 +440,11 @@ impl Tools {
     }
 
     #[must_use]
+    pub fn hand_working_directory(&self, session_id: &str) -> Option<String> {
+        self.embedded_host.as_ref()?.working_directory(session_id)
+    }
+
+    #[must_use]
     pub const fn cell_yield(&self) -> Option<std::time::Duration> {
         self.cell_yield
     }

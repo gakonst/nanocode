@@ -199,6 +199,13 @@ impl RuntimeBackend for ClaudeHarness {
             if direct && !remote {
                 builder = builder.upstream_web().upstream_context();
             }
+            if remote && let Some(AgentTools::Shared(hand)) = settings.tools.clone() {
+                let fallback = workspace.to_string_lossy().into_owned();
+                builder = builder.workspace_resolver(move |session_id| {
+                    hand.hand_working_directory(session_id)
+                        .unwrap_or_else(|| fallback.clone())
+                });
+            }
             let tools = settings.tools;
             #[cfg(not(target_family = "wasm"))]
             let providers = settings.providers;

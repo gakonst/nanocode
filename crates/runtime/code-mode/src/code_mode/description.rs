@@ -175,7 +175,7 @@ pub fn exec_description_with(
     } else {
         description.push_str("\n- `ALL_TOOLS` is the catalog of callable nested tools for this execution. A tool exposed separately by the host is not necessarily callable through `tools`; use its direct tool entry when it is absent from this catalog.");
     }
-    description.push_str("\n- Nanocode extension: calling a missing nested tool rejects locally with `TOOL_NOT_AVAILABLE`; it does not dispatch a tool, unless its input names a `hand`, which calls that hand's tool of that name, such as one only a phone offers. An unfinished nested call may have executed even when its cell ends; an `outcome: unknown` receipt is not permission to retry it.");
+    description.push_str("\n- Nanocode extension: a call to a name missing from `ALL_TOOLS` is still a nested call the host answers: it runs that hand's tool of that name when its input names a `hand` (such as one only a phone offers) or a tool the host found since the cell started, and otherwise rejects with `TOOL_NOT_AVAILABLE`. An unfinished nested call may have executed even when its cell ends; an `outcome: unknown` receipt is not permission to retry it.");
     let reader = definitions
         .iter()
         .find_map(|definition| match definition.name() {

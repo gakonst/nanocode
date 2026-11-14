@@ -21,7 +21,6 @@ nanocode-tls.workspace = true
 nanocode-zstd.workspace = true
 rustls.workspace = true
 tokio = { workspace = true, features = ["io-util", "net", "rt", "sync"] }
-tokio-rustls.workspace = true
 
 [lints]
 workspace = true

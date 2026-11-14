@@ -5,15 +5,14 @@ use std::{
 use futures_util::{StreamExt, stream::FuturesUnordered};
 use nanocode_sync::{Duplex, SwapOption};
 use nanocode_sys::base64::STANDARD;
+use nanocode_tls::{
+    ClientStream,
+    rustls::{ClientConfig, pki_types::ServerName},
+};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::TcpStream,
     time::{Instant, sleep_until},
-};
-use tokio_rustls::{
-    TlsConnector,
-    client::TlsStream,
-    rustls::{ClientConfig, pki_types::ServerName},
 };
 
 const CONNECTION_ATTEMPT_DELAY: Duration = Duration::from_millis(250);
@@ -568,7 +567,7 @@ pub enum Alpn {
     Http1,
 }
 
-pub async fn tls<S>(stream: S, host: &str, alpn: Alpn) -> io::Result<TlsStream<S>>
+pub async fn tls<S>(stream: S, host: &str, alpn: Alpn) -> io::Result<ClientStream<S>>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
@@ -578,7 +577,7 @@ where
     };
     let name = ServerName::try_from(normalize_host(host).to_owned())
         .map_err(|_| invalid_input(format!("invalid TLS server name {host:?}")))?;
-    TlsConnector::from(config).connect(name, stream).await
+    nanocode_tls::connect(config, name, stream).await
 }
 
 pub async fn stream(

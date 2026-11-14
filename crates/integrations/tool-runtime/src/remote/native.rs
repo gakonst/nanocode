@@ -354,10 +354,9 @@ pub(super) async fn dial_staged(
         lap(&mut stages.tcp);
         let stream = match tls {
             Some(tls) => {
-                let name = tokio_rustls::rustls::pki_types::ServerName::try_from(host.clone())
+                let name = nanocode_tls::rustls::pki_types::ServerName::try_from(host.clone())
                     .map_err(|issue| Dial::Rejected(error(issue), None))?;
-                let stream = tokio_rustls::TlsConnector::from(tls)
-                    .connect(name, tcp)
+                let stream = nanocode_tls::connect(tls, name, tcp)
                     .await
                     .map_err(|issue| Dial::Failed(error(format!("TLS with {host}: {issue}"))))?;
                 nanocode_websocket::MaybeTlsStream::Rustls(stream)

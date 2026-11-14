@@ -17,10 +17,9 @@ use nanocode_http::header::{
 use nanocode_http::server::{self, Outgoing, Reply, Upgraded};
 use nanocode_http::{Method, StatusCode};
 use nanocode_sync::Atom;
-use tokio_rustls::TlsAcceptor;
-use tokio_rustls::rustls::ServerConfig;
-use tokio_rustls::rustls::crypto::CryptoProvider;
-use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+use nanocode_tls::rustls::ServerConfig;
+use nanocode_tls::rustls::crypto::CryptoProvider;
+use nanocode_tls::rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 
 use super::error::Fault;
 use super::events::Events;
@@ -319,7 +318,7 @@ impl<P: PaymentProvider + 'static> Proxy<P> {
         let Ok(config) = self.authority.server_config(host) else {
             return;
         };
-        let Ok(stream) = TlsAcceptor::from(config).accept(upgraded).await else {
+        let Ok(stream) = nanocode_tls::accept(config, upgraded).await else {
             return;
         };
         let _ = server::serve(

@@ -5,13 +5,10 @@ use std::{
     task::{Context, Poll},
 };
 
+use nanocode_tls::rustls::{ClientConfig, pki_types::ServerName};
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
     net::TcpStream,
-};
-use tokio_rustls::{
-    TlsConnector,
-    rustls::{ClientConfig, pki_types::ServerName},
 };
 
 use crate::{
@@ -26,7 +23,7 @@ const WS_PORT: u16 = 80;
 
 pub enum MaybeTlsStream<S> {
     Plain(S),
-    Rustls(tokio_rustls::client::TlsStream<S>),
+    Rustls(nanocode_tls::ClientStream<S>),
 }
 
 impl<S: AsyncRead + AsyncWrite + Unpin> AsyncRead for MaybeTlsStream<S> {
@@ -123,8 +120,7 @@ where
         (Mode::Tls, Connector::Rustls(tls)) => {
             let name =
                 ServerName::try_from(domain).map_err(|_| Error::Tls(TlsError::InvalidDnsName))?;
-            let stream = TlsConnector::from(tls)
-                .connect(name, stream)
+            let stream = nanocode_tls::connect(tls, name, stream)
                 .await
                 .map_err(Error::Io)?;
             MaybeTlsStream::Rustls(stream)

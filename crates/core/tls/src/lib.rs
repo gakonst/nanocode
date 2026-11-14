@@ -1,8 +1,11 @@
 #![cfg(not(target_family = "wasm"))]
 
 mod provider;
+mod stream;
 
 pub use provider::provider;
+pub use rustls;
+pub use stream::{ClientStream, ServerStream, TlsStream, accept, connect};
 
 use nanocode_sync::{SingleFlight, SwapOption};
 use rustls::{ClientConfig, RootCertStore};

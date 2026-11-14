@@ -26,7 +26,6 @@ nanocode-zstd.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["io-util", "net", "rt", "sync", "time"] }
-tokio-rustls.workspace = true
 nanocode-url.workspace = true
 
 [lints]

@@ -8,7 +8,6 @@ use crate::egress::{
     tls::Tls,
     wire::{Credential, Secret},
 };
-use nanocode_sys::base64::STANDARD;
 use bytes::Bytes;
 use http::{
     Method, StatusCode, Uri,
@@ -20,6 +19,8 @@ use nanocode_http::{
     wire::WireError,
 };
 use nanocode_sync::{Atom, Duplex, pipe};
+use nanocode_sys::base64::STANDARD;
+use nanocode_trace::{debug, error, info, warn};
 use rustls::pki_types::ServerName;
 use std::{
     any::Any,
@@ -37,8 +38,6 @@ use tokio::{
     sync::mpsc,
     time::timeout,
 };
-use tokio_rustls::{TlsAcceptor, TlsConnector};
-use nanocode_trace::{debug, error, info, warn};
 
 const HOP: &str = "connection keep-alive proxy-authenticate proxy-authorization proxy-connection te trailer transfer-encoding";
 
@@ -434,7 +433,7 @@ impl<A: Authority> Proxy<A> {
                 return error!("egress certificate for {host} failed: {error:#}");
             }
         };
-        let accept = TlsAcceptor::from(config).accept(upgraded);
+        let accept = nanocode_tls::accept(config, upgraded);
         let error = match timeout(self.rules.limits.connect, accept).await {
             Ok(Ok(tls)) => {
                 let proxy = Arc::clone(&self);
@@ -495,7 +494,7 @@ impl<A: Authority> Proxy<A> {
         let stream = self.dial(host, port).await?;
         let name = ServerName::try_from(host.to_owned())
             .map_err(|_| refuse(StatusCode::BAD_REQUEST, "Invalid host."))?;
-        let connect = TlsConnector::from(self.tls.upstream()).connect(name, stream);
+        let connect = nanocode_tls::connect(self.tls.upstream(), name, stream);
         let tls = timeout(self.rules.limits.connect, connect)
             .await
             .unwrap_or_else(|_| Err(ErrorKind::TimedOut.into()))

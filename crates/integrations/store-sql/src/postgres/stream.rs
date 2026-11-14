@@ -11,14 +11,13 @@ use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
     net::TcpStream,
 };
-use tokio_rustls::{TlsConnector, client::TlsStream};
 
 const ACCEPTS_TLS: u8 = b'S';
 const REFUSES_TLS: u8 = b'N';
 
 pub(super) enum Stream {
     Tcp(TcpStream),
-    Tls(Box<TlsStream<TcpStream>>),
+    Tls(Box<nanocode_tls::ClientStream<TcpStream>>),
     #[cfg(unix)]
     Unix(tokio::net::UnixStream),
 }
@@ -77,7 +76,7 @@ impl Stream {
         };
         let name = ServerName::try_from(host.clone())
             .map_err(|error| PgError::Tls(format!("{host} is not a TLS server name: {error}")))?;
-        let tls = TlsConnector::from(config).connect(name, tcp).await?;
+        let tls = nanocode_tls::connect(config, name, tcp).await?;
         Ok(Self::Tls(Box::new(tls)))
     }
 

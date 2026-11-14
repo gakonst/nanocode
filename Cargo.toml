@@ -177,7 +177,6 @@ serde = { version = "1.0.228", features = ["derive", "rc"] }
 serde_json = { version = "1.0.149", features = ["float_roundtrip", "raw_value"] }
 syn = { version = "2.0.119", features = ["full"] }
 tokio = "1.48.0"
-tokio-rustls = { version = "0.26.4", default-features = false }
 unicode-normalization = { path = "crates/core/unicode-normalization" }
 nanocode-url = { version = "0.7.0", path = "crates/core/url" }
 nanocode-zstd = { version = "0.7.0", path = "crates/core/zstd" }

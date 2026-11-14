@@ -17,8 +17,8 @@ httparse.workspace = true
 nanocode-digest.workspace = true
 nanocode-platform.workspace = true
 nanocode-sys.workspace = true
+nanocode-tls.workspace = true
 tokio = { workspace = true, features = ["io-util", "net"] }
-tokio-rustls.workspace = true
 
 [lints]
 workspace = true

@@ -639,7 +639,6 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
- "tokio-rustls",
 ]
 
 [[package]]
@@ -749,11 +748,11 @@ dependencies = [
  "nanocode-platform",
  "nanocode-sync",
  "nanocode-tempo",
+ "nanocode-tls",
  "nanocode-trace",
  "serde",
  "serde_json",
  "tokio",
- "tokio-rustls",
 ]
 
 [[package]]
@@ -882,7 +881,6 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
- "tokio-rustls",
 ]
 
 [[package]]
@@ -961,7 +959,6 @@ dependencies = [
  "nanocode-zstd",
  "rustls",
  "tokio",
- "tokio-rustls",
 ]
 
 [[package]]
@@ -1024,6 +1021,7 @@ dependencies = [
  "nanocode-trace",
  "rustls",
  "rustls-platform-verifier",
+ "tokio",
 ]
 
 [[package]]
@@ -1089,7 +1087,6 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
- "tokio-rustls",
 ]
 
 [[package]]
@@ -1186,8 +1183,8 @@ dependencies = [
  "nanocode-digest",
  "nanocode-platform",
  "nanocode-sys",
+ "nanocode-tls",
  "tokio",
- "tokio-rustls",
 ]
 
 [[package]]
@@ -1694,16 +1691,6 @@ dependencies = [
  "signal-hook-registry",
  "socket2",
  "windows-sys",
-]
-
-[[package]]
-name = "tokio-rustls"
-version = "0.26.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1729aa945f29d91ba541258c8df89027d5792d85a8841fb65e8bf0f4ede4ef61"
-dependencies = [
- "rustls",
- "tokio",
 ]
 
 [[package]]

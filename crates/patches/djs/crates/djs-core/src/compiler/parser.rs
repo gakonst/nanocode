@@ -222,12 +222,62 @@ pub(super) struct Parser<'a, 'h> {
 /// the bytes; an entry is `(hash, start, len, atom)` with the text at `text[start..]`.
 #[derive(Default)]
 pub(crate) struct IdentAtoms {
+    stable: AtomTexts,
+    fresh: AtomTexts,
+    stable_below: u32,
+}
+
+impl IdentAtoms {
+    pub(crate) fn hash(b: &[u8]) -> u32 {
+        AtomTexts::hash(b)
+    }
+
+    #[inline]
+    pub(crate) fn get(&self, b: &[u8], h: u32) -> Option<Atom> {
+        self.stable.get(b, h).or_else(|| self.fresh.get(b, h))
+    }
+
+    pub(crate) fn insert(&mut self, h: u32, b: &[u8], a: Atom) {
+        self.table_for(a).insert(h, b, a);
+    }
+
+    pub(crate) fn insert_units(&mut self, h: u32, units: &[u16], a: Atom) {
+        self.table_for(a).insert_units(h, units, a);
+    }
+
+    pub(crate) fn restart(&mut self, stable_below: u32) {
+        if stable_below != self.stable_below {
+            self.stable.clear();
+            self.stable_below = stable_below;
+        }
+        self.fresh.clear();
+    }
+
+    fn table_for(&mut self, a: Atom) -> &mut AtomTexts {
+        if a.is_int() || (a.is_string() && a.table_index() < self.stable_below) {
+            &mut self.stable
+        } else {
+            &mut self.fresh
+        }
+    }
+}
+
+#[derive(Default)]
+struct AtomTexts {
     slots: Vec<(u32, u32, u32, Atom)>,
     text: Vec<u8>,
     len: usize,
 }
 
-impl IdentAtoms {
+impl AtomTexts {
+    fn clear(&mut self) {
+        if self.len != 0 {
+            self.slots.fill((0, 0, 0, Atom::NULL));
+            self.text.clear();
+            self.len = 0;
+        }
+    }
+
     fn hash(b: &[u8]) -> u32 {
         let mut h: u32 = 0x811C_9DC5;
         for &c in b {
@@ -257,7 +307,17 @@ impl IdentAtoms {
     fn insert(&mut self, h: u32, b: &[u8], a: Atom) {
         let start = self.text.len() as u32;
         self.text.extend_from_slice(b);
-        let len = b.len() as u32;
+        self.index(h, start, a);
+    }
+
+    fn insert_units(&mut self, h: u32, units: &[u16], a: Atom) {
+        let start = self.text.len() as u32;
+        self.text.extend(units.iter().map(|&u| u as u8));
+        self.index(h, start, a);
+    }
+
+    fn index(&mut self, h: u32, start: u32, a: Atom) {
+        let len = self.text.len() as u32 - start;
         if (self.len + 1) * 2 > self.slots.len() {
             let cap = (self.slots.len() * 2).max(256);
             let old = core::mem::replace(&mut self.slots, alloc::vec![(0, 0, 0, Atom::NULL); cap]);
@@ -1118,19 +1178,7 @@ impl<'a, 'h> Parser<'a, 'h> {
         let tok = self.tok;
         if !tok.has_escape() {
             let b = self.lx.text(&tok);
-            #[cfg(feature = "compile-cache")]
-            if self.heap.intern_log.is_some() {
-                let s = core::str::from_utf8(b).unwrap_or("\u{FFFD}");
-                return Ok(self.heap.atom_str(s)?);
-            }
-            let h = IdentAtoms::hash(b);
-            if let Some(a) = self.heap.ident_atoms.get(b, h) {
-                return Ok(a);
-            }
-            let s = core::str::from_utf8(b).unwrap_or("\u{FFFD}");
-            let a = self.heap.atom_str(s)?;
-            self.heap.ident_atoms.insert(h, b, a);
-            return Ok(a);
+            return Ok(self.heap.atom_utf8_cached(b)?);
         }
         let bytes = self.lx.ident_value(&tok, &mut self.buf8);
         let s = core::str::from_utf8(bytes).unwrap_or("\u{FFFD}");

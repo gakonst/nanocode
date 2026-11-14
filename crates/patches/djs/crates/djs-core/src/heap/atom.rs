@@ -114,7 +114,7 @@ impl Atom {
     }
 
     #[inline]
-    const fn table_index(self) -> u32 {
+    pub(crate) const fn table_index(self) -> u32 {
         self.0 & INDEX_MASK
     }
 }
@@ -572,6 +572,7 @@ impl Heap {
     /// renumbers every atom id in the heap by the returned map ([`Heap::moved_atom`]).
     pub(crate) fn forget_string_atoms(&mut self, keep: &[bool]) -> Result<Vec<u32>, HeapError> {
         assert_eq!(self.atom_base_count(), 0, "the atom table is split already");
+        self.ident_atoms = Default::default();
         let table = self.atom_table();
         let entries = self.atom_entries();
         let n = self.value_array_len(entries);
@@ -856,7 +857,30 @@ impl Heap {
             self.log_intern(a, before, crate::vm::compile_cache::Source::Text);
             return Ok(a);
         }
-        self.atom_str_inner(t)
+        self.atom_utf8_cached(t.as_bytes())
+    }
+
+    #[inline]
+    pub(crate) fn ident_atoms_open(&self) -> bool {
+        #[cfg(feature = "compile-cache")]
+        if self.intern_log.is_some() {
+            return false;
+        }
+        true
+    }
+
+    #[inline]
+    pub(crate) fn atom_utf8_cached(&mut self, b: &[u8]) -> Result<Atom, HeapError> {
+        if !self.ident_atoms_open() {
+            return self.atom_str(core::str::from_utf8(b).unwrap_or("\u{FFFD}"));
+        }
+        let h = crate::compiler::IdentAtoms::hash(b);
+        if let Some(a) = self.ident_atoms.get(b, h) {
+            return Ok(a);
+        }
+        let a = self.atom_str_inner(core::str::from_utf8(b).unwrap_or("\u{FFFD}"))?;
+        self.ident_atoms.insert(h, b, a);
+        Ok(a)
     }
 
     #[inline(always)]

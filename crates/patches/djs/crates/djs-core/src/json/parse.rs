@@ -23,6 +23,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use super::{DEFAULT_MAX_DEPTH, ParseError, SyntaxError};
+use crate::compiler::IdentAtoms;
 use crate::heap::{Atom, Heap, HeapError, atoms, string::MAX_LEN};
 use crate::num;
 use crate::value::{Obj, Str, Value};
@@ -953,6 +954,22 @@ impl<'a, 'o> Parser<'a, 'o> {
                 None
             }
         };
+        let ascii = {
+            let b = src_bytes(self.heap, &self.src);
+            (E != UTF16 && slot.is_some() && b[s.start..s.end].is_ascii())
+                .then(|| IdentAtoms::hash(&b[s.start..s.end]))
+        };
+        if let Some(h) = ascii
+            && self.heap.ident_atoms_open()
+        {
+            let b = src_bytes(self.heap, &self.src);
+            if let Some(atom) = self.heap.ident_atoms.get(&b[s.start..s.end], h) {
+                if let Some(slot) = slot {
+                    self.key_cache[slot] = (s.start as u32, s.end as u32, atom);
+                }
+                return Ok(atom);
+            }
+        }
         self.key_buf.clear();
         {
             let b = src_bytes(self.heap, &self.src);
@@ -960,6 +977,11 @@ impl<'a, 'o> Parser<'a, 'o> {
             decode_units::<E>(b, s, |u| buf.push(u));
         }
         let atom = self.heap.atom_utf16(&self.key_buf)?;
+        if let Some(h) = ascii
+            && self.heap.ident_atoms_open()
+        {
+            self.heap.ident_atoms.insert_units(h, &self.key_buf, atom);
+        }
         if let Some(slot) = slot {
             self.key_cache[slot] = ((w * s.start) as u32, (w * s.end) as u32, atom);
         }

@@ -328,6 +328,7 @@ pub struct ClaudeTools {
     pub(crate) shared_shutdown: Option<ToolCleanup>,
     pub(crate) agent_bound: Vec<AgentBound>,
     pub(crate) turn_hold: Vec<ToolCleanup>,
+    pub(crate) working_directory: Option<Arc<Atom<std::path::PathBuf>>>,
 }
 impl nanocode_tools::ToolCollection for ClaudeTools {
     type Error = NanocodeError;
@@ -442,6 +443,12 @@ impl ClaudeTools {
         Fut: crate::ToolFuture<Output = ()> + 'static,
     {
         self.turn_hold.push(Arc::new(move || Box::pin(hold())));
+        self
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) fn working_directory(mut self, current: Arc<Atom<std::path::PathBuf>>) -> Self {
+        self.working_directory = Some(current);
         self
     }
 
@@ -1459,6 +1466,7 @@ impl ClaudeBuilder {
         let mut code_quiet = Vec::new();
         let mut agent_bound = Vec::new();
         let mut turn_hold = Vec::new();
+        let mut working_directory = None;
         let mut nested_tools = None;
         let mut recovery = None;
         if let Some(factory) = &self.tools_factory {
@@ -1477,6 +1485,7 @@ impl ClaudeBuilder {
             code_quiet.extend(native.code_quiet);
             agent_bound.extend(native.agent_bound);
             turn_hold.extend(native.turn_hold);
+            working_directory = native.working_directory;
         }
 
         if self.claude.model.trim().is_empty()
@@ -1671,6 +1680,7 @@ impl ClaudeBuilder {
                 shared_shutdown: None,
                 agent_bound: Vec::new(),
                 turn_hold: Vec::new(),
+                working_directory: None,
             };
             let adapted = adapter(catalog)?;
             nested_tools = adapted.nested_tools;
@@ -1693,6 +1703,7 @@ impl ClaudeBuilder {
             code_quiet.extend(adapted.code_quiet);
             agent_bound.extend(adapted.agent_bound);
             turn_hold.extend(adapted.turn_hold);
+            working_directory = adapted.working_directory.or(working_directory);
             self.client_tool_search = false;
         }
         let mut names = handlers.keys().map(String::as_str).collect::<HashSet<_>>();
@@ -1838,6 +1849,7 @@ impl ClaudeBuilder {
             code_turn_settle,
             code_quiet,
             turn_hold,
+            working_directory: working_directory.map(crate::environment::WorkingDirectory::new),
             nested_tools,
             recovery,
             dynamic_tools: self.dynamic_tools,
@@ -3367,6 +3379,7 @@ struct State {
     code_turn_settle: Vec<ToolCleanup>,
     code_quiet: Vec<CodeQuiet>,
     turn_hold: Vec<ToolCleanup>,
+    working_directory: Option<crate::environment::WorkingDirectory>,
     lifecycle_opened: Atom<Option<String>>,
     subagent_type: Option<String>,
     subagent_type_resolver: Option<SubagentTypeResolver>,
@@ -6260,6 +6273,12 @@ impl State {
         let served = if matches!(mode, CompactionMode::ContextRecovery)
             || self.summary_refused.load(Ordering::SeqCst)
             || self.holds_back_formats()
+            || template
+                .model
+                .parse::<ModelSelection>()
+                .ok()
+                .and_then(|model| model.as_claude())
+                .is_none()
         {
             None
         } else {
@@ -6499,7 +6518,10 @@ impl State {
             .cloned();
         Ok(match (outcome.message.stop_reason, block) {
             (Some(StopReason::Compaction), Some(block)) => Some((outcome.message, block)),
-            _ => None,
+            _ => {
+                self.summary_refused.store(true, Ordering::SeqCst);
+                None
+            }
         })
     }
     async fn recover_server_turn(
@@ -7905,6 +7927,11 @@ impl State {
                 let results: Vec<_> = results.into_iter().map(Option::unwrap).collect();
                 pending.push(Message::tool_results(results).into());
                 if self.upstream_context {
+                    let update = self
+                        .working_directory
+                        .as_ref()
+                        .and_then(crate::environment::WorkingDirectory::update)
+                        .unwrap_or_default();
                     let used = response
                         .usage
                         .input_tokens
@@ -7915,7 +7942,7 @@ impl State {
                         Message::text(
                             Role::System,
                             format!(
-                                "<total_tokens>{} tokens left</total_tokens>",
+                                "{update}<total_tokens>{} tokens left</total_tokens>",
                                 TOKEN_BUDGET.saturating_sub(used)
                             ),
                         )

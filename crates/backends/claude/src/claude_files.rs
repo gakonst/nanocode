@@ -11,6 +11,7 @@ use serde_json::Value;
 pub(super) fn selection(
     files: &Arc<ClaudeWorkspaceFiles>,
     workspace: PathBuf,
+    cwd: Arc<nanocode_sync::Atom<PathBuf>>,
     session: Option<SessionEnvironment>,
     jobs: Arc<super::claude_bash::Jobs>,
     executor: Arc<dyn nanocode_process_contracts::ForegroundExecutor>,
@@ -35,7 +36,7 @@ pub(super) fn selection(
         });
     }
     let notices = Arc::new(super::claude_bash::JobNotices(Arc::clone(&jobs)));
-    super::claude_bash::install(tools, workspace, session, jobs, executor)
+    super::claude_bash::install(tools, workspace, cwd, session, jobs, executor)
         .build()
         .map(|tools| {
             tools

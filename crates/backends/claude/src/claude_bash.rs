@@ -1027,12 +1027,13 @@ async fn settled(mut receiver: watch::Receiver<Option<Outcome>>) -> Outcome {
 pub(super) fn install(
     mut tools: ToolsBuilder,
     workspace: PathBuf,
+    cwd: Arc<Atom<PathBuf>>,
     session: Option<SessionEnvironment>,
     jobs: Arc<Jobs>,
     process: Arc<dyn nanocode_process_contracts::ForegroundExecutor>,
 ) -> ToolsBuilder {
     let executor = LocalBash {
-        cwd: Arc::new(Atom::new(workspace.clone())),
+        cwd,
         workspace,
         jobs,
         executor: process,

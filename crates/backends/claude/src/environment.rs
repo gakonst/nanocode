@@ -17,6 +17,30 @@ pub(crate) fn environment_section(workspace: &str) -> String {
 
 const DATE: &str = "Today's date: ";
 
+pub(crate) struct WorkingDirectory {
+    current: std::sync::Arc<nanocode_sync::Atom<std::path::PathBuf>>,
+    announced: nanocode_sync::Atom<std::path::PathBuf>,
+}
+
+impl WorkingDirectory {
+    pub(crate) fn new(current: std::sync::Arc<nanocode_sync::Atom<std::path::PathBuf>>) -> Self {
+        let announced = nanocode_sync::Atom::new(current.get().as_ref().clone());
+        Self { current, announced }
+    }
+
+    pub(crate) fn update(&self) -> Option<String> {
+        let now = self.current.get();
+        let was = self.announced.set(now.as_ref().clone());
+        (was != now).then(|| {
+            format!(
+                "# Environment update\n - Primary working directory: {} (was {})\n\n",
+                now.display(),
+                was.display()
+            )
+        })
+    }
+}
+
 pub(crate) fn upstream_environment(workspace: &str, model: &str) -> String {
     let mut lines = vec![
         "# Environment".to_owned(),

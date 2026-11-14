@@ -45,7 +45,8 @@ pub fn runner_tools_with_executor(
     })?;
     crate::claude_files::selection(
         &Arc::new(files),
-        workspace,
+        workspace.clone(),
+        Arc::new(nanocode_sync::Atom::new(workspace)),
         None,
         Arc::new(crate::claude_bash::Jobs::default()),
         executor,
@@ -77,7 +78,8 @@ pub fn hand_tools_with(directory: PathBuf, files: HandFiles) -> Result<Tools> {
     })?;
     crate::claude_files::selection(
         &Arc::new(files),
-        directory,
+        directory.clone(),
+        Arc::new(nanocode_sync::Atom::new(directory)),
         None,
         Arc::new(crate::claude_bash::Jobs::default()),
         Arc::new(nanocode_process::NativeForeground),
@@ -141,6 +143,7 @@ pub(crate) fn install_default_tools_with_providers(
     direct: bool,
 ) -> Result<crate::ClaudeTools> {
     let jobs = Arc::new(crate::claude_bash::Jobs::with_subagents(&additive));
+    let mut cwd = None;
     let selected = match selected {
         Some(tools) => tools,
         None => {
@@ -150,9 +153,12 @@ pub(crate) fn install_default_tools_with_providers(
                     workspace.display()
                 ))
             })?;
+            let current = Arc::new(nanocode_sync::Atom::new(workspace.clone()));
+            cwd = Some(Arc::clone(&current));
             crate::claude_files::selection(
                 &Arc::new(files),
                 workspace.clone(),
+                current,
                 Some(handle.session_environment()),
                 jobs.clone(),
                 executor,
@@ -202,6 +208,10 @@ pub(crate) fn install_default_tools_with_providers(
             }
         })
         .agent_bound(move |agent, steer| bound.bind(agent, steer, delivery));
+    let tools = match cwd {
+        Some(cwd) => tools.working_directory(cwd),
+        None => tools,
+    };
     let tools = match delivery {
         crate::claude_bash::Delivery::Held => tools.turn_hold(move || held.hold()),
         _ => tools,

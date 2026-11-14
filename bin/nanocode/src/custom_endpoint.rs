@@ -83,7 +83,7 @@ fn anthropic(clients: ModelClients) -> Result<ModelClients, String> {
     let clients = clients.unlisted_models(nanocode::HarnessFamily::Claude);
     let url = format!("{}/messages", base.trim_end_matches('/'));
     nanocode::codex::transport::install_default_rustls_crypto_provider();
-    let http = nanocode_http::client();
+    let http = nanocode::claude::ClaudeClient::http_client();
     match credential {
         AnthropicCredential::ApiKey => Ok(clients.claude(move || {
             nanocode::claude::ClaudeClient::new(http.clone(), url.clone(), value.clone())

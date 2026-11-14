@@ -180,7 +180,6 @@ pub(super) fn install(
             } if !recursive_schema(parameters.as_value()) => Some(true),
             _ => None,
         };
-        let output_schema = definition.output_schema().cloned();
         let (name, description, input_schema, call) = match definition {
             RuntimeDefinition::Custom {
                 name, description, ..
@@ -221,13 +220,6 @@ pub(super) fn install(
                     other.name()
                 )));
             }
-        };
-        let description = match output_schema {
-            Some(schema) => shared_description(
-                &name,
-                format!("{description}\nOutput schema: {}", schema.as_value()),
-            ),
-            None => description,
         };
         let tool_name = name.to_string();
         native.shared_tool_names.insert(tool_name.clone());

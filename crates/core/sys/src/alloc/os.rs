@@ -1,3 +1,5 @@
+#[cfg(unix)]
+use crate::libc;
 use core::ffi::c_void;
 use core::ptr::null_mut;
 use core::sync::atomic::{AtomicUsize, Ordering};

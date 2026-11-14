@@ -7,31 +7,17 @@ version.workspace = true
 license.workspace = true
 publish.workspace = true
 
-# psh-engine for the Host trait; libc on Unix, windows-sys on Windows (D024), at the
-# version pi-env pins.
+# psh-engine for the Host trait; nanocode-sys's C library declarations on Unix and
+# its Win32 declarations on Windows (D024).
 [dependencies]
 psh-engine.workspace = true
 
 [target.'cfg(unix)'.dependencies]
-libc = "0.2.191"
+nanocode-sys.workspace = true
 
 [target.'cfg(windows)'.dependencies.windows-sys]
-version = "=0.61.2"
-features = [
-    "Win32_Foundation",
-    "Win32_Globalization",
-    "Win32_Security",
-    "Win32_Security_Cryptography",
-    "Win32_Storage_FileSystem",
-    "Win32_System_Console",
-    "Win32_System_Diagnostics_ToolHelp",
-    "Win32_System_IO",
-    "Win32_System_JobObjects",
-    "Win32_System_Pipes",
-    "Win32_System_SystemInformation",
-    "Win32_System_Threading",
-    "Win32_System_Time",
-]
+package = "nanocode-windows-sys"
+path = "../../../../core/windows-sys"
 
 # The one crate allowed `unsafe` (AGENTS.md): every block says why it is sound.
 [lints.rust]

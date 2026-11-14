@@ -1,3 +1,4 @@
+use crate::libc;
 use std::{
     io,
     mem::MaybeUninit,
@@ -36,6 +37,7 @@ mod system {
         AsFd, AsRawFd, BorrowedFd, Duration, Event, FromRawFd, MaybeUninit, OwnedFd, WAKE_TOKEN,
         checked, io, timeout_ms,
     };
+    use crate::libc;
 
     pub struct Poller {
         queue: OwnedFd,
@@ -189,6 +191,7 @@ mod system {
     use super::{
         AsRawFd, BorrowedFd, Duration, Event, FromRawFd, OwnedFd, WAKE_TOKEN, checked, io,
     };
+    use crate::libc;
 
     pub struct Poller {
         queue: OwnedFd,

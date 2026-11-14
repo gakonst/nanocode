@@ -14,6 +14,7 @@ pub mod base64;
 pub mod crc32;
 mod decimal;
 mod exclusive;
+pub mod libc;
 pub mod lz4;
 pub mod memchr;
 #[cfg(target_os = "macos")]
@@ -37,6 +38,17 @@ pub mod unix;
 pub mod certificate_store;
 #[cfg(windows)]
 pub mod junction;
+#[cfg(windows)]
+#[allow(
+    non_snake_case,
+    non_upper_case_globals,
+    non_camel_case_types,
+    dead_code,
+    clippy::all,
+    clippy::missing_const_for_fn,
+    clippy::use_self
+)]
+pub mod windows_sys;
 #[cfg(target_os = "macos")]
 pub mod trust_settings;
 pub mod webp;

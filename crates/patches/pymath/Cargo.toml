@@ -40,7 +40,8 @@ name = "pymath"
 path = "src/lib.rs"
 
 [dependencies.libc]
-version = "0.2"
+package = "nanocode-libc"
+path = "../../core/libc"
 
 [dependencies.nanocode-numeric]
 path = "../../core/numeric"

@@ -57,6 +57,8 @@ members = [
     "crates/core/sync",
     "crates/core/trace",
     "crates/core/sys",
+    "crates/core/libc",
+    "crates/core/windows-sys",
     "crates/core/tools",
     "crates/core/tool-contracts",
     "crates/core/tools-macros",
@@ -123,7 +125,6 @@ nanocode-computer-repl = { version = "0.7.0", path = "crates/integrations/comput
 nanocode-tools = { version = "0.7.0", path = "crates/core/tools" }
 nanocode-tool-contracts = { version = "0.7.0", path = "crates/core/tool-contracts" }
 nanocode-store-jsonl = { version = "0.7.0", path = "crates/integrations/store-jsonl" }
-libc = "0.2"
 memchr = "2.8.3"
 nanocode-backend-claude = { version = "0.7.0", path = "crates/backends/claude" }
 nanocode-backend-claude-client = { version = "0.7.0", path = "crates/backends/claude/client" }

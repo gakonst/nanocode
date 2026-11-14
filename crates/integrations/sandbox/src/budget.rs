@@ -528,7 +528,7 @@ fn kill(tree: &[u32]) {
             .ok()
             .filter(|process| *process != 0)
         {
-            nanocode_platform::unix::signal_process(process, libc::SIGKILL).ok();
+            nanocode_platform::unix::signal_process(process, nanocode_sys::libc::SIGKILL).ok();
         }
     }
 }

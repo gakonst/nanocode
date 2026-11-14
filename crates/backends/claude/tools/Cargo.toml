@@ -23,9 +23,6 @@ serde_json.workspace = true
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 nanocode-jpeg.workspace = true
 
-[target.'cfg(unix)'.dependencies]
-libc.workspace = true
-
 [lints]
 workspace = true
 

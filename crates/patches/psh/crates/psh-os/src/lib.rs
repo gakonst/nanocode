@@ -18,6 +18,9 @@ pub mod windows;
 pub use terminal::stdout_columns;
 pub use timer::sleep;
 
+#[cfg(unix)]
+use nanocode_sys::libc;
+
 /// The fate of a run's leftovers when its host is dropped (D1067).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Leftovers {

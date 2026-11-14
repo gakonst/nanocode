@@ -703,7 +703,7 @@ fn process_alive(pid: u32) -> bool {
     nanocode_platform::unix::probe_process(pid)
         .err()
         .and_then(|error| error.raw_os_error())
-        != Some(libc::ESRCH)
+        != Some(nanocode_sys::libc::ESRCH)
 }
 
 #[cfg(not(unix))]

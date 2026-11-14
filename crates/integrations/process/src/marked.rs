@@ -18,7 +18,7 @@ pub fn terminate_marked(variable: &str, value: &str, grace: Duration) -> usize {
         return 0;
     }
     for &pid in &ended {
-        let _ = nanocode_platform::unix::signal_process(pid, libc::SIGTERM);
+        let _ = nanocode_platform::unix::signal_process(pid, nanocode_sys::libc::SIGTERM);
     }
     let until = std::time::Instant::now() + grace;
     while std::time::Instant::now() < until && !escaped().is_empty() {
@@ -27,7 +27,7 @@ pub fn terminate_marked(variable: &str, value: &str, grace: Duration) -> usize {
     for _ in 0..5 {
         let found = escaped();
         for &pid in &found {
-            let _ = nanocode_platform::unix::signal_process(pid, libc::SIGKILL);
+            let _ = nanocode_platform::unix::signal_process(pid, nanocode_sys::libc::SIGKILL);
         }
         if found.is_empty() {
             break;

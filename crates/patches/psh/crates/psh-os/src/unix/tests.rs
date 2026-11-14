@@ -1,5 +1,6 @@
 //! The host without the engine: spawn, wait, pipes, abandon, release.
 
+use nanocode_sys::libc;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::task::{Context, Poll, Wake, Waker};

@@ -471,7 +471,7 @@ impl ReadFile {
         }
         let mut file = OpenOptions::new()
             .read(true)
-            .custom_flags(libc::O_NOFOLLOW)
+            .custom_flags(nanocode_sys::libc::O_NOFOLLOW)
             .open(&path)
             .map_err(served.logged("file unreadable"))?;
         let opened = file.metadata().map_err(served.logged("file unreadable"))?;

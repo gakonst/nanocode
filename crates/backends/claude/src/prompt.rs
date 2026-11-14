@@ -307,7 +307,7 @@ fn local_image(path: &std::path::Path) -> std::result::Result<String, &'static s
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt as _;
-        options.custom_flags(libc::O_NONBLOCK);
+        options.custom_flags(nanocode_sys::libc::O_NONBLOCK);
     }
     let file = options.open(path).map_err(|_| UNREADABLE)?;
     let metadata = file.metadata().map_err(|_| UNREADABLE)?;

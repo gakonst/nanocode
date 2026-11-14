@@ -52,12 +52,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "libc"
-version = "0.2.191"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a"
-
-[[package]]
 name = "memchr"
 version = "2.8.3"
 dependencies = [
@@ -68,7 +62,6 @@ dependencies = [
 name = "nanocode"
 version = "0.7.0"
 dependencies = [
- "libc",
  "nanocode-agent",
  "nanocode-agent-host",
  "nanocode-backend-claude",
@@ -84,6 +77,7 @@ dependencies = [
  "nanocode-store-jsonl",
  "nanocode-subagents",
  "nanocode-sync",
+ "nanocode-sys",
  "nanocode-tool-runtime",
  "nanocode-tools",
  "nanocode-turnlog",
@@ -187,7 +181,6 @@ dependencies = [
 name = "nanocode-backend-claude"
 version = "0.7.0"
 dependencies = [
- "libc",
  "nanocode-agent-config",
  "nanocode-agent-core",
  "nanocode-backend-claude-client",
@@ -241,7 +234,6 @@ dependencies = [
 name = "nanocode-backend-claude-tools"
 version = "0.7.0"
 dependencies = [
- "libc",
  "nanocode-home",
  "nanocode-image",
  "nanocode-jpeg",
@@ -257,7 +249,6 @@ dependencies = [
 name = "nanocode-backend-codex"
 version = "0.7.0"
 dependencies = [
- "libc",
  "nanocode-agent-config",
  "nanocode-agent-core",
  "nanocode-backend-codex-client",
@@ -318,12 +309,12 @@ version = "0.7.0"
 name = "nanocode-chatgpt-extension"
 version = "0.7.0"
 dependencies = [
- "libc",
  "nanocode-digest",
  "nanocode-executor",
  "nanocode-io",
  "nanocode-platform",
  "nanocode-sync",
+ "nanocode-sys",
  "nanocode-tool-contracts",
  "nanocode-url",
  "serde",
@@ -407,7 +398,6 @@ dependencies = [
 name = "nanocode-computer"
 version = "0.7.0"
 dependencies = [
- "libc",
  "nanocode-computer-repl",
  "nanocode-executor",
  "nanocode-io",
@@ -497,9 +487,9 @@ version = "0.7.0"
 name = "nanocode-home"
 version = "0.7.0"
 dependencies = [
- "libc",
  "nanocode-digest",
  "nanocode-platform",
+ "nanocode-sys",
  "serde",
 ]
 
@@ -549,6 +539,13 @@ dependencies = [
 
 [[package]]
 name = "nanocode-jpeg"
+version = "0.7.0"
+dependencies = [
+ "nanocode-sys",
+]
+
+[[package]]
+name = "nanocode-libc"
 version = "0.7.0"
 dependencies = [
  "nanocode-sys",
@@ -678,7 +675,6 @@ dependencies = [
 name = "nanocode-process"
 version = "0.7.0"
 dependencies = [
- "libc",
  "nanocode-executor",
  "nanocode-home",
  "nanocode-io",
@@ -752,7 +748,6 @@ name = "nanocode-sandbox"
 version = "0.7.0"
 dependencies = [
  "graviola",
- "libc",
  "nanocode-bytes",
  "nanocode-executor",
  "nanocode-http",
@@ -823,11 +818,11 @@ dependencies = [
 name = "nanocode-store-jsonl"
 version = "0.7.0"
 dependencies = [
- "libc",
  "nanocode-digest",
  "nanocode-durability-core",
  "nanocode-platform",
  "nanocode-sync",
+ "nanocode-sys",
  "nanocode-trace",
  "nanocode-zstd",
  "serde",
@@ -879,10 +874,6 @@ dependencies = [
 [[package]]
 name = "nanocode-sys"
 version = "0.7.0"
-dependencies = [
- "libc",
- "windows-sys",
-]
 
 [[package]]
 name = "nanocode-telemetry"
@@ -1070,6 +1061,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "nanocode-windows-sys"
+version = "0.7.0"
+dependencies = [
+ "nanocode-sys",
+]
+
+[[package]]
 name = "nanocode-x509"
 version = "0.7.0"
 dependencies = [
@@ -1132,9 +1130,9 @@ dependencies = [
 name = "psh-os"
 version = "0.0.0"
 dependencies = [
- "libc",
+ "nanocode-sys",
+ "nanocode-windows-sys",
  "psh-engine",
- "windows-sys",
 ]
 
 [[package]]
@@ -1169,7 +1167,7 @@ dependencies = [
 name = "pymath"
 version = "0.2.0"
 dependencies = [
- "libc",
+ "nanocode-libc",
  "nanocode-numeric",
 ]
 
@@ -1193,9 +1191,9 @@ dependencies = [
  "nanocode-platform",
  "nanocode-sys",
  "nanocode-trace",
+ "nanocode-windows-sys",
  "rustls",
  "rustls-webpki",
- "windows-sys",
 ]
 
 [[package]]
@@ -1227,10 +1225,10 @@ dependencies = [
 name = "rustpython-common"
 version = "0.6.0"
 dependencies = [
- "libc",
  "memchr",
  "nanocode-compression",
  "nanocode-flags",
+ "nanocode-libc",
  "nanocode-numeric",
  "nanocode-platform",
  "nanocode-sys",
@@ -1291,12 +1289,12 @@ dependencies = [
 name = "rustpython-host_env"
 version = "0.6.0"
 dependencies = [
- "libc",
  "memchr",
+ "nanocode-libc",
  "nanocode-platform",
  "nanocode-sys",
+ "nanocode-windows-sys",
  "rustpython-wtf8",
- "windows-sys",
 ]
 
 [[package]]
@@ -1375,8 +1373,8 @@ name = "rustpython-stdlib"
 version = "0.6.0"
 dependencies = [
  "indexmap",
- "libc",
  "memchr",
+ "nanocode-libc",
  "nanocode-numeric",
  "nanocode-platform",
  "pymath",
@@ -1406,9 +1404,9 @@ version = "0.6.0"
 dependencies = [
  "indexmap",
  "itoa",
- "libc",
  "memchr",
  "nanocode-flags",
+ "nanocode-libc",
  "nanocode-numeric",
  "nanocode-platform",
  "nanocode-trace",
@@ -1465,18 +1463,3 @@ dependencies = [
 [[package]]
 name = "unicode-normalization"
 version = "0.1.25"
-
-[[package]]
-name = "windows-link"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f0805222e57f7521d6a62e36fa9163bc891acd422f971defe97d64e70d0a4fe5"
-
-[[package]]
-name = "windows-sys"
-version = "0.61.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ae137229bcbd6cdf0f7b80a31df61766145077ddf49416a728b02cb3921ff3fc"
-dependencies = [
- "windows-link",
-]

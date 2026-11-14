@@ -41,9 +41,6 @@ nanocode-process.workspace = true
 nanocode-tls.workspace = true
 nanocode-executor.workspace = true
 
-[target.'cfg(unix)'.dependencies]
-libc.workspace = true
-
 [lints]
 workspace = true
 

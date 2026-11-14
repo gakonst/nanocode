@@ -24,7 +24,6 @@ graviola.workspace = true
 rustls = { workspace = true, features = ["std", "tls12"] }
 nanocode-tls.workspace = true
 rustls-platform-verifier = "0.7.0"
-libc.workspace = true
 nanocode-sys.workspace = true
 serde.workspace = true
 nanocode-executor.workspace = true

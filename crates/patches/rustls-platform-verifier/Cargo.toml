@@ -32,4 +32,4 @@ nanocode-sys = { path = "../../core/sys" }
 webpki = { package = "rustls-webpki", version = "0.103", default-features = false }
 
 [target."cfg(windows)".dependencies]
-windows-sys = { version = "0.61", default-features = false, features = ["Win32_Foundation", "Win32_Security_Cryptography"] }
+windows-sys = { package = "nanocode-windows-sys", path = "../../core/windows-sys" }

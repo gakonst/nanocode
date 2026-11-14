@@ -77,7 +77,8 @@ path = "../../core/platform"
 path = "../../core/sys"
 
 [dependencies.libc]
-version = "0.2.186"
+package = "nanocode-libc"
+path = "../../core/libc"
 
 [dependencies.nanocode-numeric]
 path = "../../core/numeric"

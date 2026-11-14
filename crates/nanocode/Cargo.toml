@@ -42,7 +42,7 @@ nanocode-sync.workspace = true
 nanocode-executor.workspace = true
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
-libc.workspace = true
+nanocode-sys.workspace = true
 
 [features]
 default = ["local-cells", "cua"]

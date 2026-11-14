@@ -1,3 +1,4 @@
+use crate::libc;
 use std::{
     io,
     os::fd::{BorrowedFd, FromRawFd, OwnedFd},

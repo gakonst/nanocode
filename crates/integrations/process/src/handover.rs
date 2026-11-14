@@ -9,7 +9,7 @@ use std::{
 
 pub const ARGUMENT: &str = "read-outputs";
 
-pub const TERMINATED: u8 = 128 + libc::SIGTERM as u8;
+pub const TERMINATED: u8 = 128 + nanocode_sys::libc::SIGTERM as u8;
 
 fn reads(command: &mut Command) -> io::Result<bool> {
     let outputs = super::output::open();
@@ -57,7 +57,7 @@ fn read(descriptors: impl Iterator<Item = String>) -> ExitCode {
         .map(|output| {
             std::thread::spawn(move || {
                 if let Ok(flags) = nanocode_sys::unix::status_flags(&output) {
-                    let _ = nanocode_sys::unix::set_status_flags(&output, flags & !libc::O_NONBLOCK);
+                    let _ = nanocode_sys::unix::set_status_flags(&output, flags & !nanocode_sys::libc::O_NONBLOCK);
                 }
                 let _ = io::copy(&mut std::fs::File::from(output), &mut io::sink());
             })

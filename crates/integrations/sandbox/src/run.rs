@@ -344,7 +344,7 @@ struct Cleanup {
 impl Cleanup {
     fn kill(&mut self) {
         if let Some(group) = self.group.take() {
-            nanocode_platform::unix::signal_group(group, libc::SIGKILL).ok();
+            nanocode_platform::unix::signal_group(group, nanocode_sys::libc::SIGKILL).ok();
         }
     }
 }

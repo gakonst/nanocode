@@ -73,7 +73,7 @@ pub async fn bounded(
     if finished.is_err()
         && let Some(group) = group
     {
-        nanocode_platform::unix::signal_group(group, libc::SIGKILL).ok();
+        nanocode_platform::unix::signal_group(group, nanocode_sys::libc::SIGKILL).ok();
     }
     finished.map_or(Ok(None), |bounded| bounded.map(Some))
 }

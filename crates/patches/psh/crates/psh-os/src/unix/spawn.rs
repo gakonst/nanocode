@@ -22,6 +22,7 @@
 //!
 //! The recipe follows oh-my-pi's `pi-shell/src/sys/spawn` (MIT, see NOTICE).
 
+use nanocode_sys::libc;
 use std::ffi::CString;
 use std::io::{self, Read};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
@@ -726,6 +727,7 @@ fn fork_exec(exec: &Exec, fds: &[(i32, RawFd)], setup: &Setup, floor: RawFd) -> 
 
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod posix {
+    use nanocode_sys::libc;
     use std::io;
     use std::mem::MaybeUninit;
     use std::os::fd::RawFd;

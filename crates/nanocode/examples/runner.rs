@@ -272,11 +272,11 @@ a second signal during multi-session shutdown aborts the remaining sessions.
         {
             if issue.raw_os_error().is_some_and(|errno| {
                 [
-                    libc::EPROTO,
-                    libc::ENOPROTOOPT,
-                    libc::EHOSTDOWN,
-                    libc::ENONET,
-                    libc::EOPNOTSUPP,
+                    nanocode_sys::libc::EPROTO,
+                    nanocode_sys::libc::ENOPROTOOPT,
+                    nanocode_sys::libc::EHOSTDOWN,
+                    nanocode_sys::libc::ENONET,
+                    nanocode_sys::libc::EOPNOTSUPP,
                 ]
                 .contains(&errno)
             }) {

@@ -16,6 +16,8 @@ use nanocode_executor::process::{ChildStderr, ChildStdout, Command};
 use nanocode_sync::{mpsc, oneshot};
 
 use nanocode_process_contracts::{MIN_REDACTED_SECRET_BYTES, REDACTED, Redactor};
+#[cfg(unix)]
+use nanocode_sys::libc;
 
 use super::selection::Shell;
 

@@ -29,6 +29,8 @@ mod parked;
 mod shared;
 mod side;
 mod telemetry;
+#[cfg(not(target_family = "wasm"))]
+mod web;
 use crate::execution::{Admission, ClaudeExecutionPolicy, Step};
 pub use durable::{
     ClaudeCheckpointView, decode_checkpoint, decode_session_checkpoint, rewind_checkpoint,
@@ -1304,6 +1306,38 @@ impl ClaudeBuilder {
 
     pub const fn client_tool_search(mut self) -> Self {
         self.client_tool_search = true;
+        self
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    pub fn upstream_web(mut self) -> Self {
+        let side = web::Side {
+            client: self.claude.client.clone(),
+            model: self.claude.model.clone(),
+            max_tokens: self.max_tokens,
+            output_config: self.effort.map(|effort| crate::OutputConfig { effort }),
+        };
+        for name in ["WebSearch", "WebFetch"] {
+            let upstream = crate::upstream::tool_definition(name).expect("upstream web definition");
+            let definition = ToolDefinition {
+                name: name.into(),
+                description: upstream.description.clone(),
+                input_schema: upstream.input_schema.clone(),
+                strict: None,
+                defer_loading: false,
+                cache_control: None,
+            };
+            let side = side.clone();
+            self = self.tool(definition, move |input| {
+                let side = side.clone();
+                async move {
+                    match name {
+                        "WebSearch" => side.search(input).await,
+                        _ => side.fetch(input).await,
+                    }
+                }
+            });
+        }
         self
     }
 

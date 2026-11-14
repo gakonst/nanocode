@@ -195,6 +195,10 @@ impl RuntimeBackend for ClaudeHarness {
             if let Some(configure) = configure {
                 builder = configure(builder)?.workspace(workspace.to_string_lossy().into_owned());
             }
+            #[cfg(not(target_family = "wasm"))]
+            if direct && !remote {
+                builder = builder.upstream_web();
+            }
             let tools = settings.tools;
             #[cfg(not(target_family = "wasm"))]
             let providers = settings.providers;

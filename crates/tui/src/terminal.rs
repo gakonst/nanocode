@@ -155,9 +155,13 @@ impl TerminalSession {
             self.current = Buffer::empty(area);
             self.stale = true;
             self.selection = None;
+        } else {
+            self.current.reset();
+            if self.stale {
+                self.previous.reset();
+            }
         }
         span.record("repaint", self.stale);
-        self.current.reset();
         self.regions.clear();
         self.regions.push(area);
         self.spinners.clear();
@@ -177,9 +181,6 @@ impl TerminalSession {
             monochrome(&mut self.current);
         } else if !self.truecolor {
             downsample(&mut self.current);
-        }
-        if self.stale {
-            self.previous.reset();
         }
         let diff_encode = nanocode_trace::info_span!("tui.terminal.diff_encode").entered();
         let mut changed_cells = 0;

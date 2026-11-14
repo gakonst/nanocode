@@ -326,6 +326,16 @@ impl Buffer {
     pub fn diff_iter<'next>(&self, next: &'next Self) -> BufferDiff<'_, 'next> {
         BufferDiff::new(self, next)
     }
+
+    #[must_use]
+    pub fn blank_diff_iter(&self) -> BlankDiff<'_> {
+        BlankDiff {
+            next: &self.content,
+            area: self.area,
+            position: 0,
+            trailing: None,
+        }
+    }
 }
 
 impl<P: Into<Position>> Index<P> for Buffer {
@@ -395,12 +405,16 @@ impl<'previous, 'next> BufferDiff<'previous, 'next> {
     }
 
     const fn position_of(&self, index: usize) -> (u16, u16) {
-        let width = self.area.width as usize;
-        (
-            (index % width + self.area.x as usize) as u16,
-            (index / width + self.area.y as usize) as u16,
-        )
+        position_of(self.area, index)
     }
+}
+
+const fn position_of(area: Rect, index: usize) -> (u16, u16) {
+    let width = area.width as usize;
+    (
+        (index % width + area.x as usize) as u16,
+        (index / width + area.y as usize) as u16,
+    )
 }
 
 impl<'next> Iterator for BufferDiff<'_, 'next> {
@@ -451,6 +465,56 @@ impl<'next> Iterator for BufferDiff<'_, 'next> {
                 });
             }
             let (x, y) = self.position_of(index);
+            return Some((x, y, &self.next[index]));
+        }
+        None
+    }
+}
+
+#[derive(Debug)]
+pub struct BlankDiff<'next> {
+    next: &'next [Cell],
+    area: Rect,
+    position: usize,
+    trailing: Option<(usize, usize)>,
+}
+
+impl<'next> Iterator for BlankDiff<'next> {
+    type Item = (u16, u16, &'next Cell);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let length = self.next.len();
+        if let Some((next, end)) = &mut self.trailing {
+            while *next < *end {
+                let index = *next;
+                *next += usize::from(self.next[index].cell_width().max(1));
+                *end = (*end).max(*next).min(length);
+                if self.next[index].symbol_bytes() != BLANK.as_bytes() {
+                    let (x, y) = position_of(self.area, index);
+                    return Some((x, y, &self.next[index]));
+                }
+            }
+            self.position = *end;
+            self.trailing = None;
+        }
+        while self.position < length {
+            let index = self.position;
+            self.position += 1;
+            let cell = &self.next[index];
+            if cell.symbol_bytes() == BLANK.as_bytes()
+                && cell.fg == Color::Reset
+                && cell.bg == Color::Reset
+                && cell.modifier.is_empty()
+            {
+                continue;
+            }
+            let width = usize::from(cell.cell_width());
+            if width > 1 && cell.symbol().contains(VARIATION_SELECTOR_EMOJI) {
+                self.trailing = Some((index + 1, (index + width).min(length)));
+            } else if width > 1 {
+                self.position += width - 1;
+            }
+            let (x, y) = position_of(self.area, index);
             return Some((x, y, &self.next[index]));
         }
         None

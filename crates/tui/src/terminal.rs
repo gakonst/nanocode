@@ -9,7 +9,7 @@ use std::{
 
 use crate::input::{MouseButton, MouseEvent, MouseEventKind};
 use crate::ui::{
-    buffer::Buffer,
+    buffer::{Buffer, Cell},
     layout::{Position, Rect},
     style::Color,
 };
@@ -150,16 +150,14 @@ impl TerminalSession {
         );
         let _entered = span.enter();
         let area = Rect::new(0, 0, columns, rows);
-        if area != self.current.area {
-            self.previous = Buffer::empty(area);
-            self.current = Buffer::empty(area);
+        if area != self.previous.area {
             self.stale = true;
             self.selection = None;
-        } else {
+        }
+        if area == self.current.area {
             self.current.reset();
-            if self.stale {
-                self.previous.reset();
-            }
+        } else {
+            self.current = Buffer::empty(area);
         }
         span.record("repaint", self.stale);
         self.regions.clear();
@@ -183,50 +181,27 @@ impl TerminalSession {
             downsample(&mut self.current);
         }
         let diff_encode = nanocode_trace::info_span!("tui.terminal.diff_encode").entered();
-        let mut changed_cells = 0;
-        let mut updates = self
-            .previous
-            .diff_iter(&self.current)
-            .inspect(|_| changed_cells += 1)
-            .peekable();
-        let has_updates = updates.peek().is_some();
-        if !self.stale && !has_updates && cursor == self.cursor {
+        let frame = Frame {
+            bytes: &mut self.bytes,
+            area,
+            stale: self.stale,
+            cursor,
+            shown: self.cursor,
+            monochrome: self.monochrome,
+        };
+        let encoded = if self.stale {
+            frame.encode(self.current.blank_diff_iter())
+        } else {
+            frame.encode(self.previous.diff_iter(&self.current))
+        };
+        let Some(changed_cells) = encoded else {
             span.record("frame.changed_cells", 0);
             span.record("frame.skipped", true);
             self.stats.skipped += 1;
             std::mem::swap(&mut self.previous, &mut self.current);
             return Ok(());
-        }
-        self.bytes.clear();
-        self.bytes
-            .extend_from_slice(ansi::BEGIN_SYNCHRONIZED_UPDATE.as_bytes());
-        if self.stale {
-            self.bytes
-                .extend_from_slice(ansi::RESET_ATTRIBUTES.as_bytes());
-            for row in area.top()..area.bottom() {
-                ansi::move_to(&mut self.bytes, 0, row);
-                self.bytes.extend_from_slice(ansi::CLEAR_LINE.as_bytes());
-            }
-        }
-        if has_updates {
-            if self.cursor.is_some() {
-                self.bytes.extend_from_slice(ansi::HIDE_CURSOR.as_bytes());
-            }
-            ansi::draw(&mut self.bytes, updates, self.monochrome);
-        }
+        };
         span.record("frame.changed_cells", changed_cells);
-        match cursor {
-            Some(position) => {
-                ansi::move_to(&mut self.bytes, position.x, position.y);
-                self.bytes.extend_from_slice(ansi::SHOW_CURSOR.as_bytes());
-            }
-            None if self.cursor.is_some() => {
-                self.bytes.extend_from_slice(ansi::HIDE_CURSOR.as_bytes());
-            }
-            None => {}
-        }
-        self.bytes
-            .extend_from_slice(ansi::END_SYNCHRONIZED_UPDATE.as_bytes());
         drop(diff_encode);
         span.record("frame.bytes", self.bytes.len());
         nanocode_trace::info_span!("tui.terminal.write", bytes = self.bytes.len()).in_scope(|| {
@@ -433,6 +408,59 @@ impl Drop for TerminalSession {
         if self.active {
             restore(&mut self.output);
         }
+    }
+}
+
+struct Frame<'a> {
+    bytes: &'a mut Vec<u8>,
+    area: Rect,
+    stale: bool,
+    cursor: Option<Position>,
+    shown: Option<Position>,
+    monochrome: bool,
+}
+
+impl Frame<'_> {
+    fn encode<'cell>(
+        self,
+        updates: impl Iterator<Item = (u16, u16, &'cell Cell)>,
+    ) -> Option<usize> {
+        let mut changed_cells = 0;
+        let mut updates = updates.inspect(|_| changed_cells += 1).peekable();
+        let has_updates = updates.peek().is_some();
+        if !self.stale && !has_updates && self.cursor == self.shown {
+            return None;
+        }
+        self.bytes.clear();
+        self.bytes
+            .extend_from_slice(ansi::BEGIN_SYNCHRONIZED_UPDATE.as_bytes());
+        if self.stale {
+            self.bytes
+                .extend_from_slice(ansi::RESET_ATTRIBUTES.as_bytes());
+            for row in self.area.top()..self.area.bottom() {
+                ansi::move_to(self.bytes, 0, row);
+                self.bytes.extend_from_slice(ansi::CLEAR_LINE.as_bytes());
+            }
+        }
+        if has_updates {
+            if self.shown.is_some() {
+                self.bytes.extend_from_slice(ansi::HIDE_CURSOR.as_bytes());
+            }
+            ansi::draw(self.bytes, updates, self.monochrome);
+        }
+        match self.cursor {
+            Some(position) => {
+                ansi::move_to(self.bytes, position.x, position.y);
+                self.bytes.extend_from_slice(ansi::SHOW_CURSOR.as_bytes());
+            }
+            None if self.shown.is_some() => {
+                self.bytes.extend_from_slice(ansi::HIDE_CURSOR.as_bytes());
+            }
+            None => {}
+        }
+        self.bytes
+            .extend_from_slice(ansi::END_SYNCHRONIZED_UPDATE.as_bytes());
+        Some(changed_cells)
     }
 }
 

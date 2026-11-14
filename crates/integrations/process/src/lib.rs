@@ -413,10 +413,27 @@ impl ShellSessions {
                     }
                 }
             }
+            let search = environment
+                .iter()
+                .find(|(name, _)| name == "PATH")
+                .map(|(_, value)| value.clone());
+            let requested = command
+                .shell
+                .as_deref()
+                .and_then(|requested| selection::requested(requested, search.as_deref()));
+            let stands_in = requested.is_none();
+            if stands_in {
+                let bash = OsString::from(selection::default_shell_path());
+                if !environment.iter().any(|(name, _)| name == "SHELL") {
+                    environment.push((OsString::from("SHELL"), bash.clone()));
+                }
+                environment.push((OsString::from("PSH_NAME"), bash));
+            }
+            let shell = requested.unwrap_or(shell);
             let terminations = self.terminations.load(Ordering::SeqCst);
             let script = command.script.clone();
             #[cfg(any(target_os = "macos", target_os = "linux"))]
-            let warm = match command.tty {
+            let warm = match command.tty || !stands_in {
                 true => None,
                 false => match embedded::spawn(
                     &script,

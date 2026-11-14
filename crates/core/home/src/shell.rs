@@ -51,6 +51,38 @@ pub const fn default_shell_name() -> &'static str {
     "bash"
 }
 
+pub const fn default_shell_path() -> &'static str {
+    "/bin/bash"
+}
+
+#[cfg(unix)]
+pub fn requested(shell: &str, search: Option<&std::ffi::OsStr>) -> Option<Shell> {
+    let name = match Path::new(shell).file_stem().and_then(|name| name.to_str()) {
+        Some("bash") => return None,
+        Some(name @ ("sh" | "zsh")) => name,
+        _ => {
+            return Some(Shell::psh(PathBuf::from("/bin/sh"), Vec::new()));
+        }
+    };
+    let program = user_shell_path()
+        .filter(|path| path.file_stem().and_then(|stem| stem.to_str()) == Some(name))
+        .or_else(|| {
+            search.and_then(|search| {
+                std::env::split_paths(search)
+                    .map(|directory| directory.join(name))
+                    .find(|path| path.is_file())
+            })
+        })
+        .or_else(|| Some(Path::new("/bin").join(name)).filter(|path| path.is_file()))
+        .unwrap_or_else(|| PathBuf::from("/bin/sh"));
+    Some(Shell::psh(program, Vec::new()))
+}
+
+#[cfg(not(unix))]
+pub const fn requested(_: &str, _: Option<&std::ffi::OsStr>) -> Option<Shell> {
+    None
+}
+
 #[cfg(unix)]
 fn user_shell_path() -> Option<PathBuf> {
     static SHELL: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();

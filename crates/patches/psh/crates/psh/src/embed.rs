@@ -170,6 +170,11 @@ pub fn start(
             });
             let killer = host.killer();
             let mut cfg = ShellConfig::new(Rc::new(host));
+            let arg0 = command
+                .env
+                .iter()
+                .find(|(name, _)| name == crate::NAME_VAR.as_bytes())
+                .map_or_else(|| b"psh".to_vec(), |(_, value)| value.clone());
             cfg.env = command.env;
             (cfg.utilities, cfg.nested_shells) = crate::settings(&mut cfg.env);
             cfg.cwd = command.cwd;
@@ -180,7 +185,7 @@ pub fn start(
             let control = shell.control();
             shell.start(Script {
                 source: command.script,
-                arg0: b"psh".to_vec(),
+                arg0,
                 args: Vec::new(),
                 dash_c: true,
                 options: Vec::new(),

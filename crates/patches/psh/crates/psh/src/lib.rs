@@ -108,6 +108,12 @@ fn os_path(b: &[u8]) -> std::path::PathBuf {
 /// `PATH` instead of psh (D1410, D1412).
 const NESTED_OFF_VAR: &str = "PSH_NESTED_OFF";
 
+const NAME_VAR: &str = "PSH_NAME";
+
+fn name() -> Vec<u8> {
+    std::env::var_os(NAME_VAR).map_or_else(|| b"psh".to_vec(), os_bytes)
+}
+
 /// The standalone shell's configuration: the OS host and its stdio, the utilities (with
 /// `PSH_UTILS_FORCE`), the environment and the working directory. `psh --utils` asks a
 /// shell configured so which utilities run.
@@ -161,6 +167,7 @@ fn shell_config() -> ShellConfig {
 /// psh's own variables, taken out of `env`: the utilities they leave on, and whether a
 /// command named `bash` or `sh` runs in psh.
 fn settings(env: &mut Vec<(Vec<u8>, Vec<u8>)>) -> (psh_engine::util::UtilPolicy, bool) {
+    env.retain(|(name, _)| name != NAME_VAR.as_bytes());
     let mut take = |name: &str| {
         let i = env.iter().position(|(k, _)| k == name.as_bytes())?;
         Some(env.remove(i).1)
@@ -294,7 +301,7 @@ fn warm_shell(mut args: Vec<Vec<u8>>) -> ExitCode {
         }
     }
     args.extend([b"-c".to_vec(), source]);
-    let script = match script(&args) {
+    let script = match script(&args, name()) {
         Ok(script) => script,
         Err(code) => return code,
     };
@@ -306,7 +313,7 @@ fn warm_shell(mut args: Vec<Vec<u8>>) -> ExitCode {
 
 /// The standalone shell: bash's command line in `args`.
 fn shell(args: &[Vec<u8>]) -> ExitCode {
-    let script = match script(args) {
+    let script = match script(args, name()) {
         Ok(script) => script,
         Err(code) => return code,
     };
@@ -318,7 +325,7 @@ fn shell(args: &[Vec<u8>]) -> ExitCode {
 
 /// The script bash's command line asks for, or the status to end with at once (`--help`,
 /// a usage error, a file that cannot be read).
-fn script(args: &[Vec<u8>]) -> Result<Script, ExitCode> {
+fn script(args: &[Vec<u8>], name: Vec<u8>) -> Result<Script, ExitCode> {
     let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
     Ok(match parse_args(args) {
         Err(msg) => return Err(usage_error(&msg)),
@@ -339,7 +346,7 @@ fn script(args: &[Vec<u8>]) -> Result<Script, ExitCode> {
             options,
         }) => Script {
             source,
-            arg0: arg0.unwrap_or_else(|| b"psh".to_vec()),
+            arg0: arg0.unwrap_or(name),
             args,
             dash_c: true,
             options,
@@ -376,7 +383,7 @@ fn script(args: &[Vec<u8>]) -> Result<Script, ExitCode> {
         // Read as it runs, one command at a time, as bash does (D1414).
         Ok(Invocation::Stdin { args, options }) => Script {
             source: Vec::new(),
-            arg0: b"psh".to_vec(),
+            arg0: name,
             args,
             dash_c: false,
             options,

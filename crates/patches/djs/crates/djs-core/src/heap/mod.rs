@@ -302,8 +302,8 @@ impl Heap {
         {
             fresh.compositions = core::mem::take(&mut self.compositions);
         }
-        fresh.compile_scratch = core::mem::take(&mut self.compile_scratch);
-        fresh.ident_atoms = core::mem::take(&mut self.ident_atoms);
+        core::mem::swap(&mut fresh.compile_scratch, &mut self.compile_scratch);
+        core::mem::swap(&mut fresh.ident_atoms, &mut self.ident_atoms);
         let stable_below = fresh.atom_count();
         fresh.ident_atoms.restart(stable_below);
         *self = fresh;

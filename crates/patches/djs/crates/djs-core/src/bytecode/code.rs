@@ -157,7 +157,15 @@ pub struct CodeBuf<M: LabelMode = Final> {
 
 impl<M: LabelMode> Default for CodeBuf<M> {
     fn default() -> Self {
-        Self::make(0)
+        CodeBuf {
+            code: Vec::new(),
+            insns: Vec::new(),
+            labels: Vec::new(),
+            fixups: Vec::new(),
+            last: None,
+            error: None,
+            _mode: PhantomData,
+        }
     }
 }
 

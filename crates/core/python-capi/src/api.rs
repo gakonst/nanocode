@@ -879,18 +879,22 @@ pub extern "C" fn PyLong_AsSsize_t(pointer: *mut Object) -> isize {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn PyLong_AsSize_t(pointer: *mut Object) -> usize {
-    guard(usize::MAX, |vm| index(vm, pointer)?.try_to_primitive(vm))
+    guard(usize::MAX, |vm| {
+        index(vm, pointer)?.try_to_primitive_in_range(vm)
+    })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn PyLong_AsUnsignedLong(pointer: *mut Object) -> c_ulong {
-    guard(c_ulong::MAX, |vm| index(vm, pointer)?.try_to_primitive(vm))
+    guard(c_ulong::MAX, |vm| {
+        index(vm, pointer)?.try_to_primitive_in_range(vm)
+    })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn PyLong_AsUnsignedLongLong(pointer: *mut Object) -> c_ulonglong {
     guard(c_ulonglong::MAX, |vm| {
-        index(vm, pointer)?.try_to_primitive(vm)
+        index(vm, pointer)?.try_to_primitive_in_range(vm)
     })
 }
 
@@ -1943,6 +1947,10 @@ pub extern "C" fn PyDict_Merge(pointer: *mut Object, other: *mut Object, replace
 
 thread_local! {
     static SNAPSHOTS: RefCell<crate::address::AddressMap<Vec<(PyObjectRef, PyObjectRef)>>> = const { RefCell::new(crate::address::map()) };
+}
+
+pub fn forget_snapshots() {
+    SNAPSHOTS.with_borrow_mut(|snapshots| snapshots.clear());
 }
 
 #[unsafe(no_mangle)]

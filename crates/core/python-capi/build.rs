@@ -300,6 +300,14 @@ fn main() {
                     .iter()
                     .map(|include| format!("-I{}", include.display())),
             );
+            if let Ok(macros) = fs::read_to_string(dir.join("defines")) {
+                defines.extend(
+                    macros
+                        .lines()
+                        .filter(|line| !line.is_empty())
+                        .map(|line| format!("-D{line}")),
+                );
+            }
             let object = out.join(format!("{}.o", objects.len()));
             compile(&source, &object, &defines);
             if wasm {

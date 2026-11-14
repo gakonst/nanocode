@@ -12,6 +12,7 @@ pub mod api;
 mod bridge;
 mod buffer;
 mod cast;
+mod dconv;
 mod heap;
 #[cfg(target_family = "wasm")]
 mod libc;

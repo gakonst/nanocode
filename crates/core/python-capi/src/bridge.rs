@@ -348,6 +348,7 @@ pub fn enter<R>(vm: &VirtualMachine, f: impl FnOnce() -> R) -> R {
     DEPTH.set(DEPTH.get() - 1);
     MACHINE.set(previous);
     if DEPTH.get() == 0 {
+        crate::api::forget_snapshots();
         sweep();
     }
     result

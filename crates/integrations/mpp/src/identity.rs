@@ -6,10 +6,10 @@ use std::sync::Arc;
 
 use nanocode_http::header::{HeaderMap, HeaderValue};
 use nanocode_http::{Request, Response, StatusCode, Url};
+use nanocode_sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use nanocode_sync::{Atom, SingleFlight, Slot};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
 use super::flow::{Exchange, HttpFault};
 use super::protocol::{Challenge, PAYMENT_RECEIPT_HEADER, decode_url, now_seconds};

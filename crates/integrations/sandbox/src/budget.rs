@@ -1,9 +1,9 @@
+use nanocode_sync::{Semaphore, SemaphorePermit};
 use std::collections::BTreeSet;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
-use tokio::sync::{Semaphore, SemaphorePermit};
 
 const MEMORY_MIB: u64 = 1024;
 const MEMORY_EVERY: Duration = Duration::from_millis(100);

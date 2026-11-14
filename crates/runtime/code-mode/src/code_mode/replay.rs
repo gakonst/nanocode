@@ -3,9 +3,9 @@ use std::{
     sync::{Arc, Weak},
 };
 
+use nanocode_sync::watch;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, value::RawValue};
-use tokio::sync::watch;
 
 use nanocode_code_mode_engine::{JournalEntry, SharedJournal};
 use nanocode_sync::{Atom, Inbox, Owned};

@@ -22,7 +22,6 @@ serde_json.workspace = true
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 nanocode-image.workspace = true
 nanocode-jpeg.workspace = true
-tokio = { workspace = true, features = ["rt"] }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

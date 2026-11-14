@@ -10,8 +10,8 @@ use std::{
 
 use nanocode_sync::{Slot, Swap, SwapOption};
 
+use nanocode_sync::oneshot;
 use nanocode_sync::unbounded;
-use tokio::sync::oneshot;
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 

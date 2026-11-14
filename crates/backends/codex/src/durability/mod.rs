@@ -804,7 +804,7 @@ struct Acquired {
 struct LazyExecution {
     store: SharedStore,
     record: SessionRecord,
-    ready: tokio::sync::OnceCell<Acquired>,
+    ready: nanocode_sync::OnceCell<Acquired>,
 
     initialized: std::sync::atomic::AtomicBool,
 
@@ -818,7 +818,7 @@ impl LazyExecution {
         Self {
             store,
             record,
-            ready: tokio::sync::OnceCell::new(),
+            ready: nanocode_sync::OnceCell::new(),
             initialized: std::sync::atomic::AtomicBool::new(false),
             created_with: SwapOption::empty(),
             deferred: None,

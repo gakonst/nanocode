@@ -10,12 +10,12 @@ use http::{HeaderValue, header};
 use nanocode_http::layer::retry;
 use nanocode_platform::timeout;
 use nanocode_sync::{FutureExt, SinkExt, StreamExt};
+use nanocode_sync::{mpsc, oneshot};
 use nanocode_websocket::{
     Error as WebSocketError, Frame, IntoClientRequest, MaybeTlsStream, Message, OpCode,
     ProtocolError, Utf8Bytes, WebSocketStream,
 };
 use tokio::net::TcpStream;
-use tokio::sync::{mpsc, oneshot};
 
 use crate::client::{
     EncodedRequest, OpenAiAuthSnapshot, ResponsesError,

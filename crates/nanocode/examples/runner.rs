@@ -14,9 +14,9 @@ mod native {
         attachment::AttachmentTarget,
         remote::{SocketPolicy, serve_accept, serve_connect},
     };
+    use nanocode_sync::watch;
     use tokio::{
         net::{TcpListener, TcpStream},
-        sync::watch,
         task::{JoinError, JoinSet},
     };
 

@@ -9,11 +9,11 @@ use std::{
 
 use nanocode_platform::Instant;
 use nanocode_sync::Stream;
+use nanocode_sync::mpsc;
 use nanocode_sync::{Inbox, Slot, Swap};
 use nanocode_types_core::responses::MessagePhase;
 use serde::Serialize;
 use serde_json::value::{RawValue, to_raw_value};
-use tokio::sync::mpsc;
 
 use nanocode_types_core::events::TextDeltaRef;
 pub use nanocode_types_core::events::{

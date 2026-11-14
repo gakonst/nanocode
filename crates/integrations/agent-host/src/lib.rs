@@ -393,7 +393,7 @@ impl RunnerServices for Services {
     > {
         Box::pin(async move { self.runner_pool().listen(config).await })
     }
-    fn runner_events(&self) -> tokio::sync::mpsc::UnboundedReceiver<RunnerEvent> {
+    fn runner_events(&self) -> nanocode_sync::mpsc::UnboundedReceiver<RunnerEvent> {
         self.runner_pool().subscribe()
     }
     fn list_runners(&self) -> Vec<RunnerInfo> {

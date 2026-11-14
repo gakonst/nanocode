@@ -19,8 +19,8 @@ use nanocode_sync::{
     future::{AbortHandle, Abortable, Either, select},
     stream::FuturesUnordered,
 };
+use nanocode_sync::{mpsc, oneshot};
 use serde_json::Value;
-use tokio::sync::{mpsc, oneshot};
 
 use super::{
     Answers, HAND_RESTARTED, LOCAL_TOOLS_UNKNOWN, NOT_RECEIVED, REQUEST_IN_USE, ReceivedCalls,

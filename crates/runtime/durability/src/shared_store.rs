@@ -1,7 +1,7 @@
 use std::future::Future;
 
 use nanocode_platform::Instant;
-use tokio::sync::{mpsc, oneshot};
+use nanocode_sync::{mpsc, oneshot};
 use nanocode_trace::Instrument;
 
 use crate::{

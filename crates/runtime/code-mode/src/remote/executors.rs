@@ -72,7 +72,7 @@ pub trait HandAuthorizer: Send + Sync + 'static {
 #[derive(Clone, Default)]
 pub struct CodeModeExecutors {
     state: Arc<Atom<State>>,
-    changed: Arc<tokio::sync::Notify>,
+    changed: Arc<nanocode_sync::Notify>,
     session: Option<Arc<Entered>>,
 }
 

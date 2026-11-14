@@ -1,4 +1,5 @@
 use crate::Atom;
+use crate::{Notify, broadcast, mpsc};
 use std::{
     collections::{HashMap, HashSet},
     hash::{BuildHasher, RandomState},
@@ -7,7 +8,6 @@ use std::{
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
-use tokio::sync::{Notify, broadcast, mpsc};
 
 pub type Wakeups = broadcast::Receiver<Arc<str>>;
 

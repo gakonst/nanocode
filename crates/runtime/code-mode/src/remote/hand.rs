@@ -9,9 +9,9 @@ use std::{
 use nanocode_platform::{Duration, Instant};
 use nanocode_sync::future::{AbortHandle, Abortable, select_all};
 use nanocode_sync::{Atom, Signal, Slot};
+use nanocode_sync::{mpsc, oneshot, watch};
 use nanocode_tool_contracts::RunningTask;
 use serde_json::{Value, json};
-use tokio::sync::{mpsc, oneshot, watch};
 
 use super::{
     Answers, HandCapability, HandEnvironment, HandHostInfo, HandPermission, LOCAL_TOOLS_UNKNOWN,

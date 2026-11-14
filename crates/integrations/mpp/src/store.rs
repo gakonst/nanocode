@@ -5,9 +5,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use nanocode_sync::Atom;
+use nanocode_sync::{OwnedSemaphorePermit, Semaphore};
 use nanocode_tempo::{Address, Sha256, hex};
 use serde::{Deserialize, Serialize};
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use super::accounts;
 use super::error::Fault;

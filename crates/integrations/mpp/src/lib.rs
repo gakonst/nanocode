@@ -1,7 +1,7 @@
 #![cfg(not(target_family = "wasm"))]
 
 use nanocode_sync::Atom;
-use tokio::sync::mpsc::UnboundedSender;
+use nanocode_sync::mpsc::UnboundedSender;
 
 pub mod accounts;
 pub mod charge;

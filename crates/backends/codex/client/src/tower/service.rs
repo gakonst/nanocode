@@ -15,8 +15,8 @@ use crate::client::{
 };
 use nanocode_platform::Instant;
 use nanocode_sync::Actor;
-use std::sync::OnceLock;
 use nanocode_trace::{Instrument, info_span};
+use std::sync::OnceLock;
 
 mod https;
 

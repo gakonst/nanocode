@@ -10,9 +10,9 @@ use std::{
 
 use nanocode_sync::{Atom, Slot};
 
-use nanocode_sys::base64::{Alphabet, DecodePadding, Engine};
 use djs_embed::{ErrorKind, HostCall, Throw};
 use nanocode_platform::Instant;
+use nanocode_sys::base64::{Alphabet, DecodePadding, Engine};
 
 use crate::cell::{ExecutionState, Reply};
 

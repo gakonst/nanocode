@@ -2,8 +2,8 @@ use std::{fmt, sync::mpsc as sync_channel, thread, time::Duration};
 
 use bytes::Bytes;
 use http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
+use nanocode_sync::mpsc;
 use nanocode_url::Url;
-use tokio::sync::mpsc;
 
 use super::{Body, IntoUrl, Request, Result, redirect};
 

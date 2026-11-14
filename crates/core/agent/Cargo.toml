@@ -17,7 +17,6 @@ nanocode-types.workspace = true
 nanocode-tool-contracts.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tokio = { workspace = true, features = ["rt", "sync"] }
 [lints]
 workspace = true
 

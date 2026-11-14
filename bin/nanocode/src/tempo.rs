@@ -481,7 +481,7 @@ impl Payments {
     }
 
     fn notices(&self) -> impl Stream<Item = String> + use<> {
-        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+        let (sender, receiver) = nanocode_sync::mpsc::unbounded_channel();
         self.listeners
             .update(|listeners| listeners.push(sender.clone()));
         nanocode_sync::stream::unfold(receiver, |mut receiver| async move {

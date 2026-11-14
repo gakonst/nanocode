@@ -19,6 +19,7 @@ use nanocode_http::{
     wire::WireError,
 };
 use nanocode_platform::timeout;
+use nanocode_sync::mpsc;
 use nanocode_sync::{Atom, Duplex, pipe};
 use nanocode_sys::base64::STANDARD;
 use nanocode_trace::{debug, error, info, warn};
@@ -35,7 +36,6 @@ use std::{
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::{TcpStream, lookup_host},
-    sync::mpsc,
 };
 
 const HOP: &str = "connection keep-alive proxy-authenticate proxy-authorization proxy-connection te trailer transfer-encoding";

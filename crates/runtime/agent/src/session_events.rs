@@ -9,10 +9,10 @@ use std::{
 use nanocode_platform::Instant;
 use nanocode_subagents::{AgentUpdate, ScopedAgentUpdate};
 use nanocode_sync::future::{Either, select};
+use nanocode_sync::{mpsc, oneshot};
 use nanocode_tool_host::embedded::HostFuture;
 use serde::{Serialize, Serializer, ser::SerializeMap};
 use serde_json::{Map, Value};
-use tokio::sync::{mpsc, oneshot};
 
 use crate::{
     AgentEvents, SubagentUpdates,

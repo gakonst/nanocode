@@ -5,9 +5,9 @@ use std::time::Duration;
 use nanocode_http::Url;
 use nanocode_http::header::{HeaderMap, HeaderName, HeaderValue};
 use nanocode_sync::Atom;
+use nanocode_sync::{OwnedSemaphorePermit, Semaphore};
 use nanocode_tempo::{Address, Call, SignedKeyAuthorization, U256, hex, keccak256};
 use serde_json::{Value, json};
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use super::charge::{AutoswapConfig, AutoswapRoute, resolve_autoswap_route};
 use super::error::Fault;

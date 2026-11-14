@@ -17,9 +17,9 @@ use nanocode_tool_host::image::ImageHistory;
 
 use nanocode_tool_host::ToolsBuildError;
 
-use tokio::sync::oneshot;
+use nanocode_sync::oneshot;
 
-use tokio::sync::{mpsc, watch};
+use nanocode_sync::{mpsc, watch};
 
 use crate::client::tower::Service;
 

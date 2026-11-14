@@ -193,7 +193,7 @@ pub trait RunnerServices: HostServices {
         &self,
         config: Self::ServerConfig,
     ) -> nanocode_tool_host::embedded::HostFuture<'_, std::result::Result<Self::Server, Self::Error>>;
-    fn runner_events(&self) -> tokio::sync::mpsc::UnboundedReceiver<Self::Event>;
+    fn runner_events(&self) -> nanocode_sync::mpsc::UnboundedReceiver<Self::Event>;
     fn list_runners(&self) -> Vec<Self::Info>;
     fn disconnect_runner<'a>(
         &'a self,

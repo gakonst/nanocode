@@ -9,9 +9,9 @@ use std::{
 
 use nanocode_agent_core::backend::SteerReceiptStatus;
 use nanocode_sync::SwapOption;
+use nanocode_sync::{mpsc, oneshot};
 use nanocode_trace::Instrument;
 use serde::{Serialize, de::DeserializeOwned};
-use tokio::sync::{mpsc, oneshot};
 
 use crate::{
     Committed, DurableState, EncodedPayload, Error, OperationStatus, OwnerId, OwnerToken, Result,
@@ -629,12 +629,12 @@ const OWNER_RELEASED: u8 = 2;
 
 struct OwnerReleaseState {
     state: AtomicU8,
-    completed: tokio::sync::watch::Sender<bool>,
+    completed: nanocode_sync::watch::Sender<bool>,
 }
 
 impl OwnerReleaseState {
     fn new() -> Self {
-        let (completed, _) = tokio::sync::watch::channel(false);
+        let (completed, _) = nanocode_sync::watch::channel(false);
         Self {
             state: AtomicU8::new(OWNER_ACTIVE),
             completed,

@@ -309,7 +309,7 @@ pub(super) struct Instance {
 
 #[cfg(unix)]
 impl Instance {
-    pub(super) fn start(tx: tokio::sync::mpsc::UnboundedSender<AppEvent>) -> Result<Self> {
+    pub(super) fn start(tx: nanocode_sync::mpsc::UnboundedSender<AppEvent>) -> Result<Self> {
         use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
         let directory =
             std::env::temp_dir().join(format!("nanocode-{}", nanocode_platform::unix::user_id()));
@@ -422,7 +422,7 @@ pub(super) struct Instance;
 
 #[cfg(not(unix))]
 impl Instance {
-    pub(super) fn start(_: tokio::sync::mpsc::UnboundedSender<AppEvent>) -> Result<Self> {
+    pub(super) fn start(_: nanocode_sync::mpsc::UnboundedSender<AppEvent>) -> Result<Self> {
         Ok(Self)
     }
     pub(super) async fn broadcast(&self) -> Result<()> {

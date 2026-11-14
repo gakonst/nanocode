@@ -24,6 +24,7 @@ use nanocode_durability_core::StoreError;
 use nanocode_platform::Instant;
 use nanocode_schema::Validator;
 use nanocode_sync::{Atom, Sequencer, Turn};
+use nanocode_sync::{mpsc, oneshot, watch};
 use nanocode_tool_contracts::ToolReceipt;
 use nanocode_trace::Instrument;
 use serde::Serialize;
@@ -36,7 +37,6 @@ use std::{
     },
     time::Duration,
 };
-use tokio::sync::{mpsc, oneshot, watch};
 
 mod activity;
 mod completion;
@@ -2958,7 +2958,7 @@ impl Registry {
             return;
         };
         let root = handle.session_id().to_owned();
-        let (ready, gate) = tokio::sync::watch::channel(RestorationState::Loading);
+        let (ready, gate) = nanocode_sync::watch::channel(RestorationState::Loading);
         let Some(journal) = self.claims.try_update(|claims| {
             if claims.restored.contains_key(&root) {
                 return None;

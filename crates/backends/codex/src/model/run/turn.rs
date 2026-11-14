@@ -17,7 +17,7 @@ impl ModelRun {
         thinking: Thinking,
         service_tier: ServiceTier,
         logical_turn: u64,
-        cancel: &mut tokio::sync::oneshot::Receiver<()>,
+        cancel: &mut nanocode_sync::oneshot::Receiver<()>,
         execution_steps: Option<ExecutionSteps>,
     ) -> Result<ModelCompactOutcome> {
         let configured = (Arc::clone(&self.config), self.model);
@@ -45,7 +45,7 @@ impl ModelRun {
         thinking: Thinking,
         service_tier: ServiceTier,
         logical_turn: u64,
-        cancel: &mut tokio::sync::oneshot::Receiver<()>,
+        cancel: &mut nanocode_sync::oneshot::Receiver<()>,
         execution_steps: Option<ExecutionSteps>,
     ) -> Result<ModelCompactOutcome> {
         self.execution_steps = execution_steps;
@@ -241,7 +241,7 @@ impl ModelRun {
         service_tier: ServiceTier,
         logical_turn: u64,
         steering: TurnSteering,
-        mut cancel: tokio::sync::oneshot::Receiver<()>,
+        mut cancel: nanocode_sync::oneshot::Receiver<()>,
         fork_snapshots: watch::Sender<Option<ModelCheckpoint>>,
         execution_steps: Option<ExecutionSteps>,
     ) -> Result<ModelTurnOutcome> {
@@ -422,7 +422,7 @@ impl ModelRun {
         &mut self,
         session: &mut ModelSessionState,
         task: &Prompt,
-        cancel: &mut tokio::sync::oneshot::Receiver<()>,
+        cancel: &mut nanocode_sync::oneshot::Receiver<()>,
     ) -> Result<bool> {
         let compacted = {
             let compaction = self.maybe_compact(
@@ -520,7 +520,7 @@ impl ModelRun {
         requested_workspace: Option<Arc<str>>,
         logical_turn: u64,
         steering: TurnSteering,
-        cancel: &mut tokio::sync::oneshot::Receiver<()>,
+        cancel: &mut nanocode_sync::oneshot::Receiver<()>,
         fork_snapshots: &watch::Sender<Option<ModelCheckpoint>>,
     ) -> Result<ModelTaskOutcome> {
         let restored = self

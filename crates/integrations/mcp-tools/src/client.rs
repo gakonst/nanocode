@@ -10,10 +10,10 @@ use nanocode_mcp::{
     CallToolParams, CallToolResult, Error as SessionError, Implementation, Inbound, Outgoing,
     Session, Tool,
 };
+use nanocode_trace::{Instrument, Span, info_span};
 use serde_json::Value;
 #[cfg(not(target_family = "wasm"))]
 use tokio::io::AsyncReadExt;
-use nanocode_trace::{Instrument, Span, info_span};
 
 #[cfg(not(target_family = "wasm"))]
 use nanocode_mcp_http::oauth::{

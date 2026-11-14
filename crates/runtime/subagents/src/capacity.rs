@@ -1,3 +1,4 @@
+use nanocode_sync::oneshot;
 use nanocode_sync::{Atom, Mailbox};
 use std::{
     collections::VecDeque,
@@ -6,7 +7,6 @@ use std::{
     sync::Arc,
     task::{Context, Poll},
 };
-use tokio::sync::oneshot;
 
 #[derive(Clone)]
 pub(super) struct Capacity {

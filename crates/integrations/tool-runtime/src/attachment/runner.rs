@@ -3,8 +3,8 @@ use crate::{
     Tools,
     prepared::{PreparedToolRuntime, PreparedTools},
 };
+use nanocode_sync::{mpsc, watch};
 use std::{path::PathBuf, sync::Arc};
-use tokio::sync::{mpsc, watch};
 
 pub enum RunnerEndpoint {
     Listen(std::net::SocketAddr),

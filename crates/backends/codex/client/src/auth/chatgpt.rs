@@ -554,7 +554,7 @@ struct PersonalAccessTokenAuth {
     access_token: Arc<str>,
     client: nanocode_http::Client,
     whoami_endpoint: Arc<str>,
-    status: tokio::sync::OnceCell<ChatGptAuthStatus>,
+    status: nanocode_sync::OnceCell<ChatGptAuthStatus>,
 }
 
 impl PersonalAccessTokenAuth {
@@ -613,7 +613,7 @@ fn personal_access_token_auth(
         access_token,
         client: auth_client()?,
         whoami_endpoint: Arc::from(whoami_endpoint(auth_api_base_url)),
-        status: tokio::sync::OnceCell::new(),
+        status: nanocode_sync::OnceCell::new(),
     };
     Ok(OpenAiAuth::managed_chatgpt(Arc::new(source)))
 }

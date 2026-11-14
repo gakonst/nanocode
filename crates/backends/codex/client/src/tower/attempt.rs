@@ -18,8 +18,8 @@ use crate::client::{
 };
 use nanocode_http::layer::retry;
 use nanocode_platform::Instant;
+use nanocode_sync::mpsc;
 use serde::Serialize;
-use tokio::sync::mpsc;
 
 use crate::client::stream::{CompactionOutput, GenerationOutput};
 

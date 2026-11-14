@@ -1,4 +1,5 @@
 use crate::future::BoxFuture;
+use crate::mpsc::{self, error::TrySendError};
 use nanocode_platform::timeout;
 use std::{
     collections::HashMap,
@@ -7,10 +8,7 @@ use std::{
     sync::{Arc, OnceLock},
     time::Duration,
 };
-use tokio::{
-    sync::mpsc::{self, error::TrySendError},
-    task::JoinHandle,
-};
+use tokio::task::JoinHandle;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Bounds {

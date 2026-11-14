@@ -28,9 +28,9 @@ pub use runner::{RunnerConfig, RunnerEndpoint, run_runner, run_runner_with_tools
 
 pub use host::{RemoteRunner, RemoteTool, RemoteTools, RunnerConnection, RunnerHost};
 
+use nanocode_sync::{mpsc, watch};
 use nanocode_url::{Host, Url};
 use std::{collections::HashSet, fmt, sync::Arc};
-use tokio::sync::{mpsc, watch};
 
 use crate::{
     Tools,

@@ -54,7 +54,7 @@ use serde_json::{Value, value::RawValue};
 
 use nanocode_platform::Instant;
 use nanocode_sync::{Atom, InOrder, Leased, Owned, Sequencer, Signal, Slot, Turn};
-use tokio::sync::{Notify, mpsc, oneshot, watch};
+use nanocode_sync::{Notify, mpsc, oneshot, watch};
 use nanocode_trace::{Instrument, info_span};
 
 use super::{ToolContext, ToolOutput, ToolOutputBody, ToolOutputContent};

@@ -1,3 +1,4 @@
+use crate::mpsc;
 use crate::stream::Stream;
 use std::{
     pin::Pin,
@@ -7,7 +8,6 @@ use std::{
     },
     task::{Context, Poll},
 };
-use tokio::sync::mpsc;
 
 enum Envelope<T> {
     Message(T),

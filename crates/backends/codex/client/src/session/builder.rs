@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::client::call::Service;
 use nanocode_platform::MaybeSend;
-use tokio::sync::mpsc;
+use nanocode_sync::mpsc;
 
 use crate::client::{
     EventSink, Model, ModelConfig, ResponseItem, ResponsesAttempt, ResponsesClient,

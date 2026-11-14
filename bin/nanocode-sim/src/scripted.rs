@@ -18,10 +18,10 @@ use nanocode_agent_core::{
     events::{AgentEventKind, AgentEventPublisher, AgentEvents},
 };
 use nanocode_subagents::{MemorySubagentStore, SubagentStore, SubagentStoreFuture};
+use nanocode_sync::Notify;
 use nanocode_sync::future::{Either, select};
 use nanocode_sync::{Atom, Signal, Slot};
 use serde_json::{Value, value::RawValue};
-use tokio::sync::Notify;
 
 use crate::{
     executor::Clock,

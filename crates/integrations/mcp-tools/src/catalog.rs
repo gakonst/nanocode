@@ -7,10 +7,10 @@ use std::{
 use nanocode_digest::Sha1;
 use nanocode_mcp::Tool as McpTool;
 use nanocode_sync::Atom;
+use nanocode_sync::watch;
 use nanocode_tools::ToolDefinition;
 use serde::Serialize;
 use serde_json::{Map, Value, json};
-use tokio::sync::watch;
 
 use super::{
     McpServerError,

@@ -20,7 +20,7 @@ nanocode-sys.workspace = true
 nanocode-tls.workspace = true
 nanocode-zstd.workspace = true
 rustls.workspace = true
-tokio = { workspace = true, features = ["io-util", "net", "rt", "sync"] }
+tokio = { workspace = true, features = ["io-util", "net", "rt"] }
 
 [lints]
 workspace = true

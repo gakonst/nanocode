@@ -309,7 +309,7 @@ struct Prepared {
     thinking: Thinking,
     tier: ServiceTier,
     home: PathBuf,
-    runner_events: tokio::sync::mpsc::UnboundedReceiver<nanocode::RunnerEvent>,
+    runner_events: nanocode_sync::mpsc::UnboundedReceiver<nanocode::RunnerEvent>,
 }
 
 async fn prepare(

@@ -148,7 +148,6 @@ dependencies = [
  "nanocode-turnlog",
  "serde",
  "serde_json",
- "tokio",
 ]
 
 [[package]]
@@ -158,9 +157,9 @@ dependencies = [
  "nanocode-agent-core",
  "nanocode-durability",
  "nanocode-process-contracts",
+ "nanocode-sync",
  "nanocode-tool-contracts",
  "nanocode-tool-host",
- "tokio",
 ]
 
 [[package]]
@@ -175,7 +174,6 @@ dependencies = [
  "nanocode-types",
  "serde",
  "serde_json",
- "tokio",
 ]
 
 [[package]]
@@ -293,7 +291,6 @@ dependencies = [
  "nanocode-tools",
  "serde",
  "serde_json",
- "tokio",
 ]
 
 [[package]]
@@ -415,7 +412,6 @@ dependencies = [
  "nanocode-types-core",
  "serde",
  "serde_json",
- "tokio",
 ]
 
 [[package]]
@@ -599,7 +595,6 @@ dependencies = [
  "nanocode-url",
  "serde",
  "serde_json",
- "tokio",
 ]
 
 [[package]]
@@ -678,7 +673,6 @@ dependencies = [
  "nanocode-trace",
  "serde",
  "serde_json",
- "tokio",
 ]
 
 [[package]]
@@ -849,11 +843,11 @@ dependencies = [
  "nanocode-digest",
  "nanocode-durability-core",
  "nanocode-platform",
+ "nanocode-sync",
  "nanocode-trace",
  "nanocode-zstd",
  "serde",
  "serde_json",
- "tokio",
 ]
 
 [[package]]
@@ -884,7 +878,6 @@ dependencies = [
  "nanocode-trace",
  "serde",
  "serde_json",
- "tokio",
 ]
 
 [[package]]
@@ -1053,7 +1046,6 @@ dependencies = [
  "nanocode-types-core",
  "serde",
  "serde_json",
- "tokio",
 ]
 
 [[package]]

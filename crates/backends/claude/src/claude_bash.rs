@@ -8,6 +8,7 @@ use crate::{
 use nanocode_agent_core::{Agent, PromptRequest, WeakAgent};
 use nanocode_process_contracts::{ForegroundExecutor, LastActivity, OutputSink};
 use nanocode_sync::{Atom, Signal, Slot};
+use nanocode_sync::{mpsc, oneshot, watch};
 use nanocode_tool_host::{
     SessionEnvironment, Tool, ToolContext, ToolDefinition, ToolInput, ToolOutput, ToolResult,
     ToolsBuilder, contract::RunningTask,
@@ -22,10 +23,7 @@ use std::{
     },
     time::Duration,
 };
-use tokio::{
-    io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
-    sync::{mpsc, oneshot, watch},
-};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
 const STALL_POLL: Duration = Duration::from_secs(5);
 const STALL_SILENCE: Duration = Duration::from_secs(45);

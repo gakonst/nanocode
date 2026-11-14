@@ -20,13 +20,13 @@ use std::{
 
 use nanocode_sync::Signal;
 use nanocode_sync::{Atom, Ordered, Slot};
+use nanocode_sync::{mpsc, watch};
 use nanocode_websocket::{
     CloseCode, CloseFrame, Message,
     server::{ErrorResponse, Request, Response},
 };
 use tokio::{
     net::{TcpListener, TcpStream},
-    sync::{mpsc, watch},
     task::{AbortHandle, JoinHandle, JoinSet},
 };
 

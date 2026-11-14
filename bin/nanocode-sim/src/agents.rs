@@ -4,8 +4,8 @@ use nanocode_agent_core::AgentHandle;
 use nanocode_subagents::{
     AgentStatus, AgentTask, DEFAULT_MAX_SUBAGENTS, Registry, ScopedAgentUpdate, SubagentControl,
 };
+use nanocode_sync::mpsc::UnboundedReceiver;
 use serde_json::Value;
-use tokio::sync::mpsc::UnboundedReceiver;
 
 use crate::{
     executor::{Clock, Ended, Executor, Task},

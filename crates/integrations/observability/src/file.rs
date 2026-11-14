@@ -15,7 +15,7 @@ use crate::{
     model::{ExportError, Exported, Resource, Scope, SpanData},
     trace::SpanProcessor,
 };
-use tokio::sync::mpsc::{
+use nanocode_sync::mpsc::{
     UnboundedReceiver, UnboundedSender, error::TryRecvError, unbounded_channel,
 };
 

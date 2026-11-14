@@ -7,13 +7,13 @@ use std::{
 };
 
 use nanocode_platform::Instant;
+use nanocode_sync::mpsc;
 use nanocode_sync::{
     FutureExt, Stream, StreamExt,
     future::{BoxFuture, Either},
     stream::FuturesUnordered,
 };
 use serde_json::Value;
-use tokio::sync::mpsc;
 
 use super::{
     NOT_RECEIVED, RemoteClient, RemoteContext, RemoteLink, RemoteOperation, RemoteTransport,

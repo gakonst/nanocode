@@ -27,7 +27,7 @@ nanocode-trace.workspace = true
 nanocode-process.workspace = true
 http.workspace = true
 nanocode-tls.workspace = true
-tokio = { workspace = true, features = ["fs", "io-util", "net", "rt", "signal", "sync", "time"] }
+tokio = { workspace = true, features = ["fs", "io-util", "net", "rt", "signal", "time"] }
 nanocode-websocket.workspace = true
 nanocode-url.workspace = true
 nanocode-platform.workspace = true

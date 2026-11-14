@@ -17,6 +17,7 @@ use nanocode_agent_core::{
     SpawnOptions, Thinking,
 };
 use nanocode_sync::Atom;
+use nanocode_sync::oneshot;
 use nanocode_tool_contracts::{
     Tool, ToolCollection, ToolContext, ToolDefinition, ToolInput, ToolOutput, ToolResult,
 };
@@ -27,7 +28,6 @@ use std::{
     sync::{Arc, LazyLock, Weak},
     time::Duration,
 };
-use tokio::sync::oneshot;
 
 const DEFAULT_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
 

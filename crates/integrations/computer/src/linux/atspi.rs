@@ -5,9 +5,9 @@ use super::{
 };
 use crate::state::Node;
 use nanocode_platform::{timeout, timeout_at};
+use nanocode_sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use nanocode_sync::{StreamExt, stream};
 use std::{collections::HashMap, future::Future, time::Duration};
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 pub const CALL: Duration = Duration::from_secs(1);
 const READ: Duration = Duration::from_secs(5);

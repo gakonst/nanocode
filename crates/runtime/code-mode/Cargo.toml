@@ -27,16 +27,13 @@ nanocode-tool-contracts.workspace = true
 nanocode-tools.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tokio = { workspace = true, features = ["sync"] }
 nanocode-trace.workspace = true
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 nanocode-code-mode-engine.workspace = true
-tokio = { workspace = true, features = ["rt", "sync", "time"] }
 
 [target.'cfg(target_family = "wasm")'.dependencies]
 nanocode-code-mode-engine = { workspace = true, optional = true }
-tokio = { workspace = true, features = ["sync"] }
 
 [features]
 local-cells = ["dep:nanocode-code-mode-engine"]

@@ -18,11 +18,11 @@ use std::{
 };
 
 use nanocode_sync::{Atom, Owned, Signal};
+use nanocode_sync::{mpsc, watch};
 use nanocode_websocket::{IntoClientRequest, Message, WebSocketStream};
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::{TcpListener, TcpStream},
-    sync::{mpsc, watch},
 };
 
 #[derive(Clone, Copy)]

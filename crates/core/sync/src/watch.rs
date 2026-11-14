@@ -344,6 +344,12 @@ impl<T: Clone> Sender<T> {
     }
 }
 
+impl<T: Default> Default for Sender<T> {
+    fn default() -> Self {
+        Self::new(T::default())
+    }
+}
+
 impl<T> Clone for Sender<T> {
     fn clone(&self) -> Self {
         self.shared.senders.fetch_add(1, Ordering::AcqRel);

@@ -1,7 +1,7 @@
 use crate::postgres::PgError;
-use nanocode_sys::base64::STANDARD;
 use nanocode_digest::Sha256;
 use nanocode_sync::SwapOption;
+use nanocode_sys::base64::STANDARD;
 use std::sync::Arc;
 
 pub(super) const MECHANISM: &str = "SCRAM-SHA-256";

@@ -139,7 +139,7 @@ fn tracked(
     let Some(claim) = claim else {
         return result;
     };
-    let (sender, receiver) = tokio::sync::oneshot::channel();
+    let (sender, receiver) = nanocode_sync::oneshot::channel();
     let forward = async move {
         drop(sender.send(result.await));
         drop(claim);

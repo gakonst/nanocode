@@ -5,7 +5,7 @@ use std::{
     collections::{BinaryHeap, HashMap},
 };
 
-use tokio::sync::{mpsc, oneshot};
+use nanocode_sync::{mpsc, oneshot};
 
 #[cfg(not(target_family = "wasm"))]
 use crate::shared_store::spawn_driver;

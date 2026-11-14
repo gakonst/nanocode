@@ -9,9 +9,9 @@ use std::{
 };
 
 use crate::client::call::Service;
-use nanocode_sync::{Stream, future::poll_fn};
 use nanocode_platform::Instant;
-use tokio::sync::mpsc;
+use nanocode_sync::mpsc;
+use nanocode_sync::{Stream, future::poll_fn};
 use nanocode_trace::{Instrument, info_span};
 
 use crate::client::{

@@ -210,7 +210,7 @@ struct Acquired {
 struct LazyClaudeExecution {
     store: SharedStore,
     record: SessionRecord,
-    ready: tokio::sync::OnceCell<Acquired>,
+    ready: nanocode_sync::OnceCell<Acquired>,
 
     initialized: std::sync::atomic::AtomicBool,
 
@@ -224,7 +224,7 @@ impl LazyClaudeExecution {
         Self {
             store,
             record,
-            ready: tokio::sync::OnceCell::new(),
+            ready: nanocode_sync::OnceCell::new(),
             initialized: std::sync::atomic::AtomicBool::new(false),
             model: nanocode_sync::Atom::default(),
             deferred: None,

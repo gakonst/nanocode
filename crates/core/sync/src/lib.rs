@@ -22,6 +22,7 @@ mod reentry;
 #[doc(hidden)]
 pub mod select;
 mod semaphore;
+mod set_once;
 #[cfg(not(target_family = "wasm"))]
 mod session;
 mod shared;
@@ -53,6 +54,7 @@ pub use map::{Kept, Throttle};
 pub use nanocode_sys::AtomicWaker;
 pub use notify::{Notified, Notify};
 pub use once_cell::{OnceCell, SetError};
+pub use set_once::{SetOnce, SetOnceError};
 pub use ordered::{OrdMap, OrdSet};
 #[cfg(not(target_family = "wasm"))]
 pub use reentry::{Claim, Reentry};
@@ -74,11 +76,10 @@ pub use weighed::Weighed;
 use future::Shared;
 use nanocode_sys::Enclosed;
 pub use nanocode_sys::{Guard, Swap, SwapOption};
-use tokio::sync::{mpsc as tokio_mpsc, oneshot as tokio_oneshot};
 
 pub struct Signal {
-    finish: Slot<tokio_oneshot::Sender<()>>,
-    finished: Shared<tokio_oneshot::Receiver<()>>,
+    finish: Slot<oneshot::Sender<()>>,
+    finished: Shared<oneshot::Receiver<()>>,
 }
 
 impl Default for Signal {
@@ -90,7 +91,7 @@ impl Default for Signal {
 impl Signal {
     #[must_use]
     pub fn new() -> Self {
-        let (finish, finished) = tokio_oneshot::channel();
+        let (finish, finished) = oneshot::channel();
         Self {
             finish: Slot::new(Some(finish)),
             finished: finished.shared(),
@@ -788,7 +789,7 @@ impl std::fmt::Display for Stopped {
 impl std::error::Error for Stopped {}
 
 pub struct Actor<S> {
-    jobs: tokio_mpsc::UnboundedSender<Job<S>>,
+    jobs: mpsc::UnboundedSender<Job<S>>,
 }
 
 impl<S> Clone for Actor<S> {
@@ -806,19 +807,19 @@ impl<S: 'static> Actor<S> {
         S: Send,
     {
         let runtime = nanocode_platform::Handle::try_current().map_err(std::io::Error::other)?;
-        let (jobs, received) = tokio_mpsc::unbounded_channel();
+        let (jobs, received) = mpsc::unbounded_channel();
         runtime.spawn(Self::serve(state, received));
         Ok(Self { jobs })
     }
 
     #[cfg(target_family = "wasm")]
     pub fn spawn(state: S) -> std::io::Result<Self> {
-        let (jobs, received) = tokio_mpsc::unbounded_channel();
+        let (jobs, received) = mpsc::unbounded_channel();
         nanocode_platform::spawn_local(Self::serve(state, received));
         Ok(Self { jobs })
     }
 
-    async fn serve(mut state: S, mut jobs: tokio_mpsc::UnboundedReceiver<Job<S>>) {
+    async fn serve(mut state: S, mut jobs: mpsc::UnboundedReceiver<Job<S>>) {
         while let Some(job) = jobs.recv().await {
             job(&mut state).await;
         }
@@ -836,7 +837,7 @@ impl<S: 'static> Actor<S> {
             + Send
             + 'static,
     {
-        let (mut sender, receiver) = tokio_oneshot::channel();
+        let (mut sender, receiver) = oneshot::channel();
         let job: Job<S> = Box::new(move |state| {
             Box::pin(async move {
                 if sender.is_closed() {
@@ -870,7 +871,7 @@ impl<S: 'static> Actor<S> {
         R: 'static,
         F: for<'a> FnOnce(&'a mut S) -> Pin<Box<dyn Future<Output = R> + 'a>> + 'static,
     {
-        let (mut sender, receiver) = tokio_oneshot::channel();
+        let (mut sender, receiver) = oneshot::channel();
         let job: Job<S> = Box::new(move |state| {
             Box::pin(async move {
                 if sender.is_closed() {
@@ -910,12 +911,12 @@ const MAILBOX_BUDGET: usize = 128;
 
 struct Desk<S> {
     state: S,
-    letters: tokio_mpsc::UnboundedReceiver<Letter<S>>,
+    letters: mpsc::UnboundedReceiver<Letter<S>>,
 }
 
 struct Mailroom<S> {
     desk: nanocode_sys::AtomicBox<Desk<S>>,
-    letters: tokio_mpsc::UnboundedSender<Letter<S>>,
+    letters: mpsc::UnboundedSender<Letter<S>>,
     queued: std::sync::atomic::AtomicUsize,
 }
 
@@ -936,7 +937,7 @@ impl<S: Default> Default for Mailbox<S> {
 impl<S> Mailbox<S> {
     #[must_use]
     pub fn new(state: S) -> Self {
-        let (letters, received) = tokio_mpsc::unbounded_channel();
+        let (letters, received) = mpsc::unbounded_channel();
         Self(Arc::new(Mailroom {
             desk: nanocode_sys::AtomicBox::new(Some(Box::new(Desk {
                 state,
@@ -958,7 +959,7 @@ impl<S: Send + 'static> Mailbox<S> {
         R: Send + 'static,
         F: FnOnce(&mut S) -> R + Send + 'static,
     {
-        let (reply, receiver) = tokio_oneshot::channel();
+        let (reply, receiver) = oneshot::channel();
         self.send(move |state| {
             if !reply.is_closed() {
                 drop(reply.send(job(state)));
@@ -968,9 +969,9 @@ impl<S: Send + 'static> Mailbox<S> {
     }
 }
 
-async fn replied<R>(mut receiver: tokio_oneshot::Receiver<R>) -> R {
+async fn replied<R>(mut receiver: oneshot::Receiver<R>) -> R {
     let reply = match receiver.try_recv() {
-        Err(tokio_oneshot::error::TryRecvError::Empty) => receiver.await.ok(),
+        Err(oneshot::error::TryRecvError::Empty) => receiver.await.ok(),
         reply => reply.ok(),
     };
     match reply {
@@ -1052,7 +1053,7 @@ async fn detached<T: Send + 'static>(future: impl Future<Output = T> + Send + 's
             },
         };
     };
-    let (sent, received) = tokio_oneshot::channel();
+    let (sent, received) = oneshot::channel();
     host.spawn(Box::pin(async move {
         drop(sent.send(future.await));
     }));
@@ -1211,7 +1212,7 @@ impl Lines {
 
 #[cfg(not(target_family = "wasm"))]
 struct Waiter<V, E, C> {
-    answer: tokio_oneshot::Sender<Result<Arc<V>, E>>,
+    answer: oneshot::Sender<Result<Arc<V>, E>>,
     context: C,
 }
 
@@ -1240,7 +1241,7 @@ where
         F: Fn(C) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<V, E>> + Send + 'static,
     {
-        let (answer, answered) = tokio_oneshot::channel();
+        let (answer, answered) = oneshot::channel();
         let waiter = Arc::new(Slot::new(Some(Waiter { answer, context })));
         let key: Arc<str> = key.into();
         let lead = self.0.update(|waiting| match waiting.get_mut(&key) {

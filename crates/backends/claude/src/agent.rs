@@ -43,6 +43,7 @@ use nanocode_image::{ImageHistory, ImageWindow};
 use nanocode_platform::Instant;
 use nanocode_platform::sleep;
 use nanocode_sync::{Atom, Owned, Sequencer, Slot};
+use nanocode_sync::{Notify, oneshot};
 use nanocode_trace::Instrument as _;
 use std::{
     collections::{HashMap, HashSet},
@@ -55,7 +56,6 @@ use std::{
     },
     time::Duration,
 };
-use tokio::sync::{Notify, oneshot};
 
 fn estimate_text_tokens(text: &str) -> u64 {
     (text.encode_utf16().count() as u64).div_ceil(4)
@@ -282,7 +282,7 @@ impl ClaudeNestedToolUpdate {
 }
 
 #[derive(Clone)]
-pub struct ClaudeToolProgress(tokio::sync::mpsc::UnboundedSender<ClaudeNestedToolUpdate>);
+pub struct ClaudeToolProgress(nanocode_sync::mpsc::UnboundedSender<ClaudeNestedToolUpdate>);
 impl ClaudeToolProgress {
     pub fn update(&self, update: ClaudeNestedToolUpdate) {
         let _ = self.0.send(update);
@@ -6153,7 +6153,7 @@ impl State {
     }
     fn stop_code_cells(
         &self,
-        progress: &tokio::sync::mpsc::UnboundedSender<ClaudeNestedToolUpdate>,
+        progress: &nanocode_sync::mpsc::UnboundedSender<ClaudeNestedToolUpdate>,
     ) -> BackendFuture<()> {
         let cleanups = self.code_turn_cleanup.clone();
         let progress = progress.clone();
@@ -6165,7 +6165,7 @@ impl State {
     }
     async fn settle_code_turn(&self, events: &AgentEventPublisher, model_call_index: u32) {
         for cleanup in &self.code_turn_cleanup {
-            let (sender, mut updates) = tokio::sync::mpsc::unbounded_channel();
+            let (sender, mut updates) = nanocode_sync::mpsc::unbounded_channel();
             let mut live = LiveNestedCalls {
                 state: self,
                 events,
@@ -6975,7 +6975,7 @@ impl State {
         let outcome = if let Some(reply) = recovered {
             Ok(reply)
         } else if matches!(name, "exec" | "wait") {
-            let (sender, mut updates) = tokio::sync::mpsc::unbounded_channel();
+            let (sender, mut updates) = nanocode_sync::mpsc::unbounded_channel();
             let stopper = sender.clone();
             let mut invocation = invocation;
             invocation.progress = Some(ClaudeToolProgress(sender));

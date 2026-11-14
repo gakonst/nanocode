@@ -3,7 +3,8 @@ use crate::egress::{
     lookup::Key,
     wire::{Called, Calls, Credential, Report},
 };
-use nanocode_platform::{Instant, MissedTickBehavior, interval_at};
+use nanocode_platform::{MissedTickBehavior, interval_at};
+use nanocode_sync::mpsc;
 use nanocode_trace::{error, warn};
 use std::{
     collections::{HashMap, VecDeque},
@@ -14,7 +15,6 @@ use std::{
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
-use tokio::sync::mpsc;
 
 #[derive(Clone, Copy)]
 pub struct Reporting {

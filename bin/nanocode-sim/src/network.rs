@@ -197,7 +197,9 @@ impl Network {
                 return Ok(HttpResponse::new(
                     http::StatusCode::from_u16(status).expect("a simulated status is valid"),
                     headers,
-                    Box::pin(nanocode_sync::stream::once(async move { Ok(body.into_bytes()) })),
+                    Box::pin(nanocode_sync::stream::once(
+                        async move { Ok(body.into_bytes()) },
+                    )),
                 ));
             }
             Fate::Delivered { .. } => {}

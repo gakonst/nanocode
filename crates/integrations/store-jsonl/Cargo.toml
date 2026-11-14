@@ -12,6 +12,7 @@ repository.workspace = true
 description = "Append-only JSONL state store, one file per session: the CLI's default durability"
 
 [dependencies]
+nanocode-sync.workspace = true
 nanocode-durability-core.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -21,7 +22,6 @@ nanocode-trace.workspace = true
 nanocode-digest.workspace = true
 nanocode-platform.workspace = true
 nanocode-zstd.workspace = true
-tokio = { workspace = true, features = ["sync"] }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

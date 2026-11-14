@@ -2,7 +2,7 @@ use std::fmt::Display;
 
 use nanocode_sync::Owned;
 use nanocode_sync::{Sink, SinkExt, Stream, StreamExt};
-use tokio::sync::{mpsc, oneshot};
+use nanocode_sync::{mpsc, oneshot};
 
 use super::{PEER_CLOSED, RemoteDelivery, RemoteFrame, RemoteLink};
 use crate::embedded::{CodeModeHostError, HostFuture};

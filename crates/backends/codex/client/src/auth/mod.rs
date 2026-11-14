@@ -295,7 +295,7 @@ pub fn chatgpt_auth_file() -> Result<std::path::PathBuf, nanocode_home::HomeErro
 #[cfg(not(target_family = "wasm"))]
 #[derive(Default)]
 struct ChatGptHomeAuth {
-    loaded: tokio::sync::OnceCell<OpenAiAuth>,
+    loaded: nanocode_sync::OnceCell<OpenAiAuth>,
 }
 
 #[cfg(not(target_family = "wasm"))]

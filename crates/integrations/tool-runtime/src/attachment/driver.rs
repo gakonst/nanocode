@@ -6,6 +6,7 @@ use std::{
 };
 
 use nanocode_sync::{Atom, SinkExt, StreamExt};
+use nanocode_sync::{mpsc, watch};
 use nanocode_trace::Instrument as _;
 use nanocode_url::Url;
 use nanocode_websocket::{
@@ -13,7 +14,6 @@ use nanocode_websocket::{
     client_async_tls_with_config,
 };
 use serde_json::{Value, json};
-use tokio::sync::{mpsc, watch};
 
 use super::protocol::{
     self, AttachmentCall, CommandStatus, DiagnosticStage, EndpointFrame, ReceiptTiming, RunnerFrame,

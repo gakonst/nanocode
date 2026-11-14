@@ -19,7 +19,6 @@ nanocode-tool-host.workspace = true
 nanocode-tool-contracts.workspace = true
 nanocode-process-contracts.workspace = true
 nanocode-sync.workspace = true
-tokio = { workspace = true, features = ["sync"] }
 serde.workspace = true
 serde_json.workspace = true
 

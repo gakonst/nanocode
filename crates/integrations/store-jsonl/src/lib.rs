@@ -18,6 +18,7 @@ use nanocode_durability_core::{
     Settle, StateCommit, StateStore, StoreError, StoreFuture, StoreHandles, StoreRecord,
     StoreReplacement, StoreUpdate, StoredState,
 };
+use nanocode_sync::{mpsc, oneshot};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de, ser::SerializeStruct};
 use std::{
     borrow::Cow,
@@ -32,7 +33,6 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
-use tokio::sync::{mpsc, oneshot};
 
 const JOURNAL_READ_BUFFER_BYTES: usize = 128 * 1024;
 const RECOVERY_BLOCK_BYTES: usize = 64 * 1024 * 1024;

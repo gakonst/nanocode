@@ -4,10 +4,10 @@ pub use nanocode_tool_runtime::attachment::{
 };
 
 use nanocode_sync::{Atom, Signal, Slot};
+use nanocode_sync::{mpsc, oneshot};
 use std::sync::Arc;
-use tokio::sync::{mpsc, oneshot};
 
-type Startup = tokio::sync::watch::Receiver<Option<Result<(), AttachmentError>>>;
+type Startup = nanocode_sync::watch::Receiver<Option<Result<(), AttachmentError>>>;
 
 pub(crate) struct RunnerAgents {
     pool: RunnerPool,
@@ -17,7 +17,7 @@ pub(crate) struct RunnerAgents {
     code_mode_hosts: Atom<nanocode_sync::Map<String, bool>>,
     agents: Atom<nanocode_sync::Map<String, Listener>>,
     folded: Atom<nanocode_sync::Map<String, (crate::WeakAgent, String)>>,
-    initialized: tokio::sync::OnceCell<Result<(), AttachmentError>>,
+    initialized: nanocode_sync::OnceCell<Result<(), AttachmentError>>,
 }
 
 const NOTICE_PREFIX: &str = "Runner ";
@@ -60,7 +60,7 @@ impl RunnerAgents {
         let events = pool.subscribe();
         Arc::new(Self {
             pool,
-            initialized: tokio::sync::OnceCell::new(),
+            initialized: nanocode_sync::OnceCell::new(),
             pending: Slot::new(Some(Pending {
                 events,
                 runners,
@@ -97,12 +97,12 @@ impl RunnerAgents {
         for runner in runners {
             startup.push(match self.pool.keep_connected(runner) {
                 Ok(started) => started,
-                Err(error) => tokio::sync::watch::channel(Some(Err(error))).1,
+                Err(error) => nanocode_sync::watch::channel(Some(Err(error))).1,
             });
         }
         for server in servers {
             let pool = self.pool.clone();
-            let (receipt, result) = tokio::sync::watch::channel(None);
+            let (receipt, result) = nanocode_sync::watch::channel(None);
             runtime.spawn(async move {
                 let outcome = match pool.listen(server).await {
                     Ok(_) => Ok(()),

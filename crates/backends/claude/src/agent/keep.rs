@@ -5,12 +5,12 @@ use super::{
 use crate::FrozenWireProfile;
 use nanocode_agent_core::{ClaudeModel, Origin};
 use nanocode_platform::sleep;
+use nanocode_sync::Notify;
 use nanocode_trace::Instrument as _;
 use std::{
     sync::{Arc, Weak, atomic::Ordering},
     time::Duration,
 };
-use tokio::sync::Notify;
 
 pub(super) struct KeptRequest {
     pub(super) request: Arc<MessagesRequest>,

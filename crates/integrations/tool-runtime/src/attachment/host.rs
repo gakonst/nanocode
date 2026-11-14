@@ -8,16 +8,14 @@ use std::{
 
 use nanocode_sync::{Atom, Slot};
 use nanocode_sync::{Sink, SinkExt, Stream, StreamExt, future};
+use nanocode_sync::{mpsc, oneshot, watch};
 use nanocode_websocket::{
     CloseCode, CloseFrame, Message,
     server::{ErrorResponse, Request, Response},
 };
 use serde::Deserialize;
 use serde_json::{Value, json, value::RawValue};
-use tokio::{
-    net::{TcpListener, TcpStream, ToSocketAddrs},
-    sync::{mpsc, oneshot, watch},
-};
+use tokio::net::{TcpListener, TcpStream, ToSocketAddrs};
 
 use super::AttachmentError;
 use crate::{

@@ -10,8 +10,8 @@ use crate::client::{
 };
 use crate::model::run::ModelCheckpoint;
 use nanocode_digest::Sha256;
+use nanocode_sync::OnceCell;
 use nanocode_sync::{Swap, SwapOption};
-use tokio::sync::OnceCell;
 
 use crate::{NanocodeError, Result};
 

@@ -1,4 +1,5 @@
 use super::wire::{BIG_ENDIAN, LITTLE_ENDIAN, Malformed, Reader, Value, Writer, signature};
+use nanocode_sync::{mpsc, oneshot};
 use std::{
     collections::HashMap,
     fmt, io,
@@ -13,7 +14,6 @@ use tokio::{
         UnixStream,
         unix::{OwnedReadHalf, OwnedWriteHalf},
     },
-    sync::{mpsc, oneshot},
 };
 
 pub const BUS: &str = "org.freedesktop.DBus";

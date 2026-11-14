@@ -9,8 +9,8 @@ use std::{
     task::{Context, Poll, Wake, Waker},
 };
 
+use crate::mpsc;
 use nanocode_sys::AtomicWaker;
-use tokio::sync::mpsc;
 
 use crate::{
     future::Future,

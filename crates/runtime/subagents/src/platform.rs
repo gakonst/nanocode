@@ -7,11 +7,11 @@ use std::{
 
 use nanocode_agent_core::backend::BackendFuture;
 use nanocode_platform::{Instant, MaybeSend};
+use nanocode_sync::oneshot;
 use nanocode_sync::{
     FutureExt as _,
     future::{AbortHandle, Abortable},
 };
-use tokio::sync::oneshot;
 
 #[derive(Debug)]
 pub(crate) struct TaskError;

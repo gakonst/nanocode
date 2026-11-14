@@ -24,14 +24,13 @@ http.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 nanocode-trace.workspace = true
-tokio = { workspace = true, features = ["sync"] }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 nanocode-home.workspace = true
 nanocode-tls.workspace = true
 nanocode-tool-provider.workspace = true
 nanocode-process.workspace = true
-tokio = { workspace = true, features = ["io-util", "process", "rt", "sync", "time"] }
+tokio = { workspace = true, features = ["io-util", "process", "rt", "time"] }
 
 [lints]
 workspace = true

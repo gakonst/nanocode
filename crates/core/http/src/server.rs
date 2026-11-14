@@ -16,10 +16,8 @@ use nanocode_sync::{
     Stream, StreamExt,
     future::{Either, select},
 };
-use tokio::{
-    io::{AsyncRead, AsyncWrite, ReadBuf},
-    sync::{mpsc, oneshot},
-};
+use nanocode_sync::{mpsc, oneshot};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 use crate::{
     client::BoxError,

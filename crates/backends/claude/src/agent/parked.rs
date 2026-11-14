@@ -4,12 +4,12 @@ use std::sync::{
 };
 
 use nanocode_agent_core::backend::{BackendFuture, ParkedCall};
+use nanocode_sync::Notify;
 use nanocode_sync::{
     Atom, Signal, Slot, StreamExt,
     future::{AbortHandle, Abortable},
 };
 use nanocode_trace::Instrument as _;
-use tokio::sync::Notify;
 
 use crate::{ClaudeClient, ClaudeError, ClaudeStream, PreparedWire, StreamEvent};
 

@@ -12,7 +12,7 @@ use nanocode_agent_core::backend::{
 };
 use nanocode_sync::SwapOption;
 
-use tokio::sync::{mpsc, oneshot};
+use nanocode_sync::{mpsc, oneshot};
 
 use crate::{
     EncodedPayload, OperationStatus, OwnedState, OwnerId, OwnerToken, StateStore, StoreError,

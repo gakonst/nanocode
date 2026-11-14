@@ -109,11 +109,11 @@ pub trait ParkedCall: Send + Sync + 'static {
     fn into_any(self: Arc<Self>) -> Arc<dyn std::any::Any + Send + Sync>;
 }
 
-pub type JournalFill = tokio::sync::oneshot::Sender<(String, Vec<(Arc<str>, Arc<str>)>)>;
+pub type JournalFill = nanocode_sync::oneshot::Sender<(String, Vec<(Arc<str>, Arc<str>)>)>;
 
-pub type JournalCommit = tokio::sync::oneshot::Receiver<std::io::Result<()>>;
+pub type JournalCommit = nanocode_sync::oneshot::Receiver<std::io::Result<()>>;
 
-pub type DeferredJournal = tokio::sync::oneshot::Receiver<(JournalFill, JournalCommit)>;
+pub type DeferredJournal = nanocode_sync::oneshot::Receiver<(JournalFill, JournalCommit)>;
 
 #[cfg(target_family = "wasm")]
 pub type BackendFuture<T> = Pin<Box<dyn Future<Output = T> + 'static>>;

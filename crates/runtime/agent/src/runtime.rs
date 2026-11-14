@@ -33,7 +33,7 @@ use crate::durability::DurableBackendRegistration as RegisteredBackend;
 type Recipe = Arc<dyn Fn(AgentSpec) -> BackendFuture<AgentResult> + Send + Sync>;
 
 pub type SubagentUpdates =
-    tokio::sync::mpsc::UnboundedReceiver<nanocode_subagents::ScopedAgentUpdate>;
+    nanocode_sync::mpsc::UnboundedReceiver<nanocode_subagents::ScopedAgentUpdate>;
 type UpdateSlot = Arc<SwapOption<SubagentUpdates>>;
 #[cfg(not(target_family = "wasm"))]
 type RunnerFuture<'a, H, T> = nanocode_tool_host::embedded::HostFuture<
@@ -274,7 +274,7 @@ impl<B, D: RuntimeDefaults> RuntimeBuilder<B, D> {
                 builder.data.durability = Some(store.await.map_err(Arc::new));
             }
             let span = nanocode_trace::Span::current();
-            let (completed, result) = tokio::sync::oneshot::channel();
+            let (completed, result) = nanocode_sync::oneshot::channel();
             std::thread::Builder::new()
                 .name("nanocode-runtime-construction".into())
                 .spawn(move || {
@@ -1478,18 +1478,18 @@ pub(crate) struct Ownership {
     opening: Swap<HashMap<String, Arc<Opening>>>,
     services: OnceLock<std::sync::Weak<dyn HostServices>>,
     reopener: OnceLock<Reopener>,
-    idle: tokio::sync::Notify,
-    stopped: tokio::sync::OnceCell<Option<Arc<ShutdownError>>>,
+    idle: nanocode_sync::Notify,
+    stopped: nanocode_sync::OnceCell<Option<Arc<ShutdownError>>>,
 }
 
 struct Opening {
-    finish: SwapOption<tokio::sync::oneshot::Sender<()>>,
-    finished: nanocode_sync::future::Shared<tokio::sync::oneshot::Receiver<()>>,
+    finish: SwapOption<nanocode_sync::oneshot::Sender<()>>,
+    finished: nanocode_sync::future::Shared<nanocode_sync::oneshot::Receiver<()>>,
 }
 
 impl Opening {
     fn new() -> Arc<Self> {
-        let (finish, finished) = tokio::sync::oneshot::channel();
+        let (finish, finished) = nanocode_sync::oneshot::channel();
         Arc::new(Self {
             finish: SwapOption::from_pointee(finish),
             finished: nanocode_sync::FutureExt::shared(finished),
@@ -1935,7 +1935,7 @@ where
     #[must_use]
     pub fn runner_events(
         &self,
-    ) -> tokio::sync::mpsc::UnboundedReceiver<<D::Host as RunnerServices>::Event> {
+    ) -> nanocode_sync::mpsc::UnboundedReceiver<<D::Host as RunnerServices>::Event> {
         self.host.runner_events()
     }
 

@@ -15,7 +15,6 @@ nanocode-platform.workspace = true
 nanocode-types-core.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tokio = { workspace = true, features = ["sync"] }
 nanocode-trace.workspace = true
 
 [lints]

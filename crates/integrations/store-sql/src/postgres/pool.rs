@@ -1,10 +1,10 @@
 use crate::postgres::{PgConnection, PgError, PgOptions, connection::Reuse};
 use nanocode_sync::{Leased, Owned};
+use nanocode_sync::{OwnedSemaphorePermit, Semaphore};
 use std::{
     ops::{Deref, DerefMut},
     sync::Arc,
 };
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 #[derive(Clone)]
 pub struct PgPool(Arc<Shared>);

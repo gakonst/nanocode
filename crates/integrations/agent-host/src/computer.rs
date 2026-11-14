@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 #[cfg(not(target_family = "wasm"))]
 pub(super) struct Cua {
-    tools: tokio::sync::OnceCell<Option<Computer>>,
+    tools: nanocode_sync::OnceCell<Option<Computer>>,
     unavailable: std::sync::OnceLock<String>,
 }
 
@@ -16,8 +16,8 @@ pub(super) type Computer = crate::ComputerTools;
 pub(super) fn cell(explicit: Option<Computer>) -> Arc<Cua> {
     Arc::new(Cua {
         tools: match explicit {
-            Some(computer) => tokio::sync::OnceCell::new_with(Some(Some(computer))),
-            None => tokio::sync::OnceCell::new(),
+            Some(computer) => nanocode_sync::OnceCell::new_with(Some(Some(computer))),
+            None => nanocode_sync::OnceCell::new(),
         },
         unavailable: std::sync::OnceLock::new(),
     })

@@ -24,7 +24,6 @@ nanocode-turnlog.workspace = true
 nanocode-sync.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tokio = { workspace = true, features = ["sync"] }
 
 [lints]
 workspace = true

@@ -28,7 +28,7 @@ pub(crate) struct Shell {
 
 struct ShellSink {
     index: usize,
-    tx: tokio::sync::mpsc::UnboundedSender<AppEvent>,
+    tx: nanocode_sync::mpsc::UnboundedSender<AppEvent>,
     sent: AtomicUsize,
 }
 

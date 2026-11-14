@@ -11,8 +11,8 @@ use std::{
     time::Duration,
 };
 
+use nanocode_sync::{mpsc, oneshot};
 use tokio::process::{ChildStderr, ChildStdout, Command};
-use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 use nanocode_process_contracts::{MIN_REDACTED_SECRET_BYTES, REDACTED, Redactor};
@@ -62,8 +62,8 @@ pub(super) struct ProcessChild {
 #[derive(Default)]
 pub(super) struct Exit {
     done: AtomicBool,
-    ended: tokio::sync::Notify,
-    waiters: std::sync::OnceLock<Arc<tokio::sync::Notify>>,
+    ended: nanocode_sync::Notify,
+    waiters: std::sync::OnceLock<Arc<nanocode_sync::Notify>>,
 }
 
 impl Exit {
@@ -88,7 +88,7 @@ impl Exit {
         }
     }
 
-    pub(super) fn notify(&self, waiters: &Arc<tokio::sync::Notify>) {
+    pub(super) fn notify(&self, waiters: &Arc<nanocode_sync::Notify>) {
         let _ = self.waiters.set(Arc::clone(waiters));
     }
 }

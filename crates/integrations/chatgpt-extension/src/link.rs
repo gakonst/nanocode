@@ -1,5 +1,6 @@
 use crate::{read_body, write_body};
 use nanocode_sync::{Atom, Slot};
+use nanocode_sync::{Semaphore, mpsc, oneshot};
 use nanocode_tool_contracts::{
     Tool, ToolContext, ToolDefinition, ToolError, ToolInput, ToolOutput, ToolResult,
 };
@@ -20,7 +21,6 @@ use std::{
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     net::{UnixListener, UnixStream},
-    sync::{Semaphore, mpsc, oneshot},
 };
 
 const STEP_TIMEOUT: Duration = Duration::from_secs(45);

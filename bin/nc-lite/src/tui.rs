@@ -4,10 +4,10 @@ use std::pin::Pin;
 
 use nanocode_agent::events::AgentEvent;
 use nanocode_agent::{Agent, AgentEvents, TurnControl, TurnResult};
+use nanocode_sync::mpsc;
 use nanocode_tui::input::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use nanocode_tui::terminal::{self, ansi};
 use nanocode_tui::unicode;
-use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::markdown::{BOLD, DIM, Markdown, RED, RESET};

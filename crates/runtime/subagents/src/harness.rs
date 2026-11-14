@@ -14,6 +14,8 @@ use nanocode_agent_core::input::Prompt;
 use nanocode_agent_core::{
     Agent, NanocodeError, Result as AgentResult, SessionCheckpoint, TurnControl, TurnResult,
 };
+use nanocode_sync::{mpsc, oneshot};
+use nanocode_trace::Instrument;
 use std::{
     collections::VecDeque,
     sync::{
@@ -21,8 +23,6 @@ use std::{
         atomic::{AtomicUsize, Ordering},
     },
 };
-use tokio::sync::{mpsc, oneshot};
-use nanocode_trace::Instrument;
 
 const COMMAND_CAPACITY: usize = 8;
 

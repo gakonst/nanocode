@@ -2,8 +2,8 @@ use nanocode::{
     claude::{ClaudeHomeLogin, subscription::ClaudeSubscriptionStatus},
     codex::auth::{ChatGptLogin, chatgpt_auth_file},
 };
+use nanocode_sync::mpsc::UnboundedSender;
 use nanocode_tui::transcript::NoticeLevel;
-use tokio::sync::mpsc::UnboundedSender;
 
 use crate::app::{App, AppEvent};
 

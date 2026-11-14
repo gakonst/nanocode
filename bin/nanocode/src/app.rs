@@ -18,6 +18,7 @@ use nanocode::{
 };
 use nanocode_observability::TUI_TARGET;
 use nanocode_sync::StreamExt;
+use nanocode_sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use nanocode_tui::{
     composer::{Composer, ComposerAction},
     effort::{DialAction, EffortDial},
@@ -35,7 +36,6 @@ use nanocode_tui::{
     transcript::{CellKind, NoticeLevel, ToolStatus, Transcript, TranscriptPolicy},
     tree::{AgentTree, NodeStatus},
 };
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 use crate::{
     events::{Accepted, EventMapper},
@@ -243,7 +243,7 @@ pub enum Overlay {
 
 /// Signalled once the interactive interface has drawn its first frame: work that the
 /// frame does not need (the paying proxy, warming connections) waits for it.
-pub static FIRST_FRAME: tokio::sync::SetOnce<()> = tokio::sync::SetOnce::const_new();
+pub static FIRST_FRAME: nanocode_sync::SetOnce<()> = nanocode_sync::SetOnce::const_new();
 
 pub struct Launch {
     pub host: Host,
@@ -260,7 +260,7 @@ pub struct Launch {
     pub tier_override: Option<ServiceTier>,
     pub reload: Option<reload::State>,
     pub reload_path: Option<PathBuf>,
-    pub runner_events: tokio::sync::mpsc::UnboundedReceiver<RunnerEvent>,
+    pub runner_events: nanocode_sync::mpsc::UnboundedReceiver<RunnerEvent>,
 }
 
 pub struct App {
@@ -662,7 +662,7 @@ fn runner_info(info: &RunnerInfo) -> String {
 }
 
 fn forward_runners(
-    mut events: tokio::sync::mpsc::UnboundedReceiver<RunnerEvent>,
+    mut events: nanocode_sync::mpsc::UnboundedReceiver<RunnerEvent>,
     tx: UnboundedSender<AppEvent>,
 ) {
     nanocode_platform::spawn_task(async move {

@@ -4,8 +4,8 @@ use std::{
     sync::{Arc, LazyLock},
 };
 
-use nanocode_sys::base64::STANDARD;
 use nanocode_sync::Swap;
+use nanocode_sys::base64::STANDARD;
 mod bmp;
 mod decode;
 mod history;

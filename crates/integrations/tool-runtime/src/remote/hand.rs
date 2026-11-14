@@ -14,7 +14,7 @@ use super::pricing::{HandPricing, Meter, Priced};
 use super::{ExecutorOptions, HandActivity};
 use crate::embedded::CodeModeHostError;
 use nanocode_code_mode::remote::{HandCore, HandHostInfo, HostInfoLimits, HostInfoSource};
-use tokio::sync::mpsc;
+use nanocode_sync::mpsc;
 
 #[derive(Clone, Debug)]
 pub enum HandEndpoint {

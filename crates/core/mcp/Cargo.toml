@@ -17,7 +17,6 @@ autobenches = false
 nanocode-sync.workspace = true
 memchr.workspace = true
 nanocode-sys.workspace = true
-tokio = { workspace = true, features = ["sync"] }
 serde.workspace = true
 serde_json.workspace = true
 nanocode-digest.workspace = true

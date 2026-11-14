@@ -19,7 +19,7 @@ const TURN_STATE_HEADER: &str = "x-codex-turn-state";
 #[cfg(not(target_family = "wasm"))]
 const ZSTD_LEVEL: i32 = 3;
 #[cfg(not(target_family = "wasm"))]
-const STREAM_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+use super::idle::STREAM_IDLE_TIMEOUT;
 
 #[cfg(not(target_family = "wasm"))]
 async fn idle<T>(read: impl std::future::Future<Output = T>) -> Result<T, ResponsesError> {

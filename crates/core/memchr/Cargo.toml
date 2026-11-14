@@ -1,0 +1,22 @@
+[package]
+name = "memchr"
+version = "2.8.3"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Byte and substring search over nanocode_sys::memchr's vector kernels, the memchr API nanocode's dependencies call"
+autotests = false
+autobenches = false
+
+[dependencies]
+nanocode-sys.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+test = false
+doctest = false
+bench = false

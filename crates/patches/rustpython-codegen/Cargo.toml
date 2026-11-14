@@ -52,7 +52,6 @@ path = "../../core/numeric"
 
 [dependencies.memchr]
 version = "2.8.1"
-features = ["alloc"]
 default-features = false
 
 [dependencies.ruff_python_ast]

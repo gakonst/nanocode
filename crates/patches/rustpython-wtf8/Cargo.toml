@@ -33,7 +33,6 @@ path = "src/lib.rs"
 
 [dependencies.memchr]
 version = "2.8.1"
-features = ["alloc"]
 default-features = false
 
 [lints.clippy]

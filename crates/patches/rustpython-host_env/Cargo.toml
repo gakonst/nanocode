@@ -56,7 +56,6 @@ optional = true
 
 [target."cfg(windows)".dependencies.memchr]
 version = "2.8.1"
-features = ["alloc"]
 default-features = false
 
 [target."cfg(windows)".dependencies.nanocode-sys]

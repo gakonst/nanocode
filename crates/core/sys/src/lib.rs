@@ -13,6 +13,7 @@ pub mod base64;
 pub mod crc32;
 mod decimal;
 pub mod lz4;
+pub mod memchr;
 #[cfg(target_os = "macos")]
 pub mod core_foundation;
 mod inline;

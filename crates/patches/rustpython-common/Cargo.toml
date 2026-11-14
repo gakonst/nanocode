@@ -84,7 +84,6 @@ path = "../../core/numeric"
 
 [dependencies.memchr]
 version = "2.8.1"
-features = ["alloc"]
 optional = true
 default-features = false
 

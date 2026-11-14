@@ -36,3 +36,6 @@ lto = true
 codegen-units = 1
 panic = "abort"
 strip = true
+
+[patch.crates-io]
+memchr = { path = "../../core/memchr" }

@@ -241,10 +241,7 @@ pub fn run_with(clients: ModelClients) -> ExitCode {
                 on_worker(list_sessions(args)).await
             }
             Some(Command::Exec(args)) => on_worker(exec(args.or(cli.session), clients)).await,
-            Some(Command::Models) => {
-                print_models(&clients).await;
-                Ok(())
-            }
+            Some(Command::Models) => print_models(&clients).await,
             Some(Command::Resume { id }) => {
                 let mut args = cli.session;
                 args.resume = Some(id.unwrap_or_default());
@@ -656,15 +653,10 @@ async fn list_sessions(args: SessionsArgs) -> Result<()> {
     let home = host::home_dir(args.home.as_deref())?;
     let (store, _) = host::open_store(&home).await?;
     if let Some(id) = &args.session {
-        for item in store.load(id).await?.transcript {
-            match item {
-                TranscriptItem::User(text) => println!("## user\n{text}\n"),
-                TranscriptItem::Assistant(text) => println!("## assistant\n{text}\n"),
-                _ => {}
-            }
-        }
+        let transcript = store.load(id).await?.transcript;
+        let printed = print_transcript(&transcript);
         store.flush().await?;
-        return Ok(());
+        return Ok(unless_closed(printed)?);
     }
     let workspace = std::env::current_dir()?;
     let limit = args.limit.map_or(Ok(sessions::PAGE), usize::try_from)?;
@@ -677,24 +669,50 @@ async fn list_sessions(args: SessionsArgs) -> Result<()> {
         .await?;
     let more = page.len() > limit;
     page.truncate(limit);
-    for session in &page {
+    let printed = print_sessions(&page);
+    if more && printed.is_ok() {
+        eprintln!("nanocode: more sessions than the {limit} shown; --limit <n> lists more");
+    }
+    store.flush().await?;
+    Ok(unless_closed(printed)?)
+}
+
+fn print_transcript(transcript: &[TranscriptItem]) -> std::io::Result<()> {
+    let mut out = std::io::stdout().lock();
+    for item in transcript {
+        match item {
+            TranscriptItem::User(text) => writeln!(out, "## user\n{text}\n")?,
+            TranscriptItem::Assistant(text) => writeln!(out, "## assistant\n{text}\n")?,
+            _ => {}
+        }
+    }
+    out.flush()
+}
+
+fn print_sessions(page: &[nanocode::durability::SessionSummary]) -> std::io::Result<()> {
+    let mut out = std::io::stdout().lock();
+    for session in page {
         let record = &session.record;
-        println!(
+        writeln!(
+            out,
             "{}  {:>8}  {:<20}  {}",
             record.session_id,
             sessions::age(record.updated_at_ms),
             sessions::model(record),
             sessions::title(session)
-        );
+        )?;
     }
-    if more {
-        eprintln!("nanocode: more sessions than the {limit} shown; --limit <n> lists more");
-    }
-    store.flush().await?;
-    Ok(())
+    out.flush()
 }
 
-async fn print_models(clients: &ModelClients) {
+fn unless_closed(printed: std::io::Result<()>) -> std::io::Result<()> {
+    match printed {
+        Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+        printed => printed,
+    }
+}
+
+async fn print_models(clients: &ModelClients) -> Result<()> {
     if let Some(tempo) = clients.tempo_models() {
         tempo.load().await;
     }
@@ -705,10 +723,11 @@ async fn print_models(clients: &ModelClients) {
         .map(|(route, model, _)| route.label(model).chars().count())
         .max()
         .unwrap_or_default();
-    for group in groups {
-        println!("{}", group.title);
+    let mut out = std::io::stdout().lock();
+    let printed = groups.iter().try_for_each(|group| {
+        writeln!(out, "{}", group.title)?;
         if let Some(note) = &group.note {
-            println!("  {note}");
+            writeln!(out, "  {note}")?;
         }
         for (route, model, about) in &group.models {
             let capabilities = model.capabilities(nanocode::ModelTransport::Native);
@@ -723,15 +742,18 @@ async fn print_models(clients: &ModelClients) {
                 .filter(|part| !part.is_empty())
                 .collect::<Vec<_>>()
                 .join(" · ");
-            println!(
+            writeln!(
+                out,
                 "  {:<width$} thinking {:<30} default {:<7} {}",
                 route.label(model),
                 thinking,
                 capabilities.default_thinking().as_str(),
                 detail
-            );
+            )?;
         }
-    }
+        Ok(())
+    });
+    Ok(unless_closed(printed.and_then(|()| out.flush()))?)
 }
 
 async fn hand(args: HandArgs) -> Result<()> {

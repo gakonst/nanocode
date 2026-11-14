@@ -3,6 +3,7 @@ use std::{future::Future, pin::Pin, sync::Arc};
 mod armed;
 #[cfg(not(target_family = "wasm"))]
 mod blocking;
+pub mod broadcast;
 pub mod future;
 mod hasher;
 mod in_order;
@@ -12,6 +13,7 @@ mod lanes;
 mod lease;
 mod map;
 pub mod mpsc;
+mod notify;
 mod once_cell;
 pub mod oneshot;
 mod ordered;
@@ -35,6 +37,7 @@ mod vector;
 mod waiters;
 mod waits;
 mod wakes;
+pub mod watch;
 mod weighed;
 
 pub use armed::Armed;
@@ -48,6 +51,7 @@ pub use map::AtomMap;
 #[cfg(not(target_family = "wasm"))]
 pub use map::{Kept, Throttle};
 pub use nanocode_sys::AtomicWaker;
+pub use notify::{Notified, Notify};
 pub use once_cell::{OnceCell, SetError};
 pub use ordered::{OrdMap, OrdSet};
 #[cfg(not(target_family = "wasm"))]

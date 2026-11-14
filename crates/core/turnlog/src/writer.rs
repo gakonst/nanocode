@@ -5,7 +5,7 @@ use nanocode_sync::{Held, Owned};
 
 use crate::{
     Event, Fold, LogHost, Record,
-    codec::{self, BOUNDARY, History, PART, RECORDS, SNAPSHOT},
+    codec::{self, BOUNDARY, History, PART, RECORDS, SNAPSHOT, Stream},
 };
 
 pub const EVENT_GAP: u64 = 1 << 14;
@@ -131,6 +131,7 @@ struct Writer {
     snapshot: usize,
     state: usize,
     stats: Stats,
+    stream: Option<Stream>,
     tail: usize,
 }
 
@@ -213,6 +214,7 @@ impl TurnLog {
                     collected,
                     ..Stats::default()
                 },
+                stream: None,
                 tail,
             }),
         })
@@ -370,7 +372,11 @@ impl Lease<'_> {
                 .cloned()
                 .collect::<Vec<_>>(),
         )?;
-        let body = codec::pack(RECORDS, plain.as_bytes(), writer.history.bytes())?;
+        let mut stream = match writer.stream.take() {
+            Some(stream) => stream,
+            None => Stream::new(writer.history.bytes())?,
+        };
+        let body = stream.pack(RECORDS, plain.as_bytes())?;
         let keep = writer
             .buffer
             .iter()
@@ -457,6 +463,9 @@ impl Lease<'_> {
                     writer.fold.seal(seq, keep);
                     writer.history.clear();
                     writer.stats.boundaries += 1;
+                }
+                if boundary.is_none() {
+                    writer.stream = Some(stream);
                 }
                 writer.history.extend(plain.as_bytes());
                 writer.tail += bytes;

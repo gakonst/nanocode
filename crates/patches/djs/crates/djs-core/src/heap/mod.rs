@@ -212,6 +212,7 @@ pub struct Heap {
     /// The compiler's buffers, kept between compiles so that each one starts with their
     /// capacity (`resolve::finish`). Not part of the image.
     pub(crate) compile_scratch: crate::compiler::CompileScratch,
+    pub(crate) ident_atoms: crate::compiler::IdentAtoms,
     /// The prefix as it was when the barrier was armed (debug builds, D2065): what
     /// [`Heap::check_prefix`] compares against, for writes that bypass `Arena::write`.
     #[cfg(debug_assertions)]
@@ -363,6 +364,7 @@ impl Heap {
             iter_result_shape: 0,
             atom_memo: Default::default(),
             compile_scratch: Default::default(),
+            ident_atoms: Default::default(),
             #[cfg(debug_assertions)]
             prefix_copy: None,
             barrier_forced: false,

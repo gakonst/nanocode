@@ -185,8 +185,6 @@ pub(super) struct Parser<'a, 'h> {
     /// The local holding the completion value of Script and eval code
     /// (`Parser::emit_completion`).
     pub completion: Option<Atom>,
-    /// The atoms of the identifiers seen so far, by source text (0096).
-    pub ident_atoms: IdentAtoms,
     /// Lazy or eager, and a lazy function's own compile (D2990).
     #[cfg(feature = "lazy")]
     pub unit: super::resolve::Unit,
@@ -202,10 +200,11 @@ pub(super) struct Parser<'a, 'h> {
 /// The atoms of unescaped identifiers by their text in the source: most names repeat,
 /// and interning through the heap's table (hash, array-index check, probe, compare
 /// through the heap) cost 5% of a compile (0096). Open addressing, keyed by the hash of
-/// the bytes; an entry is `(hash, start, len, atom)` with the text at `src[start..]`.
+/// the bytes; an entry is `(hash, start, len, atom)` with the text at `text[start..]`.
 #[derive(Default)]
-pub struct IdentAtoms {
+pub(crate) struct IdentAtoms {
     slots: Vec<(u32, u32, u32, Atom)>,
+    text: Vec<u8>,
     len: usize,
 }
 
@@ -218,7 +217,7 @@ impl IdentAtoms {
         h | 1
     }
 
-    fn get(&self, src: &[u8], b: &[u8], h: u32) -> Option<Atom> {
+    fn get(&self, b: &[u8], h: u32) -> Option<Atom> {
         if self.slots.is_empty() {
             return None;
         }
@@ -229,14 +228,17 @@ impl IdentAtoms {
             if k == 0 {
                 return None;
             }
-            if k == h && src.get(start as usize..(start + len) as usize) == Some(b) {
+            if k == h && self.text.get(start as usize..(start + len) as usize) == Some(b) {
                 return Some(a);
             }
             i = (i + 1) & mask;
         }
     }
 
-    fn insert(&mut self, h: u32, start: u32, len: u32, a: Atom) {
+    fn insert(&mut self, h: u32, b: &[u8], a: Atom) {
+        let start = self.text.len() as u32;
+        self.text.extend_from_slice(b);
+        let len = b.len() as u32;
         if (self.len + 1) * 2 > self.slots.len() {
             let cap = (self.slots.len() * 2).max(256);
             let old = core::mem::replace(&mut self.slots, alloc::vec![(0, 0, 0, Atom::NULL); cap]);
@@ -381,7 +383,6 @@ impl<'a, 'h> Parser<'a, 'h> {
             ts_params_end: 0,
             using: Default::default(),
             completion: None,
-            ident_atoms: IdentAtoms::default(),
             #[cfg(feature = "lazy")]
             unit: super::resolve::Unit::EAGER,
             #[cfg(feature = "dump")]
@@ -1028,13 +1029,18 @@ impl<'a, 'h> Parser<'a, 'h> {
         let tok = self.tok;
         if !tok.has_escape() {
             let b = self.lx.text(&tok);
+            #[cfg(feature = "compile-cache")]
+            if self.heap.intern_log.is_some() {
+                let s = core::str::from_utf8(b).unwrap_or("\u{FFFD}");
+                return Ok(self.heap.atom_str(s)?);
+            }
             let h = IdentAtoms::hash(b);
-            if let Some(a) = self.ident_atoms.get(self.src, b, h) {
+            if let Some(a) = self.heap.ident_atoms.get(b, h) {
                 return Ok(a);
             }
             let s = core::str::from_utf8(b).unwrap_or("\u{FFFD}");
             let a = self.heap.atom_str(s)?;
-            self.ident_atoms.insert(h, tok.start, b.len() as u32, a);
+            self.heap.ident_atoms.insert(h, b, a);
             return Ok(a);
         }
         let bytes = self.lx.ident_value(&tok, &mut self.buf8);

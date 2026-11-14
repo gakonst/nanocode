@@ -32,6 +32,7 @@ mod parser;
 mod pattern;
 mod peephole;
 mod resolve;
+pub(crate) use parser::IdentAtoms;
 pub(crate) use resolve::Scratch as CompileScratch;
 mod scan;
 mod smap;

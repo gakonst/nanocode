@@ -26,7 +26,7 @@ case $target in
     ;;
   *-linux-*)
     bolt="$(realpath "${LLVM_BOLT:-$(command -v llvm-bolt)}")" || { echo "build-cli.sh: needs llvm-bolt on PATH or LLVM_BOLT" >&2; exit 1; }
-    flags="-Crelocation-model=static -Clink-arg=-Wl,--emit-relocs $remap"
+    flags="-Crelocation-model=static -Clink-arg=-Wl,--emit-relocs -Clink-arg=-Wl,-T,$root/scripts/cli-eh-frame.ld $remap"
     icf=all
     "$bolt" --help-hidden | grep -q -- '--icf=<value>' || icf=1
     case $target in x86_64-unknown-linux-gnu) flags="$flags -Clink-arg=-Wl,--icf=all" ;; esac
@@ -55,6 +55,7 @@ case $target in
     python3 "$root/scripts/order-cli.py" "$train/cdsort.order" "$train"/startup/*.fdata > "$train/startup.order"
     "$bolt" "$built" -o "$train/optimized" -data="$train/profile.fdata" $layout -reorder-functions=user -function-order="$train/startup.order" >&2
     strip --remove-section=.note.bolt_info -o "$out/$bin" "$train/optimized"
+    python3 "$root/scripts/trim-cli.py" "$out/$bin"
     ;;
   *)
     if [ "$package" = nanocode-cli ]; then

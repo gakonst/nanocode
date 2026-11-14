@@ -213,10 +213,11 @@ impl RuntimeBackend for ClaudeHarness {
                     .map(|tools| tools.materialize(handle.clone()))
                     .transpose()
                     .map_err(|error| NanocodeError::InvalidRequest(error.to_string()))?;
-                let selected = selected
-                    .map(|tools| services.prepare_tools(&handle, tools, process_store.clone()))
-                    .transpose()
-                    .map_err(|error| NanocodeError::InvalidRequest(error.to_string()))?;
+                let prepare = |tools| {
+                    services
+                        .prepare_tools(&handle, tools, process_store.clone())
+                        .map_err(|error| NanocodeError::InvalidRequest(error.to_string()))
+                };
                 let mut additive = if selected
                     .as_ref()
                     .is_some_and(nanocode_tool_host::Tools::has_code_mode_host)
@@ -238,6 +239,7 @@ impl RuntimeBackend for ClaudeHarness {
                         root.clone(),
                         &handle,
                         selected,
+                        prepare,
                         additive,
                         process_store
                             .clone()
@@ -251,7 +253,12 @@ impl RuntimeBackend for ClaudeHarness {
                 }
                 #[cfg(target_family = "wasm")]
                 {
-                    claude_tools(root.clone(), &handle, selected, additive)
+                    claude_tools(
+                        root.clone(),
+                        &handle,
+                        selected.map(prepare).transpose()?,
+                        additive,
+                    )
                 }
             });
             builder = builder.code_only((cfg!(not(target_family = "wasm")) && !direct) || remote);

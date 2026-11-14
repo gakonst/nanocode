@@ -121,6 +121,7 @@ pub fn install_default_tools_with_executor(
         workspace,
         handle,
         selected,
+        Ok,
         additive,
         process_routes,
         runner_pool,
@@ -136,6 +137,7 @@ pub(crate) fn install_default_tools_with_providers(
     workspace: PathBuf,
     handle: &AgentHandle,
     selected: Option<Tools>,
+    prepare: impl FnOnce(Tools) -> Result<Tools>,
     additive: Vec<Arc<dyn Tool>>,
     process_routes: Option<Arc<dyn nanocode_tool_host::attachment::ProcessRouteStore>>,
     runner_pool: Option<nanocode_tool_host::attachment::RunnerRouting>,
@@ -146,7 +148,7 @@ pub(crate) fn install_default_tools_with_providers(
 ) -> Result<crate::ClaudeTools> {
     let jobs = Arc::new(crate::claude_bash::Jobs::with_subagents(&additive));
     let mut cwd = None;
-    let selected = match selected {
+    let selected = prepare(match selected {
         Some(tools) => tools,
         None => {
             let files = crate::tools::ClaudeWorkspaceFiles::new(&workspace).map_err(|error| {
@@ -168,7 +170,7 @@ pub(crate) fn install_default_tools_with_providers(
             )
             .map_err(|error| NanocodeError::InvalidRequest(error.to_string()))?
         }
-    };
+    })?;
     let selected = if selected.has_code_mode_host() {
         selected
     } else {

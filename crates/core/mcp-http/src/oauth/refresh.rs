@@ -7,7 +7,7 @@ use std::{
 use nanocode_sync::{SingleFlight, Swap};
 
 use nanocode_mcp::oauth::{TokenError, TokenResponse};
-use tokio::time::timeout;
+use nanocode_platform::timeout;
 
 use super::{McpOAuthCredentials, OAuthRuntime, now_millis};
 

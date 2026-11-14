@@ -5,6 +5,7 @@ use crate::{
     mcp::Mcp,
     policy::{Leases, Policy, app_key},
 };
+use nanocode_platform::timeout;
 use nanocode_sync::{Atom, Owned};
 use nanocode_tool_contracts::{
     Tool, ToolContext, ToolDefinition, ToolError, ToolInput, ToolOutput, ToolResult,
@@ -15,7 +16,6 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-use tokio::time::timeout;
 
 pub const ACTIONS: [&str; 10] = [
     "list_apps",

@@ -43,6 +43,7 @@ use nanocode_image::{ImageHistory, ImageWindow};
 use nanocode_platform::Instant;
 use nanocode_platform::sleep;
 use nanocode_sync::{Atom, Owned, Sequencer, Slot};
+use nanocode_trace::Instrument as _;
 use std::{
     collections::{HashMap, HashSet},
     future::Future,
@@ -55,7 +56,6 @@ use std::{
     time::Duration,
 };
 use tokio::sync::{Notify, oneshot};
-use nanocode_trace::Instrument as _;
 
 fn estimate_text_tokens(text: &str) -> u64 {
     (text.encode_utf16().count() as u64).div_ceil(4)
@@ -3614,7 +3614,7 @@ impl Cancellation {
             return;
         }
         let notified = self.notify.notified();
-        tokio::pin!(notified);
+        let mut notified = std::pin::pin!(notified);
         notified.as_mut().enable();
         if !self.is_cancelled() {
             notified.await;
@@ -4370,7 +4370,7 @@ impl State {
         loop {
             let admission = self.admission.enter().await;
             let notified = self.persistence_ready.notified();
-            tokio::pin!(notified);
+            let mut notified = std::pin::pin!(notified);
             notified.as_mut().enable();
             let update = self.persistence_update.enter().await;
             if self.life.stopped() {
@@ -5508,7 +5508,7 @@ impl State {
                 Ok(mut stream) => {
                     accepted = true;
                     let cancelled = cancel.cancelled();
-                    tokio::pin!(cancelled);
+                    let mut cancelled = std::pin::pin!(cancelled);
                     let mut accumulator: Option<MessageAccumulator> = None;
                     let mut thinking_item: Option<(usize, String)> = None;
                     let mut tool_blocks: HashMap<usize, (String, String)> = HashMap::new();
@@ -6002,7 +6002,7 @@ impl State {
                 unknown: Vec::new(),
             };
             let settled = cleanup(ClaudeToolProgress(sender));
-            tokio::pin!(settled);
+            let mut settled = std::pin::pin!(settled);
             loop {
                 nanocode_sync::select! {
                     Some(update) = updates.recv() => live.publish(update),
@@ -6815,7 +6815,7 @@ impl State {
                     let mut stopped_unknown = false;
                     let stop = self.stop_code_cells(&stopper);
                     drop(stopper);
-                    tokio::pin!(stop);
+                    let mut stop = std::pin::pin!(stop);
                     let mut partial = Vec::new();
                     let mut collect = |update: &ClaudeNestedToolUpdate| {
                         if let ClaudeNestedToolUpdate::Terminated { call_id, output } = update {
@@ -8625,7 +8625,7 @@ impl LifecycleBackend for Driver {
             if state.policy.is_some() {
                 loop {
                     let notified = state.idle.notified();
-                    tokio::pin!(notified);
+                    let mut notified = std::pin::pin!(notified);
                     notified.as_mut().enable();
                     if !state.cancellations.get().contains_key(&key) {
                         break;
@@ -8732,7 +8732,7 @@ impl LifecycleBackend for Driver {
                     }
                     loop {
                         let notified = state.idle.notified();
-                        tokio::pin!(notified);
+                        let mut notified = std::pin::pin!(notified);
                         notified.as_mut().enable();
                         if state.cancellations.get().is_empty() {
                             break;
@@ -8998,7 +8998,7 @@ impl LifecycleBackend for Driver {
             let _admission = state.admission.enter().await;
             loop {
                 let notified = state.idle.notified();
-                tokio::pin!(notified);
+                let mut notified = std::pin::pin!(notified);
                 notified.as_mut().enable();
                 let cancels = state.cancellations.get();
                 if cancels.is_empty() {
@@ -9080,7 +9080,7 @@ impl State {
     async fn wait_idle(&self) {
         loop {
             let notified = self.idle.notified();
-            tokio::pin!(notified);
+            let mut notified = std::pin::pin!(notified);
             notified.as_mut().enable();
             if self.cancellations.get().is_empty() {
                 break;

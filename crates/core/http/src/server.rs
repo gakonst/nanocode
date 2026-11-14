@@ -15,10 +15,10 @@ use http::{
     HeaderMap, HeaderValue, Method, StatusCode, Version,
     header::{CONTENT_LENGTH, DATE, TRANSFER_ENCODING, UPGRADE},
 };
+use nanocode_platform::timeout;
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
     sync::{mpsc, oneshot},
-    time::timeout,
 };
 
 use crate::{

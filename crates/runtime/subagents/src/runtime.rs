@@ -25,6 +25,7 @@ use nanocode_platform::Instant;
 use nanocode_schema::Validator;
 use nanocode_sync::{Atom, Sequencer, Turn};
 use nanocode_tool_contracts::ToolReceipt;
+use nanocode_trace::Instrument;
 use serde::Serialize;
 use serde_json::Value;
 use std::{
@@ -36,7 +37,6 @@ use std::{
     time::Duration,
 };
 use tokio::sync::{mpsc, oneshot, watch};
-use nanocode_trace::Instrument;
 
 mod activity;
 mod completion;
@@ -1391,7 +1391,7 @@ async fn journal_writer(
                 attempt => platform::sleep(completion_retry_delay(attempt)).await,
             }
         };
-        tokio::pin!(retry);
+        let mut retry = std::pin::pin!(retry);
         loop {
             let taken = async {
                 match slot.as_mut() {

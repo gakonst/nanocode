@@ -1,5 +1,4 @@
 use crate::egress::wire::Secret;
-use nanocode_sys::base64::STANDARD;
 use bytes::Bytes;
 use futures_util::stream::unfold;
 use http::header::{self, HeaderMap, HeaderName, HeaderValue};
@@ -7,8 +6,9 @@ use nanocode_http::{
     server::{BodyStream, Incoming},
     wire::WireError,
 };
+use nanocode_platform::timeout;
+use nanocode_sys::base64::STANDARD;
 use std::{cmp::Reverse, error::Error, fmt, sync::Arc, time::Duration};
-use tokio::time::timeout;
 
 const MIN_MASKED: usize = 4;
 const MIN_MASKED_TOKEN: usize = 8;

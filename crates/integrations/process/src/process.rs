@@ -81,7 +81,7 @@ impl Exit {
 
     pub(super) async fn wait(&self) {
         let ended = self.ended.notified();
-        tokio::pin!(ended);
+        let mut ended = std::pin::pin!(ended);
         ended.as_mut().enable();
         if !self.get() {
             ended.await;
@@ -149,7 +149,7 @@ impl ProcessChild {
                     if let Some(signal) = exited.as_mut() {
                         return signal.recv().await.is_some();
                     }
-                    tokio::time::sleep(REAP_POLL_INTERVAL).await;
+                    nanocode_platform::sleep(REAP_POLL_INTERVAL).await;
                     true
                 };
                 nanocode_sync::select! {

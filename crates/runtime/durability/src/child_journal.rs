@@ -709,12 +709,8 @@ pub(crate) fn seeded_child_journal(
 
 #[cfg(not(target_family = "wasm"))]
 fn spawn_writer(writer: impl Future<Output = ()> + Send + 'static) {
-    if let Some(host) = nanocode_platform::host() {
-        host.spawn(Box::pin(writer));
-        return;
-    }
-    if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-        drop(nanocode_platform::spawn_on(&runtime, writer));
+    if let Ok(runtime) = nanocode_platform::Handle::try_current() {
+        runtime.spawn(writer);
     }
 }
 

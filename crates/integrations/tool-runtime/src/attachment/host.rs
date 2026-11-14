@@ -266,7 +266,7 @@ impl RemoteRunner {
                 }
             };
             let specs = match timeout_ms {
-            Some(ms) => tokio::time::timeout(Duration::from_millis(ms), wait)
+            Some(ms) => nanocode_platform::timeout(Duration::from_millis(ms), wait)
                 .await
                 .map_err(|_| AttachmentError::Transport(format!("runner `{}` unavailable: no catalog before the configured connection deadline", self.namespace()).into()))??,
             None => wait.await?,
@@ -290,7 +290,7 @@ impl RemoteRunner {
         T: Stream<Item = Result<String, E>> + Sink<String, Error = E> + Unpin,
         E: fmt::Display,
     {
-        let first = match tokio::time::timeout(super::driver::HANDSHAKE_TIMEOUT, transport.next())
+        let first = match nanocode_platform::timeout(super::driver::HANDSHAKE_TIMEOUT, transport.next())
             .await
             .map_err(transport_error)?
         {
@@ -712,7 +712,7 @@ impl Inner {
             inner: Arc::clone(self),
             call_id,
         };
-        let waited = tokio::time::timeout(
+        let waited = nanocode_platform::timeout(
             Duration::from_millis(deadline_at.saturating_sub(now)),
             receipt,
         )
@@ -1113,7 +1113,7 @@ async fn serve_socket(stream: TcpStream, runners: Runners) {
             Err(rejection)
         }
     };
-    let socket = match tokio::time::timeout(
+    let socket = match nanocode_platform::timeout(
         super::driver::HANDSHAKE_TIMEOUT,
         nanocode_websocket::accept_hdr_async(stream, authenticate),
     )
@@ -1342,7 +1342,7 @@ impl RemoteRunner {
             loop {
                 let connected = match initial.take() {
                     Some((socket, first)) => Ok((socket, Some(first))),
-                    None => tokio::time::timeout(super::driver::HANDSHAKE_TIMEOUT, async {
+                    None => nanocode_platform::timeout(super::driver::HANDSHAKE_TIMEOUT, async {
                         let connector = super::driver::tls_connector(&request).await?;
                         nanocode_websocket::connect_async_tls_with_config(
                             request.clone(),
@@ -1398,7 +1398,7 @@ impl RemoteRunner {
                         nanocode_trace::warn!(target: "nanocode_code_mode::attachment", %error, "runner connection failed")
                     }
                 }
-                tokio::time::sleep(super::driver::Failure::Transport.delay(&mut backoff, None))
+                nanocode_platform::sleep(super::driver::Failure::Transport.delay(&mut backoff, None))
                     .await;
             }
         })))

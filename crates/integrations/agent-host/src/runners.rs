@@ -75,7 +75,7 @@ impl RunnerAgents {
     }
 
     pub(crate) fn activate(self: &Arc<Self>) {
-        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+        let Ok(runtime) = nanocode_platform::Handle::try_current() else {
             return;
         };
         let Some(Pending {
@@ -87,7 +87,7 @@ impl RunnerAgents {
             return;
         };
         let weak = Arc::downgrade(self);
-        nanocode_platform::spawn_on(&runtime, async move {
+        runtime.spawn(async move {
             while let Some(event) = events.recv().await {
                 let Some(agents) = weak.upgrade() else { break };
                 agents.notify(event);
@@ -102,7 +102,7 @@ impl RunnerAgents {
         for server in servers {
             let pool = self.pool.clone();
             let (receipt, result) = tokio::sync::watch::channel(None);
-            nanocode_platform::spawn_on(&runtime, async move {
+            runtime.spawn(async move {
                 let outcome = match pool.listen(server).await {
                     Ok(_) => Ok(()),
                     Err(error) => {
@@ -119,7 +119,7 @@ impl RunnerAgents {
     }
 
     pub(crate) async fn initialize(self: &Arc<Self>) -> Result<(), AttachmentError> {
-        tokio::runtime::Handle::try_current()
+        nanocode_platform::Handle::try_current()
             .map_err(|error| AttachmentError::Transport(error.to_string().into()))?;
         self.activate();
         self.activated.wait().await;

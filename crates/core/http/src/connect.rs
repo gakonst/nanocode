@@ -3,6 +3,7 @@ use std::{
 };
 
 use futures_util::{StreamExt, stream::FuturesUnordered};
+use nanocode_platform::sleep_until;
 use nanocode_sync::{Duplex, SwapOption};
 use nanocode_sys::base64::STANDARD;
 use nanocode_tls::{
@@ -12,7 +13,6 @@ use nanocode_tls::{
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::TcpStream,
-    time::{Instant, sleep_until},
 };
 
 const CONNECTION_ATTEMPT_DELAY: Duration = Duration::from_millis(250);
@@ -482,7 +482,7 @@ where
     };
     let mut attempts = FuturesUnordered::new();
     attempts.push(connect(first));
-    let mut next_attempt = Instant::now() + CONNECTION_ATTEMPT_DELAY;
+    let mut next_attempt = nanocode_platform::now() + CONNECTION_ATTEMPT_DELAY;
     let mut last_error = None;
     loop {
         if addresses.is_empty() {
@@ -503,7 +503,7 @@ where
         }
         if let Some(address) = addresses.pop_front() {
             attempts.push(connect(address));
-            next_attempt = Instant::now() + CONNECTION_ATTEMPT_DELAY;
+            next_attempt = nanocode_platform::now() + CONNECTION_ATTEMPT_DELAY;
         }
     }
     Err(last_error.unwrap_or_else(|| {

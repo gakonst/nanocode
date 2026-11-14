@@ -43,8 +43,9 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
+use nanocode_platform::timeout;
 use nanocode_sync::{Actor, Atom};
-use tokio::{sync::Notify, task::JoinHandle, time::timeout};
+use tokio::{sync::Notify, task::JoinHandle};
 
 pub use nanocode_process_contracts::{
     DEFAULT_EXEC_YIELD_MS, DEFAULT_POLL_YIELD_MS, DEFAULT_WRITE_YIELD_MS, MAX_EXEC_YIELD_MS,
@@ -333,7 +334,7 @@ impl ShellSessions {
     pub async fn quiet(&self) {
         loop {
             let exited = self.sessions.exits.notified();
-            tokio::pin!(exited);
+            let mut exited = std::pin::pin!(exited);
             exited.as_mut().enable();
             if !self.active() {
                 return;
@@ -747,12 +748,14 @@ impl Session {
                 )),
             ],
             #[cfg(any(target_os = "macos", target_os = "linux"))]
-            process::ProcessOutput::Stream(both) => vec![nanocode_platform::spawn_task(output::drain(
-                Some(both),
-                chunks,
-                Arc::clone(&activity),
-                Arc::clone(&exited),
-            ))],
+            process::ProcessOutput::Stream(both) => {
+                vec![nanocode_platform::spawn_task(output::drain(
+                    Some(both),
+                    chunks,
+                    Arc::clone(&activity),
+                    Arc::clone(&exited),
+                ))]
+            }
         };
         let process_group = spawned.process_group;
         exited.notify(exits);
@@ -859,9 +862,9 @@ impl SessionState {
         let Some(handles) = self.drains.take() else {
             return;
         };
-        let deadline = tokio::time::Instant::now() + DRAIN_GRACE;
+        let deadline = nanocode_platform::now() + DRAIN_GRACE;
         for mut handle in handles {
-            if tokio::time::timeout_at(deadline, &mut handle)
+            if nanocode_platform::timeout_at(deadline, &mut handle)
                 .await
                 .is_err()
             {

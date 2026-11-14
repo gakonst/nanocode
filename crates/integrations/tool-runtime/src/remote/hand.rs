@@ -324,7 +324,7 @@ impl Hand {
                             }
                         });
                         let dialing = dial_staged(&target, &headers, policy);
-                        tokio::pin!(dialing);
+                        let mut dialing = std::pin::pin!(dialing);
                         let dialed = loop {
                             nanocode_sync::select! {
                                 dialed = &mut dialing => break dialed,
@@ -381,7 +381,7 @@ impl Hand {
                                         let delay =
                                             crate::attachment::reconnect_delay(&mut backoff);
                                         events(HandEvent::Retrying { delay });
-                                        tokio::time::sleep(delay).await;
+                                        nanocode_platform::sleep(delay).await;
                                         continue;
                                     }
                                 };
@@ -438,7 +438,7 @@ impl Hand {
                                         status,
                                         retry: *retry,
                                     });
-                                    tokio::time::sleep(*retry).await;
+                                    nanocode_platform::sleep(*retry).await;
                                     continue;
                                 }
                                 if let Some(status) = status {
@@ -457,7 +457,7 @@ impl Hand {
                         };
                         events(HandEvent::Retrying { delay });
                         if !delay.is_zero() {
-                            tokio::time::sleep(delay).await;
+                            nanocode_platform::sleep(delay).await;
                         }
                     }
                 }

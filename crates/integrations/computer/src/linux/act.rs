@@ -8,8 +8,8 @@ use super::{
     wire::Value,
 };
 use crate::{Direction, Press, Selection};
+use nanocode_platform::timeout;
 use std::{future::Future, time::Duration};
-use tokio::time::timeout;
 
 const ACTION: Duration = Duration::from_secs(5);
 const GONE: &str = "That element is gone, so nothing ran. Read the app again with get_app_state.";

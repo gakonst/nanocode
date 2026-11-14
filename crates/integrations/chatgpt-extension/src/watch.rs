@@ -1,7 +1,7 @@
 use crate::{Bridge, Choice, ExtensionLink, cached_default_browser};
+use nanocode_platform::sleep;
 use nanocode_platform::spawn_blocking;
 use std::{collections::HashSet, path::PathBuf, sync::Weak, time::Duration};
-use tokio::time::sleep;
 
 #[derive(Clone, Copy, Debug)]
 pub enum Noticed<'a> {

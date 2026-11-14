@@ -265,7 +265,7 @@ impl<B, D: RuntimeDefaults> RuntimeBuilder<B, D> {
     {
         #[cfg(not(target_family = "wasm"))]
         {
-            let runtime = tokio::runtime::Handle::try_current()
+            let runtime = nanocode_platform::Handle::try_current()
                 .map_err(|_| NanocodeError::TokioRuntimeUnavailable)?;
             let mut builder = self;
             if builder.data.durability.is_none()

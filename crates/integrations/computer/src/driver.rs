@@ -552,7 +552,7 @@ impl Driver {
             {
                 return Ok(pid);
             }
-            tokio::time::sleep(Duration::from_millis(250)).await;
+            nanocode_platform::sleep(Duration::from_millis(250)).await;
         }
         Err(Failure {
             message: format!(
@@ -648,7 +648,7 @@ impl Driver {
         };
         if let Some(acted) = acted {
             let wait = (acted + FIRST_READ).saturating_duration_since(Instant::now());
-            tokio::time::sleep(wait).await;
+            nanocode_platform::sleep(wait).await;
         }
         let mut arguments = Map::new();
         arguments.insert("include_screenshot".into(), false.into());
@@ -660,7 +660,8 @@ impl Driver {
             && result["structuredContent"]["since_status"] == "no_change"
             && Instant::now() < acted + SETTLE
         {
-            tokio::time::sleep((acted + SETTLE).saturating_duration_since(Instant::now())).await;
+            nanocode_platform::sleep((acted + SETTLE).saturating_duration_since(Instant::now()))
+                .await;
             result = self.window_state(pid, arguments).await?;
         }
         let state = &result["structuredContent"];

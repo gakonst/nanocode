@@ -9,9 +9,9 @@ use std::{
 
 use nanocode_agent_core::backend::SteerReceiptStatus;
 use nanocode_sync::SwapOption;
+use nanocode_trace::Instrument;
 use serde::{Serialize, de::DeserializeOwned};
 use tokio::sync::{mpsc, oneshot};
-use nanocode_trace::Instrument;
 
 use crate::{
     Committed, DurableState, EncodedPayload, Error, OperationStatus, OwnerId, OwnerToken, Result,
@@ -4165,10 +4165,8 @@ fn spawn_claim_ack(
             );
         }
     };
-    if let Some(host) = nanocode_platform::host() {
-        host.spawn(Box::pin(release));
-    } else if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-        drop(nanocode_platform::spawn_on(&runtime, release));
+    if let Ok(runtime) = nanocode_platform::Handle::try_current() {
+        runtime.spawn(release);
     }
 }
 
@@ -4200,12 +4198,9 @@ fn spawn_claim_ack(
 
 #[cfg(not(target_family = "wasm"))]
 fn spawn_driver(mut driver: Driver) -> Result<()> {
-    if let Some(host) = nanocode_platform::host() {
-        host.spawn(Box::pin(async move { driver.run().await }));
-        return Ok(());
-    }
-    let runtime = tokio::runtime::Handle::try_current().map_err(|_| Error::RuntimeUnavailable)?;
-    drop(nanocode_platform::spawn_on(&runtime, async move { driver.run().await }));
+    let runtime =
+        nanocode_platform::Handle::try_current().map_err(|_| Error::RuntimeUnavailable)?;
+    runtime.spawn(async move { driver.run().await });
     Ok(())
 }
 

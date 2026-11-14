@@ -382,18 +382,18 @@ a second signal during multi-session shutdown aborts the remaining sessions.
                 self.tools,
                 self.policy,
             );
-            tokio::pin!(serve);
+            let mut serve = std::pin::pin!(serve);
             let mut bridge = Box::pin(bridge(brain, upstream));
             let bridged = nanocode_sync::select! {
                 result = &mut serve => {
-                    let _ = tokio::time::timeout(self.policy.request_timeout, bridge).await;
+                    let _ = nanocode_platform::timeout(self.policy.request_timeout, bridge).await;
                     return result.map_err(Into::into);
                 },
                 result = &mut bridge => result.err(),
                 () = async { let _ = self.stop.wait_for(|stop| *stop).await; } => None,
             };
             drop(bridge);
-            tokio::time::timeout(self.policy.request_timeout, serve)
+            nanocode_platform::timeout(self.policy.request_timeout, serve)
                 .await
                 .map_err(|_| "session cleanup exceeded --timeout-ms")??;
             bridged.map_or(Ok(()), |issue| Err(issue.into()))

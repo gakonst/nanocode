@@ -49,11 +49,13 @@ impl McpHandle {
                 else {
                     continue;
                 };
-                let result =
-                    tokio::time::timeout(configured.config.tool_timeout, client.native_tools())
-                        .await
-                        .map_err(|_| "MCP tool discovery timed out".to_owned())
-                        .and_then(|result| result);
+                let result = nanocode_platform::timeout(
+                    configured.config.tool_timeout,
+                    client.native_tools(),
+                )
+                .await
+                .map_err(|_| "MCP tool discovery timed out".to_owned())
+                .and_then(|result| result);
                 let result = result.map(|tools| ConnectedCatalog {
                     entries: ToolEntry::new_many(
                         &configured.name,
@@ -128,7 +130,7 @@ impl McpHandle {
         timeout: Duration,
     ) -> futures_util::future::BoxFuture<'call, Value> {
         Box::pin(async move {
-            let _ = tokio::time::timeout(timeout, self.state.wait_for_startup()).await;
+            let _ = nanocode_platform::timeout(timeout, self.state.wait_for_startup()).await;
             self.state.native_status()
         })
     }
@@ -196,7 +198,7 @@ impl McpHandle {
                 "MCP tool {name} changed since admission; rediscover before executing"
             ));
         }
-        let result = tokio::time::timeout(entry.timeout, entry.client.call_tool(params))
+        let result = nanocode_platform::timeout(entry.timeout, entry.client.call_tool(params))
             .await
             .map_err(|_| {
                 format!(
@@ -235,9 +237,11 @@ impl McpHandle {
                 if !client.supports_resources() {
                     continue;
                 }
-                let result =
-                    tokio::time::timeout(configured.config.tool_timeout, client.list_resources())
-                        .await;
+                let result = nanocode_platform::timeout(
+                    configured.config.tool_timeout,
+                    client.list_resources(),
+                )
+                .await;
                 match result {
                     Ok(Ok(value)) => {
                         for (key, target) in [
@@ -288,7 +292,7 @@ impl McpHandle {
             if !client.supports_resources() {
                 return Err(format!("MCP server does not support resources: {server}"));
             }
-            tokio::time::timeout(configured.config.tool_timeout, client.read_resource(uri))
+            nanocode_platform::timeout(configured.config.tool_timeout, client.read_resource(uri))
                 .await
                 .map_err(|_| "MCP resource read timed out".to_owned())?
         })

@@ -210,7 +210,7 @@ impl Budget {
             None => None,
             Some(room) => {
                 let mib = u32::try_from(expected.div_ceil(1 << 20)).unwrap_or(u32::MAX);
-                match tokio::time::timeout(self.cpu_wait, room.acquire_many(mib)).await {
+                match nanocode_platform::timeout(self.cpu_wait, room.acquire_many(mib)).await {
                     Ok(Ok(reserved)) => Some(reserved),
                     Ok(Err(_)) => return Err(Busy::Short),
                     Err(_) => {
@@ -222,7 +222,7 @@ impl Budget {
             }
         };
         let left = self.cpu_wait.saturating_sub(began.elapsed());
-        let permit = match tokio::time::timeout(left, self.computing.acquire()).await {
+        let permit = match nanocode_platform::timeout(left, self.computing.acquire()).await {
             Ok(Ok(permit)) => permit,
             Ok(Err(_)) => return Err(Busy::Short),
             Err(_) => {
@@ -502,7 +502,7 @@ async fn watch(pid: Option<u32>, limit: u64, together: Option<Together<'_>>) -> 
                 most,
             };
         }
-        tokio::time::sleep(every).await;
+        nanocode_platform::sleep(every).await;
     }
 }
 

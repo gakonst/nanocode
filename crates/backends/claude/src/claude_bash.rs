@@ -310,15 +310,15 @@ async fn stall(job: &Job, binding: &Binding) {
         return;
     };
     let mut size = 0;
-    let mut quiet = tokio::time::Instant::now();
+    let mut quiet = nanocode_platform::now();
     loop {
-        tokio::time::sleep(STALL_POLL).await;
+        nanocode_platform::sleep(STALL_POLL).await;
         let Ok(metadata) = tokio::fs::metadata(path).await else {
             continue;
         };
         if metadata.len() > size {
             size = metadata.len();
-            quiet = tokio::time::Instant::now();
+            quiet = nanocode_platform::now();
             continue;
         }
         if quiet.elapsed() < STALL_SILENCE {
@@ -328,7 +328,7 @@ async fn stall(job: &Job, binding: &Binding) {
             continue;
         };
         if !prompting(&tail) {
-            quiet = tokio::time::Instant::now();
+            quiet = nanocode_platform::now();
             continue;
         }
         let text = job.notification(
@@ -556,7 +556,7 @@ impl Jobs {
                 job.written.wait().await;
                 outcome
             };
-            tokio::pin!(finished);
+            let mut finished = std::pin::pin!(finished);
             let outcome = nanocode_sync::select! {
                 outcome = &mut finished => outcome,
                 () = stall(&job, &binding) => finished.await,
@@ -758,7 +758,7 @@ impl BashExecutor for LocalBash {
                 start.wait().await;
                 let deadline = async move {
                     match armed.await {
-                        Ok(after) => tokio::time::sleep(after).await,
+                        Ok(after) => nanocode_platform::sleep(after).await,
                         Err(_) => std::future::pending().await,
                     }
                 };
@@ -822,7 +822,7 @@ impl BashExecutor for LocalBash {
             let _ = arm.send(timeout);
             None
         } else {
-            match tokio::time::timeout(timeout, completion(&job)).await {
+            match nanocode_platform::timeout(timeout, completion(&job)).await {
                 Ok(mut result) => {
                     self.jobs.forget(&id);
                     if direct && let Ok(result) = &mut result {

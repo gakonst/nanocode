@@ -76,7 +76,7 @@ pub(crate) fn run_bash_with_environment<'call>(
             }
         }
         let cleanup = Cleanup(spawned.process_group);
-        let outcome = tokio::time::timeout(timeout, async {
+        let outcome = nanocode_platform::timeout(timeout, async {
             match spawned.output {
                 process::ProcessOutput::Pipes { stdout, stderr } => {
                     let captures = (
@@ -115,9 +115,10 @@ async fn collect<O: Pipe, E: Pipe>(
     secrets: &nanocode_process_contracts::Redactor,
 ) -> std::io::Result<ForegroundOutput> {
     let exit_code = {
-        let read =
-            async { nanocode_sync::try_join!(stdout.read(output, secrets), stderr.read(output, secrets)) };
-        tokio::pin!(read);
+        let read = async {
+            nanocode_sync::try_join!(stdout.read(output, secrets), stderr.read(output, secrets))
+        };
+        let mut read = std::pin::pin!(read);
         nanocode_sync::select! {
             status = child.wait() => status?,
             ended = &mut read => {
@@ -196,7 +197,9 @@ impl<P: Pipe> Capture<P> {
             match pipe.ready(&mut buffer)? {
                 None => {
                     let open = pipe.open();
-                    drop(nanocode_platform::spawn_task(crate::output::discard(pipe, open)));
+                    drop(nanocode_platform::spawn_task(crate::output::discard(
+                        pipe, open,
+                    )));
                 }
                 Some(0) => {}
                 Some(read) => {

@@ -2,7 +2,7 @@ use std::{future::Future, time::Duration};
 
 #[cfg(not(target_family = "wasm"))]
 #[derive(Default)]
-pub(crate) struct IdleTimer(Option<std::pin::Pin<Box<tokio::time::Sleep>>>);
+pub(crate) struct IdleTimer(Option<nanocode_platform::Sleep>);
 
 #[cfg(target_family = "wasm")]
 #[derive(Default)]
@@ -15,19 +15,19 @@ impl IdleTimer {
         timeout: Duration,
         read: impl Future<Output = T>,
     ) -> Option<T> {
-        let deadline = tokio::time::Instant::now() + timeout;
+        let deadline = nanocode_platform::now() + timeout;
         let sleep = self
             .0
-            .get_or_insert_with(|| Box::pin(tokio::time::sleep_until(deadline)));
+            .get_or_insert_with(|| nanocode_platform::Sleep::until(deadline));
         let mut read = std::pin::pin!(read);
         loop {
             nanocode_sync::select! {
                 value = &mut read => return Some(value),
-                () = sleep.as_mut() => {
-                    if tokio::time::Instant::now() >= deadline {
+                () = &mut *sleep => {
+                    if nanocode_platform::now() >= deadline {
                         return None;
                     }
-                    sleep.as_mut().reset(deadline);
+                    sleep.reset(deadline);
                 }
             }
         }

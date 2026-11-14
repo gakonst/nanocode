@@ -18,6 +18,7 @@ use nanocode_http::{
     server::{self, Incoming, OnUpgrade, Outgoing, Reply, Upgraded},
     wire::WireError,
 };
+use nanocode_platform::timeout;
 use nanocode_sync::{Atom, Duplex, pipe};
 use nanocode_sys::base64::STANDARD;
 use nanocode_trace::{debug, error, info, warn};
@@ -34,9 +35,7 @@ use std::{
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::{TcpStream, lookup_host},
-    spawn,
     sync::mpsc,
-    time::timeout,
 };
 
 const HOP: &str = "connection keep-alive proxy-authenticate proxy-authorization proxy-connection te trailer transfer-encoding";
@@ -171,7 +170,7 @@ impl<A: Authority> Proxy<A> {
                 ended: ended.clone(),
             });
             let proxy = Arc::clone(&self);
-            spawn(async move { proxy.serve(stream, slot, source).await });
+            nanocode_platform::spawn_task(async move { proxy.serve(stream, slot, source).await });
         }
     }
 
@@ -392,7 +391,7 @@ impl<A: Authority> Proxy<A> {
         }
         if self.intercepts(&client, &host, port) {
             self.count(&client, &host, port, Kind::Intercepted);
-            spawn(async move {
+            nanocode_platform::spawn_task(async move {
                 match upgrade.await {
                     Ok(upgraded) => self.intercept(client, host, port, upgraded, slot).await,
                     Err(error) => warn!("egress upgrade: {error}"),
@@ -409,7 +408,7 @@ impl<A: Authority> Proxy<A> {
         };
         self.count(&client, &host, port, Kind::Tunneled);
         let idle = self.rules.limits.idle_tunnel;
-        spawn(async move {
+        nanocode_platform::spawn_task(async move {
             match upgrade.await {
                 Ok(upgraded) => pipe(upgraded, upstream, idle).await,
                 Err(error) => warn!("egress upgrade: {error}"),
@@ -622,7 +621,7 @@ impl<A: Authority> Proxy<A> {
         let idle = self.rules.limits.idle_tunnel;
         let body = if upgraded {
             let upstream = body.into_upgraded();
-            spawn(async move {
+            nanocode_platform::spawn_task(async move {
                 if let (Some(client), Some(upstream)) = (client, upstream)
                     && let Ok(client) = client.await
                 {

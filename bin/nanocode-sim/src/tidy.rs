@@ -29,7 +29,7 @@ const BANNED: &[(&str, &str)] = &[
     ("getrandom", BYPASSES_HOST),
     ("tokio::time", BYPASSES_HOST),
     ("tokio::spawn", BYPASSES_HOST),
-    ("Handle::try_current", BYPASSES_HOST),
+    ("tokio::runtime", BYPASSES_HOST),
     ("FuturesUnordered", WAKE_ORDER),
     ("FuturesOrdered", JOIN_ORDER),
     ("join_all", JOIN_ORDER),
@@ -46,48 +46,6 @@ struct Allowed {
 
 const ALLOWED: &[Allowed] = &[
     Allowed {
-        path: "crates/backends/claude/src/claude_bash.rs",
-        call: "Instant::now",
-        uses: 3,
-        why: "Claude Code's Bash tool watches a real shell process for silence on Tokio's clock; the simulator registers no Bash tool",
-    },
-    Allowed {
-        path: "crates/backends/claude/src/claude_bash.rs",
-        call: "tokio::time",
-        uses: 6,
-        why: "Claude Code's Bash tool times real shell processes on Tokio's clock; the simulator registers no Bash tool",
-    },
-    Allowed {
-        path: "crates/backends/claude/src/claude_tools.rs",
-        call: "Handle::try_current",
-        uses: 1,
-        why: "a dropped tool runtime guard cancels its real tool runtime on the caller's Tokio runtime; the simulator builds no tool runtime",
-    },
-    Allowed {
-        path: "crates/core/agent/src/agent/handle.rs",
-        call: "Handle::try_current",
-        uses: 1,
-        why: "without a host, a claimed turn's result is forwarded by a task on the caller's Tokio runtime, or in place outside one; an installed host takes it first",
-    },
-    Allowed {
-        path: "crates/core/agent/src/agent/owned.rs",
-        call: "Handle::try_current",
-        uses: 1,
-        why: "without a host, detached event publishing runs on the caller's Tokio runtime; spawn_detached gives it to an installed host first",
-    },
-    Allowed {
-        path: "crates/core/sync/src/lanes.rs",
-        call: "tokio::spawn",
-        uses: 1,
-        why: "Lanes batch a host's commits over its own connections (pyramid-core); no simulated crate builds one",
-    },
-    Allowed {
-        path: "crates/core/sync/src/lanes.rs",
-        call: "tokio::time",
-        uses: 1,
-        why: "Lanes batch a host's commits over its own connections (pyramid-core); no simulated crate builds one",
-    },
-    Allowed {
         path: "crates/core/sync/src/lease.rs",
         call: "Instant::now",
         uses: 3,
@@ -98,48 +56,6 @@ const ALLOWED: &[Allowed] = &[
         call: "thread::spawn",
         uses: 1,
         why: "a lease's watchdog runs on its own thread so that it expires the lease even when the Tokio runtime stalls",
-    },
-    Allowed {
-        path: "crates/core/sync/src/lease.rs",
-        call: "tokio::time",
-        uses: 1,
-        why: "a lease's renewals sleep on Tokio's clock beside its watchdog thread; no simulated crate takes a lease",
-    },
-    Allowed {
-        path: "crates/core/sync/src/lib.rs",
-        call: "Handle::try_current",
-        uses: 2,
-        why: "without a host, an Actor's server and a Mailbox hand-off run on the caller's Tokio runtime, and a hand-off outside one delivers in place; both go to an installed host first",
-    },
-    Allowed {
-        path: "crates/core/sync/src/session.rs",
-        call: "Instant::now",
-        uses: 2,
-        why: "session locks wait on a host's SQL connections against Tokio deadlines; no simulated crate takes one",
-    },
-    Allowed {
-        path: "crates/core/sync/src/session.rs",
-        call: "tokio::spawn",
-        uses: 1,
-        why: "session locks keep their SQL connections alive from Tokio tasks; no simulated crate takes one",
-    },
-    Allowed {
-        path: "crates/core/sync/src/session.rs",
-        call: "tokio::time",
-        uses: 3,
-        why: "session locks wait on a host's SQL connections against Tokio deadlines; no simulated crate takes one",
-    },
-    Allowed {
-        path: "crates/core/sync/src/splice.rs",
-        call: "Instant::now",
-        uses: 2,
-        why: "splice joins two TCP streams for a host's network egress until they idle; the simulator runs no sockets",
-    },
-    Allowed {
-        path: "crates/core/sync/src/splice.rs",
-        call: "tokio::time",
-        uses: 1,
-        why: "splice joins two TCP streams for a host's network egress until they idle; the simulator runs no sockets",
     },
     Allowed {
         path: "crates/core/sync/src/waits.rs",
@@ -161,39 +77,21 @@ const ALLOWED: &[Allowed] = &[
     },
     Allowed {
         path: "crates/runtime/agent/src/runtime.rs",
-        call: "Handle::try_current",
-        uses: 1,
-        why: "build_async opens the default store and assembles the runtime on its own thread, off the caller's Tokio worker; a host builds with build",
-    },
-    Allowed {
-        path: "crates/runtime/agent/src/runtime.rs",
         call: "thread::Builder",
         uses: 1,
         why: "build_async opens the default store and assembles the runtime on its own thread, off the caller's Tokio worker; a host builds with build",
     },
     Allowed {
         path: "crates/runtime/durability/src/shared_store.rs",
-        call: "thread::Builder",
-        uses: 1,
+        call: "tokio::runtime",
+        uses: 2,
         why: "without a host, SharedStore drivers run on one current_thread runtime on their own thread; spawn_driver gives them to an installed host first",
     },
     Allowed {
-        path: "crates/runtime/durability/src/memory.rs",
-        call: "Handle::try_current",
+        path: "crates/runtime/durability/src/shared_store.rs",
+        call: "thread::Builder",
         uses: 1,
-        why: "without a host, the in-memory store's driver runs on the caller's Tokio runtime; spawn_driver gives it to an installed host first",
-    },
-    Allowed {
-        path: "crates/runtime/durability/src/session.rs",
-        call: "Handle::try_current",
-        uses: 2,
-        why: "without a host, session drivers and claim acknowledgements run on the caller's Tokio runtime; both give them to an installed host first",
-    },
-    Allowed {
-        path: "crates/runtime/durability/src/child_journal.rs",
-        call: "Handle::try_current",
-        uses: 1,
-        why: "without a host, the child journal writer runs on the caller's Tokio runtime; spawn_writer gives it to an installed host first",
+        why: "without a host, SharedStore drivers run on one current_thread runtime on their own thread; spawn_driver gives them to an installed host first",
     },
 ];
 
@@ -220,6 +118,9 @@ fn grouped(member: &str) -> Option<&'static str> {
     }
     if name == "time" || name.starts_with("time::") {
         return Some("tokio::time");
+    }
+    if name == "runtime" || name.starts_with("runtime::") {
+        return Some("tokio::runtime");
     }
     None
 }

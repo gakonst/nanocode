@@ -800,7 +800,7 @@ async fn run_session(
                 "_meta": call_meta(&session, turn_id.as_deref(), &call_id, &model)}),
             );
             let reply = match config.step_timeout {
-                Some(timeout) => tokio::time::timeout(timeout, call)
+                Some(timeout) => nanocode_platform::timeout(timeout, call)
                     .await
                     .map_err(|_| Failure::Unknown(Box::new(OutcomeUnknown::TimedOut(timeout))))?,
                 None => call.await,
@@ -883,7 +883,7 @@ struct Process {
 }
 impl Process {
     async fn start(config: &ComputerConfig) -> Result<Self, ToolError> {
-        tokio::time::timeout(config.startup_timeout, Self::start_and_discover(config))
+        nanocode_platform::timeout(config.startup_timeout, Self::start_and_discover(config))
             .await
             .map_err(|_| format!("CUA provider startup timed out after {} seconds during initialization or catalog discovery; owned transport discarded. Upstream/native work may continue.", config.startup_timeout.as_secs()))?
     }

@@ -13,16 +13,16 @@ use super::{
     OpenAiAuthSource,
 };
 use nanocode_digest::Sha256;
+use nanocode_platform::{Duration, timeout};
 use nanocode_sync::{SingleFlight, Swap};
 use nanocode_sys::base64::URL_SAFE_NO_PAD;
+use nanocode_trace::Instrument;
 use nanocode_url::Url;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
-    time::{Duration, timeout},
 };
-use nanocode_trace::Instrument;
 
 const AUTH_ISSUER: &str = "https://auth.openai.com";
 const AUTH_API_BASE_URL: &str = "https://auth.openai.com/api/accounts";

@@ -1,18 +1,15 @@
 use crate::{Lines, Owned, Turn};
 use futures_util::future::BoxFuture;
+use nanocode_platform::{sleep, timeout, timeout_at};
 use std::{
     fmt::{Debug, Display},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
-    time::{Duration, Instant},
+    time::Duration,
 };
-use tokio::{
-    spawn,
-    task::JoinHandle,
-    time::{sleep, timeout, timeout_at},
-};
+use tokio::task::JoinHandle;
 
 pub trait Locker: Send + Sync + 'static {
     type Connection: Send + 'static;
@@ -114,12 +111,12 @@ impl<L: Locker> SessionLocks<L> {
         keys: &[&str],
         deadline: Duration,
     ) -> Result<SessionLock<L>, SessionLockError<L::Error>> {
-        let asked = Instant::now();
-        let until = tokio::time::Instant::from_std(asked + deadline);
+        let asked = nanocode_platform::now();
+        let until = asked + deadline;
         let waiting = Gauge::new(&self.locker, kind, "waiting");
         let keys = sorted(keys);
         let late = || {
-            self.locker.late(kind, asked.elapsed());
+            self.locker.late(kind, nanocode_platform::now().saturating_duration_since(asked));
             SessionLockError::Late { kind, deadline }
         };
         let mut queued = Vec::with_capacity(keys.len());
@@ -137,10 +134,10 @@ impl<L: Locker> SessionLocks<L> {
                 .map_err(SessionLockError::Backend)?;
             if let Some(lock) = self.taken(connection, kind, &keys, &mut queued).await? {
                 drop(waiting);
-                self.locker.waited(kind, asked.elapsed());
+                self.locker.waited(kind, nanocode_platform::now().saturating_duration_since(asked));
                 return Ok(lock);
             }
-            let now = tokio::time::Instant::now();
+            let now = nanocode_platform::now();
             if now >= until {
                 return Err(late());
             }
@@ -194,7 +191,7 @@ impl<L: Locker> SessionLocks<L> {
         let keepalive = {
             let (connection, lost) = (Arc::clone(&connection), Arc::clone(&lost));
             let (locker, every) = (Arc::clone(&self.locker), self.keepalive);
-            spawn(async move {
+            nanocode_platform::spawn_task(async move {
                 loop {
                     sleep(every).await;
                     let pinged = locker.ping(&mut *connection.acquire().await).await;
@@ -249,7 +246,7 @@ impl<L: Locker> Drop for SessionLock<L> {
             std::mem::take(&mut self.queued),
         );
         let kind = self.kind;
-        spawn(async move {
+        nanocode_platform::spawn_task(async move {
             let mut connection = connection.acquire().await;
             if let Err(error) = locker.release(&mut connection).await {
                 locker.unreleased(kind, &error);

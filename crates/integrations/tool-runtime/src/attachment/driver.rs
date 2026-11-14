@@ -8,6 +8,7 @@ use std::{
 use nanocode_sync::Atom;
 
 use futures_util::{SinkExt, StreamExt};
+use nanocode_trace::Instrument as _;
 use nanocode_url::Url;
 use nanocode_websocket::{
     CloseCode, CloseFrame, Connector, IntoClientRequest, Message, Utf8Bytes,
@@ -15,7 +16,6 @@ use nanocode_websocket::{
 };
 use serde_json::{Value, json};
 use tokio::sync::{mpsc, watch};
-use nanocode_trace::Instrument as _;
 
 use super::protocol::{
     self, AttachmentCall, CommandStatus, DiagnosticStage, EndpointFrame, ReceiptTiming, RunnerFrame,
@@ -104,7 +104,7 @@ pub(crate) async fn run(
         } else {
             nanocode_sync::select! {
                 command = commands.recv() => match command { Some(Command::Detach) | None => break Ok(()) },
-                connected = tokio::time::timeout(Duration::from_secs(5), async {
+                connected = nanocode_platform::timeout(Duration::from_secs(5), async {
                     let connector = tls_connector(&request).await?;
                     nanocode_trace::info!(target: "nanocode_code_mode::attachment",
                         stage = "attachment.socket.trust",
@@ -420,7 +420,7 @@ fn retry_after(headers: &http::HeaderMap) -> Option<Duration> {
 
 async fn wait_backoff(commands: &mut mpsc::Receiver<Command>, delay: Duration) -> bool {
     nanocode_sync::select! {
-        _ = tokio::time::sleep(delay) => false,
+        _ = nanocode_platform::sleep(delay) => false,
         command = commands.recv() => matches!(command, Some(Command::Detach) | None),
     }
 }
@@ -767,7 +767,7 @@ fn start_call(
                     let _phase = ExecutionPhase::start(&timing, &completed, &task_identity.call_id);
                     runtime.execute(call).await
                 };
-                let executed = tokio::time::timeout(duration, execute).await;
+                let executed = nanocode_platform::timeout(duration, execute).await;
                 match executed {
                     Ok(Ok(output)) => match serde_json::to_value(output) {
                         Ok(output)
@@ -975,14 +975,14 @@ where
             return ConnectionEnd::Failed(error);
         }
     }
-    let mut heartbeat = tokio::time::interval_at(
-        tokio::time::Instant::now() + protocol::HEARTBEAT_INTERVAL,
+    let mut heartbeat = nanocode_platform::interval_at(
+        nanocode_platform::now() + protocol::HEARTBEAT_INTERVAL,
         protocol::HEARTBEAT_INTERVAL,
     );
-    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    let mut pong_timeout = Box::pin(tokio::time::sleep(PONG_TIMEOUT));
+    heartbeat.set_missed_tick_behavior(nanocode_platform::MissedTickBehavior::Delay);
+    let mut pong_timeout = nanocode_platform::Sleep::after(PONG_TIMEOUT);
     let mut ping: Option<(Vec<u8>, Instant)> = None;
-    let mut detach_deadline = Box::pin(tokio::time::sleep(Duration::from_secs(10)));
+    let mut detach_deadline = nanocode_platform::Sleep::after(Duration::from_secs(10));
     let mut drain = Drain::Attached;
 
     let end = loop {
@@ -997,7 +997,7 @@ where
                 }
                 nanocode_trace::info!(target: "nanocode_code_mode::attachment", stage = "attachment.drain_requested", pending_calls = journal.values().filter(|call| call.running()).count(), pending_receipts = journal.values().filter(|call| call.receipt().is_some()).count(), reason_code = "detach_requested", "attachment drain requested");
                 drain = Drain::Requested;
-                detach_deadline.as_mut().reset(tokio::time::Instant::now() + Duration::from_secs(10));
+                detach_deadline.reset(nanocode_platform::now() + Duration::from_secs(10));
                 shutdown_calls(active).await;
                 while let Ok(completion) = completed_rx.try_recv() {
                     if let Completion::Result { call_id, outcome, .. } = completion
@@ -1027,7 +1027,7 @@ where
                 }
                 nanocode_trace::info!(target: "nanocode_code_mode::attachment", stage = "attachment.heartbeat_ping", pending_calls = journal.values().filter(|call| call.running()).count(), pending_receipts = journal.values().filter(|call| call.receipt().is_some()).count(), "attachment heartbeat sent");
                 ping = Some((nonce, started));
-                pong_timeout.as_mut().reset(tokio::time::Instant::now() + PONG_TIMEOUT);
+                pong_timeout.reset(nanocode_platform::now() + PONG_TIMEOUT);
             }
             completion = completed_rx.recv() => if let Some(completion) = completion {
                 let sent = match completion {
@@ -1114,7 +1114,7 @@ where
                     }
                     EndpointFrame::TurnEnded { session_id, turn_id, hook_event_name } => {
 
-                        if tokio::time::timeout(Duration::from_secs(5), runtime.end_turn(&session_id, &turn_id, &hook_event_name)).await.is_err() {
+                        if nanocode_platform::timeout(Duration::from_secs(5), runtime.end_turn(&session_id, &turn_id, &hook_event_name)).await.is_err() {
                             nanocode_trace::warn!(target: "nanocode_code_mode::attachment",
                                 "turn cleanup timed out; not retried");
                         }
@@ -1206,7 +1206,7 @@ where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     nanocode_trace::warn!(target: "nanocode_code_mode::attachment", stage = "attachment.socket.close_sent", close_code = u16::from(CloseCode::Restart), reason_code = "heartbeat_timeout", "attachment close sent");
-    let _ = tokio::time::timeout(
+    let _ = nanocode_platform::timeout(
         Duration::from_secs(1),
         socket.close(Some(CloseFrame {
             code: CloseCode::Restart,
@@ -1225,7 +1225,7 @@ where
 {
     nanocode_sync::select! {
         command = commands.recv() => match command { Some(Command::Detach) | None => Err(ConnectionEnd::Detached) },
-        frame = tokio::time::timeout(HANDSHAKE_TIMEOUT, next_frame(socket)) => match frame {
+        frame = nanocode_platform::timeout(HANDSHAKE_TIMEOUT, next_frame(socket)) => match frame {
             Ok(frame) => frame,
             Err(_) => {
                 nanocode_trace::warn!(target: "nanocode_code_mode::attachment", stage = "attachment.ready_timeout", reason_code = "ready_timeout", "attachment readiness timed out");
@@ -1615,7 +1615,7 @@ async fn accept_runner(
                     Err(rejection)
                 }
             };
-        if let Ok(Ok(socket)) = tokio::time::timeout(
+        if let Ok(Ok(socket)) = nanocode_platform::timeout(
             HANDSHAKE_TIMEOUT,
             nanocode_websocket::accept_hdr_async(
                 nanocode_websocket::MaybeTlsStream::Plain(stream),

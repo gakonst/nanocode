@@ -11,8 +11,9 @@ use futures_util::{
     future::{BoxFuture, Either},
     stream::FuturesUnordered,
 };
+use nanocode_platform::Instant;
 use serde_json::Value;
-use tokio::{sync::mpsc, time::Instant};
+use tokio::sync::mpsc;
 
 use super::{
     NOT_RECEIVED, RemoteClient, RemoteContext, RemoteLink, RemoteOperation, RemoteTransport,
@@ -185,9 +186,9 @@ pub async fn serve_queue<Q: CommandQueue>(
     let mut awake = true;
     let mut watching = HashSet::new();
     let mut cancelled = HashSet::new();
-    let mut checked = Instant::now();
+    let mut checked = nanocode_platform::now();
     let mut polled = Some(first);
-    let mut next = Instant::now();
+    let mut next = nanocode_platform::now();
     let mut due = false;
     let result = loop {
         if let Some(polled) = polled.take() {
@@ -285,10 +286,10 @@ pub async fn serve_queue<Q: CommandQueue>(
                         );
                     }
                 }
-                checked = Instant::now();
+                checked = nanocode_platform::now();
             }
             let busy = calls > 0 || !flights.is_empty() || !watching.is_empty();
-            let now = Instant::now();
+            let now = nanocode_platform::now();
             next = if busy {
                 let polled = now + options.busy_poll;
                 queue
@@ -336,7 +337,7 @@ pub async fn serve_queue<Q: CommandQueue>(
                 let stopped = stopped.get(&command).cloned();
                 let _ = done.send(Done::Reply { command, request, resumed, stopped, result });
             },
-            () = tokio::time::sleep_until(next) => match queue.poll().await {
+            () = nanocode_platform::sleep_until(next) => match queue.poll().await {
                 Ok(next) => polled = Some(next),
                 Err(error) => break Err(error),
             },

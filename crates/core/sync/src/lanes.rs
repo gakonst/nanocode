@@ -1,4 +1,5 @@
 use futures_util::future::BoxFuture;
+use nanocode_platform::timeout;
 use std::{
     collections::HashMap,
     future::Future,
@@ -7,10 +8,8 @@ use std::{
     time::Duration,
 };
 use tokio::{
-    spawn,
     sync::mpsc::{self, error::TrySendError},
     task::JoinHandle,
-    time::timeout,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -52,7 +51,12 @@ impl<T: Send + 'static> Lanes<T> {
     ) -> Result<(), T> {
         let queue = self.queue.get_or_init(|| {
             let (queue, items) = mpsc::channel(self.bounds.queued);
-            spawn(route(items, Arc::new(commit), self.bounds, self.refused));
+            nanocode_platform::spawn_task(route(
+                items,
+                Arc::new(commit),
+                self.bounds,
+                self.refused,
+            ));
             queue
         });
         queue
@@ -107,7 +111,7 @@ async fn route<T: Send + 'static>(
         let previous = lanes.remove(&key).map(|lane| lane.worker);
         let (queue, received) = mpsc::channel(bounds.batch);
         drop(queue.try_send(item));
-        let worker = spawn(work(
+        let worker = nanocode_platform::spawn_task(work(
             key.clone(),
             received,
             Arc::clone(&commit),

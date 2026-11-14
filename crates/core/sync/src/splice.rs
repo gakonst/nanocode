@@ -1,4 +1,5 @@
 use futures_util::future::{Either, join, select};
+use nanocode_platform::{Instant, sleep_until};
 use std::{
     pin::pin,
     sync::atomic::{AtomicU64, Ordering},
@@ -7,7 +8,6 @@ use std::{
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, split},
     net::TcpStream,
-    time::{Instant, sleep_until},
 };
 
 pub trait Duplex: AsyncRead + AsyncWrite + Send + Unpin {}
@@ -22,7 +22,7 @@ pub async fn splice(a: TcpStream, b: TcpStream, idle: Duration) -> std::io::Resu
 }
 
 pub async fn pipe(a: impl AsyncRead + AsyncWrite, b: impl AsyncRead + AsyncWrite, idle: Duration) {
-    let start = Instant::now();
+    let start = nanocode_platform::now();
     let last = AtomicU64::new(0);
     let quiet = || start + Duration::from_millis(last.load(Ordering::Relaxed)) + idle;
     let (mut ar, mut aw) = split(a);
@@ -34,7 +34,7 @@ pub async fn pipe(a: impl AsyncRead + AsyncWrite, b: impl AsyncRead + AsyncWrite
     loop {
         match select(copy.as_mut(), pin!(sleep_until(quiet()))).await {
             Either::Left(_) => return,
-            Either::Right(_) if Instant::now() >= quiet() => return,
+            Either::Right(_) if nanocode_platform::now() >= quiet() => return,
             Either::Right(_) => {}
         }
     }

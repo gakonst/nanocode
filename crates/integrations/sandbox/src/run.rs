@@ -5,6 +5,7 @@ use crate::{
     egress::{Allowlist, Egress, Limits, Secret, Tls, tailnet_host},
 };
 use futures_util::future::BoxFuture;
+use nanocode_platform::{Elapsed, timeout};
 use nanocode_sync::Signal;
 use std::{
     collections::VecDeque,
@@ -22,7 +23,6 @@ use tokio::{
     net::{UnixStream, unix::pipe},
     process::{Child, Command},
     task::JoinHandle,
-    time::{error::Elapsed, timeout},
 };
 
 const PIPE: usize = 64 * 1024;
@@ -290,7 +290,8 @@ impl Runner {
                 let mut held = Vec::new();
                 let charge = |bytes| self.budget.charge(&mut held, base, bytes);
                 let serving = serve(stream, host.as_ref(), self.caps, charge);
-                tokio::pin!(exchanged, serving);
+                let mut exchanged = std::pin::pin!(exchanged);
+                let mut serving = std::pin::pin!(serving);
                 let mut served = false;
                 loop {
                     nanocode_sync::select! {

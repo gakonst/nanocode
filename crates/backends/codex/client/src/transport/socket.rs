@@ -9,13 +9,13 @@ use std::{
 use futures_util::{FutureExt, SinkExt, StreamExt};
 use http::{HeaderValue, header};
 use nanocode_http::layer::retry;
+use nanocode_platform::timeout;
 use nanocode_websocket::{
     Error as WebSocketError, Frame, IntoClientRequest, MaybeTlsStream, Message, OpCode,
     ProtocolError, Utf8Bytes, WebSocketStream,
 };
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, oneshot};
-use tokio::time::timeout;
 
 use crate::client::{
     EncodedRequest, OpenAiAuthSnapshot, ResponsesError,
@@ -199,10 +199,11 @@ impl ResponsesSocket {
     ) -> Result<SendOutcome, ResponsesError> {
         let text = request.into_string();
         let message = if self.deflate {
-            let payload = nanocode_platform::spawn_blocking(move || deflate::deflate(text.as_bytes()))
-                .await
-                .map_err(|error| deflate_error(&error))?
-                .map_err(|error| deflate_error(&error))?;
+            let payload =
+                nanocode_platform::spawn_blocking(move || deflate::deflate(text.as_bytes()))
+                    .await
+                    .map_err(|error| deflate_error(&error))?
+                    .map_err(|error| deflate_error(&error))?;
             nanocode_trace::Span::current().record("request.deflate_bytes", payload.len());
             let mut frame = Frame::message(payload, OpCode::Text, true);
             frame.header_mut().rsv1 = true;

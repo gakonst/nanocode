@@ -2,8 +2,10 @@ use crate::egress::{
     authority::{Authority, chain},
     wire::{Credential, Grant, Secret},
 };
+use nanocode_platform::sleep;
 use nanocode_platform::spawn_task as spawn;
 use nanocode_sync::{Atom, Signal};
+use nanocode_trace::error;
 use std::{
     sync::{
         Arc, OnceLock,
@@ -11,8 +13,6 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use tokio::time::sleep;
-use nanocode_trace::error;
 
 #[derive(Clone, Copy)]
 pub struct Caching {

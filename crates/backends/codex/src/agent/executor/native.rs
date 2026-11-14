@@ -18,8 +18,8 @@ impl<T: Send + Sync> AgentFactory for T {}
 pub(crate) fn spawn_driver(
     driver: crate::agent::execution::ExecutionFuture<'static, ()>,
 ) -> Result<()> {
-    let runtime = tokio::runtime::Handle::try_current()
+    let runtime = nanocode_platform::Handle::try_current()
         .map_err(|_| NanocodeError::TokioRuntimeUnavailable)?;
-    drop(nanocode_platform::spawn_on(&runtime, driver));
+    runtime.spawn(driver);
     Ok(())
 }

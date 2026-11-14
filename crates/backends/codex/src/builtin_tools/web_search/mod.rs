@@ -6,9 +6,9 @@ use std::time::Duration;
 
 use crate::client::auth::{OpenAiAuth, OpenAiAuthError, OpenAiAuthMode, OpenAiAuthSnapshot};
 use nanocode_http::header::{AUTHORIZATION, USER_AGENT};
+use nanocode_platform::{sleep, timeout};
 use nanocode_tools::ToolDefinition;
 use serde_json::json;
-use tokio::time::{sleep, timeout};
 
 use self::{
     history::recent_input,

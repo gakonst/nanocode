@@ -288,7 +288,7 @@ impl Rpc {
                 false => 0,
             };
             let backoff = error.backoff_hint().unwrap_or(INITIAL_BACKOFF);
-            tokio::time::sleep(backoff.saturating_add(Duration::from_secs(budget))).await;
+            nanocode_platform::sleep(backoff.saturating_add(Duration::from_secs(budget))).await;
         }
     }
 

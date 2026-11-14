@@ -225,7 +225,7 @@ async fn with_management_timeout<T>(
     context: &str,
     request: impl Future<Output = Result<T, Fault>>,
 ) -> Result<T, Fault> {
-    tokio::time::timeout(timeout, request)
+    nanocode_platform::timeout(timeout, request)
         .await
         .unwrap_or_else(|_| {
             Err(Fault::SessionOutcomeUnknown {
@@ -1118,7 +1118,7 @@ impl SessionProvider {
         let (Some(amount), Some(client), Ok(runtime)) = (
             self.top_up_amount,
             context.http_client.clone(),
-            tokio::runtime::Handle::try_current(),
+            nanocode_platform::Handle::try_current(),
         ) else {
             return;
         };
@@ -1141,7 +1141,7 @@ impl SessionProvider {
         let headers = context.headers.clone();
         let challenge = challenge.clone();
         let channel_id = channel_id.to_owned();
-        nanocode_platform::spawn_on(&runtime, async move {
+        runtime.spawn(async move {
             let _ = provider
                 .top_up_in_background(
                     &client,
@@ -1673,7 +1673,7 @@ impl SessionProvider {
                 .uncertain_top_ups
                 .update(|uncertain| uncertain.insert(id));
         };
-        let Ok(receipt) = tokio::time::timeout(
+        let Ok(receipt) = nanocode_platform::timeout(
             self.management_timeout,
             transport.send(challenge, &prepared.credential),
         )
@@ -1935,7 +1935,8 @@ impl SessionProvider {
         context: &str,
         channel_id: Hash,
     ) -> Result<nanocode_http::Response, Fault> {
-        let error = match tokio::time::timeout(self.management_timeout, request.send()).await {
+        let error = match nanocode_platform::timeout(self.management_timeout, request.send()).await
+        {
             Ok(Ok(response)) => return Ok(nanocode_http::decode_flate_response(response)),
             Ok(Err(error)) if error.is_connect() => {
                 return Err(Fault::http(format!("{context}: {error}")));
@@ -1950,7 +1951,7 @@ impl SessionProvider {
     }
 
     async fn management_body(&self, response: nanocode_http::Response) -> String {
-        tokio::time::timeout(self.management_timeout, response.text())
+        nanocode_platform::timeout(self.management_timeout, response.text())
             .await
             .ok()
             .and_then(Result::ok)
@@ -2174,7 +2175,8 @@ impl SessionProvider {
             return lock.acquire_owned().await.map_err(closed);
         };
         let remaining = u64::try_from(expires - protocol::now_seconds()).unwrap_or(0);
-        match tokio::time::timeout(Duration::from_secs(remaining), lock.acquire_owned()).await {
+        match nanocode_platform::timeout(Duration::from_secs(remaining), lock.acquire_owned()).await
+        {
             Ok(permit) => permit.map_err(closed),
             Err(_) => Err(Fault::Expired(challenge.expires.clone())),
         }
@@ -2660,13 +2662,10 @@ impl SessionProvider {
             .shared
             .spend
             .update(|ledger| ledger.record(&channel_id, spent, quoted));
-        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+        if let Ok(runtime) = nanocode_platform::Handle::try_current() {
             let provider = self.clone();
             let id = channel_id.clone();
-            nanocode_platform::spawn_on(
-                &runtime,
-                async move { provider.save_server_spent(&id).await },
-            );
+            runtime.spawn(async move { provider.save_server_spent(&id).await });
         }
         if self.is_pending_open(&channel_id)
             && let Some(entry) = self.channel_by_id(&channel_id)

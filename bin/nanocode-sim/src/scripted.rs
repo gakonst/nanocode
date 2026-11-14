@@ -493,7 +493,7 @@ impl LifecycleBackend for ScriptedBackend {
         Box::pin(async move {
             loop {
                 let entered = inner.entered.notified();
-                tokio::pin!(entered);
+                let mut entered = std::pin::pin!(entered);
                 entered.as_mut().enable();
                 let entries = inner.entries.load(Ordering::SeqCst);
                 if entries > after && inner.phase.load(Ordering::SeqCst) == PARKED {

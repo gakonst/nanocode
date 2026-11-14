@@ -226,7 +226,7 @@ impl ClaudeHomeLogin {
 
     pub async fn complete(self) -> Result<ClaudeSubscriptionStatus, ClaudeSubscriptionError> {
         let remaining = Duration::from_millis(self.expires_at.saturating_sub(now()));
-        let (mut stream, target) = tokio::time::timeout(remaining, callback(&self.listener))
+        let (mut stream, target) = nanocode_platform::timeout(remaining, callback(&self.listener))
             .await
             .map_err(|_| ClaudeSubscriptionError::LoginRequired)?
             .map_err(|_| ClaudeSubscriptionError::Host)?;

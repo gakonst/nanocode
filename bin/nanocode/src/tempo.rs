@@ -1634,7 +1634,7 @@ async fn close_session(client: &nanocode_http::Client, session: &SessionProvider
             }
             Ok(None) => return,
             Err(error) if error.to_string().contains(" 409 ") => {
-                tokio::time::sleep(CLOSE_RETRY).await;
+                nanocode_platform::sleep(CLOSE_RETRY).await;
             }
             Err(error) => {
                 return eprintln!(

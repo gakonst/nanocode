@@ -9,8 +9,8 @@ use futures_util::{
 };
 use nanocode_agent_core::backend::{BackendFuture, ParkedCall};
 use nanocode_sync::{Atom, Signal, Slot};
-use tokio::sync::Notify;
 use nanocode_trace::Instrument as _;
+use tokio::sync::Notify;
 
 use crate::{ClaudeClient, ClaudeError, ClaudeStream, PreparedWire, StreamEvent};
 
@@ -95,7 +95,7 @@ impl ModelCall {
     pub(super) async fn opened(&self) -> Result<(), ClaudeError> {
         loop {
             let changed = self.changed.notified();
-            tokio::pin!(changed);
+            let mut changed = std::pin::pin!(changed);
             changed.as_mut().enable();
             match self.phase.load(Ordering::SeqCst) {
                 OPENING => changed.await,
@@ -110,7 +110,7 @@ impl ModelCall {
     async fn next(&self, read: usize) -> Option<Result<StreamEvent, ClaudeError>> {
         loop {
             let changed = self.changed.notified();
-            tokio::pin!(changed);
+            let mut changed = std::pin::pin!(changed);
             changed.as_mut().enable();
             let phase = self.phase.load(Ordering::SeqCst);
             if let Some(event) = self.events.read(|events| events.get(read).cloned()) {
@@ -246,7 +246,7 @@ impl Parking {
     pub(super) async fn parked(&self, after: u64) -> u64 {
         loop {
             let entered = self.entered.notified();
-            tokio::pin!(entered);
+            let mut entered = std::pin::pin!(entered);
             entered.as_mut().enable();
             let entries = self.entries.load(Ordering::SeqCst);
             if entries > after && self.state.load(Ordering::SeqCst) == PARKED {

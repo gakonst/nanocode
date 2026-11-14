@@ -456,7 +456,7 @@ impl RunnerPool {
         initial: Option<(DialedSocket, String)>,
     ) -> Result<RunnerHandle, AttachmentError> {
         config.validate()?;
-        tokio::runtime::Handle::try_current().map_err(error)?;
+        nanocode_platform::Handle::try_current().map_err(error)?;
         super::install_default_rustls_crypto_provider();
         let target = AttachmentTarget::new(&config.endpoint, config.token)?;
         let mut remote = RemoteRunner::new(&config.name)?;
@@ -537,7 +537,7 @@ impl RunnerPool {
         if config.mode == RemoteMode::Replace {
             self.inner.code_mode.await_replacement(true);
         }
-        tokio::runtime::Handle::try_current().map_err(error)?;
+        nanocode_platform::Handle::try_current().map_err(error)?;
         nanocode_platform::spawn_task(supervise(Arc::downgrade(&self.inner), config));
         Ok(())
     }
@@ -556,7 +556,7 @@ impl RunnerPool {
     }
     async fn connect_detected(&self, config: Runner) -> Result<RunnerHandle, AttachmentError> {
         config.validate()?;
-        tokio::runtime::Handle::try_current().map_err(error)?;
+        nanocode_platform::Handle::try_current().map_err(error)?;
         super::install_default_rustls_crypto_provider();
         self.inner
             .state
@@ -596,7 +596,7 @@ impl RunnerPool {
         let handle = self.start_inner(config, Some((socket, first)))?;
         let wait = handle.ready();
         let result = match timeout {
-            Some(timeout) => tokio::time::timeout(timeout, wait)
+            Some(timeout) => nanocode_platform::timeout(timeout, wait)
                 .await
                 .map_err(error)
                 .and_then(|result| result),
@@ -1140,7 +1140,7 @@ async fn supervise(pool: Weak<PoolInner>, config: Runner) {
                     reported = true;
                 }
                 drop(pool_handle);
-                tokio::time::sleep(super::reconnect_delay(&mut backoff)).await;
+                nanocode_platform::sleep(super::reconnect_delay(&mut backoff)).await;
             }
             Err(failure) => {
                 pool_handle.report_failure(config.name.clone(), failure.to_string());
@@ -1202,7 +1202,7 @@ async fn dial(target: &AttachmentTarget) -> Result<(DialedSocket, String), Attac
     let connector = super::driver::tls_connector(&request)
         .await
         .map_err(error)?;
-    let (mut socket, _) = tokio::time::timeout(
+    let (mut socket, _) = nanocode_platform::timeout(
         super::driver::HANDSHAKE_TIMEOUT,
         nanocode_websocket::connect_async_tls_with_config(request, None, true, connector),
     )
@@ -1216,9 +1216,10 @@ async fn dial(target: &AttachmentTarget) -> Result<(DialedSocket, String), Attac
         }
         failure => error(failure),
     })?;
-    let first = tokio::time::timeout(super::driver::HANDSHAKE_TIMEOUT, first_text(&mut socket))
-        .await
-        .map_err(error)??;
+    let first =
+        nanocode_platform::timeout(super::driver::HANDSHAKE_TIMEOUT, first_text(&mut socket))
+            .await
+            .map_err(error)??;
     Ok((socket, first))
 }
 async fn first_text<S>(
@@ -1510,7 +1511,7 @@ async fn incoming(
             Err(response)
         }
     };
-    let mut socket = tokio::time::timeout(
+    let mut socket = nanocode_platform::timeout(
         super::driver::HANDSHAKE_TIMEOUT,
         nanocode_websocket::accept_hdr_async(stream, authenticate),
     )
@@ -1523,14 +1524,16 @@ async fn incoming(
             reason: "invalid runner credential".into(),
         };
         let _ =
-            tokio::time::timeout(super::driver::HANDSHAKE_TIMEOUT, socket.close(Some(close))).await;
+            nanocode_platform::timeout(super::driver::HANDSHAKE_TIMEOUT, socket.close(Some(close)))
+                .await;
         return Err(AttachmentError::Authentication(
             "invalid runner credential".into(),
         ));
     }
-    let first = tokio::time::timeout(super::driver::HANDSHAKE_TIMEOUT, first_text(&mut socket))
-        .await
-        .map_err(error)??;
+    let first =
+        nanocode_platform::timeout(super::driver::HANDSHAKE_TIMEOUT, first_text(&mut socket))
+            .await
+            .map_err(error)??;
     if code_mode_catalog(&first) {
         return incoming_executor(socket, first, pool, endpoint, timeout, mode, workspace).await;
     }

@@ -23,7 +23,7 @@ const STREAM_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(
 
 #[cfg(not(target_family = "wasm"))]
 async fn idle<T>(read: impl std::future::Future<Output = T>) -> Result<T, ResponsesError> {
-    tokio::time::timeout(STREAM_IDLE_TIMEOUT, read)
+    nanocode_platform::timeout(STREAM_IDLE_TIMEOUT, read)
         .await
         .map_err(|_| stream_stalled())
 }

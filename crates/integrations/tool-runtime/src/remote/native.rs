@@ -135,7 +135,7 @@ pub(super) fn validate_policy(policy: SocketPolicy) -> Result<(), CodeModeHostEr
             "max_frame_bytes and request_timeout must be positive",
         ));
     }
-    if tokio::time::Instant::now()
+    if nanocode_platform::now()
         .checked_add(policy.request_timeout)
         .is_none()
     {
@@ -150,7 +150,7 @@ pub(super) fn validate_policy(policy: SocketPolicy) -> Result<(), CodeModeHostEr
 }
 
 struct Liveness {
-    origin: tokio::time::Instant,
+    origin: nanocode_platform::Instant,
     last_inbound_us: AtomicU64,
     probe_us: AtomicU64,
     heard: Signal,
@@ -160,7 +160,7 @@ struct Liveness {
 impl Liveness {
     fn new() -> Arc<Self> {
         Arc::new(Self {
-            origin: tokio::time::Instant::now(),
+            origin: nanocode_platform::now(),
             last_inbound_us: AtomicU64::new(0),
             probe_us: AtomicU64::new(0),
             heard: Signal::new(),
@@ -191,8 +191,8 @@ impl Liveness {
         loop {
             match self.unanswered_probe_age() {
                 Some(age) if age >= window => return,
-                Some(age) => tokio::time::sleep(window - age).await,
-                None => tokio::time::sleep(window).await,
+                Some(age) => nanocode_platform::sleep(window - age).await,
+                None => nanocode_platform::sleep(window).await,
             }
         }
     }
@@ -313,9 +313,9 @@ pub(super) async fn dial_staged(
         .headers_mut()
         .insert(http::header::AUTHORIZATION, bearer);
     let mut stages = DialStages::default();
-    let mut stage = tokio::time::Instant::now();
+    let mut stage = nanocode_platform::now();
     let mut lap = |at: &mut Duration| {
-        let now = tokio::time::Instant::now();
+        let now = nanocode_platform::now();
         *at = now - stage;
         stage = now;
     };
@@ -338,7 +338,7 @@ pub(super) async fn dial_staged(
         .trim_end_matches(']')
         .to_owned();
     let port = uri.port_u16().unwrap_or(if secure { 443 } else { 80 });
-    let socket = tokio::time::timeout(policy.request_timeout, async {
+    let socket = nanocode_platform::timeout(policy.request_timeout, async {
         let addresses = tokio::net::lookup_host((host.as_str(), port))
             .await
             .map_err(|issue| Dial::Failed(error(format!("resolving {host}: {issue}"))))?
@@ -464,7 +464,7 @@ async fn handshake(
             Err(rejection)
         }
     };
-    let mut socket = tokio::time::timeout(
+    let mut socket = nanocode_platform::timeout(
         policy.request_timeout,
         nanocode_websocket::accept_hdr_async_with_config(
             stream,
@@ -480,7 +480,7 @@ async fn handshake(
             code: nanocode_websocket::CloseCode::Policy,
             reason: REFUSED_CREDENTIAL.into(),
         };
-        let _ = tokio::time::timeout(policy.request_timeout, socket.close(Some(close))).await;
+        let _ = nanocode_platform::timeout(policy.request_timeout, socket.close(Some(close))).await;
         return Err(error(REFUSED_CREDENTIAL));
     }
     Ok(socket)
@@ -534,7 +534,7 @@ async fn write<S: Sink<Message, Error = nanocode_websocket::Error> + Unpin>(
     text: String,
     policy: SocketPolicy,
 ) -> Result<(), CodeModeHostError> {
-    tokio::time::timeout(policy.request_timeout, socket.send(Message::text(text)))
+    nanocode_platform::timeout(policy.request_timeout, socket.send(Message::text(text)))
         .await
         .map_err(|_| error("remote write deadline elapsed"))?
         .map_err(error)
@@ -545,7 +545,7 @@ async fn write_all<S: Sink<Message, Error = nanocode_websocket::Error> + Unpin>(
     frames: Vec<String>,
     policy: SocketPolicy,
 ) -> Result<(), CodeModeHostError> {
-    tokio::time::timeout(policy.request_timeout, async {
+    nanocode_platform::timeout(policy.request_timeout, async {
         for frame in frames {
             socket.feed(Message::text(frame)).await?;
         }
@@ -571,13 +571,14 @@ fn writer<S: Sink<Message, Error = nanocode_websocket::Error> + Unpin + Send + '
     let (tx, mut rx) = mpsc::unbounded_channel();
     let task = nanocode_platform::spawn_task(async move {
         let period = policy.request_timeout / 2;
-        let mut heartbeat = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
-        heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut heartbeat =
+            nanocode_platform::interval_at(nanocode_platform::now() + period, period);
+        heartbeat.set_missed_tick_behavior(nanocode_platform::MissedTickBehavior::Delay);
         loop {
             nanocode_sync::select! {
                 _ = heartbeat.tick() => {
                     let started_us = liveness.elapsed_us();
-                    tokio::time::timeout(policy.request_timeout, sink.send(Message::Ping(Default::default())))
+                    nanocode_platform::timeout(policy.request_timeout, sink.send(Message::Ping(Default::default())))
                         .await
                         .map_err(|_| error("remote write deadline elapsed"))?
                         .map_err(error)?;
@@ -597,7 +598,7 @@ fn writer<S: Sink<Message, Error = nanocode_websocket::Error> + Unpin + Send + '
                             code: nanocode_websocket::CloseCode::Policy,
                             reason: reason.into(),
                         });
-                        tokio::time::timeout(policy.request_timeout, sink.send(Message::Close(close)))
+                        nanocode_platform::timeout(policy.request_timeout, sink.send(Message::Close(close)))
                             .await
                             .map_err(|_| error("remote write deadline elapsed"))?
                             .map_err(error)?;
@@ -707,11 +708,13 @@ impl SocketTransport {
             host,
         } = match catalog {
             Some(text) => RemoteCatalog::decode(&text, policy.max_frame_bytes)?,
-            None => tokio::time::timeout(policy.request_timeout, read(&mut socket, &liveness))
-                .await
-                .map_err(error)??
-                .ok_or_else(|| error(NO_CATALOG))?
-                .try_into()?,
+            None => {
+                nanocode_platform::timeout(policy.request_timeout, read(&mut socket, &liveness))
+                    .await
+                    .map_err(error)??
+                    .ok_or_else(|| error(NO_CATALOG))?
+                    .try_into()?
+            }
         };
         crate::host::validate_public_tool_catalog_names(
             definitions.iter().map(ToolDefinition::name),
@@ -1275,7 +1278,7 @@ async fn serve_link<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     write(&mut socket, catalog, policy).await?;
     let (sink, mut socket) = socket.split();
     let watchdog = liveness.watch(policy.request_timeout / 2);
-    tokio::pin!(watchdog);
+    let mut watchdog = std::pin::pin!(watchdog);
     let (wire, mut writer) = writer(sink, policy, Arc::clone(liveness), Arc::default());
     let answers = wire.clone();
     let wire = match &meter {
@@ -1339,7 +1342,7 @@ async fn serve_link<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     let left = result?;
     if left {
         drop(answers);
-        let _ = tokio::time::timeout(LEAVE_CLOSE, &mut writer.0).await;
+        let _ = nanocode_platform::timeout(LEAVE_CLOSE, &mut writer.0).await;
     }
     Ok(())
 }

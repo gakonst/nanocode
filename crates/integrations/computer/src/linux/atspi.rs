@@ -5,11 +5,9 @@ use super::{
 };
 use crate::state::Node;
 use futures_util::{StreamExt, stream};
+use nanocode_platform::{timeout, timeout_at};
 use std::{collections::HashMap, future::Future, time::Duration};
-use tokio::{
-    sync::mpsc::{UnboundedReceiver, UnboundedSender},
-    time::{Instant, timeout, timeout_at},
-};
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 pub const CALL: Duration = Duration::from_secs(1);
 const READ: Duration = Duration::from_secs(5);
@@ -378,13 +376,13 @@ pub fn changed(message: &Message) -> bool {
 }
 
 pub async fn settle(changes: &mut UnboundedReceiver<()>, first: Duration, quiet: Duration) -> bool {
-    let start = Instant::now();
+    let start = nanocode_platform::now();
     let cap = start + first + quiet;
     let mut until = start + first;
     let mut changed = false;
     while let Ok(Some(())) = timeout_at(until, changes.recv()).await {
         changed = true;
-        until = (Instant::now() + quiet).min(cap);
+        until = (nanocode_platform::now() + quiet).min(cap);
     }
     changed
 }
@@ -689,7 +687,7 @@ pub fn node(element: Element, info: Info) -> Node<Element> {
 }
 
 pub async fn tree(bus: &Bus, window: &Element) -> Tree {
-    let deadline = Instant::now() + READ;
+    let deadline = nanocode_platform::now() + READ;
     let mut slots: Vec<(Element, Info, Vec<usize>)> = Vec::new();
     let mut level = vec![(window.clone(), None::<usize>, 0)];
     let mut complete = true;
@@ -699,7 +697,7 @@ pub async fn tree(bus: &Bus, window: &Element) -> Tree {
             level.truncate(room);
             complete = false;
         }
-        if level.is_empty() || Instant::now() >= deadline {
+        if level.is_empty() || nanocode_platform::now() >= deadline {
             complete = false;
             break;
         }

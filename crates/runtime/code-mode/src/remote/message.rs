@@ -207,9 +207,8 @@ where
         Arc,
         atomic::{AtomicU64, Ordering},
     };
-    use tokio::time::Instant;
 
-    let start = Instant::now();
+    let start = nanocode_platform::now();
     let answered = Arc::new(AtomicU64::new(0));
     let (replies, pong) = (writer.clone(), Arc::clone(&answered));
     let messages = stream.filter_map(move |message| {
@@ -233,7 +232,7 @@ where
     });
     let link = MessageLink::new(messages.boxed(), writer.clone(), max_frame_bytes, resumes);
     let heartbeat = async move {
-        let mut heartbeat = tokio::time::interval(interval);
+        let mut heartbeat = nanocode_platform::interval(interval);
         loop {
             heartbeat.tick().await;
             let last = start + std::time::Duration::from_millis(answered.load(Ordering::Relaxed));

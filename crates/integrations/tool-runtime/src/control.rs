@@ -1,3 +1,4 @@
+use nanocode_platform::{sleep, timeout};
 use std::{
     fs,
     future::Future,
@@ -10,7 +11,6 @@ use tokio::{
     io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     net::{UnixListener, UnixStream},
     sync::mpsc,
-    time::{sleep, timeout},
 };
 
 #[derive(Clone, Copy, Debug)]

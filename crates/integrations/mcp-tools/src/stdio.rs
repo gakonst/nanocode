@@ -42,7 +42,10 @@ pub fn spawn(
         .ok_or_else(|| io::Error::other("spawned MCP server without stdin"))?;
     let stderr = child.stderr.take();
 
-    drop(nanocode_platform::spawn_task(read_messages(stdout, inbound.clone())));
+    drop(nanocode_platform::spawn_task(read_messages(
+        stdout,
+        inbound.clone(),
+    )));
     drop(nanocode_platform::spawn_task(async move {
         let mut outgoing = outgoing;
         while let Some(message) = outgoing.next().await {
@@ -55,7 +58,7 @@ pub fn spawn(
         drop(stdin);
         let mut process_group = process_group;
         let terminated = process_group.terminate_and_disarm();
-        let waited = match tokio::time::timeout(MCP_STDIO_EXIT_TIMEOUT, child.wait()).await {
+        let waited = match nanocode_platform::timeout(MCP_STDIO_EXIT_TIMEOUT, child.wait()).await {
             Ok(result) => result.map(|_| ()),
             Err(_) => child.kill().await,
         };

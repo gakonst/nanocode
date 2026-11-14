@@ -5,12 +5,12 @@ use super::{
 use crate::FrozenWireProfile;
 use nanocode_agent_core::{ClaudeModel, Origin};
 use nanocode_platform::sleep;
+use nanocode_trace::Instrument as _;
 use std::{
     sync::{Arc, Weak, atomic::Ordering},
     time::Duration,
 };
 use tokio::sync::Notify;
-use nanocode_trace::Instrument as _;
 
 pub(super) struct KeptRequest {
     pub(super) request: Arc<MessagesRequest>,
@@ -177,7 +177,7 @@ impl State {
 async fn keep_cache(state: Weak<State>, changed: Arc<Notify>) {
     loop {
         let notified = changed.notified();
-        tokio::pin!(notified);
+        let mut notified = std::pin::pin!(notified);
         notified.as_mut().enable();
         let wait = match state.upgrade() {
             Some(state) if !state.life.stopped() => match state.kept_wait() {

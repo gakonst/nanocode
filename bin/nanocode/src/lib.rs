@@ -780,7 +780,7 @@ async fn hand(args: HandArgs) -> Result<()> {
         HandEvent::Replaced => eprintln!("hand: another hand attached under this name; stopping"),
         other => eprintln!("hand: {other:?}"),
     });
-    tokio::pin!(run);
+    let mut run = std::pin::pin!(run);
     nanocode_sync::select! {
         result = &mut run => {
             let left = leave_reader();

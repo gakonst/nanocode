@@ -1334,7 +1334,7 @@ async fn complete_login(
         otel.status_code = nanocode_trace::field::Empty,
         status = nanocode_trace::field::Empty,
     );
-    let callback = match tokio::time::timeout(
+    let callback = match nanocode_platform::timeout(
         LOGIN_TIMEOUT,
         receive_callback(listener, &session.pending.redirect_uri),
     )

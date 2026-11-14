@@ -788,7 +788,7 @@ impl App {
             if let Some(at) = self.autoscroll_at {
                 scheduler.request_at(at);
             }
-            let deadline = scheduler.deadline().map(tokio::time::Instant::from_std);
+            let deadline = scheduler.deadline();
             nanocode_sync::select! {
                 event = input.next() => {
                     match event {
@@ -848,7 +848,7 @@ impl App {
                 }
                 () = async {
                     match deadline {
-                        Some(deadline) => tokio::time::sleep_until(deadline).await,
+                        Some(deadline) => nanocode_platform::sleep_until(deadline).await,
                         None => std::future::pending().await,
                     }
                 } => {}

@@ -3,6 +3,8 @@ use crate::egress::{
     lookup::Key,
     wire::{Called, Calls, Credential, Report},
 };
+use nanocode_platform::{Instant, MissedTickBehavior, interval_at};
+use nanocode_trace::{error, warn};
 use std::{
     collections::{HashMap, VecDeque},
     mem,
@@ -13,8 +15,6 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::sync::mpsc;
-use tokio::time::{Instant, MissedTickBehavior, interval_at};
-use nanocode_trace::{error, warn};
 
 #[derive(Clone, Copy)]
 pub struct Reporting {
@@ -116,7 +116,7 @@ async fn own<A: Authority>(
 ) {
     let mut held = Held::new();
     let mut pending = Pending::new();
-    let mut tick = interval_at(Instant::now() + reporting.every, reporting.every);
+    let mut tick = interval_at(nanocode_platform::now() + reporting.every, reporting.every);
     tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
     loop {
         nanocode_sync::select! {

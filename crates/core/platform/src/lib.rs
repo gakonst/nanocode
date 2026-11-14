@@ -1,7 +1,7 @@
 #[cfg(target_family = "wasm")]
 mod host;
 #[cfg(target_family = "wasm")]
-pub use host::{Host, Instant, LocalFuture, install, spawn_local};
+pub use host::{Host, Instant, LocalFuture, Sleep, install, sleep_until, spawn_local};
 
 #[cfg(unix)]
 pub mod unix {
@@ -15,6 +15,9 @@ pub mod unix {
         user_entry, user_id,
     };
 }
+
+mod interval;
+pub use interval::{Interval, MissedTickBehavior, interval, interval_at};
 
 mod http_date;
 pub use http_date::{HttpDateError, format_http_date, parse_http_date};
@@ -30,7 +33,10 @@ pub use zone::{
 #[cfg(not(target_family = "wasm"))]
 mod native;
 #[cfg(not(target_family = "wasm"))]
-pub use native::{Host, HostFuture, host, install, now, sleep, spawn, spawn_blocking, spawn_joined, spawn_on, spawn_task, system_time, timeout};
+pub use native::{
+    Handle, Host, HostFuture, Sleep, TryCurrentError, host, install, now, sleep, sleep_until,
+    spawn, spawn_blocking, spawn_joined, spawn_on, spawn_task, system_time, timeout, timeout_at,
+};
 
 #[cfg(not(target_family = "wasm"))]
 pub mod trust;
@@ -95,6 +101,14 @@ pub async fn timeout<F: std::future::Future>(
         delay.as_mut().poll(context).map(|()| Err(Elapsed))
     })
     .await
+}
+
+#[cfg(target_family = "wasm")]
+pub async fn timeout_at<F: std::future::Future>(
+    deadline: Instant,
+    future: F,
+) -> Result<F::Output, Elapsed> {
+    timeout(deadline.saturating_duration_since(Instant::now()), future).await
 }
 
 pub fn unix_millis() -> u64 {

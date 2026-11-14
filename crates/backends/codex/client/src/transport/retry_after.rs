@@ -2,10 +2,10 @@ use http::{HeaderMap, header};
 use nanocode_http::layer::retry;
 #[cfg(target_family = "wasm")]
 use nanocode_platform::Instant;
+#[cfg(not(target_family = "wasm"))]
+use nanocode_platform::Instant;
 use nanocode_platform::{SystemTime, UNIX_EPOCH};
 use std::time::Duration;
-#[cfg(not(target_family = "wasm"))]
-use tokio::time::Instant;
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct RetryReceipt {
@@ -17,7 +17,7 @@ impl RetryReceipt {
         let wall = nanocode_platform::system_time();
         Self {
             wall,
-            monotonic: Instant::now(),
+            monotonic: nanocode_platform::now(),
         }
     }
 }
@@ -50,7 +50,7 @@ impl RetryAfter {
         Self::from_unix_ms_at(
             deadline_unix_ms,
             nanocode_platform::system_time(),
-            Instant::now(),
+            nanocode_platform::now(),
         )
     }
 
@@ -61,7 +61,7 @@ impl RetryAfter {
 
     #[must_use]
     pub fn remaining_delay(self) -> Duration {
-        self.remaining_at(Instant::now())
+        self.remaining_at(nanocode_platform::now())
     }
     pub(crate) fn from_delay_received(delay: Duration, received: RetryReceipt) -> Option<Self> {
         Self::capture(delay, received.wall, received.monotonic)

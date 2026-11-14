@@ -425,7 +425,7 @@ async fn stall<T>(
     timeout: Duration,
     read: impl std::future::Future<Output = T>,
 ) -> Result<T, ResponsesError> {
-    tokio::time::timeout(timeout, read)
+    nanocode_platform::timeout(timeout, read)
         .await
         .map_err(|_| stalled(timeout))
 }

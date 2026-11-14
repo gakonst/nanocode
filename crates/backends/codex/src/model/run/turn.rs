@@ -98,7 +98,7 @@ impl ModelRun {
                 &session.factory,
                 self.compaction_effort(&session.conversation.reasoning),
             );
-            tokio::pin!(compaction);
+            let mut compaction = std::pin::pin!(compaction);
             nanocode_sync::select! {
                 _ = &mut *cancel => None,
                 outcome = &mut compaction => Some(outcome),
@@ -434,7 +434,7 @@ impl ModelRun {
                     phase: CompactionPhase::PreTurn,
                 },
             );
-            tokio::pin!(compaction);
+            let mut compaction = std::pin::pin!(compaction);
             nanocode_sync::select! {
                 _ = &mut *cancel => None,
                 outcome = &mut compaction => Some(outcome?),
@@ -642,7 +642,7 @@ impl ModelRun {
                 );
                 let warmup = {
                     let warmup = self.perform_warmup(&session.factory, request_effort);
-                    tokio::pin!(warmup);
+                    let mut warmup = std::pin::pin!(warmup);
                     nanocode_sync::select! {
                         _ = &mut *cancel => None,
                         outcome = &mut warmup => Some(outcome),
@@ -704,7 +704,7 @@ impl ModelRun {
                 resumed && phase == ExecutionPhase::Generate,
                 fork_snapshots,
             );
-            tokio::pin!(task);
+            let mut task = std::pin::pin!(task);
             nanocode_sync::select! {
                 _ = &mut *cancel => None,
                 outcome = &mut task => Some(outcome),
@@ -1043,7 +1043,7 @@ impl ModelRun {
                     history,
                     session.factory.profile().turn_id(),
                 );
-                tokio::pin!(tools);
+                let mut tools = std::pin::pin!(tools);
                 loop {
                     nanocode_sync::select! {
                         outcome = &mut tools => { outcome?; break; }

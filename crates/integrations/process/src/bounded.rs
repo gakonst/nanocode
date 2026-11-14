@@ -71,7 +71,7 @@ pub async fn bounded(
             cut,
         })
     };
-    let finished = tokio::time::timeout(timeout, work).await;
+    let finished = nanocode_platform::timeout(timeout, work).await;
     if finished.is_err()
         && let Some(group) = group
     {

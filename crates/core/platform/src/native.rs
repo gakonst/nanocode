@@ -61,18 +61,11 @@ enum Timed<F: Future> {
     Host(F, HostFuture),
 }
 
-pub fn timeout<F: Future>(
-    duration: Duration,
-    future: F,
-) -> impl Future<Output = Result<F::Output, crate::Elapsed>> {
-    let timed = match host() {
-        Some(host) => Timed::Host(future, host.sleep(duration)),
-        None => Timed::Tokio(tokio::time::timeout(duration, future)),
-    };
-    async move {
-        match timed {
-            Timed::Tokio(timed) => timed.await.map_err(|_| crate::Elapsed),
-            Timed::Host(future, mut delay) => {
+impl<F: Future> Timed<F> {
+    async fn run(self) -> Result<F::Output, crate::Elapsed> {
+        match self {
+            Self::Tokio(timed) => timed.await.map_err(|_| crate::Elapsed),
+            Self::Host(future, mut delay) => {
                 let mut future = std::pin::pin!(future);
                 std::future::poll_fn(|context| {
                     if let Poll::Ready(output) = future.as_mut().poll(context) {
@@ -82,6 +75,135 @@ pub fn timeout<F: Future>(
                 })
                 .await
             }
+        }
+    }
+}
+
+pub fn timeout<F: Future>(
+    duration: Duration,
+    future: F,
+) -> impl Future<Output = Result<F::Output, crate::Elapsed>> {
+    let timed = match host() {
+        Some(host) => Timed::Host(future, host.sleep(duration)),
+        None => Timed::Tokio(tokio::time::timeout(duration, future)),
+    };
+    timed.run()
+}
+pub fn sleep_until(deadline: Instant) -> impl Future<Output = ()> + Send + 'static {
+    let delay = match host() {
+        Some(host) => Delay::Host(host.sleep(deadline.saturating_duration_since(host.now()))),
+        None => Delay::Tokio(tokio::time::sleep_until(deadline.into())),
+    };
+    async move {
+        match delay {
+            Delay::Tokio(delay) => delay.await,
+            Delay::Host(delay) => delay.await,
+        }
+    }
+}
+
+pub fn timeout_at<F: Future>(
+    deadline: Instant,
+    future: F,
+) -> impl Future<Output = Result<F::Output, crate::Elapsed>> {
+    let timed = match host() {
+        Some(host) => Timed::Host(
+            future,
+            host.sleep(deadline.saturating_duration_since(host.now())),
+        ),
+        None => Timed::Tokio(tokio::time::timeout_at(deadline.into(), future)),
+    };
+    timed.run()
+}
+
+enum Wake {
+    Tokio(Pin<Box<tokio::time::Sleep>>),
+    Host(HostFuture),
+}
+
+pub struct Sleep {
+    deadline: Instant,
+    wake: Wake,
+}
+
+impl Sleep {
+    pub fn after(duration: Duration) -> Self {
+        Self::until(now() + duration)
+    }
+
+    pub fn until(deadline: Instant) -> Self {
+        let wake = match host() {
+            Some(host) => Wake::Host(host.sleep(deadline.saturating_duration_since(host.now()))),
+            None => Wake::Tokio(Box::pin(tokio::time::sleep_until(deadline.into()))),
+        };
+        Self { deadline, wake }
+    }
+
+    pub const fn deadline(&self) -> Instant {
+        self.deadline
+    }
+
+    pub fn reset(&mut self, deadline: Instant) {
+        self.deadline = deadline;
+        match (&mut self.wake, host()) {
+            (Wake::Tokio(delay), None) => delay.as_mut().reset(deadline.into()),
+            (wake, _) => *wake = Self::until(deadline).wake,
+        }
+    }
+}
+
+impl Future for Sleep {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, context: &mut std::task::Context<'_>) -> Poll<()> {
+        match &mut self.get_mut().wake {
+            Wake::Tokio(delay) => delay.as_mut().poll(context),
+            Wake::Host(delay) => delay.as_mut().poll(context),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct TryCurrentError;
+
+impl std::fmt::Display for TryCurrentError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(
+            "there is no reactor running, must be called from the context of a Tokio 1.x runtime",
+        )
+    }
+}
+
+impl std::error::Error for TryCurrentError {}
+
+#[derive(Clone)]
+pub enum Handle {
+    Host(&'static dyn Host),
+    Tokio(tokio::runtime::Handle),
+}
+
+impl Handle {
+    pub fn try_current() -> Result<Self, TryCurrentError> {
+        if let Some(host) = host() {
+            return Ok(Self::Host(host));
+        }
+        tokio::runtime::Handle::try_current()
+            .map(Self::Tokio)
+            .map_err(|_| TryCurrentError)
+    }
+
+    pub fn enter(&self) -> Option<tokio::runtime::EnterGuard<'_>> {
+        match self {
+            Self::Host(_) => None,
+            Self::Tokio(runtime) => Some(runtime.enter()),
+        }
+    }
+
+    pub fn spawn(&self, future: impl Future<Output = ()> + Send + 'static) {
+        let future: HostFuture = Box::pin(future);
+        match self {
+            Self::Host(host) => host.spawn(future),
+            Self::Tokio(runtime) => drop(runtime.spawn(future)),
         }
     }
 }

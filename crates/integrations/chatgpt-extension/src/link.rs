@@ -91,7 +91,7 @@ impl ExtensionLink {
             if Instant::now() >= deadline {
                 return None;
             }
-            tokio::time::sleep(RECONNECT_POLL).await;
+            nanocode_platform::sleep(RECONNECT_POLL).await;
         }
     }
 
@@ -236,7 +236,7 @@ impl ExtensionLink {
         drop(waiting);
         let out = live.out.clone();
         let live = Arc::downgrade(&live);
-        let sent_and_answered = tokio::time::timeout(STEP_TIMEOUT, async {
+        let sent_and_answered = nanocode_platform::timeout(STEP_TIMEOUT, async {
             if out.send(frame).await.is_err() {
                 return None;
             }

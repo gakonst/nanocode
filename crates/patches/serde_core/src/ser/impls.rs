@@ -2,8 +2,6 @@ use crate::lib::*;
 
 use crate::ser::{Error, Serialize, SerializeTuple, Serializer};
 
-////////////////////////////////////////////////////////////////////////////////
-
 macro_rules! primitive_impl {
     ($ty:ident, $method:ident $($cast:tt)*) => {
         impl Serialize for $ty {
@@ -35,8 +33,6 @@ primitive_impl!(f32, serialize_f32);
 primitive_impl!(f64, serialize_f64);
 primitive_impl!(char, serialize_char);
 
-////////////////////////////////////////////////////////////////////////////////
-
 impl Serialize for str {
     #[inline]
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -47,8 +43,6 @@ impl Serialize for str {
     }
 }
 
-#[cfg(any(feature = "std", feature = "alloc"))]
-#[cfg_attr(docsrs, doc(cfg(any(feature = "std", feature = "alloc"))))]
 impl Serialize for String {
     #[inline]
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -68,10 +62,6 @@ impl<'a> Serialize for fmt::Arguments<'a> {
     }
 }
 
-////////////////////////////////////////////////////////////////////////////////
-
-#[cfg(any(feature = "std", not(no_core_cstr)))]
-#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 impl Serialize for CStr {
     #[inline]
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -82,8 +72,6 @@ impl Serialize for CStr {
     }
 }
 
-#[cfg(any(feature = "std", all(not(no_core_cstr), feature = "alloc")))]
-#[cfg_attr(docsrs, doc(cfg(any(feature = "std", feature = "alloc"))))]
 impl Serialize for CString {
     #[inline]
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -93,8 +81,6 @@ impl Serialize for CString {
         serializer.serialize_bytes(self.to_bytes())
     }
 }
-
-////////////////////////////////////////////////////////////////////////////////
 
 impl<T> Serialize for Option<T>
 where
@@ -112,8 +98,6 @@ where
     }
 }
 
-////////////////////////////////////////////////////////////////////////////////
-
 impl<T> Serialize for PhantomData<T>
 where
     T: ?Sized,
@@ -127,9 +111,6 @@ where
     }
 }
 
-////////////////////////////////////////////////////////////////////////////////
-
-// Does not require T: Serialize.
 impl<T> Serialize for [T; 0] {
     #[inline]
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -170,8 +151,6 @@ array_impls! {
     31 32
 }
 
-////////////////////////////////////////////////////////////////////////////////
-
 impl<T> Serialize for [T]
 where
     T: Serialize,
@@ -207,42 +186,28 @@ macro_rules! seq_impl {
 }
 
 seq_impl! {
-    #[cfg(any(feature = "std", feature = "alloc"))]
-    #[cfg_attr(docsrs, doc(cfg(any(feature = "std", feature = "alloc"))))]
     BinaryHeap<T>
 }
 
 seq_impl! {
-    #[cfg(any(feature = "std", feature = "alloc"))]
-    #[cfg_attr(docsrs, doc(cfg(any(feature = "std", feature = "alloc"))))]
     BTreeSet<T>
 }
 
 seq_impl! {
-    #[cfg(feature = "std")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
     HashSet<T, H: BuildHasher>
 }
 
 seq_impl! {
-    #[cfg(any(feature = "std", feature = "alloc"))]
-    #[cfg_attr(docsrs, doc(cfg(any(feature = "std", feature = "alloc"))))]
     LinkedList<T>
 }
 
 seq_impl! {
-    #[cfg(any(feature = "std", feature = "alloc"))]
-    #[cfg_attr(docsrs, doc(cfg(any(feature = "std", feature = "alloc"))))]
     Vec<T>
 }
 
 seq_impl! {
-    #[cfg(any(feature = "std", feature = "alloc"))]
-    #[cfg_attr(docsrs, doc(cfg(any(feature = "std", feature = "alloc"))))]
     VecDeque<T>
 }
-
-////////////////////////////////////////////////////////////////////////////////
 
 impl<Idx> Serialize for Range<Idx>
 where
@@ -260,8 +225,6 @@ where
     }
 }
 
-////////////////////////////////////////////////////////////////////////////////
-
 impl<Idx> Serialize for RangeFrom<Idx>
 where
     Idx: Serialize,
@@ -276,8 +239,6 @@ where
         state.end()
     }
 }
-
-////////////////////////////////////////////////////////////////////////////////
 
 impl<Idx> Serialize for RangeInclusive<Idx>
 where
@@ -295,8 +256,6 @@ where
     }
 }
 
-////////////////////////////////////////////////////////////////////////////////
-
 impl<Idx> Serialize for RangeTo<Idx>
 where
     Idx: Serialize,
@@ -311,8 +270,6 @@ where
         state.end()
     }
 }
-
-////////////////////////////////////////////////////////////////////////////////
 
 impl<T> Serialize for Bound<T>
 where
@@ -334,8 +291,6 @@ where
     }
 }
 
-////////////////////////////////////////////////////////////////////////////////
-
 impl Serialize for () {
     #[inline]
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -346,23 +301,9 @@ impl Serialize for () {
     }
 }
 
-#[cfg(feature = "unstable")]
-#[cfg_attr(docsrs, doc(cfg(feature = "unstable")))]
-impl Serialize for ! {
-    fn serialize<S>(&self, _serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        *self
-    }
-}
-
-////////////////////////////////////////////////////////////////////////////////
-
 macro_rules! tuple_impls {
     ($($len:expr => ($($n:tt $name:ident)+))+) => {
         $(
-            #[cfg_attr(docsrs, doc(hidden))]
             impl<$($name),+> Serialize for ($($name,)+)
             where
                 $($name: Serialize,)+
@@ -389,11 +330,6 @@ macro_rules! tuple_impl_body {
     };
 }
 
-#[cfg_attr(docsrs, doc(fake_variadic))]
-#[cfg_attr(
-    docsrs,
-    doc = "This trait is implemented for tuples up to 16 items long."
-)]
 impl<T> Serialize for (T,)
 where
     T: Serialize,
@@ -419,8 +355,6 @@ tuple_impls! {
     16 => (0 T0 1 T1 2 T2 3 T3 4 T4 5 T5 6 T6 7 T7 8 T8 9 T9 10 T10 11 T11 12 T12 13 T13 14 T14 15 T15)
 }
 
-////////////////////////////////////////////////////////////////////////////////
-
 macro_rules! map_impl {
     (
         $(#[$attr:meta])*
@@ -444,18 +378,12 @@ macro_rules! map_impl {
 }
 
 map_impl! {
-    #[cfg(any(feature = "std", feature = "alloc"))]
-    #[cfg_attr(docsrs, doc(cfg(any(feature = "std", feature = "alloc"))))]
     BTreeMap<K: Ord, V>
 }
 
 map_impl! {
-    #[cfg(feature = "std")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
     HashMap<K: Eq + Hash, V, H: BuildHasher>
 }
-
-////////////////////////////////////////////////////////////////////////////////
 
 macro_rules! deref_impl {
     (
@@ -484,55 +412,24 @@ deref_impl! {
 }
 
 deref_impl! {
-    #[cfg(any(feature = "std", feature = "alloc"))]
-    #[cfg_attr(docsrs, doc(cfg(any(feature = "std", feature = "alloc"))))]
     <T> Serialize for Box<T> where T: ?Sized + Serialize
 }
 
 deref_impl! {
-    /// This impl requires the [`"rc"`] Cargo feature of Serde.
-    ///
-    /// Serializing a data structure containing `Rc` will serialize a copy of
-    /// the contents of the `Rc` each time the `Rc` is referenced within the
-    /// data structure. Serialization will not attempt to deduplicate these
-    /// repeated data.
-    ///
-    /// [`"rc"`]: https://serde.rs/feature-flags.html#-features-rc
-    #[cfg(all(feature = "rc", any(feature = "std", feature = "alloc")))]
-    #[cfg_attr(docsrs, doc(cfg(all(feature = "rc", any(feature = "std", feature = "alloc")))))]
+    #[cfg(feature = "rc")]
     <T> Serialize for Rc<T> where T: ?Sized + Serialize
 }
 
 deref_impl! {
-    /// This impl requires the [`"rc"`] Cargo feature of Serde.
-    ///
-    /// Serializing a data structure containing `Arc` will serialize a copy of
-    /// the contents of the `Arc` each time the `Arc` is referenced within the
-    /// data structure. Serialization will not attempt to deduplicate these
-    /// repeated data.
-    ///
-    /// [`"rc"`]: https://serde.rs/feature-flags.html#-features-rc
-    #[cfg(all(feature = "rc", any(feature = "std", feature = "alloc")))]
-    #[cfg_attr(docsrs, doc(cfg(all(feature = "rc", any(feature = "std", feature = "alloc")))))]
+    #[cfg(feature = "rc")]
     <T> Serialize for Arc<T> where T: ?Sized + Serialize
 }
 
 deref_impl! {
-    #[cfg(any(feature = "std", feature = "alloc"))]
-    #[cfg_attr(docsrs, doc(cfg(any(feature = "std", feature = "alloc"))))]
     <'a, T> Serialize for Cow<'a, T> where T: ?Sized + Serialize + ToOwned
 }
 
-////////////////////////////////////////////////////////////////////////////////
-
-/// This impl requires the [`"rc"`] Cargo feature of Serde.
-///
-/// [`"rc"`]: https://serde.rs/feature-flags.html#-features-rc
-#[cfg(all(feature = "rc", any(feature = "std", feature = "alloc")))]
-#[cfg_attr(
-    docsrs,
-    doc(cfg(all(feature = "rc", any(feature = "std", feature = "alloc"))))
-)]
+#[cfg(feature = "rc")]
 impl<T> Serialize for RcWeak<T>
 where
     T: ?Sized + Serialize,
@@ -545,14 +442,7 @@ where
     }
 }
 
-/// This impl requires the [`"rc"`] Cargo feature of Serde.
-///
-/// [`"rc"`]: https://serde.rs/feature-flags.html#-features-rc
-#[cfg(all(feature = "rc", any(feature = "std", feature = "alloc")))]
-#[cfg_attr(
-    docsrs,
-    doc(cfg(all(feature = "rc", any(feature = "std", feature = "alloc"))))
-)]
+#[cfg(feature = "rc")]
 impl<T> Serialize for ArcWeak<T>
 where
     T: ?Sized + Serialize,
@@ -564,8 +454,6 @@ where
         self.upgrade().serialize(serializer)
     }
 }
-
-////////////////////////////////////////////////////////////////////////////////
 
 macro_rules! nonzero_integers {
     ($($T:ident,)+) => {
@@ -624,8 +512,6 @@ where
     }
 }
 
-#[cfg(feature = "std")]
-#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 impl<T> Serialize for Mutex<T>
 where
     T: ?Sized + Serialize,
@@ -641,8 +527,6 @@ where
     }
 }
 
-#[cfg(feature = "std")]
-#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 impl<T> Serialize for RwLock<T>
 where
     T: ?Sized + Serialize,
@@ -658,10 +542,6 @@ where
     }
 }
 
-////////////////////////////////////////////////////////////////////////////////
-
-#[cfg(feature = "result")]
-#[cfg_attr(docsrs, doc(cfg(feature = "result")))]
 impl<T, E> Serialize for Result<T, E>
 where
     T: Serialize,
@@ -680,8 +560,6 @@ where
     }
 }
 
-////////////////////////////////////////////////////////////////////////////////
-
 impl Serialize for Duration {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -695,10 +573,6 @@ impl Serialize for Duration {
     }
 }
 
-////////////////////////////////////////////////////////////////////////////////
-
-#[cfg(feature = "std")]
-#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 impl Serialize for SystemTime {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -716,13 +590,6 @@ impl Serialize for SystemTime {
     }
 }
 
-////////////////////////////////////////////////////////////////////////////////
-
-/// Serialize a value that implements `Display` as a string, when that string is
-/// statically known to never have more than a constant `MAX_LEN` bytes.
-///
-/// Panics if the `Display` impl tries to write more than `MAX_LEN` bytes.
-#[cfg(any(feature = "std", not(no_core_net)))]
 macro_rules! serialize_display_bounded_length {
     ($value:expr, $max:expr, $serializer:expr) => {{
         let mut buffer = [0u8; $max];
@@ -732,7 +599,6 @@ macro_rules! serialize_display_bounded_length {
     }};
 }
 
-#[cfg(any(feature = "std", not(no_core_net)))]
 impl Serialize for net::IpAddr {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -756,7 +622,6 @@ impl Serialize for net::IpAddr {
     }
 }
 
-#[cfg(any(feature = "std", not(no_core_net)))]
 const DEC_DIGITS_LUT: &[u8] = b"\
       0001020304050607080910111213141516171819\
       2021222324252627282930313233343536373839\
@@ -764,7 +629,6 @@ const DEC_DIGITS_LUT: &[u8] = b"\
       6061626364656667686970717273747576777879\
       8081828384858687888990919293949596979899";
 
-#[cfg(any(feature = "std", not(no_core_net)))]
 #[inline]
 fn format_u8(mut n: u8, out: &mut [u8]) -> usize {
     if n >= 100 {
@@ -785,7 +649,6 @@ fn format_u8(mut n: u8, out: &mut [u8]) -> usize {
     }
 }
 
-#[cfg(any(feature = "std", not(no_core_net)))]
 #[test]
 fn test_format_u8() {
     let mut i = 0u8;
@@ -802,7 +665,6 @@ fn test_format_u8() {
     }
 }
 
-#[cfg(any(feature = "std", not(no_core_net)))]
 impl Serialize for net::Ipv4Addr {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -814,10 +676,8 @@ impl Serialize for net::Ipv4Addr {
             let mut buf = [b'.'; MAX_LEN];
             let mut written = format_u8(self.octets()[0], &mut buf);
             for oct in &self.octets()[1..] {
-                // Skip over delimiters that we initialized buf with
                 written += format_u8(*oct, &mut buf[written + 1..]) + 1;
             }
-            // Safety: We've only written ASCII bytes to the buffer, so it is valid UTF-8
             let buf = unsafe { str::from_utf8_unchecked(&buf[..written]) };
             serializer.serialize_str(buf)
         } else {
@@ -826,7 +686,6 @@ impl Serialize for net::Ipv4Addr {
     }
 }
 
-#[cfg(any(feature = "std", not(no_core_net)))]
 impl Serialize for net::Ipv6Addr {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -842,7 +701,6 @@ impl Serialize for net::Ipv6Addr {
     }
 }
 
-#[cfg(any(feature = "std", not(no_core_net)))]
 impl Serialize for net::SocketAddr {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -866,7 +724,6 @@ impl Serialize for net::SocketAddr {
     }
 }
 
-#[cfg(any(feature = "std", not(no_core_net)))]
 impl Serialize for net::SocketAddrV4 {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -882,7 +739,6 @@ impl Serialize for net::SocketAddrV4 {
     }
 }
 
-#[cfg(any(feature = "std", not(no_core_net)))]
 impl Serialize for net::SocketAddrV6 {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -901,10 +757,6 @@ impl Serialize for net::SocketAddrV6 {
     }
 }
 
-////////////////////////////////////////////////////////////////////////////////
-
-#[cfg(feature = "std")]
-#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 impl Serialize for Path {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -917,8 +769,6 @@ impl Serialize for Path {
     }
 }
 
-#[cfg(feature = "std")]
-#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 impl Serialize for PathBuf {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -928,8 +778,7 @@ impl Serialize for PathBuf {
     }
 }
 
-#[cfg(all(feature = "std", any(unix, windows)))]
-#[cfg_attr(docsrs, doc(cfg(all(feature = "std", any(unix, windows)))))]
+#[cfg(any(unix, windows))]
 impl Serialize for OsStr {
     #[cfg(unix)]
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -951,8 +800,7 @@ impl Serialize for OsStr {
     }
 }
 
-#[cfg(all(feature = "std", any(unix, windows)))]
-#[cfg_attr(docsrs, doc(cfg(all(feature = "std", any(unix, windows)))))]
+#[cfg(any(unix, windows))]
 impl Serialize for OsString {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -961,8 +809,6 @@ impl Serialize for OsString {
         self.as_os_str().serialize(serializer)
     }
 }
-
-////////////////////////////////////////////////////////////////////////////////
 
 impl<T> Serialize for Wrapping<T>
 where
@@ -977,7 +823,6 @@ where
     }
 }
 
-#[cfg(not(no_core_num_saturating))]
 impl<T> Serialize for Saturating<T>
 where
     T: Serialize,
@@ -1004,20 +849,15 @@ where
     }
 }
 
-////////////////////////////////////////////////////////////////////////////////
-
-#[cfg(all(feature = "std", not(no_std_atomic)))]
 macro_rules! atomic_impl {
     ($($ty:ident $size:expr)*) => {
         $(
-            #[cfg(any(no_target_has_atomic, target_has_atomic = $size))]
-            #[cfg_attr(docsrs, doc(cfg(all(feature = "std", target_has_atomic = $size))))]
+            #[cfg(target_has_atomic = $size)]
             impl Serialize for $ty {
                 fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
                 where
                     S: Serializer,
                 {
-                    // Matches the atomic ordering used in libcore for the Debug impl
                     self.load(Ordering::Relaxed).serialize(serializer)
                 }
             }
@@ -1025,7 +865,6 @@ macro_rules! atomic_impl {
     }
 }
 
-#[cfg(all(feature = "std", not(no_std_atomic)))]
 atomic_impl! {
     AtomicBool "8"
     AtomicI8 "8"
@@ -1038,7 +877,6 @@ atomic_impl! {
     AtomicUsize "ptr"
 }
 
-#[cfg(all(feature = "std", not(no_std_atomic64)))]
 atomic_impl! {
     AtomicI64 "64"
     AtomicU64 "64"

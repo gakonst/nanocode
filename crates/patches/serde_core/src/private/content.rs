@@ -1,11 +1,5 @@
 use crate::lib::*;
 
-// Used from generated code to buffer the contents of the Deserializer when
-// deserializing untagged enums and internally tagged enums.
-//
-// Not public API. Use serde-value instead.
-//
-// Obsoleted by format-specific buffer types (https://github.com/serde-rs/serde/pull/2912).
 #[doc(hidden)]
 pub enum Content<'de> {
     Bool(bool),

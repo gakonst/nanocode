@@ -1,4 +1,3 @@
-#[cfg(any(feature = "std", feature = "alloc"))]
 use crate::lib::*;
 
 pub fn from_bounds<I>(iter: &I) -> Option<usize>
@@ -8,7 +7,6 @@ where
     helper(iter.size_hint())
 }
 
-#[cfg(any(feature = "std", feature = "alloc"))]
 pub fn cautious<Element>(hint: Option<usize>) -> usize {
     const MAX_PREALLOC_BYTES: usize = 1024 * 1024;
 

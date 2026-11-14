@@ -41,6 +41,11 @@ default_table='
 2 runtime_memory_twice pass --scenario runtime --store memory --twice
 2 runtime_kv_twice pass --scenario runtime --store kv --twice
 2 runtime_kv_calm pass --scenario runtime --store kv --calm
+8 runtime_kv_http pass --scenario runtime --store kv --wire http
+4 runtime_memory_http pass --scenario runtime --store memory --wire http
+2 runtime_kv_http_twice pass --scenario runtime --store kv --wire http --twice
+8 websocket pass --scenario websocket
+2 websocket_twice pass --scenario websocket --twice
 1 canary_cas_ignores_expected canary --scenario store --mutation cas_ignores_expected
 1 canary_record_insert_drops canary --scenario store --mutation record_insert_drops
 1 canary_power_loss_drops_acked canary --scenario store --mutation power_loss_drops_acked
@@ -54,6 +59,12 @@ default_table='
 1 canary_recovery_skips_clientless canary --scenario turns --mutation recovery_skips_clientless
 1 canary_tick_not_atomic canary --scenario turns --mutation tick_not_atomic
 1 canary_seal_skipped canary:4000 --scenario turns --live-seqs floor --mutation seal_skipped
+1 canary_http_reuse_dirty canary:100 --scenario runtime --store kv --wire http --mutation http-reuse-dirty
+1 canary_http_no_read_timeout canary:200 --scenario runtime --store kv --wire http --mutation http-no-read-timeout
+1 canary_tool_result_twice canary:40 --scenario runtime --store kv --wire http --mutation tool-result-twice
+1 canary_websocket_corrupt_payload canary --scenario websocket --mutation corrupt_payload
+1 canary_websocket_drop_client_byte canary --scenario websocket --mutation drop_client_byte
+1 canary_websocket_hold_eof canary --scenario websocket --mutation hold_eof
 '
 default_known='
 '

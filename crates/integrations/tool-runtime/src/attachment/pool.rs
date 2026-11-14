@@ -18,16 +18,14 @@ use std::{
     time::Duration,
 };
 
+use nanocode_executor::{AbortHandle, JoinHandle, JoinSet};
+use nanocode_executor::{TcpListener, TcpStream};
 use nanocode_sync::Signal;
 use nanocode_sync::{Atom, Ordered, Slot};
 use nanocode_sync::{mpsc, watch};
 use nanocode_websocket::{
     CloseCode, CloseFrame, Message,
     server::{ErrorResponse, Request, Response},
-};
-use tokio::{
-    net::{TcpListener, TcpStream},
-    task::{AbortHandle, JoinHandle, JoinSet},
 };
 
 #[derive(Clone)]
@@ -1245,7 +1243,7 @@ async fn first_text<S>(
     socket: &mut nanocode_websocket::WebSocketStream<S>,
 ) -> Result<String, AttachmentError>
 where
-    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    S: nanocode_io::AsyncRead + nanocode_io::AsyncWrite + Unpin,
 {
     while let Some(message) = socket.next().await {
         match message.map_err(error)? {

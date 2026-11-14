@@ -1,3 +1,4 @@
+use crate::libc;
 use std::{
     ffi::{CStr, c_char, c_void},
     mem,

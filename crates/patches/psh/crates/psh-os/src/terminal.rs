@@ -1,5 +1,6 @@
 #[cfg(unix)]
 pub fn stdout_columns() -> Option<usize> {
+    use nanocode_sys::libc;
     let mut size = libc::winsize {
         ws_row: 0,
         ws_col: 0,

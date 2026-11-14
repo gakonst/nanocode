@@ -3,7 +3,7 @@ use std::io::Write as _;
 use nanocode_sys::base64::STANDARD;
 use nanocode_http::types::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri, Version};
 use nanocode_http::parse::Status;
-use tokio::io::{AsyncRead, AsyncReadExt as _};
+use nanocode_io::{AsyncRead, AsyncReadExt as _};
 
 use crate::error::{Error, ProtocolError, Result, SubProtocolError, UrlError};
 

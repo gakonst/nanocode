@@ -56,7 +56,7 @@ const FAST_SERVICE_WINDOW: Duration = Duration::from_secs(30);
 
 pub(crate) struct Config {
     pub(crate) endpoint: Url,
-    pub(crate) listener: Option<tokio::net::TcpListener>,
+    pub(crate) listener: Option<nanocode_executor::TcpListener>,
     pub(crate) authorization: Box<str>,
     pub(crate) tools: Value,
     pub(crate) metadata: Option<AttachmentMetadata>,
@@ -116,14 +116,14 @@ pub(crate) async fn run(
                     let host = host.trim_start_matches('[').trim_end_matches(']');
                     let port = request.uri().port_u16().unwrap_or(if matches!(connector, Connector::Rustls(_)) { 443 } else { 80 });
                     let dns_started = Instant::now();
-                    let addresses: Vec<_> = tokio::net::lookup_host((host, port)).await?.collect();
+                    let addresses: Vec<_> = nanocode_executor::lookup_host((host, port)).await?.collect();
                     nanocode_trace::info!(target: "nanocode_code_mode::attachment",
                         stage = "attachment.socket.resolved",
                         duration_ms = dns_started.elapsed().as_secs_f64() * 1000.0,
                         elapsed_ms = connect_started.elapsed().as_secs_f64() * 1000.0,
                         "attachment address resolved");
                     let tcp_started = Instant::now();
-                    let stream = tokio::net::TcpStream::connect(addresses.as_slice()).await?;
+                    let stream = nanocode_executor::TcpStream::connect(addresses.as_slice()).await?;
                     stream.set_nodelay(true)?;
                     nanocode_trace::info!(target: "nanocode_code_mode::attachment",
                         stage = "attachment.socket.tcp",
@@ -521,7 +521,7 @@ struct RetainedCall {
 }
 
 enum Progress {
-    Running(tokio::task::AbortHandle),
+    Running(nanocode_executor::AbortHandle),
     Pending,
     Settled(Utf8Bytes),
 }
@@ -558,7 +558,7 @@ impl RetainedCall {
         matches!(self.progress, Progress::Running(_))
     }
 
-    fn take_task(&mut self) -> Option<tokio::task::AbortHandle> {
+    fn take_task(&mut self) -> Option<nanocode_executor::AbortHandle> {
         match std::mem::replace(&mut self.progress, Progress::Pending) {
             Progress::Running(task) => Some(task),
             progress => {
@@ -582,7 +582,7 @@ impl Drain {
 }
 
 struct InFlight {
-    task: tokio::task::JoinHandle<()>,
+    task: nanocode_executor::JoinHandle<()>,
 }
 
 async fn shutdown_calls(active: &mut Vec<InFlight>) {
@@ -730,7 +730,7 @@ fn start_call(
     events: CallEvents,
     completed: mpsc::UnboundedSender<Completion>,
     event_sender: &mpsc::Sender<AttachmentEvent>,
-) -> tokio::task::AbortHandle {
+) -> nanocode_executor::AbortHandle {
     let runtime = Arc::clone(runtime);
     let task_span = events.span.clone();
     let mut events = TaskEvents {
@@ -889,7 +889,7 @@ async fn connection<S>(
     commands: &mut mpsc::Receiver<Command>,
 ) -> ConnectionEnd
 where
-    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    S: nanocode_io::AsyncRead + nanocode_io::AsyncWrite + Unpin,
 {
     let ConnectionContext {
         config,
@@ -1203,7 +1203,7 @@ where
 
 async fn close_heartbeat_timeout<S>(socket: &mut nanocode_websocket::WebSocketStream<S>)
 where
-    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    S: nanocode_io::AsyncRead + nanocode_io::AsyncWrite + Unpin,
 {
     nanocode_trace::warn!(target: "nanocode_code_mode::attachment", stage = "attachment.socket.close_sent", close_code = u16::from(CloseCode::Restart), reason_code = "heartbeat_timeout", "attachment close sent");
     let _ = nanocode_platform::timeout(
@@ -1221,7 +1221,7 @@ async fn next_handshake_frame<S>(
     commands: &mut mpsc::Receiver<Command>,
 ) -> Result<EndpointFrame, ConnectionEnd>
 where
-    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    S: nanocode_io::AsyncRead + nanocode_io::AsyncWrite + Unpin,
 {
     nanocode_sync::select! {
         command = commands.recv() => match command { Some(Command::Detach) | None => Err(ConnectionEnd::Detached) },
@@ -1240,7 +1240,7 @@ async fn incoming_frame<S>(
     incoming: Option<Result<Message, nanocode_websocket::Error>>,
 ) -> Result<Option<EndpointFrame>, ConnectionEnd>
 where
-    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    S: nanocode_io::AsyncRead + nanocode_io::AsyncWrite + Unpin,
 {
     if let Some(Ok(Message::Close(frame))) = &incoming {
         nanocode_trace::info!(target: "nanocode_code_mode::attachment", stage = "attachment.socket.close_received", close_code = frame.as_ref().map(|frame| u16::from(frame.code)), reason_code = "remote_close", "attachment close received");
@@ -1278,7 +1278,7 @@ async fn next_frame<S>(
     socket: &mut nanocode_websocket::WebSocketStream<S>,
 ) -> Result<EndpointFrame, ConnectionEnd>
 where
-    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    S: nanocode_io::AsyncRead + nanocode_io::AsyncWrite + Unpin,
 {
     loop {
         let incoming = socket.next().await;
@@ -1294,7 +1294,7 @@ async fn reject<S>(
     reason: impl Into<Box<str>>,
 ) -> ConnectionEnd
 where
-    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    S: nanocode_io::AsyncRead + nanocode_io::AsyncWrite + Unpin,
 {
     let reason = reason.into();
     policy_close(socket, &reason).await;
@@ -1303,7 +1303,7 @@ where
 
 async fn policy_close<S>(socket: &mut nanocode_websocket::WebSocketStream<S>, reason: &str)
 where
-    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    S: nanocode_io::AsyncRead + nanocode_io::AsyncWrite + Unpin,
 {
     nanocode_trace::warn!(target: "nanocode_code_mode::attachment", stage = "attachment.socket.close_sent", close_code = u16::from(CloseCode::Policy), reason_code = "protocol_rejected", "attachment close sent");
     let reason = bounded(reason);
@@ -1325,7 +1325,7 @@ async fn send_diagnostics<S>(
     prepared: bool,
 ) -> Result<(), AttachmentError>
 where
-    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    S: nanocode_io::AsyncRead + nanocode_io::AsyncWrite + Unpin,
 {
     let now = Instant::now();
     let phases = clock.update(|clock| {
@@ -1384,7 +1384,7 @@ async fn send_retained<S>(
     replayed: bool,
 ) -> Result<(), AttachmentError>
 where
-    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    S: nanocode_io::AsyncRead + nanocode_io::AsyncWrite + Unpin,
 {
     let started = Instant::now();
     let received = call.timing.read(|clock| clock.received);
@@ -1453,7 +1453,7 @@ async fn send<S, T: serde::Serialize>(
     frame: &T,
 ) -> Result<(), AttachmentError>
 where
-    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    S: nanocode_io::AsyncRead + nanocode_io::AsyncWrite + Unpin,
 {
     let text = serde_json::to_string(frame)
         .map_err(|error| AttachmentError::Transport(error.to_string().into()))?;
@@ -1468,7 +1468,7 @@ async fn feed<S, T: serde::Serialize>(
     frame: &T,
 ) -> Result<(), AttachmentError>
 where
-    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    S: nanocode_io::AsyncRead + nanocode_io::AsyncWrite + Unpin,
 {
     let text = serde_json::to_string(frame)
         .map_err(|error| AttachmentError::Transport(error.to_string().into()))?;
@@ -1555,13 +1555,13 @@ fn trace_attachment_event(event: &AttachmentEvent) {
 }
 
 async fn accept_runner(
-    listener: &tokio::net::TcpListener,
+    listener: &nanocode_executor::TcpListener,
     authorization: &str,
     events: &mpsc::Sender<AttachmentEvent>,
 ) -> Result<
     (
         nanocode_websocket::WebSocketStream<
-            nanocode_websocket::MaybeTlsStream<tokio::net::TcpStream>,
+            nanocode_websocket::MaybeTlsStream<nanocode_executor::TcpStream>,
         >,
         nanocode_http::types::Response<Option<Vec<u8>>>,
     ),

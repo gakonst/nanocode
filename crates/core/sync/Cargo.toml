@@ -16,7 +16,8 @@ nanocode-sys.workspace = true
 serde.workspace = true
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-tokio = { workspace = true, features = ["io-util", "net", "rt", "time"] }
+nanocode-io.workspace = true
+nanocode-executor.workspace = true
 
 [lints]
 workspace = true

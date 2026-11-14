@@ -11,13 +11,14 @@ autotests = false
 autobenches = false
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
+nanocode-io.workspace = true
 nanocode-sync.workspace = true
 nanocode-http.workspace = true
 nanocode-digest.workspace = true
 nanocode-platform.workspace = true
 nanocode-sys.workspace = true
 nanocode-tls.workspace = true
-tokio = { workspace = true, features = ["io-util", "net"] }
+nanocode-executor.workspace = true
 
 [lints]
 workspace = true

@@ -10,20 +10,6 @@ description = "The one Nanocode crate with unsafe code: owned atomic pointers, a
 autotests = false
 autobenches = false
 
-[target.'cfg(unix)'.dependencies]
-libc.workspace = true
-
-[target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", default-features = false, features = [
-    "Win32_Foundation",
-    "Win32_Security",
-    "Win32_Security_Cryptography",
-    "Win32_Storage_FileSystem",
-    "Win32_System_IO",
-    "Win32_System_SystemServices",
-    "Win32_System_Threading",
-] }
-
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
 

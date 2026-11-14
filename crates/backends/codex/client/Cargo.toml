@@ -30,8 +30,9 @@ nanocode-digest.workspace = true
 nanocode-trace.workspace = true
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
+nanocode-io.workspace = true
 nanocode-tls.workspace = true
-tokio = { workspace = true, features = ["io-util", "net", "time", "rt"] }
+nanocode-executor.workspace = true
 nanocode-websocket.workspace = true
 nanocode-url.workspace = true
 nanocode-compression.workspace = true

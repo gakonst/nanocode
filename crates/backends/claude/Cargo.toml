@@ -32,12 +32,10 @@ serde.workspace = true
 serde_json.workspace = true
 nanocode-trace.workspace = true
 
-[target.'cfg(unix)'.dependencies]
-libc.workspace = true
-
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
+nanocode-io.workspace = true
 nanocode-process.workspace = true
-tokio = { workspace = true, features = ["fs"] }
+nanocode-executor.workspace = true
 
 [lints]
 workspace = true

@@ -1,3 +1,5 @@
+#[cfg(unix)]
+use crate::libc;
 use std::io;
 
 #[cfg(any(target_os = "linux", target_os = "android"))]

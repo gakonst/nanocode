@@ -2,6 +2,7 @@
 //! set with `setrlimit` in the fork path of spawn (posix_spawn cannot). The process's
 //! own limits are never changed (D1293).
 
+use nanocode_sys::libc;
 use psh_engine::host::{Limit, Rlimit};
 
 /// The type `getrlimit`/`setrlimit` take for a resource on this platform.

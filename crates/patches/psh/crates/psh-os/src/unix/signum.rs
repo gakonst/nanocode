@@ -1,6 +1,7 @@
 //! The engine numbers signals as Linux does on every platform (D1283); this maps them
 //! to the OS's numbers at the host's boundary, and back for exit statuses.
 
+use nanocode_sys::libc;
 use psh_engine::host::Signal;
 
 /// Linux number → this OS's constant, for the signals that differ between platforms.

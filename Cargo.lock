@@ -3,12 +3,6 @@
 version = 4
 
 [[package]]
-name = "bytes"
-version = "1.12.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
-
-[[package]]
 name = "djs-core"
 version = "0.0.0"
 dependencies = [
@@ -40,16 +34,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "errno"
-version = "0.3.14"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
-dependencies = [
- "libc",
- "windows-sys",
-]
-
-[[package]]
 name = "graviola"
 version = "0.4.1"
 dependencies = [
@@ -68,12 +52,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "libc"
-version = "0.2.191"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a"
-
-[[package]]
 name = "memchr"
 version = "2.8.3"
 dependencies = [
@@ -81,21 +59,9 @@ dependencies = [
 ]
 
 [[package]]
-name = "mio"
-version = "1.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "30d65c71f1ce40ab09135ce117d742b9f8a19ff91a41a8b57ed50bc2de59c427"
-dependencies = [
- "libc",
- "wasi",
- "windows-sys",
-]
-
-[[package]]
 name = "nanocode"
 version = "0.7.0"
 dependencies = [
- "libc",
  "nanocode-agent",
  "nanocode-agent-host",
  "nanocode-backend-claude",
@@ -103,17 +69,19 @@ dependencies = [
  "nanocode-code-mode",
  "nanocode-computer",
  "nanocode-durability",
+ "nanocode-executor",
  "nanocode-home",
+ "nanocode-io",
  "nanocode-platform",
  "nanocode-process-contracts",
  "nanocode-store-jsonl",
  "nanocode-subagents",
  "nanocode-sync",
+ "nanocode-sys",
  "nanocode-tool-runtime",
  "nanocode-tools",
  "nanocode-turnlog",
  "serde_json",
- "tokio",
 ]
 
 [[package]]
@@ -170,6 +138,7 @@ dependencies = [
  "nanocode-agent-core",
  "nanocode-computer-repl",
  "nanocode-durability",
+ "nanocode-executor",
  "nanocode-home",
  "nanocode-platform",
  "nanocode-process",
@@ -182,7 +151,6 @@ dependencies = [
  "nanocode-trace",
  "serde",
  "serde_json",
- "tokio",
 ]
 
 [[package]]
@@ -213,16 +181,17 @@ dependencies = [
 name = "nanocode-backend-claude"
 version = "0.7.0"
 dependencies = [
- "libc",
  "nanocode-agent-config",
  "nanocode-agent-core",
  "nanocode-backend-claude-client",
  "nanocode-backend-claude-tools",
  "nanocode-code-mode",
  "nanocode-durability",
+ "nanocode-executor",
  "nanocode-home",
  "nanocode-http",
  "nanocode-image",
+ "nanocode-io",
  "nanocode-platform",
  "nanocode-process",
  "nanocode-process-contracts",
@@ -236,7 +205,6 @@ dependencies = [
  "nanocode-url",
  "serde",
  "serde_json",
- "tokio",
 ]
 
 [[package]]
@@ -247,8 +215,10 @@ dependencies = [
  "nanocode-agent-types",
  "nanocode-bytes",
  "nanocode-digest",
+ "nanocode-executor",
  "nanocode-home",
  "nanocode-http",
+ "nanocode-io",
  "nanocode-platform",
  "nanocode-sync",
  "nanocode-sys",
@@ -257,7 +227,6 @@ dependencies = [
  "nanocode-url",
  "serde",
  "serde_json",
- "tokio",
  "unicode-normalization",
 ]
 
@@ -265,7 +234,6 @@ dependencies = [
 name = "nanocode-backend-claude-tools"
 version = "0.7.0"
 dependencies = [
- "libc",
  "nanocode-home",
  "nanocode-image",
  "nanocode-jpeg",
@@ -281,16 +249,17 @@ dependencies = [
 name = "nanocode-backend-codex"
 version = "0.7.0"
 dependencies = [
- "libc",
  "nanocode-agent-config",
  "nanocode-agent-core",
  "nanocode-backend-codex-client",
  "nanocode-code-mode",
  "nanocode-digest",
  "nanocode-durability",
+ "nanocode-executor",
  "nanocode-home",
  "nanocode-http",
  "nanocode-image",
+ "nanocode-io",
  "nanocode-platform",
  "nanocode-process",
  "nanocode-process-contracts",
@@ -303,7 +272,6 @@ dependencies = [
  "nanocode-types",
  "serde",
  "serde_json",
- "tokio",
 ]
 
 [[package]]
@@ -315,9 +283,11 @@ dependencies = [
  "nanocode-audio",
  "nanocode-compression",
  "nanocode-digest",
+ "nanocode-executor",
  "nanocode-home",
  "nanocode-http",
  "nanocode-image",
+ "nanocode-io",
  "nanocode-platform",
  "nanocode-sync",
  "nanocode-sys",
@@ -329,7 +299,6 @@ dependencies = [
  "nanocode-zstd",
  "serde",
  "serde_json",
- "tokio",
 ]
 
 [[package]]
@@ -340,15 +309,16 @@ version = "0.7.0"
 name = "nanocode-chatgpt-extension"
 version = "0.7.0"
 dependencies = [
- "libc",
  "nanocode-digest",
+ "nanocode-executor",
+ "nanocode-io",
  "nanocode-platform",
  "nanocode-sync",
+ "nanocode-sys",
  "nanocode-tool-contracts",
  "nanocode-url",
  "serde",
  "serde_json",
- "tokio",
 ]
 
 [[package]]
@@ -360,8 +330,10 @@ dependencies = [
  "nanocode-arguments",
  "nanocode-compression",
  "nanocode-computer-repl",
+ "nanocode-executor",
  "nanocode-home",
  "nanocode-http",
+ "nanocode-io",
  "nanocode-mpp",
  "nanocode-observability",
  "nanocode-platform",
@@ -378,7 +350,6 @@ dependencies = [
  "psh-engine",
  "serde",
  "serde_json",
- "tokio",
 ]
 
 [[package]]
@@ -406,6 +377,7 @@ version = "0.7.0"
 dependencies = [
  "djs-embed",
  "nanocode-digest",
+ "nanocode-executor",
  "nanocode-platform",
  "nanocode-sync",
  "nanocode-sys",
@@ -413,7 +385,6 @@ dependencies = [
  "nanocode-trace",
  "serde",
  "serde_json",
- "tokio",
 ]
 
 [[package]]
@@ -427,8 +398,9 @@ dependencies = [
 name = "nanocode-computer"
 version = "0.7.0"
 dependencies = [
- "libc",
  "nanocode-computer-repl",
+ "nanocode-executor",
+ "nanocode-io",
  "nanocode-jpeg",
  "nanocode-mcp",
  "nanocode-mcp-tools",
@@ -437,13 +409,14 @@ dependencies = [
  "nanocode-sys",
  "nanocode-tool-contracts",
  "serde_json",
- "tokio",
 ]
 
 [[package]]
 name = "nanocode-computer-repl"
 version = "0.7.0"
 dependencies = [
+ "nanocode-executor",
+ "nanocode-io",
  "nanocode-platform",
  "nanocode-sync",
  "nanocode-sys",
@@ -451,7 +424,6 @@ dependencies = [
  "nanocode-types",
  "serde",
  "serde_json",
- "tokio",
 ]
 
 [[package]]
@@ -459,7 +431,7 @@ name = "nanocode-cua-driver"
 version = "0.7.0"
 dependencies = [
  "nanocode-computer",
- "tokio",
+ "nanocode-executor",
 ]
 
 [[package]]
@@ -475,12 +447,12 @@ version = "0.7.0"
 dependencies = [
  "nanocode-agent-core",
  "nanocode-durability-core",
+ "nanocode-executor",
  "nanocode-platform",
  "nanocode-sync",
  "nanocode-trace",
  "serde",
  "serde_json",
- "tokio",
 ]
 
 [[package]]
@@ -496,6 +468,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "nanocode-executor"
+version = "0.7.0"
+dependencies = [
+ "nanocode-io",
+ "nanocode-sys",
+]
+
+[[package]]
 name = "nanocode-flags"
 version = "0.7.0"
 
@@ -507,9 +487,9 @@ version = "0.7.0"
 name = "nanocode-home"
 version = "0.7.0"
 dependencies = [
- "libc",
  "nanocode-digest",
  "nanocode-platform",
+ "nanocode-sys",
  "serde",
 ]
 
@@ -519,6 +499,8 @@ version = "0.7.0"
 dependencies = [
  "nanocode-bytes",
  "nanocode-compression",
+ "nanocode-executor",
+ "nanocode-io",
  "nanocode-platform",
  "nanocode-sync",
  "nanocode-sys",
@@ -527,7 +509,6 @@ dependencies = [
  "nanocode-zstd",
  "serde",
  "serde_json",
- "tokio",
 ]
 
 [[package]]
@@ -550,7 +531,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "nanocode-io"
+version = "0.7.0"
+dependencies = [
+ "nanocode-sys",
+]
+
+[[package]]
 name = "nanocode-jpeg"
+version = "0.7.0"
+dependencies = [
+ "nanocode-sys",
+]
+
+[[package]]
+name = "nanocode-libc"
 version = "0.7.0"
 dependencies = [
  "nanocode-sys",
@@ -585,7 +580,9 @@ dependencies = [
 name = "nanocode-mcp-http"
 version = "0.7.0"
 dependencies = [
+ "nanocode-executor",
  "nanocode-http",
+ "nanocode-io",
  "nanocode-mcp",
  "nanocode-platform",
  "nanocode-sync",
@@ -594,7 +591,6 @@ dependencies = [
  "nanocode-url",
  "serde",
  "serde_json",
- "tokio",
 ]
 
 [[package]]
@@ -602,8 +598,10 @@ name = "nanocode-mcp-tools"
 version = "0.7.0"
 dependencies = [
  "nanocode-digest",
+ "nanocode-executor",
  "nanocode-home",
  "nanocode-http",
+ "nanocode-io",
  "nanocode-mcp",
  "nanocode-mcp-http",
  "nanocode-platform",
@@ -617,7 +615,6 @@ dependencies = [
  "nanocode-types",
  "serde",
  "serde_json",
- "tokio",
 ]
 
 [[package]]
@@ -626,7 +623,9 @@ version = "0.7.0"
 dependencies = [
  "graviola",
  "nanocode-bytes",
+ "nanocode-executor",
  "nanocode-http",
+ "nanocode-io",
  "nanocode-platform",
  "nanocode-sync",
  "nanocode-tempo",
@@ -634,7 +633,6 @@ dependencies = [
  "nanocode-trace",
  "serde",
  "serde_json",
- "tokio",
 ]
 
 [[package]]
@@ -660,10 +658,10 @@ name = "nanocode-platform"
 version = "0.7.0"
 dependencies = [
  "nanocode-digest",
+ "nanocode-executor",
  "nanocode-sys",
  "rustls-pki-types",
  "serde",
- "tokio",
 ]
 
 [[package]]
@@ -677,15 +675,15 @@ dependencies = [
 name = "nanocode-process"
 version = "0.7.0"
 dependencies = [
- "libc",
+ "nanocode-executor",
  "nanocode-home",
+ "nanocode-io",
  "nanocode-platform",
  "nanocode-process-contracts",
  "nanocode-sync",
  "nanocode-sys",
  "nanocode-trace",
  "serde_json",
- "tokio",
 ]
 
 [[package]]
@@ -750,9 +748,10 @@ name = "nanocode-sandbox"
 version = "0.7.0"
 dependencies = [
  "graviola",
- "libc",
  "nanocode-bytes",
+ "nanocode-executor",
  "nanocode-http",
+ "nanocode-io",
  "nanocode-platform",
  "nanocode-sync",
  "nanocode-sys",
@@ -763,7 +762,6 @@ dependencies = [
  "rustls-platform-verifier",
  "serde",
  "serde_json",
- "tokio",
 ]
 
 [[package]]
@@ -802,6 +800,7 @@ dependencies = [
  "nanocode-durability",
  "nanocode-durability-core",
  "nanocode-http",
+ "nanocode-io",
  "nanocode-mpp",
  "nanocode-platform",
  "nanocode-sandbox",
@@ -813,18 +812,17 @@ dependencies = [
  "nanocode-websocket",
  "rustls",
  "serde_json",
- "tokio",
 ]
 
 [[package]]
 name = "nanocode-store-jsonl"
 version = "0.7.0"
 dependencies = [
- "libc",
  "nanocode-digest",
  "nanocode-durability-core",
  "nanocode-platform",
  "nanocode-sync",
+ "nanocode-sys",
  "nanocode-trace",
  "nanocode-zstd",
  "serde",
@@ -837,13 +835,14 @@ version = "0.7.0"
 dependencies = [
  "nanocode-digest",
  "nanocode-durability-core",
+ "nanocode-executor",
+ "nanocode-io",
  "nanocode-platform",
  "nanocode-sync",
  "nanocode-sys",
  "nanocode-tls",
  "nanocode-zstd",
  "rustls",
- "tokio",
 ]
 
 [[package]]
@@ -865,19 +864,16 @@ dependencies = [
 name = "nanocode-sync"
 version = "0.7.0"
 dependencies = [
+ "nanocode-executor",
+ "nanocode-io",
  "nanocode-platform",
  "nanocode-sys",
  "serde",
- "tokio",
 ]
 
 [[package]]
 name = "nanocode-sys"
 version = "0.7.0"
-dependencies = [
- "libc",
- "windows-sys",
-]
 
 [[package]]
 name = "nanocode-telemetry"
@@ -898,12 +894,12 @@ name = "nanocode-tls"
 version = "0.7.0"
 dependencies = [
  "graviola",
+ "nanocode-io",
  "nanocode-platform",
  "nanocode-sync",
  "nanocode-trace",
  "rustls",
  "rustls-platform-verifier",
- "tokio",
 ]
 
 [[package]]
@@ -950,8 +946,10 @@ name = "nanocode-tool-runtime"
 version = "0.7.0"
 dependencies = [
  "nanocode-code-mode",
+ "nanocode-executor",
  "nanocode-home",
  "nanocode-http",
+ "nanocode-io",
  "nanocode-mcp-tools",
  "nanocode-platform",
  "nanocode-process",
@@ -966,7 +964,6 @@ dependencies = [
  "nanocode-websocket",
  "serde",
  "serde_json",
- "tokio",
 ]
 
 [[package]]
@@ -998,11 +995,11 @@ name = "nanocode-tui"
 version = "0.7.0"
 dependencies = [
  "memchr",
+ "nanocode-executor",
  "nanocode-sync",
  "nanocode-sys",
  "nanocode-trace",
  "serde",
- "tokio",
 ]
 
 [[package]]
@@ -1054,12 +1051,20 @@ name = "nanocode-websocket"
 version = "0.7.0"
 dependencies = [
  "nanocode-digest",
+ "nanocode-executor",
  "nanocode-http",
+ "nanocode-io",
  "nanocode-platform",
  "nanocode-sync",
  "nanocode-sys",
  "nanocode-tls",
- "tokio",
+]
+
+[[package]]
+name = "nanocode-windows-sys"
+version = "0.7.0"
+dependencies = [
+ "nanocode-sys",
 ]
 
 [[package]]
@@ -1081,6 +1086,7 @@ dependencies = [
  "nanocode-agent-host",
  "nanocode-backend-codex",
  "nanocode-durability",
+ "nanocode-executor",
  "nanocode-home",
  "nanocode-platform",
  "nanocode-psh",
@@ -1092,14 +1098,7 @@ dependencies = [
  "psh",
  "serde",
  "serde_json",
- "tokio",
 ]
-
-[[package]]
-name = "pin-project-lite"
-version = "0.2.17"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
 name = "psh"
@@ -1131,9 +1130,9 @@ dependencies = [
 name = "psh-os"
 version = "0.0.0"
 dependencies = [
- "libc",
+ "nanocode-sys",
+ "nanocode-windows-sys",
  "psh-engine",
- "windows-sys",
 ]
 
 [[package]]
@@ -1168,7 +1167,7 @@ dependencies = [
 name = "pymath"
 version = "0.2.0"
 dependencies = [
- "libc",
+ "nanocode-libc",
  "nanocode-numeric",
 ]
 
@@ -1192,9 +1191,9 @@ dependencies = [
  "nanocode-platform",
  "nanocode-sys",
  "nanocode-trace",
+ "nanocode-windows-sys",
  "rustls",
  "rustls-webpki",
- "windows-sys",
 ]
 
 [[package]]
@@ -1226,10 +1225,10 @@ dependencies = [
 name = "rustpython-common"
 version = "0.6.0"
 dependencies = [
- "libc",
  "memchr",
  "nanocode-compression",
  "nanocode-flags",
+ "nanocode-libc",
  "nanocode-numeric",
  "nanocode-platform",
  "nanocode-sys",
@@ -1290,12 +1289,12 @@ dependencies = [
 name = "rustpython-host_env"
 version = "0.6.0"
 dependencies = [
- "libc",
  "memchr",
+ "nanocode-libc",
  "nanocode-platform",
  "nanocode-sys",
+ "nanocode-windows-sys",
  "rustpython-wtf8",
- "windows-sys",
 ]
 
 [[package]]
@@ -1374,8 +1373,8 @@ name = "rustpython-stdlib"
 version = "0.6.0"
 dependencies = [
  "indexmap",
- "libc",
  "memchr",
+ "nanocode-libc",
  "nanocode-numeric",
  "nanocode-platform",
  "pymath",
@@ -1405,9 +1404,9 @@ version = "0.6.0"
 dependencies = [
  "indexmap",
  "itoa",
- "libc",
  "memchr",
  "nanocode-flags",
+ "nanocode-libc",
  "nanocode-numeric",
  "nanocode-platform",
  "nanocode-trace",
@@ -1462,61 +1461,5 @@ dependencies = [
 ]
 
 [[package]]
-name = "signal-hook-registry"
-version = "1.4.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c4db69cba1110affc0e9f7bcd48bbf87b3f4fc7c61fc9155afd4c469eb3d6c1b"
-dependencies = [
- "errno",
- "libc",
-]
-
-[[package]]
-name = "socket2"
-version = "0.6.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
-dependencies = [
- "libc",
- "windows-sys",
-]
-
-[[package]]
-name = "tokio"
-version = "1.52.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8fc7f01b389ac15039e4dc9531aa973a135d7a4135281b12d7c1bc79fd57fffe"
-dependencies = [
- "bytes",
- "libc",
- "mio",
- "pin-project-lite",
- "signal-hook-registry",
- "socket2",
- "windows-sys",
-]
-
-[[package]]
 name = "unicode-normalization"
 version = "0.1.25"
-
-[[package]]
-name = "wasi"
-version = "0.11.1+wasi-snapshot-preview1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ccf3ec651a847eb01de73ccad15eb7d99f80485de043efb2f370cd654f4ea44b"
-
-[[package]]
-name = "windows-link"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f0805222e57f7521d6a62e36fa9163bc891acd422f971defe97d64e70d0a4fe5"
-
-[[package]]
-name = "windows-sys"
-version = "0.61.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ae137229bcbd6cdf0f7b80a31df61766145077ddf49416a728b02cb3921ff3fc"
-dependencies = [
- "windows-link",
-]

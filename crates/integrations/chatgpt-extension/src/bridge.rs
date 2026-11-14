@@ -367,7 +367,7 @@ impl Bridge {
             .write(true)
             .create(true)
             .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW)
+            .custom_flags(nanocode_sys::libc::O_NOFOLLOW)
             .open(self.state.join("chatgpt.lock"))?;
         file.lock()?;
         Ok(Guard {

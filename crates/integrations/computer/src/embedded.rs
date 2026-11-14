@@ -4,6 +4,7 @@ use crate::{
     macos::{self, Ax},
     tool::STOPPED,
 };
+use nanocode_io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use nanocode_mcp::RpcError;
 use nanocode_sync::Owned;
 use serde_json::{Map, Value, json};
@@ -13,7 +14,6 @@ use std::{
     process::{Command, Stdio},
     sync::Arc,
 };
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 const PROTOCOL_VERSION: &str = "2025-06-18";
 const PARSE_ERROR: i64 = -32700;
@@ -635,8 +635,8 @@ fn tools() -> Value {
 
 pub async fn serve_stdio() -> Result<(), String> {
     let server = Server::start("mcp").await?;
-    let mut reader = BufReader::new(tokio::io::stdin());
-    let mut writer = tokio::io::stdout();
+    let mut reader = BufReader::new(nanocode_executor::fs::stdin());
+    let mut writer = nanocode_executor::fs::stdout();
     let mut line = String::new();
     loop {
         line.clear();

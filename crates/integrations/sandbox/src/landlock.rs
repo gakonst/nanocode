@@ -335,7 +335,7 @@ impl Created {
         for path in paths {
             let Ok(parent) = OpenOptions::new()
                 .read(true)
-                .custom_flags(libc::O_PATH | libc::O_CLOEXEC)
+                .custom_flags(nanocode_sys::libc::O_PATH | nanocode_sys::libc::O_CLOEXEC)
                 .open(path.as_ref())
             else {
                 continue;

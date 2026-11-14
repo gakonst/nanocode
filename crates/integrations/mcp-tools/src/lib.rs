@@ -76,7 +76,7 @@ pub struct Mcp {
     started: AtomicBool,
 
     #[cfg(not(target_family = "wasm"))]
-    startup_tasks: OnceLock<tokio::task::JoinSet<()>>,
+    startup_tasks: OnceLock<nanocode_executor::JoinSet<()>>,
 }
 
 pub struct PreparedMcpTool {
@@ -114,7 +114,7 @@ pub struct McpHandle {
 #[cfg(not(target_family = "wasm"))]
 pub struct McpLogin {
     authorization_url: String,
-    completion: tokio::task::JoinHandle<Result<usize, McpControlError>>,
+    completion: nanocode_executor::JoinHandle<Result<usize, McpControlError>>,
 }
 
 #[derive(Debug)]
@@ -829,7 +829,7 @@ impl Mcp {
             return;
         }
         #[cfg(not(target_family = "wasm"))]
-        let mut startup_tasks = tokio::task::JoinSet::new();
+        let mut startup_tasks = nanocode_executor::JoinSet::new();
         for server in &*self.servers {
             let name = server.name.clone();
             let model_namespace = server.model_namespace.clone();

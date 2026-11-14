@@ -1,3 +1,4 @@
+use nanocode_sys::libc;
 use std::{
     fs::{self, File, OpenOptions, TryLockError},
     io::{self, Write},

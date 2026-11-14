@@ -16,7 +16,7 @@ serde.workspace = true
 memchr.workspace = true
 nanocode-sync.workspace = true
 nanocode-sys.workspace = true
-tokio = { workspace = true, features = ["net", "signal"] }
+nanocode-executor.workspace = true
 nanocode-trace.workspace = true
 
 [lints]

@@ -4,11 +4,11 @@ use std::pin::Pin;
 
 use nanocode_agent::events::AgentEvent;
 use nanocode_agent::{Agent, AgentEvents, TurnControl, TurnResult};
+use nanocode_executor::JoinHandle;
 use nanocode_sync::mpsc;
 use nanocode_tui::input::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use nanocode_tui::terminal::{self, ansi};
 use nanocode_tui::unicode;
-use tokio::task::JoinHandle;
 
 use crate::markdown::{BOLD, DIM, Markdown, RED, RESET};
 use crate::{Config, Lite, Result, Shown, shown, workspace_sessions};
@@ -42,7 +42,7 @@ pub fn run(config: Config) -> Result<()> {
     prompt(&mut out)?;
     out.flush()?;
     let (cols, rows) = terminal::size()?;
-    crate::tokio_runtime()?.block_on(async move {
+    crate::nanocode_runtime()?.block_on(async move {
         let start = Start::Pending(nanocode_platform::spawn_task(Lite::start(config.clone())));
         let mut tui = Tui {
             out,

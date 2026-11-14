@@ -5,12 +5,12 @@ use std::{
     task::{Context, Poll, Wake, Waker},
 };
 
+use nanocode_io::{AsyncRead, AsyncWrite, AsyncWriteExt as _, ReadBuf};
 use nanocode_sync::{
     AtomicWaker,
     sink::{Sink, SinkExt as _},
     stream::{FusedStream, Stream},
 };
-use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt as _, ReadBuf};
 
 use crate::{
     error::{Error, ProtocolError, Result},

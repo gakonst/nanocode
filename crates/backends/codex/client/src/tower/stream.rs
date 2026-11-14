@@ -763,10 +763,10 @@ where
     loop {
         #[cfg(not(target_family = "wasm"))]
         {
-            if !tokio::task::coop::has_budget_remaining() {
+            if !nanocode_executor::coop::has_budget_remaining() {
                 flush_display_deltas(events, &mut timing)?;
             }
-            tokio::task::coop::consume_budget().await;
+            nanocode_executor::coop::consume_budget().await;
         }
         let (received, started_ns) = match source.try_next_text() {
             Ok(Some(received)) => (received, monotonic_now_ns()),

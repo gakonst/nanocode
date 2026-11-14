@@ -13,16 +13,14 @@ use super::{
     OpenAiAuthSource,
 };
 use nanocode_digest::Sha256;
+use nanocode_executor::TcpListener;
+use nanocode_io::{AsyncReadExt, AsyncWriteExt};
 use nanocode_platform::{Duration, timeout};
 use nanocode_sync::{SingleFlight, Swap};
 use nanocode_sys::base64::URL_SAFE_NO_PAD;
 use nanocode_trace::Instrument;
 use nanocode_url::Url;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::TcpListener,
-};
 
 const AUTH_ISSUER: &str = "https://auth.openai.com";
 const AUTH_API_BASE_URL: &str = "https://auth.openai.com/api/accounts";
@@ -238,7 +236,7 @@ impl ChatGptLogin {
 
 struct OAuthCallback {
     target: String,
-    stream: tokio::net::TcpStream,
+    stream: nanocode_executor::TcpStream,
 }
 
 impl OAuthCallback {

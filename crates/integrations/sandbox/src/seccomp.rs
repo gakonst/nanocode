@@ -266,18 +266,18 @@ pub(crate) struct Syscalls {
 }
 
 pub(crate) const NATIVE: Syscalls = Syscalls {
-    socket: libc::SYS_socket,
-    sendto: libc::SYS_sendto,
-    sendmsg: libc::SYS_sendmsg,
-    sendmmsg: libc::SYS_sendmmsg,
-    io_uring_setup: libc::SYS_io_uring_setup,
-    io_uring_enter: libc::SYS_io_uring_enter,
-    io_uring_register: libc::SYS_io_uring_register,
-    listen: libc::SYS_listen,
-    accept: libc::SYS_accept,
-    accept4: libc::SYS_accept4,
-    setsid: libc::SYS_setsid,
-    setpgid: libc::SYS_setpgid,
+    socket: nanocode_sys::libc::SYS_socket,
+    sendto: nanocode_sys::libc::SYS_sendto,
+    sendmsg: nanocode_sys::libc::SYS_sendmsg,
+    sendmmsg: nanocode_sys::libc::SYS_sendmmsg,
+    io_uring_setup: nanocode_sys::libc::SYS_io_uring_setup,
+    io_uring_enter: nanocode_sys::libc::SYS_io_uring_enter,
+    io_uring_register: nanocode_sys::libc::SYS_io_uring_register,
+    listen: nanocode_sys::libc::SYS_listen,
+    accept: nanocode_sys::libc::SYS_accept,
+    accept4: nanocode_sys::libc::SYS_accept4,
+    setsid: nanocode_sys::libc::SYS_setsid,
+    setpgid: nanocode_sys::libc::SYS_setpgid,
 };
 
 fn argument(index: u8, operation: Operation, value: i32) -> Result<Condition, Box<dyn std::error::Error + Send + Sync>> {
@@ -290,22 +290,22 @@ pub(crate) fn tool_filter(
 ) -> Result<Vec<SocketFilter>, Box<dyn std::error::Error + Send + Sync>> {
     let mut socket = vec![
         Rule::new(vec![
-            argument(SOCKET_DOMAIN_ARGUMENT, Operation::NotEqual, libc::AF_INET)?,
-            argument(SOCKET_DOMAIN_ARGUMENT, Operation::NotEqual, libc::AF_INET6)?,
+            argument(SOCKET_DOMAIN_ARGUMENT, Operation::NotEqual, nanocode_sys::libc::AF_INET)?,
+            argument(SOCKET_DOMAIN_ARGUMENT, Operation::NotEqual, nanocode_sys::libc::AF_INET6)?,
         ])?,
         Rule::new(vec![
             argument(SOCKET_PROTOCOL_ARGUMENT, Operation::NotEqual, SOCKET_DEFAULT_PROTOCOL)?,
-            argument(SOCKET_PROTOCOL_ARGUMENT, Operation::NotEqual, libc::IPPROTO_TCP)?,
+            argument(SOCKET_PROTOCOL_ARGUMENT, Operation::NotEqual, nanocode_sys::libc::IPPROTO_TCP)?,
         ])?,
     ];
-    for kind in (0..SOCKET_TYPES).filter(|kind| *kind != libc::SOCK_STREAM) {
+    for kind in (0..SOCKET_TYPES).filter(|kind| *kind != nanocode_sys::libc::SOCK_STREAM) {
         let masked = Operation::MaskedEqual(SOCKET_TYPE_MASK);
         socket.push(Rule::new(vec![argument(SOCKET_TYPE_ARGUMENT, masked, kind)?])?);
     }
-    let fast_open_mask = u64::try_from(libc::MSG_FASTOPEN)?;
+    let fast_open_mask = u64::try_from(nanocode_sys::libc::MSG_FASTOPEN)?;
     let fast_open = |index| -> Result<Vec<Rule>, Box<dyn std::error::Error + Send + Sync>> {
         let masked = Operation::MaskedEqual(fast_open_mask);
-        Ok(vec![Rule::new(vec![argument(index, masked, libc::MSG_FASTOPEN)?])?])
+        Ok(vec![Rule::new(vec![argument(index, masked, nanocode_sys::libc::MSG_FASTOPEN)?])?])
     };
     let rules = BTreeMap::from([
         (syscalls.socket, socket),
@@ -321,7 +321,7 @@ pub(crate) fn tool_filter(
         (syscalls.setsid, Vec::new()),
         (syscalls.setpgid, Vec::new()),
     ]);
-    let errno = u32::try_from(libc::EPERM)?;
+    let errno = u32::try_from(nanocode_sys::libc::EPERM)?;
     let arch = Arch::from_name(arch_name)?;
     let mut program = compile(&rules, Action::Allow, Action::Errno(errno), arch)?;
     if arch == Arch::X86_64 {

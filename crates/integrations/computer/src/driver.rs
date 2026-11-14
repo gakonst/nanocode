@@ -6,9 +6,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+use nanocode_executor::process::Command;
 use nanocode_mcp::Session;
 use serde_json::{Map, Value, json};
-use tokio::process::Command;
 
 pub use crate::policy::{Leases, app_key};
 pub use nanocode_mcp::Error as McpError;
@@ -81,7 +81,7 @@ impl McpClient {
             .map_err(|error| error.to_string())?;
         if let Some(mut stderr) = stderr {
             drop(nanocode_platform::spawn_task(async move {
-                let _ = tokio::io::copy(&mut stderr, &mut tokio::io::sink()).await;
+                let _ = nanocode_io::copy(&mut stderr, &mut nanocode_io::sink()).await;
             }));
         }
         session

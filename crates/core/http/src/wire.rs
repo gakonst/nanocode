@@ -2,8 +2,8 @@ use std::{fmt, io};
 
 use crate::types::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Version, header};
 use nanocode_bytes::Bytes;
+use nanocode_io::{AsyncReadExt, AsyncWriteExt};
 use nanocode_sync::Duplex;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 pub const HEAD_BYTES_MAX: usize = 8192 + 4096 * 100;
 pub const HEADERS_MAX: usize = 100;

@@ -1,11 +1,4 @@
-use std::{
-    fs::{self, File, OpenOptions},
-    io, mem,
-    os::windows::{ffi::OsStrExt, fs::OpenOptionsExt, io::AsRawHandle},
-    path::Path,
-    ptr,
-};
-use windows_sys::Win32::{
+use crate::windows_sys::Win32::{
     Foundation::{
         CloseHandle, ERROR_NOT_ALL_ASSIGNED, FALSE, GENERIC_READ, GENERIC_WRITE, GetLastError,
         HANDLE, LUID,
@@ -24,6 +17,13 @@ use windows_sys::Win32::{
         SystemServices::IO_REPARSE_TAG_MOUNT_POINT,
         Threading::{GetCurrentProcess, OpenProcessToken},
     },
+};
+use std::{
+    fs::{self, File, OpenOptions},
+    io, mem,
+    os::windows::{ffi::OsStrExt, fs::OpenOptionsExt, io::AsRawHandle},
+    path::Path,
+    ptr,
 };
 
 const FSCTL_SET_REPARSE_POINT: u32 = 0x0009_00A4;

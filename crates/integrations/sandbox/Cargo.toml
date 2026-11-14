@@ -16,6 +16,7 @@ include = ["src/**", "Cargo.toml"]
 
 [target.'cfg(unix)'.dependencies]
 nanocode-bytes.workspace = true
+nanocode-io.workspace = true
 nanocode-http.workspace = true
 nanocode-sync.workspace = true
 nanocode-x509.workspace = true
@@ -23,10 +24,9 @@ graviola.workspace = true
 rustls = { workspace = true, features = ["std", "tls12"] }
 nanocode-tls.workspace = true
 rustls-platform-verifier = "0.7.0"
-libc.workspace = true
 nanocode-sys.workspace = true
 serde.workspace = true
-tokio = { workspace = true, features = ["io-util", "net", "process", "rt", "time"] }
+nanocode-executor.workspace = true
 nanocode-trace.workspace = true
 nanocode-platform.workspace = true
 

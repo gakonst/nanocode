@@ -3,7 +3,7 @@ use std::{io::Read, sync::Arc};
 use nanocode_process_contracts::LastActivity;
 use nanocode_sync::{Actor, Stopped};
 
-use tokio::io::{AsyncRead, AsyncReadExt};
+use nanocode_io::{AsyncRead, AsyncReadExt};
 
 use super::process::{Exit, Ready};
 
@@ -97,7 +97,7 @@ pub(super) fn open() -> Vec<Arc<std::os::fd::OwnedFd>> {
 }
 
 pub(super) async fn discard(mut pipe: impl AsyncRead + Unpin, _open: Open) {
-    let _ = tokio::io::copy(&mut pipe, &mut tokio::io::sink()).await;
+    let _ = nanocode_io::copy(&mut pipe, &mut nanocode_io::sink()).await;
 }
 
 pub(super) async fn drain<P: AsyncRead + Ready + Unpin + Send + 'static>(
@@ -153,8 +153,8 @@ pub(super) fn drain_blocking(
     mut pipe: std::fs::File,
     chunks: Sender,
     activity: Arc<LastActivity>,
-) -> tokio::task::JoinHandle<()> {
-    let runtime = tokio::runtime::Handle::current();
+) -> nanocode_executor::JoinHandle<()> {
+    let runtime = nanocode_executor::Handle::current();
     nanocode_platform::spawn_blocking(move || {
         let _open = Open::new(&pipe);
         let mut buffer = [0_u8; READ_BUFFER_LENGTH];

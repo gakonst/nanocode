@@ -36,12 +36,10 @@ nanocode-digest.workspace = true
 nanocode-trace.workspace = true
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
+nanocode-io.workspace = true
 nanocode-process.workspace = true
 nanocode-tls.workspace = true
-tokio = { workspace = true, features = ["fs", "io-util", "rt", "time"] }
-
-[target.'cfg(unix)'.dependencies]
-libc.workspace = true
+nanocode-executor.workspace = true
 
 [lints]
 workspace = true

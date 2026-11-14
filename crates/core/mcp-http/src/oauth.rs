@@ -4,8 +4,11 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+use nanocode_executor::JoinHandle;
+use nanocode_executor::TcpListener;
 use nanocode_http::types::{HeaderName, HeaderValue};
 use nanocode_http::{StatusCode, Url};
+use nanocode_io::{AsyncReadExt, AsyncWriteExt};
 use nanocode_mcp::oauth::{
     AuthorizationCallback, AuthorizationMetadata, AuthorizationUrl, ClientAuthentication,
     ClientRegistrationRequest, ClientRegistrationResponse, DISCOVERY_PROTOCOL_VERSION,
@@ -14,11 +17,6 @@ use nanocode_mcp::oauth::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::TcpListener,
-    task::JoinHandle,
-};
 
 use nanocode_sync::{Swap, SwapOption};
 use nanocode_trace::{Instrument, info_span};
@@ -1505,7 +1503,7 @@ async fn receive_callback(listener: TcpListener, redirect_uri: &str) -> Result<S
 }
 
 async fn respond(
-    stream: &mut tokio::net::TcpStream,
+    stream: &mut nanocode_executor::TcpStream,
     status: u16,
     body: &str,
 ) -> Result<(), String> {

@@ -72,6 +72,7 @@ members = [
     "crates/integrations/telemetry",
     "crates/integrations/store-sql",
     "crates/integrations/store-jsonl",
+    "crates/integrations/mpp",
     "crates/tui",
     "bin/nanocode",
     "bin/cua-driver",
@@ -152,6 +153,7 @@ psh = { path = "crates/patches/psh/crates/psh" }
 psh-classify = { path = "crates/patches/psh/crates/psh-classify" }
 psh-syntax = { path = "crates/patches/psh/crates/psh-syntax" }
 nanocode-mcp-tools = { version = "0.7.0", path = "crates/integrations/mcp-tools" }
+nanocode-mpp = { version = "0.7.0", path = "crates/integrations/mpp" }
 nanocode-code-mode-engine = { version = "0.7.0", path = "crates/runtime/code-mode-engine" }
 nanocode-tools-macros = { version = "0.7.0", path = "crates/core/tools-macros" }
 proc-macro2 = "1.0.106"

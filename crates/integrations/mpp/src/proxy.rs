@@ -54,7 +54,7 @@ const ALPN_HTTP1: &[u8] = b"http/1.1";
 const EVENT_STREAM: &str = "text/event-stream";
 const TOKEN_BYTES: usize = 16;
 
-pub(crate) struct ForwardProxy<P> {
+pub struct ForwardProxy<P> {
     listener: std::net::TcpListener,
     address: SocketAddr,
     token: String,
@@ -66,7 +66,7 @@ pub(crate) struct ForwardProxy<P> {
 }
 
 impl<P: PaymentProvider + 'static> ForwardProxy<P> {
-    pub(crate) fn bind<E: Display>(
+    pub fn bind<E: Display>(
         providers: impl Fn(&Url) -> Result<P, E> + Send + Sync + 'static,
     ) -> Result<Self, Fault> {
         let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
@@ -88,28 +88,28 @@ impl<P: PaymentProvider + 'static> ForwardProxy<P> {
     }
 
     #[must_use]
-    pub(crate) fn bypass(mut self, hosts: impl IntoIterator<Item = impl Into<String>>) -> Self {
+    pub fn bypass(mut self, hosts: impl IntoIterator<Item = impl Into<String>>) -> Self {
         self.bypass.extend(hosts.into_iter().map(Into::into));
         self
     }
 
     #[must_use]
-    pub(crate) fn events(mut self, events: Events) -> Self {
+    pub fn events(mut self, events: Events) -> Self {
         self.events = events;
         self
     }
 
     #[must_use]
-    pub(crate) fn identity(mut self, identity: Arc<Identity>) -> Self {
+    pub fn identity(mut self, identity: Arc<Identity>) -> Self {
         self.identity = Some(identity);
         self
     }
 
-    pub(crate) fn certificates(&self) -> &Path {
+    pub fn certificates(&self) -> &Path {
         &self.certificates
     }
 
-    pub(crate) fn environment(&self) -> Vec<(&'static str, String)> {
+    pub fn environment(&self) -> Vec<(&'static str, String)> {
         let proxy = format!("http://{PROXY_USER}:{}@{}", self.token, self.address);
         let mut bypass: Vec<String> = NO_PROXY_VARIABLES
             .into_iter()
@@ -143,10 +143,7 @@ impl<P: PaymentProvider + 'static> ForwardProxy<P> {
         ]
     }
 
-    pub(crate) fn spawn(
-        self,
-        policy: impl Future<Output = Policy> + Send + 'static,
-    ) -> Result<(), Fault> {
+    pub fn spawn(self, policy: impl Future<Output = Policy> + Send + 'static) -> Result<(), Fault> {
         let (authority, root) = CertificateAuthority::generate()?;
         let system = match nanocode_platform::trust::native_bundle_file() {
             Some(file) => Ok(std::fs::File::open(file)?),
@@ -231,7 +228,7 @@ fn token() -> Result<String, Fault> {
     let mut random = [0u8; TOKEN_BYTES];
     nanocode_platform::fill_random(&mut random)
         .map_err(|error| Fault::Internal(error.to_string()))?;
-    Ok(nanocode::platform::Uuid::from_random_bytes(random)
+    Ok(nanocode_platform::Uuid::from_random_bytes(random)
         .simple()
         .to_string())
 }

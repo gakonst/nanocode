@@ -11,14 +11,14 @@ use serde_json::{Map, Value, json};
 use super::error::Fault;
 use super::rpc::{Rpc, RpcFault};
 
-pub(crate) const CHAIN_ID: u64 = 4217;
+pub const CHAIN_ID: u64 = 4217;
 pub(crate) const MODERATO_CHAIN_ID: u64 = 42431;
-pub(crate) const DEFAULT_RPC_URL: &str = "https://rpc.tempo.xyz";
+pub const DEFAULT_RPC_URL: &str = "https://rpc.tempo.xyz";
 pub(crate) const MODERATO_RPC_URL: &str = "https://rpc.moderato.tempo.xyz";
-pub(crate) const PATH_USD: Address = address("20c0000000000000000000000000000000000000");
-pub(crate) const USDC: Address = address("20C000000000000000000000b9537d11c60E8b50");
-pub(crate) const OUSD: Address = address("20c0000000000000000000006a37DA5C996874BE");
-pub(crate) const USDT0: Address = address("20c00000000000000000000014f22ca97301eb73");
+pub const PATH_USD: Address = address("20c0000000000000000000000000000000000000");
+pub const USDC: Address = address("20C000000000000000000000b9537d11c60E8b50");
+pub const OUSD: Address = address("20c0000000000000000000006a37DA5C996874BE");
+pub const USDT0: Address = address("20c00000000000000000000014f22ca97301eb73");
 pub(crate) const DEFAULT_CURRENCY_MAINNET: Address = USDC;
 pub(crate) const DEFAULT_CURRENCY_TESTNET: Address = PATH_USD;
 pub(crate) const MACH: Address = address("20c000000000000000000000f37de3740ADec032");
@@ -109,7 +109,7 @@ impl TempoNetwork {
     }
 }
 
-pub(crate) const fn machine_token(chain_id: u64) -> Option<Address> {
+pub const fn machine_token(chain_id: u64) -> Option<Address> {
     match TempoNetwork::from_chain_id(chain_id) {
         Some(_) => Some(MACH),
         None => None,

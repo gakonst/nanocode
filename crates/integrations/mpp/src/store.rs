@@ -78,7 +78,7 @@ pub(crate) fn channel_key(payee: &str, token: &str, escrow: Address, chain_id: u
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum StoreFault {
+pub enum StoreFault {
     Io(String),
     InvalidEntry(String),
 }
@@ -139,7 +139,7 @@ fn merged(
     Ok(merged)
 }
 
-pub(crate) fn default_channel_database_path() -> Result<PathBuf, Fault> {
+pub fn default_channel_database_path() -> Result<PathBuf, Fault> {
     accounts::default_store_path()
         .map(|path| path.with_file_name(DATABASE_FILE))
         .map_err(|error| Fault::Io(error.to_string()))
@@ -218,7 +218,7 @@ impl TryFrom<JsonChannelEntry> for StoredChannelEntry {
 }
 
 #[derive(Default)]
-pub(crate) struct MemoryChannelStore {
+pub struct MemoryChannelStore {
     entries: Atom<HashMap<String, StoredChannelEntry>>,
     leases: Atom<HashMap<String, Arc<Semaphore>>>,
     server_spent: Atom<HashMap<String, (Hash, u128, u128)>>,
@@ -288,10 +288,10 @@ impl MemoryChannelStore {
 }
 
 #[derive(Debug, Clone, Default)]
-pub(crate) struct FileChannelStoreOptions {
-    pub(crate) namespace: String,
-    pub(crate) path: Option<PathBuf>,
-    pub(crate) request_url: Option<String>,
+pub struct FileChannelStoreOptions {
+    pub namespace: String,
+    pub path: Option<PathBuf>,
+    pub request_url: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -340,7 +340,7 @@ struct FileStore {
 }
 
 #[derive(Clone)]
-pub(crate) struct FileChannelStore {
+pub struct FileChannelStore {
     inner: Arc<FileStore>,
 }
 
@@ -765,7 +765,7 @@ fn import_database(database: &Path) -> Result<Vec<Row>, StoreFault> {
 }
 
 impl FileChannelStore {
-    pub(crate) fn open(options: FileChannelStoreOptions) -> Result<Self, StoreFault> {
+    pub fn open(options: FileChannelStoreOptions) -> Result<Self, StoreFault> {
         let database = match options.path {
             Some(path) => path,
             None => default_channel_database_path().map_err(|error| match error {
@@ -836,7 +836,7 @@ impl FileStore {
 }
 
 #[derive(Clone)]
-pub(crate) enum ChannelStore {
+pub enum ChannelStore {
     Memory(Arc<MemoryChannelStore>),
     File(FileChannelStore),
 }

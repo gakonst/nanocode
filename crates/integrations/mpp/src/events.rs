@@ -6,28 +6,28 @@ use nanocode_sync::Atom;
 use super::protocol::{Challenge, Receipt};
 
 #[derive(Debug, Clone)]
-pub(crate) struct PaymentResponse {
-    pub(crate) challenge: Challenge,
-    pub(crate) url: Url,
-    pub(crate) receipt: Option<Receipt>,
-    pub(crate) amount: Option<u128>,
-    pub(crate) funding_currency: Option<String>,
+pub struct PaymentResponse {
+    pub challenge: Challenge,
+    pub url: Url,
+    pub receipt: Option<Receipt>,
+    pub amount: Option<u128>,
+    pub funding_currency: Option<String>,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct Deposit {
-    pub(crate) url: Url,
-    pub(crate) channel_id: String,
-    pub(crate) currency: Option<String>,
-    pub(crate) amount: u128,
-    pub(crate) deposit: u128,
-    pub(crate) opened: bool,
+pub struct Deposit {
+    pub url: Url,
+    pub channel_id: String,
+    pub currency: Option<String>,
+    pub amount: u128,
+    pub deposit: u128,
+    pub opened: bool,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct PaymentUpdate {
-    pub(crate) url: Url,
-    pub(crate) change: i128,
+pub struct PaymentUpdate {
+    pub url: Url,
+    pub change: i128,
 }
 
 type Handlers<T> = Atom<Vec<Arc<dyn Fn(&T) + Send + Sync>>>;
@@ -40,7 +40,7 @@ struct Listeners {
 }
 
 #[derive(Clone, Default)]
-pub(crate) struct Events(Arc<Listeners>);
+pub struct Events(Arc<Listeners>);
 
 fn emit<T>(handlers: &Handlers<T>, event: &T) {
     for handler in handlers.get().iter() {
@@ -49,27 +49,21 @@ fn emit<T>(handlers: &Handlers<T>, event: &T) {
 }
 
 impl Events {
-    pub(crate) fn on_payment_response(
-        &self,
-        handler: impl Fn(&PaymentResponse) + Send + Sync + 'static,
-    ) {
+    pub fn on_payment_response(&self, handler: impl Fn(&PaymentResponse) + Send + Sync + 'static) {
         let handler: Arc<dyn Fn(&PaymentResponse) + Send + Sync> = Arc::new(handler);
         self.0
             .responses
             .update(|handlers| handlers.push(handler.clone()));
     }
 
-    pub(crate) fn on_deposit(&self, handler: impl Fn(&Deposit) + Send + Sync + 'static) {
+    pub fn on_deposit(&self, handler: impl Fn(&Deposit) + Send + Sync + 'static) {
         let handler: Arc<dyn Fn(&Deposit) + Send + Sync> = Arc::new(handler);
         self.0
             .deposits
             .update(|handlers| handlers.push(handler.clone()));
     }
 
-    pub(crate) fn on_payment_update(
-        &self,
-        handler: impl Fn(&PaymentUpdate) + Send + Sync + 'static,
-    ) {
+    pub fn on_payment_update(&self, handler: impl Fn(&PaymentUpdate) + Send + Sync + 'static) {
         let handler: Arc<dyn Fn(&PaymentUpdate) + Send + Sync> = Arc::new(handler);
         self.0
             .updates

@@ -13,10 +13,10 @@ use super::protocol::{
 };
 use super::provider::{PaymentContext, PaymentProvider, PendingPayment};
 
-pub(crate) const DEFAULT_MAX_PAYMENT_RETRIES: usize = 3;
+pub const DEFAULT_MAX_PAYMENT_RETRIES: usize = 3;
 
 #[derive(Debug, Clone)]
-pub(crate) enum Policy {
+pub enum Policy {
     Always,
     Origins(Vec<String>),
 }
@@ -42,7 +42,7 @@ fn matches_origin(url: &Url, pattern: &str) -> bool {
 }
 
 #[derive(Debug)]
-pub(crate) enum HttpFault {
+pub enum HttpFault {
     MissingChallenge,
     NoSupportedChallenge(String),
     InvalidCredential(String),
@@ -83,7 +83,7 @@ impl From<Fault> for HttpFault {
 }
 
 #[derive(Debug)]
-pub(crate) enum FlowError<E> {
+pub enum FlowError<E> {
     Payment(HttpFault),
     Send(E),
 }
@@ -94,7 +94,7 @@ impl<E> From<HttpFault> for FlowError<E> {
     }
 }
 
-pub(crate) trait Exchange: Send {
+pub trait Exchange: Send {
     type Error: Display + Send;
 
     fn check_challenge(&self, challenge: &Challenge) -> Result<(), HttpFault> {
@@ -261,7 +261,7 @@ fn session_origin_mismatch() -> HttpFault {
     HttpFault::Payment(Fault::config("session response origin mismatch"))
 }
 
-pub(crate) async fn send_with_exchange<P: PaymentProvider, X: Exchange>(
+pub async fn send_with_exchange<P: PaymentProvider, X: Exchange>(
     exchange: &mut X,
     request: Request,
     provider: &P,

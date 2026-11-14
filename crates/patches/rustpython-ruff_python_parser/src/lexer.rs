@@ -8,7 +8,7 @@
 
 use std::cmp::Ordering;
 
-use unicode_ident::{is_xid_continue, is_xid_start};
+use rustpython_unicode::identifier::{is_xid_continue, is_xid_start};
 
 use ruff_python_ast::StringFlags;
 use ruff_python_ast::str_prefix::{AnyStringPrefix, StringLiteralPrefix};

@@ -41,8 +41,8 @@ package = "rustpython-ruff_source_file"
 version = "0.16.5"
 package = "rustpython-ruff_text_size"
 
-[dependencies.unicode-ident]
-version = "1.0.12"
+[dependencies.rustpython-unicode]
+version = "0.6.0"
 
 [lints.clippy]
 char_lit_as_u8 = "allow"

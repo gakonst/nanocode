@@ -1,4 +1,4 @@
-use unicode_ident::{is_xid_continue, is_xid_start};
+use rustpython_unicode::identifier::{is_xid_continue, is_xid_start};
 
 use ruff_text_size::{Ranged, TextLen, TextRange, TextSize};
 

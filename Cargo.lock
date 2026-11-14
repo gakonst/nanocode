@@ -1361,7 +1361,6 @@ dependencies = [
  "rustpython-ruff_python_trivia",
  "rustpython-ruff_text_size",
  "rustpython-unicode",
- "unicode-ident",
  "unicode-normalization",
 ]
 
@@ -1371,7 +1370,7 @@ version = "0.16.5"
 dependencies = [
  "rustpython-ruff_source_file",
  "rustpython-ruff_text_size",
- "unicode-ident",
+ "rustpython-unicode",
 ]
 
 [[package]]
@@ -1521,12 +1520,6 @@ dependencies = [
  "socket2",
  "windows-sys",
 ]
-
-[[package]]
-name = "unicode-ident"
-version = "1.0.24"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
 
 [[package]]
 name = "unicode-normalization"

@@ -1212,7 +1212,7 @@ pub(super) fn panicked_tool_output(
 ) -> ToolOutput {
     let message = crate::panic_message(payload);
     record_tool_content(span, "tool.panic", &message);
-    ToolOutput::error("aborted")
+    nanocode_code_mode::embedded::tool_panicked()
 }
 
 pub(super) fn tool_execution_span(

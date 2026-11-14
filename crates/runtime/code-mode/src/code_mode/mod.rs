@@ -3216,15 +3216,9 @@ async fn execute_nested_call(
             }))
         }
         Nested::Run if host => {
-            tools
-                .execute_host_nested(&name, Value::clone(&input), context)
-                .await
+            caught(tools.execute_host_nested(&name, Value::clone(&input), context)).await
         }
-        Nested::Run => {
-            tools
-                .execute_nested(&name, Value::clone(&input), context)
-                .await
-        }
+        Nested::Run => caught(tools.execute_nested(&name, Value::clone(&input), context)).await,
     };
     let duration_ns = u64::try_from(started_at.elapsed().as_nanos()).unwrap_or(u64::MAX);
     let encoded = execution.structured_json().map(str::to_owned);
@@ -3252,6 +3246,13 @@ async fn execute_nested_call(
             metadata: execution.metadata,
         },
     }
+}
+
+async fn caught(call: impl std::future::Future<Output = ToolOutput>) -> ToolOutput {
+    std::panic::AssertUnwindSafe(call)
+        .catch_unwind()
+        .await
+        .unwrap_or_else(|_| crate::embedded::tool_panicked())
 }
 
 fn failed_execution(

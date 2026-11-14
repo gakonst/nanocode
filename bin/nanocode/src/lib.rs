@@ -515,13 +515,12 @@ async fn latest_session(host: &Host) -> Result<String> {
         .as_ref()
         .ok_or("--continue requires durability")?;
     store
-        .list()
+        .list_page(Some(host.config.workspace.as_path()), 1, |record| {
+            sessions::user_facing(record.lineage.origin)
+        })
         .await?
         .into_iter()
-        .find(|session| {
-            sessions::user_facing(session.record.lineage.origin)
-                && session.record.workspace.as_deref() == Some(host.config.workspace.as_path())
-        })
+        .next()
         .map(|session| session.record.session_id)
         .ok_or_else(|| "no saved session for this workspace".into())
 }
@@ -663,21 +662,28 @@ async fn list_sessions(args: SessionsArgs) -> Result<()> {
         return Ok(());
     }
     let workspace = std::env::current_dir()?;
-    for session in store.list().await? {
+    let limit = args.limit.map_or(Ok(sessions::PAGE), usize::try_from)?;
+    let mut page = store
+        .list_page(
+            (!args.all).then_some(workspace.as_path()),
+            limit.saturating_add(1),
+            |record| sessions::user_facing(record.lineage.origin),
+        )
+        .await?;
+    let more = page.len() > limit;
+    page.truncate(limit);
+    for session in &page {
         let record = &session.record;
-        if !sessions::user_facing(record.lineage.origin) {
-            continue;
-        }
-        if !args.all && record.workspace.as_deref() != Some(workspace.as_path()) {
-            continue;
-        }
         println!(
             "{}  {:>8}  {:<20}  {}",
             record.session_id,
             sessions::age(record.updated_at_ms),
             sessions::model(record),
-            sessions::title(&session)
+            sessions::title(session)
         );
+    }
+    if more {
+        eprintln!("nanocode: more sessions than the {limit} shown; --limit <n> lists more");
     }
     store.flush().await?;
     Ok(())

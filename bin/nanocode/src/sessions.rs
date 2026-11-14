@@ -6,6 +6,8 @@ use nanocode_tui::{
     transcript::{CellKind, ToolStatus, Transcript},
 };
 
+pub const PAGE: usize = 100;
+
 pub fn age(updated_at_ms: u64) -> String {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)

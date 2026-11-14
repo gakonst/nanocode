@@ -348,18 +348,11 @@ impl App {
         let tx = self.tx.clone();
         nanocode_platform::spawn_task(async move {
             let sessions = store
-                .list()
+                .list_page(Some(workspace.as_path()), usize::MAX, |record| {
+                    crate::sessions::user_facing(record.lineage.origin)
+                })
                 .await
-                .map_err(|error| error.to_string())
-                .map(|sessions| {
-                    sessions
-                        .into_iter()
-                        .filter(|session| {
-                            crate::sessions::user_facing(session.record.lineage.origin)
-                                && session.record.workspace.as_deref() == Some(workspace.as_path())
-                        })
-                        .collect()
-                });
+                .map_err(|error| error.to_string());
             drop(tx.send(AppEvent::Sessions(sessions)));
         });
     }

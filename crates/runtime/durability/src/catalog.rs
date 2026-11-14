@@ -244,7 +244,7 @@ mod store {
 
     use std::{
         collections::{BTreeMap, HashSet},
-        path::PathBuf,
+        path::{Path, PathBuf},
         sync::Arc,
     };
 
@@ -271,6 +271,20 @@ mod store {
     pub use transfer::{BranchCursor, BranchExport, BranchExportMode, BranchImport, BranchPage};
 
     pub const LIST_LIMIT: usize = 1000;
+
+    enum Candidate {
+        Listed(StateSummary),
+        Read(SessionSummary),
+    }
+
+    impl Candidate {
+        const fn updated_at_ms(&self) -> u64 {
+            match self {
+                Self::Listed(summary) => summary.updated_at_ms,
+                Self::Read(session) => session.record.updated_at_ms,
+            }
+        }
+    }
 
     #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
     pub struct SessionSummary {
@@ -615,6 +629,19 @@ mod store {
         }
 
         pub async fn list(&self) -> Result<Vec<SessionSummary>> {
+            self.list_page(None, usize::MAX, |_| true).await
+        }
+
+        pub async fn list_page(
+            &self,
+            workspace: Option<&Path>,
+            limit: usize,
+            keep: impl Fn(&SessionRecord) -> bool,
+        ) -> Result<Vec<SessionSummary>> {
+            let wanted = |record: &SessionRecord| {
+                workspace.is_none_or(|workspace| record.workspace.as_deref() == Some(workspace))
+                    && keep(record)
+            };
             let Some(listed) = self.store.clone().list_summaries(usize::MAX).await? else {
                 let ids = self.store.clone().list_states(usize::MAX).await?;
                 let mut sessions: Vec<_> = nanocode_sync::try_join_in_order(
@@ -625,21 +652,24 @@ mod store {
                 .await?
                 .into_iter()
                 .flatten()
+                .filter(|session| wanted(&session.record))
                 .collect();
                 sessions.sort_by_key(|session| std::cmp::Reverse(session.record.updated_at_ms));
+                sessions.truncate(limit);
                 return Ok(sessions);
             };
-            let mut sessions = Vec::with_capacity(listed.len());
+            let elsewhere =
+                |scope: &str| workspace.is_some_and(|workspace| Path::new(scope) != workspace);
+            let mut candidates = Vec::with_capacity(listed.len());
             let mut unknown = Vec::new();
             for state in listed {
                 if is_auxiliary_state(&state.state_id) {
                     continue;
                 }
                 match state.summary {
-                    ListedSummary::Listed(summary) => sessions.push(SessionSummary {
-                        record: serde_json::from_str(&summary.value)?,
-                        preview: summary.preview,
-                    }),
+                    ListedSummary::Listed(summary)
+                        if summary.scope.as_deref().is_some_and(elsewhere) => {}
+                    ListedSummary::Listed(summary) => candidates.push(Candidate::Listed(summary)),
                     ListedSummary::Unlisted => {}
                     ListedSummary::Unknown => unknown.push(state.state_id),
                 }
@@ -654,12 +684,28 @@ mod store {
                     revision,
                     summary: summary.as_ref().map(listed_summary).transpose()?,
                 });
-                sessions.extend(summary);
+                candidates.extend(summary.map(Candidate::Read));
             }
             if !known.is_empty() {
                 self.store.clone().remember_summaries(known).await?;
             }
-            sessions.sort_by_key(|session| std::cmp::Reverse(session.record.updated_at_ms));
+            candidates.sort_by_key(|candidate| std::cmp::Reverse(candidate.updated_at_ms()));
+            let mut sessions = Vec::new();
+            for candidate in candidates {
+                if sessions.len() == limit {
+                    break;
+                }
+                let session = match candidate {
+                    Candidate::Listed(summary) => SessionSummary {
+                        record: serde_json::from_str(&summary.value)?,
+                        preview: summary.preview,
+                    },
+                    Candidate::Read(session) => session,
+                };
+                if wanted(&session.record) {
+                    sessions.push(session);
+                }
+            }
             Ok(sessions)
         }
 

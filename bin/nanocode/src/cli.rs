@@ -393,6 +393,9 @@ const SESSIONS: Group = Group::named(
         Argument::flag("all")
             .long("all")
             .help("Include sessions from every workspace"),
+        Argument::value("limit", "N", Parser::U64)
+            .long("limit")
+            .help("List at most N sessions, newest first (100 unless set)"),
         Argument::positional("session", "SESSION", Parser::Text)
             .help("Print this session's user and assistant messages instead of listing sessions"),
     ],
@@ -773,6 +776,7 @@ impl HandArgs {
 pub struct SessionsArgs {
     pub home: Option<PathBuf>,
     pub all: bool,
+    pub limit: Option<u64>,
     pub session: Option<String>,
 }
 
@@ -781,6 +785,7 @@ impl SessionsArgs {
         Self {
             home: matches.path("home"),
             all: matches.flag("all"),
+            limit: matches.u64("limit"),
             session: matches.text("session"),
         }
     }

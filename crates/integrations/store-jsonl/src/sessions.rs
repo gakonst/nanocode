@@ -24,6 +24,7 @@ const OPEN_JOURNALS: usize = 32;
 const EXTENSION: &str = ".jsonl";
 const HOMES: &str = ".homes";
 const COPY: &str = ".listed-";
+const OWNER_EXTENSION: &str = "owner";
 
 pub(super) struct Sessions {
     directory: PathBuf,
@@ -35,6 +36,7 @@ pub(super) struct Sessions {
     shared: Option<Shared>,
     touched: HashSet<String>,
     unknown: HashMap<String, Option<Summary>>,
+    held: HashMap<String, fs::File>,
 }
 
 struct Opened {
@@ -161,7 +163,65 @@ impl Sessions {
             shared: None,
             touched: HashSet::new(),
             unknown: HashMap::new(),
+            held: HashMap::new(),
         })
+    }
+
+    fn owner_path(&self, key: &str) -> PathBuf {
+        self.path(key).with_extension(OWNER_EXTENSION)
+    }
+
+    fn hold(&mut self, state_id: &str) {
+        let key = self.home(state_id);
+        if self.held.contains_key(&key) {
+            return;
+        }
+        let path = self.owner_path(&key);
+        let held = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&path)
+            .and_then(|mut file| match file.try_lock() {
+                Ok(()) => {
+                    file.set_len(0)?;
+                    file.write_all(std::process::id().to_string().as_bytes())?;
+                    Ok(Some(file))
+                }
+                Err(fs::TryLockError::WouldBlock) => Ok(None),
+                Err(fs::TryLockError::Error(error)) => Err(error),
+            });
+        match held {
+            Ok(Some(file)) => {
+                self.held.insert(key, file);
+            }
+            Ok(None) => {}
+            Err(error) => {
+                nanocode_trace::warn!(%error, state_id, "could not mark this process as the owner of a JSONL session");
+            }
+        }
+    }
+
+    pub(super) fn live_owner(&mut self, state_id: &str) -> Result<Option<u32>, StoreError> {
+        let key = self.home(state_id);
+        if self.held.contains_key(&key) {
+            return Ok(None);
+        }
+        let mut file = match fs::File::open(self.owner_path(&key)) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(backend(error)),
+        };
+        match file.try_lock_shared() {
+            Ok(()) => Ok(None),
+            Err(fs::TryLockError::WouldBlock) => {
+                let mut pid = String::new();
+                file.read_to_string(&mut pid).map_err(backend)?;
+                Ok(Some(pid.trim().parse().unwrap_or(0)))
+            }
+            Err(fs::TryLockError::Error(error)) => Err(backend(error)),
+        }
     }
 
     fn home(&self, state_id: &str) -> String {
@@ -390,9 +450,12 @@ impl Sessions {
         update: StoreUpdate,
     ) -> Result<OwnedState, StoreError> {
         let update = self.sharing(update);
-        self.opened(id)?
+        let owned = self
+            .opened(id)?
             .acquire_batch(id, owner_id, update, None)
-            .map(|(owned, _)| owned)
+            .map(|(owned, _)| owned)?;
+        self.hold(id);
+        Ok(owned)
     }
 
     pub(super) fn acquire_with_companion(
@@ -415,9 +478,11 @@ impl Sessions {
             update,
             Some((companion_id, companion_owner)),
         )?;
-        companion
+        let acquired = companion
             .map(|companion| (owned, companion))
-            .ok_or_else(|| backend("JSONL companion acquisition was not staged"))
+            .ok_or_else(|| backend("JSONL companion acquisition was not staged"))?;
+        self.hold(id);
+        Ok(acquired)
     }
 
     pub(super) fn acquire(
@@ -425,7 +490,9 @@ impl Sessions {
         id: &str,
         owner_id: OwnerId,
     ) -> Result<OwnedState, StoreError> {
-        self.opened(id)?.acquire(id, owner_id)
+        let owned = self.opened(id)?.acquire(id, owner_id)?;
+        self.hold(id);
+        Ok(owned)
     }
 
     pub(super) fn acquire_many(
@@ -456,6 +523,11 @@ impl Sessions {
                     .and_then(|journal| journal.acquire_many(&group)),
                 None => continue,
             };
+            if acquired.is_ok()
+                && let Some((first, _)) = group.first()
+            {
+                self.hold(first);
+            }
             match acquired {
                 Ok(states) => {
                     for (slot, state) in slots.into_iter().zip(states) {

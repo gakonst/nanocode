@@ -3124,6 +3124,15 @@ pub async fn open_session(
         .capabilities(nanocode::ModelTransport::Native)
         .check_thinking(thinking)?;
     let pending = pending_turns(&stored.turns, stored.in_progress.as_deref())?;
+    if !pending.is_empty()
+        && let Some(archiver) = &host.config.archiver
+        && let Some(pid) = archiver.live_owner(session_id).await?
+    {
+        return Err(format!(
+            "session {session_id} is running a turn in nanocode process {pid}; let that turn finish or stop it there, then resume"
+        )
+        .into());
+    }
     let prompts = stored
         .turns
         .iter()

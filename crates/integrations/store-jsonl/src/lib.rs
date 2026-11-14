@@ -2689,6 +2689,19 @@ impl JsonlArchiver {
         };
         store.read(|sessions| Ok(sessions.written())).await
     }
+
+    pub async fn live_owner(&self, state_id: &str) -> Result<Option<u32>, StoreError> {
+        let mut store = JsonlStore {
+            jobs: self.jobs.clone(),
+            closed: None,
+            failed: Arc::clone(&self.failed),
+            colocated: Arc::clone(&self.colocated),
+        };
+        let state_id = state_id.to_owned();
+        store
+            .read(move |sessions| sessions.live_owner(&state_id))
+            .await
+    }
 }
 
 struct Colocated(std::sync::mpsc::Sender<(String, String)>);

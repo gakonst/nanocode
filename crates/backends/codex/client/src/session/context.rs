@@ -475,7 +475,6 @@ pub fn assign_missing_response_item_id(item: &mut ResponseItem) {
 
 struct RequestPrefix {
     cache_lineage: Box<str>,
-    tools: Vec<crate::client::ToolDefinition>,
     instructions: Box<str>,
     items: std::sync::Arc<[ResponseItem]>,
 }
@@ -498,18 +497,20 @@ pub fn shared_request_prefix(
     if let Some(last) = LAST.load().as_deref()
         && *last.cache_lineage == *cache_lineage
         && *last.instructions == *instructions
-        && last.tools == tools
+        && matches!(
+            last.items.first(),
+            Some(ResponseItem::AdditionalTools { tools: previous, .. }) if *previous == tools
+        )
     {
         return Ok(std::sync::Arc::clone(&last.items));
     }
     let items = std::sync::Arc::<[ResponseItem]>::from(build_request_prefix(
         cache_lineage,
-        tools.clone(),
+        tools,
         instructions,
     )?);
     LAST.store(Some(std::sync::Arc::new(RequestPrefix {
         cache_lineage: cache_lineage.into(),
-        tools,
         instructions: instructions.into(),
         items: std::sync::Arc::clone(&items),
     })));

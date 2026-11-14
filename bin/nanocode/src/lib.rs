@@ -153,7 +153,7 @@ pub fn run_with(clients: ModelClients) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let (clients, closing) = match session_gateway(&cli) {
+    let (clients, mut closing) = match session_gateway(&cli) {
         Some(gateway) => match tempo::apply(
             clients,
             &gateway,
@@ -209,12 +209,26 @@ pub fn run_with(clients: ModelClients) -> ExitCode {
         runtime_started.elapsed().as_secs_f64() * 1_000.0,
     );
     drop(startup);
-    if matches!(
+    let warming = matches!(
         cli.command,
         None | Some(Command::Exec(_) | Command::Resume { .. })
-    ) && let Some(warming) = clients.warming()
-    {
-        nanocode_platform::spawn_on(runtime.handle(), warming);
+    )
+    .then(|| clients.warming())
+    .flatten();
+    let paying = closing.as_mut().and_then(tempo::Closing::take_start);
+    if warming.is_some() || paying.is_some() {
+        let drawn = matches!(cli.command, None | Some(Command::Resume { .. }));
+        nanocode_platform::spawn_on(runtime.handle(), async move {
+            if drawn {
+                app::FIRST_FRAME.notified().await;
+            }
+            if let Some(start) = paying {
+                start();
+            }
+            if let Some(warming) = warming {
+                warming.await;
+            }
+        });
     }
     let one_shot = matches!(cli.command, Some(Command::Exec(_)));
     let outcome = runtime.block_on(async move {

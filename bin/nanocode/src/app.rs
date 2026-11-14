@@ -238,6 +238,10 @@ pub enum Overlay {
     Help,
 }
 
+/// Signalled once the interactive interface has drawn its first frame: work that the
+/// frame does not need (the paying proxy, warming connections) waits for it.
+pub static FIRST_FRAME: tokio::sync::Notify = tokio::sync::Notify::const_new();
+
 pub struct Launch {
     pub host: Host,
     pub model: ModelSelection,
@@ -706,6 +710,7 @@ impl App {
         let mut metrics = crate::telemetry::FrameMetrics::new();
         let mut dirty = true;
         let mut full_at: Option<Instant> = None;
+        let mut first = true;
         while !self.quit {
             while let Some(result) = self.submissions.try_join_next() {
                 if let Err(error) = result {
@@ -741,6 +746,10 @@ impl App {
                     if let Err(error) = terminal.draw(|frame| view::draw(self, frame)) {
                         span.record("otel.status_code", "ERROR");
                         return Err(error.into());
+                    }
+                    if first {
+                        first = false;
+                        FIRST_FRAME.notify_one();
                     }
                     dirty = false;
                     if self

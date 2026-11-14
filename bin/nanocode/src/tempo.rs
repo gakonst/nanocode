@@ -445,7 +445,7 @@ impl Payments {
         bypass: Vec<String>,
         policy: impl Future<Output = Policy> + Send + 'static,
         identity: Arc<Identity>,
-    ) -> Result<(Vec<(&'static str, String)>, PathBuf)> {
+    ) -> Result<Paying> {
         nanocode::codex::transport::install_default_rustls_crypto_provider();
         let payments = self.clone();
         let proxy = ForwardProxy::bind(move |url| {
@@ -454,15 +454,20 @@ impl Payments {
         .bypass(bypass)
         .events(self.events.clone())
         .identity(identity);
-        let paying = (proxy.environment(), proxy.certificates().to_path_buf());
-        std::thread::Builder::new()
-            .name("nanocode-paying-proxy".to_owned())
-            .spawn(move || {
-                if let Err(error) = proxy.spawn(policy) {
-                    nanocode_trace::warn!(target: "nanocode", error = %error, "shell commands pay no Tempo services: the paying proxy did not start");
-                }
-            })?;
-        Ok(paying)
+        let (environment, certificates) = (proxy.environment(), proxy.certificates().to_path_buf());
+        let start = Box::new(move || {
+            let started = std::thread::Builder::new()
+                .name("nanocode-paying-proxy".to_owned())
+                .spawn(move || {
+                    if let Err(error) = proxy.spawn(policy) {
+                        nanocode_trace::warn!(target: "nanocode", error = %error, "shell commands pay no Tempo services: the paying proxy did not start");
+                    }
+                });
+            if let Err(error) = started {
+                nanocode_trace::warn!(target: "nanocode", error = %error, "shell commands pay no Tempo services: the paying proxy did not start");
+            }
+        });
+        Ok((environment, certificates, start))
     }
 
     fn mcp(&self, url: &str, terms: &Terms) -> Result<McpServer> {
@@ -1584,9 +1589,20 @@ fn alias(id: &str) -> Option<ModelSelection> {
         })
 }
 
+pub(crate) type Start = Box<dyn FnOnce() + Send>;
+
+type Paying = (Vec<(&'static str, String)>, PathBuf, Start);
+
 pub(crate) struct Closing {
     payments: Payments,
     certificates: Option<PathBuf>,
+    start: Option<Start>,
+}
+
+impl Closing {
+    pub(crate) fn take_start(&mut self) -> Option<Start> {
+        self.start.take()
+    }
 }
 
 pub(crate) async fn close(closing: Closing) {
@@ -1759,7 +1775,7 @@ fn shell(
     payments: &Payments,
     args: &GatewayArgs,
     identity: Arc<Identity>,
-) -> Result<(ModelClients, Option<PathBuf>)> {
+) -> Result<(ModelClients, Option<(PathBuf, Start)>)> {
     if OWN_PROXY_SETTINGS
         .iter()
         .any(|name| std::env::var_os(name).is_some_and(|value| !value.is_empty()))
@@ -1773,9 +1789,10 @@ fn shell(
         std::future::ready(policy),
         identity,
     ) {
-        Ok((environment, certificates)) => {
-            Ok((clients.tool_environment(environment), Some(certificates)))
-        }
+        Ok((environment, certificates, start)) => Ok((
+            clients.tool_environment(environment),
+            Some((certificates, start)),
+        )),
         Err(error) => {
             nanocode_trace::warn!(target: "nanocode", error = %error, "shell commands pay no Tempo services: the paying proxy did not start");
             Ok((clients, None))
@@ -1815,9 +1832,9 @@ pub(crate) fn apply(
     if models {
         clients = clients.tempo(Tempo::new(&payments, args, identity.clone())?);
     }
-    let mut certificates = None;
+    let mut paying = None;
     if !args.no_tempo_tools {
-        (clients, certificates) = shell(
+        (clients, paying) = shell(
             tools(clients, &payments, args)?,
             &payments,
             args,
@@ -1838,7 +1855,10 @@ pub(crate) fn apply(
         clients,
         Some(Closing {
             payments,
-            certificates,
+            certificates: paying
+                .as_ref()
+                .map(|(certificates, _)| certificates.clone()),
+            start: paying.map(|(_, start)| start),
         }),
     ))
 }

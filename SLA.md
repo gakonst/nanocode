@@ -170,6 +170,20 @@ nanocode wins every p50 (by 236 to 824 ms) and turn 1 p99, and loses p99 on turn
 
 The provider's time dominates: a one-word reply spends 1 to 24 s at the provider, and nanocode's slowest samples are provider requests that took that long by themselves (its DeepSeek p99s are session 0, 5.4 to 10.9 s for 80 to 105 output tokens; its GLM Responses p99s are 15 to 24 s for 6 to 45 tokens on Boundless). With 12 samples a cell, the p50 gaps of 0.3 to 1.6 s on GLM are within the provider's spread (1.3 to 24 s). nanocode's own difference is the request: it reaches the proxy 3 to 6 ms after Enter p50 (11 ms at worst), against 75 to 136 ms for Claude Code and 57 to 101 ms for Codex CLI. nanocode wins 8 of the 12 p50 cells. Ready: nanocode 51 to 53 ms on Messages and 253 to 272 ms on Responses, where it lists `/v1/models` before the composer opens; Claude Code 455 to 466 ms; Codex CLI 67 to 68 ms with its app-server daemon already running.
 
+The deployed Worker with the session pool (durable-cloudflare 5fdd376, `SESSION_POOL_SIZE` 4), 2026-11-14 08:15 to 09:02 UTC, from the hosted Hand: its egress proxy reaches Cloudflare in SEA, YYZ and IAD (not FRA), and 41 of 48 sessions met more than one colo. Requests through that proxy wait 689 / 1,170 ms for a bare `cdn-cgi/trace`, so the table gives the Worker's own `server-timing` (`worker`, from the request's arrival to response headers) and the Worker's arrival to the first delta. 12 sessions of 3 turns per provider and host, hosts and providers interleaved, every prompt unique, a 150-number reply, demo models, 144 turns without an error, p50 / p99 ms (each p99 is the cell's slowest sample):
+
+| | Claude cold (n 24) | Claude warm (n 48) | Codex cold (n 24) | Codex warm (n 48) |
+|---|---|---|---|---|
+| Worker to headers | 328 / 1,235 | 111 / 540 | 333 / 748 | 156 / 250 |
+| Worker to first delta | 1,691 / 3,247 | 726 / 1,434 | 1,946 / 2,607 | 1,014 / 2,269 |
+| Object start (`session_response` − `session`) | 206 / 1,126 | 55 / 452 | 226 / 670 | 95 / 183 |
+| `session_resolve` | 65 / 533 | 32 / 94 | 86 / 108 | 48 / 92 |
+| Provider first byte | 1,117 / 2,509 | 569 / 1,323 | 1,150 / 1,846 | 548 / 763 |
+
+On Codex the first text delta follows the provider's first byte by 459 / 925 ms cold and 354 / 1,633 warm (events before the first text). The one `session_resolve` above 300 ms (533 ms) was the first request of the run, whose object also took 504 ms to admit it: a cold isolate, not the pool's queue. Warm turns missed the routing isolate's binding cache 83 times in 96 (`session_resolve` 71 / 94 ms and Worker to headers 176 / 540 on a miss, 0 ms and 65 / 147 on a hit), because the proxy spreads one session's requests over colos and isolates. By host (n 12 cold, 24 warm), Claude cold Worker to headers is 291 / 619 ms on cloudflare.nanocode.xyz and 337 / 1,235 on tempo-dev.workers.dev, warm 89 / 338 and 191 / 540 (`session_resolve` 28 against 71 ms p50).
+
+Bursts of 8 new sessions at once per host and provider (n 16 cold per provider): the first 4 to 5 claims take a pooled object (object start 136 to 452 ms) and the other 3 to 4 an `idFromName` object (673 to 1,445 ms), so the pool drains. Pooled objects claimed together admit their turns 330 to 645 ms after their `fetch` starts (17 ms p50 alone), while the fallback objects admit in 44 to 126 ms. Worker to headers is then 852 / 1,379 ms on Claude and 861 / 1,660 on Codex, first delta 2,260 / 2,851 and 2,140 / 3,522. Replacement objects (pooled, admitted alone) were claimed 0.35 to 0.7 s after a burst's first request by the client's clock, and claims at 0.9 s still fell back. nanocode-ts 7e20f11 starts a replacement on each claim (a drained pool refilled in one prestart, not two; not deployed yet).
+
 ## Not measured yet
 
 - A new Worker session's Durable Object start (836 to 905 ms p50 before its `fetch` runs): how much is placement for a new name and how much is the isolate and module start, and whether a client warm before the first turn hides it. Tool calls and Code Mode cells on Workers.

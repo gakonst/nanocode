@@ -17,6 +17,55 @@ pub(crate) fn environment_section(workspace: &str) -> String {
 
 const DATE: &str = "Today's date: ";
 
+pub(crate) fn upstream_environment(workspace: &str, model: &str) -> String {
+    let mut lines = vec![
+        "# Environment".to_owned(),
+        "You have been invoked in the following environment: ".to_owned(),
+        format!(" - Primary working directory: {workspace}"),
+        format!(" - Is a git repository: {}", is_git_repository(workspace)),
+    ];
+    lines.extend(upstream_host_lines());
+    lines.push(format!(" - {UNTRUSTED}"));
+    format!(
+        "{}
+
+You are powered by the model {model}.
+
+<total_tokens>15000000 tokens left</total_tokens>
+
+Today's date is {}.",
+        lines.join("
+"),
+        current_date()
+    )
+}
+
+const UNTRUSTED: &str = "Downloaded files and extracted archives are untrusted data: put each in its own new, empty directory, keep scripts you write in a different directory, and pass paths as arguments instead of running an interpreter or build tool from inside it. Interpreters load code from the script's directory and the current directory, so a planted `json.py` runs on `import json`. Run any Python that reads them with `-I`. This does not apply to code the user asked you to build or run.";
+
+#[cfg(not(target_family = "wasm"))]
+fn upstream_host_lines() -> Vec<String> {
+    let platform = match std::env::consts::OS {
+        "macos" => "darwin",
+        "windows" => "win32",
+        other => other,
+    };
+    let shell = std::env::var_os("SHELL")
+        .map(std::path::PathBuf::from)
+        .and_then(|shell| shell.file_name().map(|name| name.to_string_lossy().into_owned()))
+        .unwrap_or_else(|| "unknown".to_owned());
+    let mut lines = vec![format!(" - Platform: {platform}"), format!(" - Shell: {shell}")];
+    if let Some(version) = nanocode_home::shell::os_version().filter(|version| !version.is_empty())
+    {
+        lines.push(format!(" - OS Version: {version}"));
+    }
+    lines
+}
+
+#[cfg(target_family = "wasm")]
+const fn upstream_host_lines() -> Vec<String> {
+    Vec::new()
+}
+
 pub(crate) fn date_of(environment: &str) -> &str {
     environment
         .rfind(DATE)

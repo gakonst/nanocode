@@ -699,6 +699,7 @@ pub struct ClaudeBuilder {
     parallel_tools: bool,
     parallel_safe_tools: HashSet<String>,
     client_tool_search: bool,
+    upstream_context: bool,
     code_only: bool,
     policy: Option<Arc<dyn ClaudeExecutionPolicy>>,
     restored: Option<Snapshot>,
@@ -770,6 +771,7 @@ impl ClaudeBuilder {
             parallel_tools: false,
             parallel_safe_tools: HashSet::new(),
             client_tool_search: false,
+            upstream_context: false,
             code_only: false,
             policy: None,
             restored: None,
@@ -1304,6 +1306,11 @@ impl ClaudeBuilder {
         self
     }
 
+    pub const fn upstream_context(mut self) -> Self {
+        self.upstream_context = true;
+        self
+    }
+
     pub const fn client_tool_search(mut self) -> Self {
         self.client_tool_search = true;
         self
@@ -1812,6 +1819,7 @@ impl ClaudeBuilder {
             handlers,
             discovered,
             client_tool_search: self.client_tool_search,
+            upstream_context: self.upstream_context,
             code_only: self.code_only,
             parallel_tools: self.parallel_tools,
             parallel_safe_tools: self.parallel_safe_tools,
@@ -3374,6 +3382,7 @@ struct State {
     handlers: HashMap<String, Handler>,
     discovered: Arc<Atom<HashSet<String>>>,
     client_tool_search: bool,
+    upstream_context: bool,
     code_only: bool,
     nested_tools: Option<NestedToolLookup>,
     recovery: Option<ToolRecovery>,
@@ -4256,6 +4265,8 @@ struct ResponseContext<'a> {
     threaded: bool,
 }
 const DEVELOPER_NOTICE_OPEN: &str = "<system-reminder>\n";
+const ATTRIBUTION: &str = "<system-reminder>\nAttribution for git commits and pull requests you create from here on (this replaces Claude Code's own earlier attribution guidance, such as a previous copy of this reminder; the user's own instructions about these lines, such as a CLAUDE.md or memory rule, take precedence over this reminder, but do not add attribution lines this reminder leaves out):\n- End git commit messages with:\nCo-Authored-By: Claude Code <noreply@anthropic.com>\n- End pull request descriptions with:\n\u{1f916} Generated with [Claude Code](https://claude.com/claude-code)\n</system-reminder>\n";
+const TOKEN_BUDGET: u64 = 15_000_000;
 const DEVELOPER_NOTICE_CLOSE: &str = "\n</system-reminder>";
 const DATE_CHANGED: &str = "The date has changed. Today's date is now ";
 const DATE_CHANGED_END: &str =
@@ -4706,7 +4717,9 @@ impl State {
             && self.system_resolver.is_none()
         {
             let mut blocks = Vec::clone(blocks);
-            blocks.push(json!({"type": "text", "text": environment}));
+            if !self.upstream_context {
+                blocks.push(json!({"type": "text", "text": environment}));
+            }
             if let Some(instructions) = instructions {
                 blocks.push(json!({"type": "text", "text": instructions}));
             }
@@ -7229,7 +7242,21 @@ impl State {
                     pending.push(Message::effort(effort).into());
                 }
             }
+            let first = self.upstream_context
+                && !pending.iter().any(|message| message.role == Role::User);
+            if first && let Some(message) = prompt.last_mut() {
+                message.content.insert(0, ContentBlock::text(ATTRIBUTION));
+            }
             pending.extend(prompt.into_iter().map(HistoryMessage::from));
+            if first {
+                pending.push(
+                    Message::text(
+                        Role::System,
+                        crate::environment::upstream_environment(&self.workspace(), &self.model()),
+                    )
+                    .into(),
+                );
+            }
             pending.extend(self.tool_changes(&pending));
             cursor.prepared = true;
             self.retain_pending(&mut cursor, &pending);
@@ -7842,6 +7869,24 @@ impl State {
             if has_tool_calls {
                 let results: Vec<_> = results.into_iter().map(Option::unwrap).collect();
                 pending.push(Message::tool_results(results).into());
+                if self.upstream_context {
+                    let used = response
+                        .usage
+                        .input_tokens
+                        .saturating_add(response.usage.cache_read_input_tokens)
+                        .saturating_add(response.usage.cache_creation_input_tokens)
+                        .saturating_add(response.usage.output_tokens);
+                    pending.push(
+                        Message::text(
+                            Role::System,
+                            format!(
+                                "<total_tokens>{} tokens left</total_tokens>",
+                                TOKEN_BUDGET.saturating_sub(used)
+                            ),
+                        )
+                        .into(),
+                    );
+                }
 
                 conversation.messages = pending.clone();
                 let retained = self.code_call_summaries.update(|summaries| {

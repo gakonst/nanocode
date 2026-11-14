@@ -197,7 +197,7 @@ impl RuntimeBackend for ClaudeHarness {
             }
             #[cfg(not(target_family = "wasm"))]
             if direct && !remote {
-                builder = builder.upstream_web();
+                builder = builder.upstream_web().upstream_context();
             }
             let tools = settings.tools;
             #[cfg(not(target_family = "wasm"))]

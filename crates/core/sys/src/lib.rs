@@ -16,6 +16,7 @@ pub mod lz4;
 #[cfg(target_os = "macos")]
 pub mod core_foundation;
 mod inline;
+mod pin;
 pub mod jpeg;
 #[cfg(any(unix, windows))]
 mod random;
@@ -41,6 +42,7 @@ mod zero;
 pub use atomic::{AtomicArc, AtomicBox, AtomicStatic};
 pub use decimal::DecimalText;
 pub use inline::{InlineVec, OwnedItems, new_arc_with};
+pub use pin::{Scope, Scoped};
 #[cfg(any(unix, windows))]
 pub use random::fill_random;
 pub use stack::current_thread_stack_remaining_bytes;

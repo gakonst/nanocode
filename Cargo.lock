@@ -1009,7 +1009,7 @@ dependencies = [
 name = "nanocode-trace"
 version = "0.7.0"
 dependencies = [
- "pin-project-lite",
+ "nanocode-sys",
 ]
 
 [[package]]

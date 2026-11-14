@@ -12,7 +12,7 @@ autotests = false
 autobenches = false
 
 [dependencies]
-pin-project-lite.workspace = true
+nanocode-sys.workspace = true
 
 [lints]
 workspace = true

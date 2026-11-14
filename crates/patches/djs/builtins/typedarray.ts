@@ -494,8 +494,14 @@ function TypedArrayPrototypeFill(this: Value, value: Value, start?: Value, end?:
   }
   const len2: f64 = TALength(o);
   const last: f64 = fin < len2 ? fin : len2;
-  for (let i: f64 = k; i < last; i++) {
-    TypedArraySet(o, i, n);
+  if (k < last) {
+    TypedArraySet(o, k, n);
+    let filled: f64 = 1;
+    while (k + filled < last) {
+      const count: f64 = filled < last - k - filled ? filled : last - k - filled;
+      TypedArrayCopy(o, k, o, k + filled, count);
+      filled += count;
+    }
   }
   return o;
 }

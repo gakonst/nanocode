@@ -10928,13 +10928,19 @@ function TypedArrayPrototypeFill(value, start, end) {
   }
   const len2 = (%AsNumber(%TypedArrayField(o, 3)));
   const last = fin < len2 ? fin : len2;
-  for (let i = k; i < last; i++) {
-    %TypedArraySet(o, i, n);
+  if (k < last) {
+    %TypedArraySet(o, k, n);
+    let filled = 1;
+    while (k + filled < last) {
+      const count = filled < last - k - filled ? filled : last - k - filled;
+      %TypedArrayCopy(o, k, o, k + filled, count);
+      filled += count;
+    }
   }
   return o;
 }
 
-// builtins/typedarray.ts:506
+// builtins/typedarray.ts:512
 function ValidateUint8Array(v) {
   let $1;
   if (!%IsTypedArray(v) || ($1 = %AsObj(v), %F64ToI32(%AsNumber(%TypedArrayField($1, 0)))) !== 1) {
@@ -10943,7 +10949,7 @@ function ValidateUint8Array(v) {
   return %AsObj(v);
 }
 
-// builtins/typedarray.ts:514
+// builtins/typedarray.ts:520
 function GetOptionsObject(options) {
   if (options === undefined) {
     return undefined;
@@ -10954,7 +10960,7 @@ function GetOptionsObject(options) {
   return options;
 }
 
-// builtins/typedarray.ts:525
+// builtins/typedarray.ts:531
 function Base64Alphabet(opts) {
   if (opts === undefined) {
     return false;
@@ -10969,7 +10975,7 @@ function Base64Alphabet(opts) {
   throw %NewTypeError("invalid alphabet");
 }
 
-// builtins/typedarray.ts:540
+// builtins/typedarray.ts:546
 function LastChunkHandling(opts) {
   if (opts === undefined) {
     return 0;
@@ -10987,14 +10993,14 @@ function LastChunkHandling(opts) {
   throw %NewTypeError("invalid lastChunkHandling option");
 }
 
-// builtins/typedarray.ts:558
+// builtins/typedarray.ts:564
 function Uint8ArrayFromRecord(rec) {
   const bytes = %AsObj(%Get(rec, "bytes"));
   const len = (%AsNumber(%BufferInfo(bytes, 0)));
   return %TypedArrayCreate(%RealmIntrinsic("Uint8ArrayPrototype"), 1, bytes, 0, len);
 }
 
-// builtins/typedarray.ts:568 Uint8Array.fromBase64
+// builtins/typedarray.ts:574 Uint8Array.fromBase64
 function Uint8ArrayFromBase64(string, options) {
   let $1, $2;
   if (!%IsString(string)) {
@@ -11010,7 +11016,7 @@ function Uint8ArrayFromBase64(string, options) {
   return (($1 = %AsObj(%Get(rec, "bytes")), ($2 = (%AsNumber(%BufferInfo($1, 0))), %TypedArrayCreate(%RealmIntrinsic("Uint8ArrayPrototype"), 1, $1, 0, $2))));
 }
 
-// builtins/typedarray.ts:586 Uint8Array.fromHex
+// builtins/typedarray.ts:592 Uint8Array.fromHex
 function Uint8ArrayFromHex(string) {
   let $1, $2;
   if (!%IsString(string)) {
@@ -11023,7 +11029,7 @@ function Uint8ArrayFromHex(string) {
   return (($1 = %AsObj(%Get(rec, "bytes")), ($2 = (%AsNumber(%BufferInfo($1, 0))), %TypedArrayCreate(%RealmIntrinsic("Uint8ArrayPrototype"), 1, $1, 0, $2))));
 }
 
-// builtins/typedarray.ts:601 Uint8Array.prototype.toBase64
+// builtins/typedarray.ts:607 Uint8Array.prototype.toBase64
 function Uint8ArrayPrototypeToBase64(options) {
   let $1;
   const o = ((!%IsTypedArray(this) || ($1 = %AsObj(this), %F64ToI32(%AsNumber(%TypedArrayField($1, 0)))) !== 1) ? %Throw(%NewTypeError("not a Uint8Array")) : %AsObj(this));
@@ -11036,13 +11042,13 @@ function Uint8ArrayPrototypeToBase64(options) {
   return %Base64Encode(o, url, omit);
 }
 
-// builtins/typedarray.ts:616 Uint8Array.prototype.toHex
+// builtins/typedarray.ts:622 Uint8Array.prototype.toHex
 function Uint8ArrayPrototypeToHex() {
   let $1;
   return %HexEncode(((!%IsTypedArray(this) || ($1 = %AsObj(this), %F64ToI32(%AsNumber(%TypedArrayField($1, 0)))) !== 1) ? %Throw(%NewTypeError("not a Uint8Array")) : %AsObj(this)));
 }
 
-// builtins/typedarray.ts:621
+// builtins/typedarray.ts:627
 function WriteDecoded(into, rec, isHex) {
   const bytes = %AsObj(%Get(rec, "bytes"));
   const written = (%AsNumber(%BufferInfo(bytes, 0)));
@@ -11056,7 +11062,7 @@ function WriteDecoded(into, rec, isHex) {
   return result;
 }
 
-// builtins/typedarray.ts:638 Uint8Array.prototype.setFromBase64
+// builtins/typedarray.ts:644 Uint8Array.prototype.setFromBase64
 function Uint8ArrayPrototypeSetFromBase64(string, options) {
   let $1, $2;
   const into = ((!%IsTypedArray(this) || ($1 = %AsObj(this), %F64ToI32(%AsNumber(%TypedArrayField($1, 0)))) !== 1) ? %Throw(%NewTypeError("not a Uint8Array")) : %AsObj(this));
@@ -11074,7 +11080,7 @@ function Uint8ArrayPrototypeSetFromBase64(string, options) {
   return WriteDecoded(into, rec, false);
 }
 
-// builtins/typedarray.ts:658 Uint8Array.prototype.setFromHex
+// builtins/typedarray.ts:664 Uint8Array.prototype.setFromHex
 function Uint8ArrayPrototypeSetFromHex(string) {
   let $1, $2;
   const into = ((!%IsTypedArray(this) || ($1 = %AsObj(this), %F64ToI32(%AsNumber(%TypedArrayField($1, 0)))) !== 1) ? %Throw(%NewTypeError("not a Uint8Array")) : %AsObj(this));
@@ -11089,187 +11095,187 @@ function Uint8ArrayPrototypeSetFromHex(string) {
   return WriteDecoded(into, rec, true);
 }
 
-// builtins/typedarray.ts:677 constructor Int8Array
+// builtins/typedarray.ts:683 constructor Int8Array
 function Int8ArrayConstructor(...args) {
   return TypedArrayConstruct(new.target, 0, args);
 }
 
-// builtins/typedarray.ts:685 value Int8Array.BYTES_PER_ELEMENT
+// builtins/typedarray.ts:691 value Int8Array.BYTES_PER_ELEMENT
 function Int8ArrayBytesPerElement() {
   return 1;
 }
 
-// builtins/typedarray.ts:693 value Int8Array.prototype.BYTES_PER_ELEMENT
+// builtins/typedarray.ts:699 value Int8Array.prototype.BYTES_PER_ELEMENT
 function Int8ArrayPrototypeBytesPerElement() {
   return 1;
 }
 
-// builtins/typedarray.ts:703 constructor Uint8Array
+// builtins/typedarray.ts:709 constructor Uint8Array
 function Uint8ArrayConstructor(...args) {
   return TypedArrayConstruct(new.target, 1, args);
 }
 
-// builtins/typedarray.ts:711 value Uint8Array.BYTES_PER_ELEMENT
+// builtins/typedarray.ts:717 value Uint8Array.BYTES_PER_ELEMENT
 function Uint8ArrayBytesPerElement() {
   return 1;
 }
 
-// builtins/typedarray.ts:719 value Uint8Array.prototype.BYTES_PER_ELEMENT
+// builtins/typedarray.ts:725 value Uint8Array.prototype.BYTES_PER_ELEMENT
 function Uint8ArrayPrototypeBytesPerElement() {
   return 1;
 }
 
-// builtins/typedarray.ts:729 constructor Uint8ClampedArray
+// builtins/typedarray.ts:735 constructor Uint8ClampedArray
 function Uint8ClampedArrayConstructor(...args) {
   return TypedArrayConstruct(new.target, 2, args);
 }
 
-// builtins/typedarray.ts:737 value Uint8ClampedArray.BYTES_PER_ELEMENT
+// builtins/typedarray.ts:743 value Uint8ClampedArray.BYTES_PER_ELEMENT
 function Uint8ClampedArrayBytesPerElement() {
   return 1;
 }
 
-// builtins/typedarray.ts:745 value Uint8ClampedArray.prototype.BYTES_PER_ELEMENT
+// builtins/typedarray.ts:751 value Uint8ClampedArray.prototype.BYTES_PER_ELEMENT
 function Uint8ClampedArrayPrototypeBytesPerElement() {
   return 1;
 }
 
-// builtins/typedarray.ts:755 constructor Int16Array
+// builtins/typedarray.ts:761 constructor Int16Array
 function Int16ArrayConstructor(...args) {
   return TypedArrayConstruct(new.target, 3, args);
 }
 
-// builtins/typedarray.ts:763 value Int16Array.BYTES_PER_ELEMENT
+// builtins/typedarray.ts:769 value Int16Array.BYTES_PER_ELEMENT
 function Int16ArrayBytesPerElement() {
   return 2;
 }
 
-// builtins/typedarray.ts:771 value Int16Array.prototype.BYTES_PER_ELEMENT
+// builtins/typedarray.ts:777 value Int16Array.prototype.BYTES_PER_ELEMENT
 function Int16ArrayPrototypeBytesPerElement() {
   return 2;
 }
 
-// builtins/typedarray.ts:781 constructor Uint16Array
+// builtins/typedarray.ts:787 constructor Uint16Array
 function Uint16ArrayConstructor(...args) {
   return TypedArrayConstruct(new.target, 4, args);
 }
 
-// builtins/typedarray.ts:789 value Uint16Array.BYTES_PER_ELEMENT
+// builtins/typedarray.ts:795 value Uint16Array.BYTES_PER_ELEMENT
 function Uint16ArrayBytesPerElement() {
   return 2;
 }
 
-// builtins/typedarray.ts:797 value Uint16Array.prototype.BYTES_PER_ELEMENT
+// builtins/typedarray.ts:803 value Uint16Array.prototype.BYTES_PER_ELEMENT
 function Uint16ArrayPrototypeBytesPerElement() {
   return 2;
 }
 
-// builtins/typedarray.ts:807 constructor Int32Array
+// builtins/typedarray.ts:813 constructor Int32Array
 function Int32ArrayConstructor(...args) {
   return TypedArrayConstruct(new.target, 5, args);
 }
 
-// builtins/typedarray.ts:815 value Int32Array.BYTES_PER_ELEMENT
+// builtins/typedarray.ts:821 value Int32Array.BYTES_PER_ELEMENT
 function Int32ArrayBytesPerElement() {
   return 4;
 }
 
-// builtins/typedarray.ts:823 value Int32Array.prototype.BYTES_PER_ELEMENT
+// builtins/typedarray.ts:829 value Int32Array.prototype.BYTES_PER_ELEMENT
 function Int32ArrayPrototypeBytesPerElement() {
   return 4;
 }
 
-// builtins/typedarray.ts:833 constructor Uint32Array
+// builtins/typedarray.ts:839 constructor Uint32Array
 function Uint32ArrayConstructor(...args) {
   return TypedArrayConstruct(new.target, 6, args);
 }
 
-// builtins/typedarray.ts:841 value Uint32Array.BYTES_PER_ELEMENT
+// builtins/typedarray.ts:847 value Uint32Array.BYTES_PER_ELEMENT
 function Uint32ArrayBytesPerElement() {
   return 4;
 }
 
-// builtins/typedarray.ts:849 value Uint32Array.prototype.BYTES_PER_ELEMENT
+// builtins/typedarray.ts:855 value Uint32Array.prototype.BYTES_PER_ELEMENT
 function Uint32ArrayPrototypeBytesPerElement() {
   return 4;
 }
 
-// builtins/typedarray.ts:859 constructor Float16Array
+// builtins/typedarray.ts:865 constructor Float16Array
 function Float16ArrayConstructor(...args) {
   return TypedArrayConstruct(new.target, 7, args);
 }
 
-// builtins/typedarray.ts:867 value Float16Array.BYTES_PER_ELEMENT
+// builtins/typedarray.ts:873 value Float16Array.BYTES_PER_ELEMENT
 function Float16ArrayBytesPerElement() {
   return 2;
 }
 
-// builtins/typedarray.ts:875 value Float16Array.prototype.BYTES_PER_ELEMENT
+// builtins/typedarray.ts:881 value Float16Array.prototype.BYTES_PER_ELEMENT
 function Float16ArrayPrototypeBytesPerElement() {
   return 2;
 }
 
-// builtins/typedarray.ts:885 constructor Float32Array
+// builtins/typedarray.ts:891 constructor Float32Array
 function Float32ArrayConstructor(...args) {
   return TypedArrayConstruct(new.target, 8, args);
 }
 
-// builtins/typedarray.ts:893 value Float32Array.BYTES_PER_ELEMENT
+// builtins/typedarray.ts:899 value Float32Array.BYTES_PER_ELEMENT
 function Float32ArrayBytesPerElement() {
   return 4;
 }
 
-// builtins/typedarray.ts:901 value Float32Array.prototype.BYTES_PER_ELEMENT
+// builtins/typedarray.ts:907 value Float32Array.prototype.BYTES_PER_ELEMENT
 function Float32ArrayPrototypeBytesPerElement() {
   return 4;
 }
 
-// builtins/typedarray.ts:911 constructor Float64Array
+// builtins/typedarray.ts:917 constructor Float64Array
 function Float64ArrayConstructor(...args) {
   return TypedArrayConstruct(new.target, 9, args);
 }
 
-// builtins/typedarray.ts:919 value Float64Array.BYTES_PER_ELEMENT
+// builtins/typedarray.ts:925 value Float64Array.BYTES_PER_ELEMENT
 function Float64ArrayBytesPerElement() {
   return 8;
 }
 
-// builtins/typedarray.ts:927 value Float64Array.prototype.BYTES_PER_ELEMENT
+// builtins/typedarray.ts:933 value Float64Array.prototype.BYTES_PER_ELEMENT
 function Float64ArrayPrototypeBytesPerElement() {
   return 8;
 }
 
-// builtins/typedarray.ts:937 constructor BigInt64Array
+// builtins/typedarray.ts:943 constructor BigInt64Array
 function BigInt64ArrayConstructor(...args) {
   return TypedArrayConstruct(new.target, 10, args);
 }
 
-// builtins/typedarray.ts:945 value BigInt64Array.BYTES_PER_ELEMENT
+// builtins/typedarray.ts:951 value BigInt64Array.BYTES_PER_ELEMENT
 function BigInt64ArrayBytesPerElement() {
   return 8;
 }
 
-// builtins/typedarray.ts:953 value BigInt64Array.prototype.BYTES_PER_ELEMENT
+// builtins/typedarray.ts:959 value BigInt64Array.prototype.BYTES_PER_ELEMENT
 function BigInt64ArrayPrototypeBytesPerElement() {
   return 8;
 }
 
-// builtins/typedarray.ts:963 constructor BigUint64Array
+// builtins/typedarray.ts:969 constructor BigUint64Array
 function BigUint64ArrayConstructor(...args) {
   return TypedArrayConstruct(new.target, 11, args);
 }
 
-// builtins/typedarray.ts:971 value BigUint64Array.BYTES_PER_ELEMENT
+// builtins/typedarray.ts:977 value BigUint64Array.BYTES_PER_ELEMENT
 function BigUint64ArrayBytesPerElement() {
   return 8;
 }
 
-// builtins/typedarray.ts:979 value BigUint64Array.prototype.BYTES_PER_ELEMENT
+// builtins/typedarray.ts:985 value BigUint64Array.prototype.BYTES_PER_ELEMENT
 function BigUint64ArrayPrototypeBytesPerElement() {
   return 8;
 }
 
-// builtins/typedarray.ts:990 %TypedArray%.prototype.at
+// builtins/typedarray.ts:996 %TypedArray%.prototype.at
 function TypedArrayPrototypeAt(index) {
   let $1;
   const o = ((%TypedArrayField(this, 0), ($1 = %AsObj(this), ((%AsBool(%TypedArrayField($1, 5)))) ? %Throw(%NewTypeError("ArrayBuffer is detached or resized")) : $1)));
@@ -11282,7 +11288,7 @@ function TypedArrayPrototypeAt(index) {
   return %TypedArrayGet(o, k);
 }
 
-// builtins/typedarray.ts:1005 %TypedArray%.prototype.copyWithin
+// builtins/typedarray.ts:1011 %TypedArray%.prototype.copyWithin
 function TypedArrayPrototypeCopyWithin(target, start, end) {
   let $1, $2;
   const o = ((%TypedArrayField(this, 0), ($1 = %AsObj(this), ((%AsBool(%TypedArrayField($1, 5)))) ? %Throw(%NewTypeError("ArrayBuffer is detached or resized")) : $1)));
@@ -11310,25 +11316,25 @@ function TypedArrayPrototypeCopyWithin(target, start, end) {
   return o;
 }
 
-// builtins/typedarray.ts:1036 %TypedArray%.prototype.entries
+// builtins/typedarray.ts:1042 %TypedArray%.prototype.entries
 function TypedArrayPrototypeEntries() {
   let $1;
   return %CreateArrayIterator(((%TypedArrayField(this, 0), ($1 = %AsObj(this), ((%AsBool(%TypedArrayField($1, 5)))) ? %Throw(%NewTypeError("ArrayBuffer is detached or resized")) : $1))), 2);
 }
 
-// builtins/typedarray.ts:1044 %TypedArray%.prototype.keys
+// builtins/typedarray.ts:1050 %TypedArray%.prototype.keys
 function TypedArrayPrototypeKeys() {
   let $1;
   return %CreateArrayIterator(((%TypedArrayField(this, 0), ($1 = %AsObj(this), ((%AsBool(%TypedArrayField($1, 5)))) ? %Throw(%NewTypeError("ArrayBuffer is detached or resized")) : $1))), 0);
 }
 
-// builtins/typedarray.ts:1053 %TypedArray%.prototype.values %TypedArray%.prototype[Symbol.iterator]
+// builtins/typedarray.ts:1059 %TypedArray%.prototype.values %TypedArray%.prototype[Symbol.iterator]
 function TypedArrayPrototypeValues() {
   let $1;
   return %CreateArrayIterator(((%TypedArrayField(this, 0), ($1 = %AsObj(this), ((%AsBool(%TypedArrayField($1, 5)))) ? %Throw(%NewTypeError("ArrayBuffer is detached or resized")) : $1))), 1);
 }
 
-// builtins/typedarray.ts:1058
+// builtins/typedarray.ts:1064
 function TAEveryOrSome(o, callbackfn, thisArg, wantAll) {
   const len = (%AsNumber(%TypedArrayField(o, 3)));
   ((!%IsCallable(callbackfn)) ? %Throw(%NewTypeError("not a function")) : %AsFn(callbackfn));
@@ -11341,19 +11347,19 @@ function TAEveryOrSome(o, callbackfn, thisArg, wantAll) {
   return wantAll;
 }
 
-// builtins/typedarray.ts:1074 %TypedArray%.prototype.every
+// builtins/typedarray.ts:1080 %TypedArray%.prototype.every
 function TypedArrayPrototypeEvery(callbackfn, thisArg) {
   let $1;
   return TAEveryOrSome(((%TypedArrayField(this, 0), ($1 = %AsObj(this), ((%AsBool(%TypedArrayField($1, 5)))) ? %Throw(%NewTypeError("ArrayBuffer is detached or resized")) : $1))), callbackfn, thisArg, true);
 }
 
-// builtins/typedarray.ts:1082 %TypedArray%.prototype.some
+// builtins/typedarray.ts:1088 %TypedArray%.prototype.some
 function TypedArrayPrototypeSome(callbackfn, thisArg) {
   let $1;
   return TAEveryOrSome(((%TypedArrayField(this, 0), ($1 = %AsObj(this), ((%AsBool(%TypedArrayField($1, 5)))) ? %Throw(%NewTypeError("ArrayBuffer is detached or resized")) : $1))), callbackfn, thisArg, false);
 }
 
-// builtins/typedarray.ts:1090 %TypedArray%.prototype.filter
+// builtins/typedarray.ts:1096 %TypedArray%.prototype.filter
 function TypedArrayPrototypeFilter(callbackfn, thisArg) {
   let $1, $2;
   const o = ((%TypedArrayField(this, 0), ($1 = %AsObj(this), ((%AsBool(%TypedArrayField($1, 5)))) ? %Throw(%NewTypeError("ArrayBuffer is detached or resized")) : $1)));
@@ -11375,7 +11381,7 @@ function TypedArrayPrototypeFilter(callbackfn, thisArg) {
   return a;
 }
 
-// builtins/typedarray.ts:1111
+// builtins/typedarray.ts:1117
 function TAFind(thisValue, predicate, thisArg, fromEnd, wantIndex) {
   const o = ValidateTypedArray(thisValue);
   const len = (%AsNumber(%TypedArrayField(o, 3)));
@@ -11393,27 +11399,27 @@ function TAFind(thisValue, predicate, thisArg, fromEnd, wantIndex) {
   return undefined;
 }
 
-// builtins/typedarray.ts:1132 %TypedArray%.prototype.find
+// builtins/typedarray.ts:1138 %TypedArray%.prototype.find
 function TypedArrayPrototypeFind(predicate, thisArg) {
   return TAFind(this, predicate, thisArg, false, false);
 }
 
-// builtins/typedarray.ts:1140 %TypedArray%.prototype.findIndex
+// builtins/typedarray.ts:1146 %TypedArray%.prototype.findIndex
 function TypedArrayPrototypeFindIndex(predicate, thisArg) {
   return TAFind(this, predicate, thisArg, false, true);
 }
 
-// builtins/typedarray.ts:1148 %TypedArray%.prototype.findLast
+// builtins/typedarray.ts:1154 %TypedArray%.prototype.findLast
 function TypedArrayPrototypeFindLast(predicate, thisArg) {
   return TAFind(this, predicate, thisArg, true, false);
 }
 
-// builtins/typedarray.ts:1156 %TypedArray%.prototype.findLastIndex
+// builtins/typedarray.ts:1162 %TypedArray%.prototype.findLastIndex
 function TypedArrayPrototypeFindLastIndex(predicate, thisArg) {
   return TAFind(this, predicate, thisArg, true, true);
 }
 
-// builtins/typedarray.ts:1164 %TypedArray%.prototype.forEach
+// builtins/typedarray.ts:1170 %TypedArray%.prototype.forEach
 function TypedArrayPrototypeForEach(callbackfn, thisArg) {
   let $1;
   const o = ((%TypedArrayField(this, 0), ($1 = %AsObj(this), ((%AsBool(%TypedArrayField($1, 5)))) ? %Throw(%NewTypeError("ArrayBuffer is detached or resized")) : $1)));
@@ -11424,7 +11430,7 @@ function TypedArrayPrototypeForEach(callbackfn, thisArg) {
   }
 }
 
-// builtins/typedarray.ts:1177 %TypedArray%.prototype.includes
+// builtins/typedarray.ts:1183 %TypedArray%.prototype.includes
 function TypedArrayPrototypeIncludes(searchElement, fromIndex) {
   let $1;
   const o = ((%TypedArrayField(this, 0), ($1 = %AsObj(this), ((%AsBool(%TypedArrayField($1, 5)))) ? %Throw(%NewTypeError("ArrayBuffer is detached or resized")) : $1)));
@@ -11450,7 +11456,7 @@ function TypedArrayPrototypeIncludes(searchElement, fromIndex) {
   return false;
 }
 
-// builtins/typedarray.ts:1205 %TypedArray%.prototype.indexOf
+// builtins/typedarray.ts:1211 %TypedArray%.prototype.indexOf
 function TypedArrayPrototypeIndexOf(searchElement, fromIndex) {
   let $1;
   const o = ((%TypedArrayField(this, 0), ($1 = %AsObj(this), ((%AsBool(%TypedArrayField($1, 5)))) ? %Throw(%NewTypeError("ArrayBuffer is detached or resized")) : $1)));
@@ -11477,7 +11483,7 @@ function TypedArrayPrototypeIndexOf(searchElement, fromIndex) {
   return -1;
 }
 
-// builtins/typedarray.ts:1235 %TypedArray%.prototype.lastIndexOf
+// builtins/typedarray.ts:1241 %TypedArray%.prototype.lastIndexOf
 function TypedArrayPrototypeLastIndexOf(searchElement, ...rest) {
   let $1, $2;
   const o = ((%TypedArrayField(this, 0), ($1 = %AsObj(this), ((%AsBool(%TypedArrayField($1, 5)))) ? %Throw(%NewTypeError("ArrayBuffer is detached or resized")) : $1)));
@@ -11502,7 +11508,7 @@ function TypedArrayPrototypeLastIndexOf(searchElement, ...rest) {
   return -1;
 }
 
-// builtins/typedarray.ts:1262 %TypedArray%.prototype.join
+// builtins/typedarray.ts:1268 %TypedArray%.prototype.join
 function TypedArrayPrototypeJoin(separator) {
   let $1;
   const o = ((%TypedArrayField(this, 0), ($1 = %AsObj(this), ((%AsBool(%TypedArrayField($1, 5)))) ? %Throw(%NewTypeError("ArrayBuffer is detached or resized")) : $1)));
@@ -11524,7 +11530,7 @@ function TypedArrayPrototypeJoin(separator) {
   return r;
 }
 
-// builtins/typedarray.ts:1286 %TypedArray%.prototype.map
+// builtins/typedarray.ts:1292 %TypedArray%.prototype.map
 function TypedArrayPrototypeMap(callbackfn, thisArg) {
   let $1;
   const o = ((%TypedArrayField(this, 0), ($1 = %AsObj(this), ((%AsBool(%TypedArrayField($1, 5)))) ? %Throw(%NewTypeError("ArrayBuffer is detached or resized")) : $1)));
@@ -11538,7 +11544,7 @@ function TypedArrayPrototypeMap(callbackfn, thisArg) {
   return a;
 }
 
-// builtins/typedarray.ts:1299
+// builtins/typedarray.ts:1305
 function TAReduce(o, callbackfn, rest, fromEnd) {
   const len = (%AsNumber(%TypedArrayField(o, 3)));
   ((!%IsCallable(callbackfn)) ? %Throw(%NewTypeError("not a function")) : %AsFn(callbackfn));
@@ -11560,19 +11566,19 @@ function TAReduce(o, callbackfn, rest, fromEnd) {
   return accumulator;
 }
 
-// builtins/typedarray.ts:1325 %TypedArray%.prototype.reduce
+// builtins/typedarray.ts:1331 %TypedArray%.prototype.reduce
 function TypedArrayPrototypeReduce(callbackfn, ...rest) {
   let $1;
   return TAReduce(((%TypedArrayField(this, 0), ($1 = %AsObj(this), ((%AsBool(%TypedArrayField($1, 5)))) ? %Throw(%NewTypeError("ArrayBuffer is detached or resized")) : $1))), callbackfn, rest, false);
 }
 
-// builtins/typedarray.ts:1334 %TypedArray%.prototype.reduceRight
+// builtins/typedarray.ts:1340 %TypedArray%.prototype.reduceRight
 function TypedArrayPrototypeReduceRight(callbackfn, ...rest) {
   let $1;
   return TAReduce(((%TypedArrayField(this, 0), ($1 = %AsObj(this), ((%AsBool(%TypedArrayField($1, 5)))) ? %Throw(%NewTypeError("ArrayBuffer is detached or resized")) : $1))), callbackfn, rest, true);
 }
 
-// builtins/typedarray.ts:1342 %TypedArray%.prototype.reverse
+// builtins/typedarray.ts:1348 %TypedArray%.prototype.reverse
 function TypedArrayPrototypeReverse() {
   let $1, $2;
   const o = ((%TypedArrayField(this, 0), ($1 = %AsObj(this), ((%AsBool(%TypedArrayField($1, 5)))) ? %Throw(%NewTypeError("ArrayBuffer is detached or resized")) : $1)));
@@ -11588,7 +11594,7 @@ function TypedArrayPrototypeReverse() {
   return o;
 }
 
-// builtins/typedarray.ts:1357
+// builtins/typedarray.ts:1363
 function TASortedList(o, len, comparefn) {
   const list = %ArrayCreate(0);
   for (let k = 0; k < len; k++) {
@@ -11602,7 +11608,7 @@ function TASortedList(o, len, comparefn) {
   return list;
 }
 
-// builtins/typedarray.ts:1374 %TypedArray%.prototype.sort
+// builtins/typedarray.ts:1380 %TypedArray%.prototype.sort
 function TypedArrayPrototypeSort(comparefn) {
   let $1, $2;
   if (comparefn !== undefined && !%IsCallable(comparefn)) {
@@ -11618,7 +11624,7 @@ function TypedArrayPrototypeSort(comparefn) {
   return o;
 }
 
-// builtins/typedarray.ts:1392 %TypedArray%.prototype.toSorted
+// builtins/typedarray.ts:1398 %TypedArray%.prototype.toSorted
 function TypedArrayPrototypeToSorted(comparefn) {
   let $1;
   if (comparefn !== undefined && !%IsCallable(comparefn)) {
@@ -11634,7 +11640,7 @@ function TypedArrayPrototypeToSorted(comparefn) {
   return a;
 }
 
-// builtins/typedarray.ts:1410 %TypedArray%.prototype.toReversed
+// builtins/typedarray.ts:1416 %TypedArray%.prototype.toReversed
 function TypedArrayPrototypeToReversed() {
   let $1;
   const o = ((%TypedArrayField(this, 0), ($1 = %AsObj(this), ((%AsBool(%TypedArrayField($1, 5)))) ? %Throw(%NewTypeError("ArrayBuffer is detached or resized")) : $1)));
@@ -11646,7 +11652,7 @@ function TypedArrayPrototypeToReversed() {
   return a;
 }
 
-// builtins/typedarray.ts:1424 %TypedArray%.prototype.with
+// builtins/typedarray.ts:1430 %TypedArray%.prototype.with
 function TypedArrayPrototypeWith(index, value) {
   let $1;
   const o = ((%TypedArrayField(this, 0), ($1 = %AsObj(this), ((%AsBool(%TypedArrayField($1, 5)))) ? %Throw(%NewTypeError("ArrayBuffer is detached or resized")) : $1)));
@@ -11664,7 +11670,7 @@ function TypedArrayPrototypeWith(index, value) {
   return a;
 }
 
-// builtins/typedarray.ts:1444 %TypedArray%.prototype.toLocaleString
+// builtins/typedarray.ts:1450 %TypedArray%.prototype.toLocaleString
 function TypedArrayPrototypeToLocaleString() {
   let $1;
   const o = ((%TypedArrayField(this, 0), ($1 = %AsObj(this), ((%AsBool(%TypedArrayField($1, 5)))) ? %Throw(%NewTypeError("ArrayBuffer is detached or resized")) : $1)));
@@ -11682,7 +11688,7 @@ function TypedArrayPrototypeToLocaleString() {
   return r;
 }
 
-// builtins/typedarray.ts:1461
+// builtins/typedarray.ts:1467
 function IsCanonicalNumericKey(key) {
   if (%IsNumber(key)) {
     return true;
@@ -11693,7 +11699,7 @@ function IsCanonicalNumericKey(key) {
   return key === "-0" || ToString(((%IsObject(key)) ? %ToNumberPrimitive(ToPrimitive(key, "number")) : %ToNumberPrimitive(key))) === key;
 }
 
-// builtins/typedarray.ts:1477
+// builtins/typedarray.ts:1483
 function TASet(o, k, v) {
   %TypedArraySet(o, k, ToElementValue(o, v));
 }

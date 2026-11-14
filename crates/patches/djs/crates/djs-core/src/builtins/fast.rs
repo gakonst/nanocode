@@ -1819,7 +1819,9 @@ fn assignable(heap: &Heap, to: Obj, from: Value) -> bool {
             Some(Property::Accessor { flags, .. }) => !flags.enumerable(),
             Some(Property::Data { flags, .. }) if flags.enumerable() => {
                 match heap.lookup_property(to, k) {
-                    Lookup::Found(_, Property::Data { flags, .. }) => flags.writable(),
+                    Lookup::Found(holder, Property::Data { flags, .. }) => {
+                        flags.writable() && (holder == to || heap.is_extensible(to))
+                    }
                     Lookup::Found(_, Property::Accessor { .. }) | Lookup::Proxy(_) => false,
                     Lookup::Absent => heap.is_extensible(to),
                 }

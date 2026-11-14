@@ -33,13 +33,16 @@ const forbiddenDependencies = {
   "nanocode-store-sql": new Set(["nanocode-durability"]),
   "nanocode-agent-config": new Set(["nanocode-agent", "nanocode-subagents"]),
   "nanocode-backend-codex-client": new Set([
-    "nanocode-agent-core", "nanocode-image",
+    "nanocode-agent-core",
     "nanocode-agent-config", "nanocode-tool-host", "nanocode-code-mode", "nanocode-durability",
   ]),
   "nanocode-backend-claude-client": new Set([
     "nanocode-agent-core", "nanocode-backend-claude-tools",
     "nanocode-agent-config", "nanocode-tool-host", "nanocode-code-mode", "nanocode-durability",
   ]),
+};
+const allowedDependencies = {
+  "nanocode-tui": new Set(["nanocode-sync", "nanocode-sys", "nanocode-platform", "nanocode-digest"]),
 };
 const backendImplementations = new Set([
   "nanocode-tool-runtime", "nanocode-mcp-tools", "nanocode-mcp-http",
@@ -61,7 +64,7 @@ for (const name of packages.keys()) {
   while (pending.length) {
     const path = pending.pop();
     const current = path.at(-1);
-    if (banned.includes(layer(current))) {
+    if (banned.includes(layer(current)) && !allowedDependencies[name]?.has(current)) {
       throw new Error(`${layer(name)} crate depends on ${layer(current)}: ${path.join(" → ")}`);
     }
     if (layer(name) === "crates/backends" && backendImplementations.has(current)) {

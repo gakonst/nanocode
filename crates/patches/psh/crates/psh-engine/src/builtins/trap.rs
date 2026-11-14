@@ -301,19 +301,31 @@ pub(crate) async fn take_signals(vp: &mut Vp) -> Result<(), Unwind> {
                 } else {
                     1
                 };
+                if vp.depth >= vp.core.max_depth {
+                    vp.error(&format!(
+                        "trap: {}: maximum nesting level exceeded ({})",
+                        signal_name(sig).unwrap_or_default(),
+                        vp.core.max_depth
+                    ))
+                    .await;
+                    continue;
+                }
                 let saved = std::mem::replace(&mut vp.signal_trap, true);
+                vp.depth += 1;
+                let mut r = Ok(());
                 for _ in 0..runs {
                     let st = vp.status;
-                    let mut r = run_action(vp, &action, st).await;
+                    r = run_action(vp, &action, st).await;
                     if r.is_ok() {
                         r = Box::pin(take_signals(vp)).await;
                     }
                     if r.is_err() {
-                        vp.signal_trap = saved;
+                        break;
                     }
-                    r?;
                 }
+                vp.depth -= 1;
                 vp.signal_trap = saved;
+                r?;
             }
             None if crate::signals::stops(sig)
                 && let crate::state::Sigs::Nested(n) = &vp.sigs =>

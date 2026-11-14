@@ -689,7 +689,7 @@ mod store {
             if !known.is_empty() {
                 self.store.clone().remember_summaries(known).await?;
             }
-            candidates.sort_by_key(|candidate| std::cmp::Reverse(candidate.updated_at_ms()));
+            candidates.sort_by_cached_key(|candidate| std::cmp::Reverse(candidate.updated_at_ms()));
             let mut sessions = Vec::new();
             for candidate in candidates {
                 if sessions.len() == limit {

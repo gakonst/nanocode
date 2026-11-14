@@ -406,6 +406,7 @@ dependencies = [
  "nanocode-digest",
  "nanocode-image",
  "nanocode-platform",
+ "nanocode-process-contracts",
  "nanocode-sync",
  "nanocode-tool-contracts",
  "nanocode-tools",

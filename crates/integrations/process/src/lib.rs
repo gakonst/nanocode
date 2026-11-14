@@ -90,7 +90,7 @@ const PROTECTED_SESSIONS: usize = 8;
 
 pub use nanocode_process_contracts::{
     ExecCommand, ExecCommandResult, ForegroundCommand, ForegroundExecutor, LastActivity,
-    ProcessExecutors, RunningProcess, ShellExecutor, WriteStdin,
+    OutputUnit, ProcessExecutors, RunningProcess, ShellExecutor, WriteStdin,
 };
 
 #[derive(Clone, Default)]
@@ -470,13 +470,18 @@ impl ShellSessions {
                 session: Some(Arc::clone(&session)),
                 sessions: Arc::clone(&self.sessions),
             };
-            let max_output_tokens = command.max_output_tokens;
+            let (max_output_tokens, output_unit) = (command.max_output_tokens, command.output_unit);
             session
                 .last_used
                 .store(self.uses.fetch_add(1, Ordering::Relaxed), Ordering::Relaxed);
             let busy = Busy::new(&session);
             let initial = session.owner.run(move |state| {
-                Box::pin(state.wait_for_output(yield_time, max_output_tokens, started_at))
+                Box::pin(state.wait_for_output(
+                    yield_time,
+                    max_output_tokens,
+                    output_unit,
+                    started_at,
+                ))
             });
             let pruned = self.sessions.insert(&session);
             if let Some(pruned) = pruned {
@@ -543,7 +548,7 @@ impl ShellSessions {
                 (DEFAULT_WRITE_YIELD_MS, 250, MAX_EXEC_YIELD_MS)
             };
             let yield_time = duration_ms(request.yield_time_ms, default, minimum, maximum);
-            let max_output_tokens = request.max_output_tokens;
+            let (max_output_tokens, output_unit) = (request.max_output_tokens, request.output_unit);
             let chars = request.chars;
             if !chars.is_empty() {
                 session.activity.touch();
@@ -570,7 +575,7 @@ impl ShellSessions {
                             }
                         }
                         state
-                            .wait_for_output(yield_time, max_output_tokens, started_at)
+                            .wait_for_output(yield_time, max_output_tokens, output_unit, started_at)
                             .await
                     })
                 })
@@ -825,6 +830,7 @@ impl SessionState {
         &mut self,
         yield_time: Duration,
         max_output_tokens: Option<usize>,
+        output_unit: OutputUnit,
         started_at: Instant,
     ) -> ExecCommandResult {
         let status = timeout(yield_time, self.child.wait()).await;
@@ -841,12 +847,13 @@ impl SessionState {
             }
             Err(_) => None,
         };
-        let (output, original_token_count) = match self.take_output(max_output_tokens).await {
-            Ok(output) => output,
-            Err(error) => {
-                return ExecCommandResult::failed(started_at.elapsed(), error.to_string());
-            }
-        };
+        let (output, original_token_count) =
+            match self.take_output(max_output_tokens, output_unit).await {
+                Ok(output) => output,
+                Err(error) => {
+                    return ExecCommandResult::failed(started_at.elapsed(), error.to_string());
+                }
+            };
         ExecCommandResult {
             error: None,
             chunk_id: Some(generate_chunk_id()),
@@ -876,13 +883,14 @@ impl SessionState {
     async fn take_output(
         &mut self,
         max_output_tokens: Option<usize>,
+        output_unit: OutputUnit,
     ) -> Result<(String, Option<usize>), nanocode_sync::Stopped> {
         let mut captured = self.output.take().await?;
         captured.trim_truncated_secrets(&self.secrets);
         let mut raw = String::from_utf8_lossy(&captured.with_omission_marker()).into_owned();
         self.secrets.text(&mut raw);
         let limit = output::effective_token_limit(max_output_tokens);
-        let (output, _) = output::redact_and_limit(raw, &[], limit);
+        let (output, _) = output::redact_and_limit_in(raw, &[], limit, output_unit);
         Ok((output, Some(captured.total_bytes.saturating_add(3) / 4)))
     }
 }

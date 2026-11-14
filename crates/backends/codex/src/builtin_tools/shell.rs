@@ -6,8 +6,10 @@ use serde::Deserialize;
 use super::{StandardTool, Tool, ToolContext, ToolInput, ToolOutput, ToolResult};
 
 use nanocode_process_contracts::{
-    DEFAULT_MAX_OUTPUT_TOKENS, ExecCommand, ExecCommandResult, ShellExecutor, WriteStdin,
+    DEFAULT_MAX_OUTPUT_TOKENS, ExecCommand, ExecCommandResult, OutputUnit, ShellExecutor,
+    WriteStdin,
 };
+use nanocode_types::Model;
 
 pub(crate) struct ExecCommandHandler {
     workspace: PathBuf,
@@ -57,6 +59,8 @@ impl Tool for ExecCommandHandler {
         Box::pin(async move {
             let output: ToolResult = {
                 let arguments = input.decode_json::<ExecCommandArguments>()?;
+                let (max_output_tokens, output_unit) =
+                    output_limit(arguments.max_output_tokens, context);
                 let command = ExecCommand::new(
                     arguments.cmd,
                     arguments.workdir,
@@ -64,8 +68,9 @@ impl Tool for ExecCommandHandler {
                     arguments.login,
                     arguments.tty,
                     arguments.yield_time_ms,
-                    Some(output_tokens(arguments.max_output_tokens, context)),
+                    Some(max_output_tokens),
                 )
+                .with_output_unit(output_unit)
                 .from_caller(context.session_id());
                 let result = self.sessions.execute(command, &self.workspace).await;
                 Ok(shell_execution(&result))
@@ -107,12 +112,15 @@ impl Tool for WriteStdinHandler {
         Box::pin(async move {
             let output: ToolResult = {
                 let arguments = input.decode_json::<WriteStdinArguments>()?;
+                let (max_output_tokens, output_unit) =
+                    output_limit(arguments.max_output_tokens, context);
                 let request = WriteStdin::new(
                     arguments.session_id,
                     arguments.chars,
                     arguments.yield_time_ms,
-                    Some(output_tokens(arguments.max_output_tokens, context)),
+                    Some(max_output_tokens),
                 )
+                .with_output_unit(output_unit)
                 .from_caller(context.session_id());
                 let result = self.sessions.write_stdin(request).await;
                 Ok(shell_execution(&result))
@@ -122,10 +130,17 @@ impl Tool for WriteStdinHandler {
     }
 }
 
-fn output_tokens(requested: Option<usize>, context: ToolContext<'_>) -> usize {
-    requested
-        .unwrap_or(DEFAULT_MAX_OUTPUT_TOKENS)
-        .min(context.output_token_budget())
+fn output_limit(requested: Option<usize>, context: ToolContext<'_>) -> (usize, OutputUnit) {
+    let requested = requested.unwrap_or(DEFAULT_MAX_OUTPUT_TOKENS);
+    let budget = context.output_token_budget();
+    let bytes = context
+        .model()
+        .parse::<Model>()
+        .is_ok_and(Model::truncates_tool_output_by_bytes);
+    match bytes && requested >= budget {
+        true => (budget, OutputUnit::Chars),
+        false => (requested.min(budget), OutputUnit::Tokens),
+    }
 }
 
 fn shell_execution(result: &ExecCommandResult) -> ToolOutput {

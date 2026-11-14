@@ -22,7 +22,15 @@ pub struct ExecCommand {
     pub tty: bool,
     pub yield_time_ms: Option<u64>,
     pub max_output_tokens: Option<usize>,
+    pub output_unit: OutputUnit,
     pub caller: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum OutputUnit {
+    #[default]
+    Tokens,
+    Chars,
 }
 
 impl ExecCommand {
@@ -43,8 +51,15 @@ impl ExecCommand {
             tty,
             yield_time_ms,
             max_output_tokens,
+            output_unit: OutputUnit::Tokens,
             caller: None,
         }
+    }
+
+    #[must_use]
+    pub const fn with_output_unit(mut self, output_unit: OutputUnit) -> Self {
+        self.output_unit = output_unit;
+        self
     }
 
     #[must_use]
@@ -59,6 +74,7 @@ pub struct WriteStdin {
     pub chars: String,
     pub yield_time_ms: Option<u64>,
     pub max_output_tokens: Option<usize>,
+    pub output_unit: OutputUnit,
     pub caller: Option<String>,
 }
 
@@ -74,8 +90,15 @@ impl WriteStdin {
             chars,
             yield_time_ms,
             max_output_tokens,
+            output_unit: OutputUnit::Tokens,
             caller: None,
         }
+    }
+
+    #[must_use]
+    pub const fn with_output_unit(mut self, output_unit: OutputUnit) -> Self {
+        self.output_unit = output_unit;
+        self
     }
 
     #[must_use]
@@ -258,7 +281,16 @@ pub fn effective_token_limit(requested: Option<usize>) -> usize {
 
 pub const MIN_REDACTED_SECRET_BYTES: usize = 4;
 
-pub fn redact_and_limit(mut output: String, secrets: &[String], limit: usize) -> (String, bool) {
+pub fn redact_and_limit(output: String, secrets: &[String], limit: usize) -> (String, bool) {
+    redact_and_limit_in(output, secrets, limit, OutputUnit::Tokens)
+}
+
+pub fn redact_and_limit_in(
+    mut output: String,
+    secrets: &[String],
+    limit: usize,
+    unit: OutputUnit,
+) -> (String, bool) {
     Redactor::raw(MIN_REDACTED_SECRET_BYTES)
         .values(secrets)
         .text(&mut output);
@@ -274,9 +306,15 @@ pub fn redact_and_limit(mut output: String, secrets: &[String], limit: usize) ->
     let suffix_start = output
         .ceil_char_boundary(output.len().saturating_sub(right_budget))
         .max(prefix_end);
-    let removed_tokens = output.len().saturating_sub(limit).saturating_add(3) / BYTES_PER_TOKEN;
+    let removed = match unit {
+        OutputUnit::Tokens => format!(
+            "{} tokens",
+            output.len().saturating_sub(limit).saturating_add(3) / BYTES_PER_TOKEN
+        ),
+        OutputUnit::Chars => format!("{} chars", output[prefix_end..suffix_start].chars().count()),
+    };
     let truncated = format!(
-        "Warning: truncated output (original token count: {original_token_count})\nTotal output lines: {total_lines}\n\n{}…{removed_tokens} tokens truncated…{}",
+        "Warning: truncated output (original token count: {original_token_count})\nTotal output lines: {total_lines}\n\n{}…{removed} truncated…{}",
         &output[..prefix_end],
         &output[suffix_start..],
     );

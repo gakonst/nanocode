@@ -8,7 +8,7 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 use super::process::{Exit, Ready};
 
 pub(super) const READ_BUFFER_LENGTH: usize = 8 * 1024;
-pub(super) use nanocode_process_contracts::{effective_token_limit, redact_and_limit};
+pub(super) use nanocode_process_contracts::{effective_token_limit, redact_and_limit_in};
 
 #[derive(Clone)]
 pub(super) struct Capture {

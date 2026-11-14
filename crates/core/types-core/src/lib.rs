@@ -176,6 +176,11 @@ impl Model {
     }
 
     #[must_use]
+    pub const fn truncates_tool_output_by_bytes(self) -> bool {
+        matches!(self, Self::Custom(_))
+    }
+
+    #[must_use]
     pub const fn uses_responses_lite(self) -> bool {
         !matches!(self, Self::Custom(_))
     }

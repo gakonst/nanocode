@@ -502,18 +502,20 @@ fn map_receive_error(error: WebSocketError) -> ResponsesError {
     }
 }
 
-const fn is_transient_websocket(error: &WebSocketError) -> bool {
-    matches!(
-        error,
-        WebSocketError::ConnectionClosed
-            | WebSocketError::AlreadyClosed
-            | WebSocketError::Io(_)
-            | WebSocketError::Protocol(
-                ProtocolError::HandshakeIncomplete
-                    | ProtocolError::ResetWithoutClosingHandshake
-                    | ProtocolError::SendAfterClosing
-            )
-    )
+fn is_transient_websocket(error: &WebSocketError) -> bool {
+    match error {
+        WebSocketError::Io(error) => !nanocode_http::connect::untrusted_certificate(error),
+        _ => matches!(
+            error,
+            WebSocketError::ConnectionClosed
+                | WebSocketError::AlreadyClosed
+                | WebSocketError::Protocol(
+                    ProtocolError::HandshakeIncomplete
+                        | ProtocolError::ResetWithoutClosingHandshake
+                        | ProtocolError::SendAfterClosing
+                )
+        ),
+    }
 }
 
 fn header_string(headers: &http::HeaderMap, name: &str) -> Option<String> {

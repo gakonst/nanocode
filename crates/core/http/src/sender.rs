@@ -43,7 +43,8 @@ impl Sender for ClientSender<'_> {
 
 #[must_use]
 pub fn retryable(error: &crate::Error) -> bool {
-    error.is_connect() || error.is_body() || error.is_request() || error.is_decode()
+    !crate::connect::untrusted_certificate(error)
+        && (error.is_connect() || error.is_body() || error.is_request() || error.is_decode())
 }
 
 pub fn client_error(error: crate::Error) -> Error {

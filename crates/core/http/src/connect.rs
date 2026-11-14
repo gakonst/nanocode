@@ -577,7 +577,52 @@ where
     };
     let name = ServerName::try_from(normalize_host(host).to_owned())
         .map_err(|_| invalid_input(format!("invalid TLS server name {host:?}")))?;
-    nanocode_tls::connect(config, name, stream).await
+    nanocode_tls::connect(config, name, stream)
+        .await
+        .map_err(|error| {
+            let rejected = error
+                .get_ref()
+                .and_then(|inner| inner.downcast_ref::<nanocode_tls::rustls::Error>())
+                .is_some_and(|tls| matches!(tls, nanocode_tls::rustls::Error::InvalidCertificate(_)));
+            if rejected {
+                io::Error::new(io::ErrorKind::InvalidData, UntrustedCertificate(error))
+            } else {
+                error
+            }
+        })
+}
+
+#[derive(Debug)]
+pub struct UntrustedCertificate(io::Error);
+
+impl std::fmt::Display for UntrustedCertificate {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(
+            "the server's TLS certificate is not trusted; if a proxy intercepts TLS, set SSL_CERT_FILE to its CA bundle",
+        )
+    }
+}
+
+impl std::error::Error for UntrustedCertificate {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.0)
+    }
+}
+
+pub fn untrusted_certificate(error: &(dyn std::error::Error + 'static)) -> bool {
+    let mut next = Some(error);
+    while let Some(cause) = next {
+        let untrusted = cause.is::<UntrustedCertificate>()
+            || cause
+                .downcast_ref::<io::Error>()
+                .and_then(io::Error::get_ref)
+                .is_some_and(|inner| inner.is::<UntrustedCertificate>());
+        if untrusted {
+            return true;
+        }
+        next = cause.source();
+    }
+    false
 }
 
 pub async fn stream(

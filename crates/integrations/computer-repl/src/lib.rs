@@ -167,16 +167,6 @@ impl ComputerConfig {
         let home = std::env::var_os("HOME")
             .map(PathBuf::from)
             .ok_or("cua-driver CUA requires HOME")?;
-        let node = std::env::var_os("CUA_REPL_NODE")
-            .map(PathBuf::from)
-            .or_else(|| program("node"))
-            .or_else(|| {
-                NODE_SEARCH
-                    .iter()
-                    .map(PathBuf::from)
-                    .find(|path| executable(path))
-            })
-            .ok_or("cua-driver CUA needs Node.js 22 or newer: install node or set CUA_REPL_NODE")?;
         let explicit = std::env::var_os("CUA_DRIVER_PATH").map(PathBuf::from);
         let (driver, driver_args) = if explicit.is_none() && cfg!(target_os = "macos") {
             match embedded_driver() {
@@ -201,6 +191,16 @@ impl ComputerConfig {
                 )?;
             (driver, None)
         };
+        let node = std::env::var_os("CUA_REPL_NODE")
+            .map(PathBuf::from)
+            .or_else(|| program("node"))
+            .or_else(|| {
+                NODE_SEARCH
+                    .iter()
+                    .map(PathBuf::from)
+                    .find(|path| executable(path))
+            })
+            .ok_or("cua-driver CUA needs Node.js 22 or newer: install node or set CUA_REPL_NODE")?;
         let source = CUA_DRIVER_PROVIDER
             .replacen("__CATALOG__", CUA_DRIVER_CATALOG.trim(), 1)
             .replacen("__VERSION__", env!("CARGO_PKG_VERSION"), 1);

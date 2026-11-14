@@ -4267,6 +4267,7 @@ struct ResponseContext<'a> {
 const DEVELOPER_NOTICE_OPEN: &str = "<system-reminder>\n";
 const ATTRIBUTION: &str = "<system-reminder>\nAttribution for git commits and pull requests you create from here on (this replaces Claude Code's own earlier attribution guidance, such as a previous copy of this reminder; the user's own instructions about these lines, such as a CLAUDE.md or memory rule, take precedence over this reminder, but do not add attribution lines this reminder leaves out):\n- End git commit messages with:\nCo-Authored-By: Claude Code <noreply@anthropic.com>\n- End pull request descriptions with:\n\u{1f916} Generated with [Claude Code](https://claude.com/claude-code)\n</system-reminder>\n";
 const TOKEN_BUDGET: u64 = 15_000_000;
+const NO_VISIBLE_OUTPUT: &str = "[Your previous response had no visible output. Please continue and produce a user-visible response.]";
 const DEVELOPER_NOTICE_CLOSE: &str = "\n</system-reminder>";
 const DATE_CHANGED: &str = "The date has changed. Today's date is now ";
 const DATE_CHANGED_END: &str =
@@ -8035,6 +8036,38 @@ impl State {
                 );
                 pending = conversation.packed_messages();
                 previous_message_id = conversation.previous_message_id.clone();
+                cursor.index = index + 1;
+                self.retain_pending(&mut cursor, &pending);
+                cursor.usage = usage.clone();
+                self.defer_cursor(&mut cursor, conversation, journal)
+                    .await?;
+                continue;
+            }
+            if response.stop_reason == Some(StopReason::EndTurn)
+                && !has_tool_calls
+                && !has_server_effects
+                && !cursor.thinking_only_nudged
+                && !assistant.content.iter().any(|block| {
+                    matches!(block, ContentBlock::Text { text, .. } if !text.trim().is_empty())
+                })
+            {
+                if cancel.is_cancelled() {
+                    return Err(NanocodeError::TurnCancelled);
+                }
+                cursor.thinking_only_nudged = true;
+                pending.pop();
+                match pending
+                    .iter_mut()
+                    .rev()
+                    .find(|message| message.role != Role::System)
+                {
+                    Some(message) if message.role == Role::User => message
+                        .make_mut()
+                        .content
+                        .push(ContentBlock::text(NO_VISIBLE_OUTPUT)),
+                    _ => pending.push(Message::text(Role::User, NO_VISIBLE_OUTPUT).into()),
+                }
+                conversation.messages = pending.clone();
                 cursor.index = index + 1;
                 self.retain_pending(&mut cursor, &pending);
                 cursor.usage = usage.clone();

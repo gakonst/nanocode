@@ -3496,6 +3496,9 @@ impl MessageAccumulator {
             ..
         } = self;
         if message.stop_reason.is_none() {
+            if active.is_empty() && completed.is_empty() {
+                return Err(ClaudeError::IncompleteStream);
+            }
             return Err(ClaudeError::Protocol("missing final stop_reason".into()));
         }
         let truncated = message.stop_reason == Some(StopReason::MaxTokens);

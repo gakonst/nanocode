@@ -177,7 +177,11 @@ impl<E: BashExecutor> ClaudeBash<E> {
                 "command must be nonblank and at most {MAX_COMMAND_BYTES} bytes"
             ));
         }
-        if !background && let Some(sleep) = leading_sleep(command) {
+        let nested = call_id.is_some_and(|id| id.contains("/code-"));
+        if !background
+            && nested
+            && let Some(sleep) = leading_sleep(command)
+        {
             return Err(format!(
                 "Blocked: {sleep}. To wait for a command you started, use run_in_background: true. Do not chain shorter sleeps to work around this block."
             ));
@@ -192,7 +196,6 @@ impl<E: BashExecutor> ClaudeBash<E> {
                 Some(text.to_owned())
             }
         };
-        let nested = call_id.is_some_and(|id| id.contains("/code-"));
         let (default, maximum) = if background {
             (DEFAULT_BACKGROUND_TIMEOUT_MS, MAX_BACKGROUND_TIMEOUT_MS)
         } else if nested {

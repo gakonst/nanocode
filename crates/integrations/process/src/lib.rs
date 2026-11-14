@@ -43,10 +43,10 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
+use nanocode_executor::JoinHandle;
 use nanocode_platform::timeout;
 use nanocode_sync::Notify;
 use nanocode_sync::{Actor, Atom};
-use tokio::task::JoinHandle;
 
 pub use nanocode_process_contracts::{
     DEFAULT_EXEC_YIELD_MS, DEFAULT_POLL_YIELD_MS, DEFAULT_WRITE_YIELD_MS, MAX_EXEC_YIELD_MS,

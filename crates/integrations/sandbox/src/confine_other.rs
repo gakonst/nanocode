@@ -1,3 +1,4 @@
+use nanocode_executor::process::Command;
 use serde::{Deserialize, Serialize};
 use std::{
     io::{self, PipeWriter},
@@ -7,7 +8,6 @@ use std::{
     },
     path::{Path, PathBuf},
 };
-use tokio::process::Command;
 
 pub const ARGUMENT: &str = "tool-sandbox";
 

@@ -6,14 +6,14 @@ use std::sync::{
 #[cfg(not(target_family = "wasm"))]
 use nanocode_http::types::header::PROXY_AUTHORIZATION;
 use nanocode_http::types::{HeaderMap, HeaderName, HeaderValue, header::USER_AGENT};
+#[cfg(not(target_family = "wasm"))]
+use nanocode_io::AsyncReadExt;
 use nanocode_mcp::{
     CallToolParams, CallToolResult, Error as SessionError, Implementation, Inbound, Outgoing,
     Session, Tool,
 };
 use nanocode_trace::{Instrument, Span, info_span};
 use serde_json::Value;
-#[cfg(not(target_family = "wasm"))]
-use tokio::io::AsyncReadExt;
 
 #[cfg(not(target_family = "wasm"))]
 use nanocode_mcp_http::oauth::{
@@ -370,7 +370,7 @@ pub(crate) async fn connect(
             if command.trim().is_empty() {
                 return Err("stdio command must not be empty".to_owned().into());
             }
-            let mut command = tokio::process::Command::new(command);
+            let mut command = nanocode_executor::process::Command::new(command);
             command.args(args).envs(env);
 
             match session {
@@ -654,7 +654,7 @@ async fn connect_session(
 }
 
 #[cfg(not(target_family = "wasm"))]
-fn drain_server_stderr(server_name: String, stderr: tokio::process::ChildStderr) {
+fn drain_server_stderr(server_name: String, stderr: nanocode_executor::process::ChildStderr) {
     drop(nanocode_platform::spawn_task(async move {
         let mut stderr = stderr;
         let mut chunk = [0_u8; MCP_STDERR_CHUNK_BYTES];

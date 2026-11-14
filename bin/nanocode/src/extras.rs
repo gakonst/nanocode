@@ -23,7 +23,7 @@ pub(crate) struct Shell {
     index: usize,
     started: std::time::Instant,
     pending: Vec<u8>,
-    task: tokio::task::AbortHandle,
+    task: nanocode_executor::AbortHandle,
 }
 
 struct ShellSink {
@@ -83,13 +83,13 @@ pub fn image_path(text: &str, workspace: &Path) -> Option<PathBuf> {
 
 pub fn open_url(url: &str) -> bool {
     let mut command = if cfg!(target_os = "macos") {
-        tokio::process::Command::new("open")
+        nanocode_executor::process::Command::new("open")
     } else if cfg!(windows) {
-        let mut command = tokio::process::Command::new("rundll32");
+        let mut command = nanocode_executor::process::Command::new("rundll32");
         command.arg("url.dll,FileProtocolHandler");
         command
     } else {
-        tokio::process::Command::new("xdg-open")
+        nanocode_executor::process::Command::new("xdg-open")
     };
     command
         .arg(url)

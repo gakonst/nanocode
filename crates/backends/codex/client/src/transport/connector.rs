@@ -1,12 +1,12 @@
 use std::io;
 
+use nanocode_executor::TcpStream;
 use nanocode_http::connect::{self, Alpn, Proxy, ProxyScheme};
 use nanocode_http::types::Uri;
 use nanocode_websocket::{
     Error, MaybeTlsStream, Result, WebSocketStream, client::Request, client::Response,
     client_async_with_config,
 };
-use tokio::net::TcpStream;
 
 use super::deflate::InflateStream;
 

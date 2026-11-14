@@ -153,7 +153,7 @@ fn fetch_models(url: &str, key: Option<&str>) -> Result<Vec<(String, Option<u64>
         id: String,
         context_window: Option<u64>,
     }
-    let runtime = tokio::runtime::Builder::new_current_thread()
+    let runtime = nanocode_executor::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|error| error.to_string())?;

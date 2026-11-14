@@ -6,6 +6,7 @@ use std::{
     time::Duration,
 };
 
+use nanocode_executor::TcpStream;
 use nanocode_http::layer::retry;
 use nanocode_http::types::{HeaderValue, header};
 use nanocode_platform::timeout;
@@ -15,7 +16,6 @@ use nanocode_websocket::{
     Error as WebSocketError, Frame, IntoClientRequest, MaybeTlsStream, Message, OpCode,
     ProtocolError, Utf8Bytes, WebSocketStream,
 };
-use tokio::net::TcpStream;
 
 use crate::client::{
     EncodedRequest, OpenAiAuthSnapshot, ResponsesError,
@@ -63,7 +63,7 @@ struct SocketPump {
     commands: mpsc::Sender<SocketCommand>,
     messages: mpsc::Receiver<PumpBatch>,
     batch: Option<ReceivedBatch>,
-    task: tokio::task::JoinHandle<()>,
+    task: nanocode_executor::JoinHandle<()>,
     stopped: Arc<AtomicBool>,
 }
 

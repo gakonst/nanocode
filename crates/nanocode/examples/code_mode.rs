@@ -33,7 +33,7 @@ async fn run() -> support::Result<()> {
             let transport = if mode == "connect" {
                 SocketTransport::connect(AttachmentTarget::new(endpoint, token)?, policy).await?
             } else {
-                let listener = tokio::net::TcpListener::bind(endpoint).await?;
+                let listener = nanocode_executor::TcpListener::bind(endpoint).await?;
                 eprintln!("listening {}", listener.local_addr()?);
                 SocketTransport::accept(&listener, &token, policy).await?
             };

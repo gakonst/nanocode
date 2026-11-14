@@ -7,8 +7,8 @@ use std::{
     task::{Context, Poll},
 };
 
+use nanocode_io::{AsyncRead, ReadBuf};
 use nanocode_sync::{mpsc, oneshot};
-use tokio::io::{AsyncRead, ReadBuf};
 
 use super::process;
 

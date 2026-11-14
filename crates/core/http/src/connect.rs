@@ -2,6 +2,8 @@ use std::{
     collections::VecDeque, env, future::Future, io, net::SocketAddr, sync::Arc, time::Duration,
 };
 
+use nanocode_executor::TcpStream;
+use nanocode_io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use nanocode_platform::sleep_until;
 use nanocode_sync::{Duplex, SwapOption};
 use nanocode_sync::{StreamExt, stream::FuturesUnordered};
@@ -9,10 +11,6 @@ use nanocode_sys::base64::STANDARD;
 use nanocode_tls::{
     ClientStream,
     rustls::{ClientConfig, pki_types::ServerName},
-};
-use tokio::{
-    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
-    net::TcpStream,
 };
 
 const CONNECTION_ATTEMPT_DELAY: Duration = Duration::from_millis(250);
@@ -458,7 +456,9 @@ pub async fn tcp(host: &str, port: u16, resolved: &[SocketAddr]) -> io::Result<T
         let literal = normalize_host(host);
         match literal.parse::<std::net::IpAddr>() {
             Ok(address) => vec![SocketAddr::new(address, port)],
-            Err(_) => tokio::net::lookup_host((literal, port)).await?.collect(),
+            Err(_) => nanocode_executor::lookup_host((literal, port))
+                .await?
+                .collect(),
         }
     } else {
         resolved.to_vec()

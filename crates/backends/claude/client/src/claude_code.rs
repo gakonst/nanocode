@@ -5,8 +5,8 @@ use std::{
 };
 
 use nanocode_http::header::HeaderValue;
-use serde_json::{Value, json};
 use nanocode_trace::Instrument as _;
+use serde_json::{Value, json};
 
 use crate::{
     ClaudeAccessToken, ClaudeAuthFuture, ClaudeAuthUnavailable, ClaudeClient, ClaudeTokenSource,
@@ -100,7 +100,7 @@ impl Login {
         if cfg!(target_os = "macos") {
             let service = keychain_service();
             let account = keychain_account();
-            let mut command = tokio::process::Command::new("security");
+            let mut command = nanocode_executor::process::Command::new("security");
             command.arg("find-generic-password");
             if let Some(account) = &account {
                 command.args(["-a", account]);
@@ -122,7 +122,7 @@ impl Login {
                 String::from_utf8_lossy(&output.stderr).trim()
             ));
         }
-        let bytes = tokio::fs::read(&path).await.map_err(|error| {
+        let bytes = nanocode_executor::fs::read(&path).await.map_err(|error| {
             let file = format!("{}: {error}", path.display());
             unavailable(&match keychain {
                 Some(keychain) => format!(
@@ -247,12 +247,12 @@ async fn write_keychain(
     account: &str,
     bytes: &[u8],
 ) -> Result<(), ClaudeAuthUnavailable> {
-    use tokio::io::AsyncWriteExt as _;
+    use nanocode_io::AsyncWriteExt as _;
     let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
     let command =
         format!("add-generic-password -U -a \"{account}\" -s \"{service}\" -X \"{hex}\"\n");
     let interactive = command.len() <= KEYCHAIN_COMMAND_LIMIT;
-    let mut security = tokio::process::Command::new("security");
+    let mut security = nanocode_executor::process::Command::new("security");
     if interactive {
         security.arg("-i").stdin(std::process::Stdio::piped());
     } else {

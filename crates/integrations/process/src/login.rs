@@ -165,7 +165,7 @@ async fn probe(
 ) -> Result<Snapshot, String> {
     let script = format!("printf '\\0%s\\0' {MARK}; /usr/bin/env -0");
     let failed = |why: String| format!("the login shell {} {why}", shell.display());
-    let output = tokio::process::Command::new(shell)
+    let output = nanocode_executor::process::Command::new(shell)
         .args(["-lc", &script])
         .current_dir(workdir)
         .env_clear()

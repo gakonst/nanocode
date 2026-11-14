@@ -1,12 +1,10 @@
 use std::{io, process::Stdio, time::Duration};
 
+use nanocode_executor::process::{ChildStderr, ChildStdout, Command};
+use nanocode_io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use nanocode_mcp::{Inbound, Message, Outgoing, RpcError, jsonrpc::PARSE_ERROR};
 use nanocode_sync::StreamExt;
 use serde_json::Value;
-use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
-    process::{ChildStderr, ChildStdout, Command},
-};
 
 use nanocode_process::ProcessGroupGuard;
 
@@ -70,7 +68,7 @@ pub fn spawn(
 }
 
 async fn write_message(
-    stdin: &mut tokio::process::ChildStdin,
+    stdin: &mut nanocode_executor::process::ChildStdin,
     message: &Message,
 ) -> io::Result<()> {
     let mut line = message.to_vec().map_err(io::Error::other)?;

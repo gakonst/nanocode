@@ -6,6 +6,7 @@ use crate::{
     },
     seccomp,
 };
+use nanocode_executor::process::Command;
 use nanocode_sys::unix::confine::SocketFilter;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -18,7 +19,6 @@ use std::{
     },
     path::{Path, PathBuf},
 };
-use tokio::process::Command;
 
 const ABI: Abi = Abi::V6;
 

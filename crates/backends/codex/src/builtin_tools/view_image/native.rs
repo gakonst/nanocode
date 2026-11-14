@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
+use nanocode_io::{AsyncRead, AsyncReadExt};
 use nanocode_tools::ToolDefinition;
-use tokio::io::{AsyncRead, AsyncReadExt};
 
 use super::{
     super::{StandardTool, Tool, ToolContext, ToolInput, ToolOutput, ToolResult},
@@ -56,7 +56,7 @@ impl Tool for ViewImageHandler {
                     Err(error) => return Ok(error),
                 };
                 let path = resolve(&self.workspace, Path::new(&arguments.path));
-                let mut file = match tokio::fs::File::open(&path).await {
+                let mut file = match nanocode_executor::fs::File::open(&path).await {
                     Ok(file) => file,
                     Err(error) => {
                         return Ok(ToolOutput::error(format!(

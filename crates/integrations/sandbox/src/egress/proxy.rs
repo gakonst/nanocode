@@ -9,6 +9,7 @@ use crate::egress::{
     wire::{Credential, Secret},
 };
 use nanocode_bytes::Bytes;
+use nanocode_executor::{TcpStream, lookup_host};
 use nanocode_http::types::{
     Method, StatusCode, Uri,
     header::{self, HeaderMap, HeaderValue},
@@ -18,6 +19,7 @@ use nanocode_http::{
     server::{self, Incoming, OnUpgrade, Outgoing, Reply, Upgraded},
     wire::WireError,
 };
+use nanocode_io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use nanocode_platform::timeout;
 use nanocode_sync::mpsc;
 use nanocode_sync::{Atom, Duplex, pipe};
@@ -33,10 +35,6 @@ use std::{
     pin::Pin,
     sync::Arc,
     time::Duration,
-};
-use tokio::{
-    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
-    net::{TcpStream, lookup_host},
 };
 
 const HOP: &str = "connection keep-alive proxy-authenticate proxy-authorization proxy-connection te trailer transfer-encoding";

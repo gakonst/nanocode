@@ -54,7 +54,7 @@ impl ClientBuilder {
     pub fn build(self) -> Result<Client> {
         let client = self.builder.build()?;
         let (jobs, mut queue) = mpsc::unbounded_channel::<Job>();
-        let runtime = tokio::runtime::Builder::new_current_thread()
+        let runtime = nanocode_executor::Builder::new_current_thread()
             .enable_all()
             .build()
             .map_err(super::Error::builder)?;

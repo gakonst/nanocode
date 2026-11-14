@@ -1,9 +1,9 @@
 use crate::{SYSTEM, confine::CHANNEL};
+use nanocode_executor::process::Command;
 use std::{
     ffi::{OsStr, OsString},
     path::Path,
 };
-use tokio::process::Command;
 
 pub struct Bubblewrap {
     bwrap: OsString,

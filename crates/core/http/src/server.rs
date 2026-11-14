@@ -11,13 +11,13 @@ use crate::types::{
     header::{CONTENT_LENGTH, DATE, TRANSFER_ENCODING, UPGRADE},
 };
 use nanocode_bytes::Bytes;
+use nanocode_io::{AsyncRead, AsyncWrite, ReadBuf};
 use nanocode_platform::timeout;
 use nanocode_sync::{
     Stream, StreamExt,
     future::{Either, select},
 };
 use nanocode_sync::{mpsc, oneshot};
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 use crate::{
     client::BoxError,

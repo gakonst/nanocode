@@ -39,32 +39,44 @@ pub fn system_time() -> SystemTime {
 }
 
 enum Delay {
-    Tokio(tokio::time::Sleep),
+    Executor(nanocode_executor::Sleep),
     Host(HostFuture),
 }
 
 pub fn sleep(duration: Duration) -> impl Future<Output = ()> + Send + 'static {
     let delay = match host() {
         Some(host) => Delay::Host(host.sleep(duration)),
-        None => Delay::Tokio(tokio::time::sleep(duration)),
+        None => Delay::Executor(nanocode_executor::sleep(duration)),
     };
     async move {
         match delay {
-            Delay::Tokio(delay) => delay.await,
+            Delay::Executor(delay) => delay.await,
             Delay::Host(delay) => delay.await,
         }
     }
 }
 
 enum Timed<F: Future> {
-    Tokio(tokio::time::Timeout<F>),
+    Executor(F, nanocode_executor::Sleep),
     Host(F, HostFuture),
 }
 
 impl<F: Future> Timed<F> {
     async fn run(self) -> Result<F::Output, crate::Elapsed> {
         match self {
-            Self::Tokio(timed) => timed.await.map_err(|_| crate::Elapsed),
+            Self::Executor(future, delay) => {
+                let mut future = std::pin::pin!(future);
+                let mut delay = delay;
+                std::future::poll_fn(|context| {
+                    if let Poll::Ready(output) = future.as_mut().poll(context) {
+                        return Poll::Ready(Ok(output));
+                    }
+                    Pin::new(&mut delay)
+                        .poll(context)
+                        .map(|()| Err(crate::Elapsed))
+                })
+                .await
+            }
             Self::Host(future, mut delay) => {
                 let mut future = std::pin::pin!(future);
                 std::future::poll_fn(|context| {
@@ -85,18 +97,18 @@ pub fn timeout<F: Future>(
 ) -> impl Future<Output = Result<F::Output, crate::Elapsed>> {
     let timed = match host() {
         Some(host) => Timed::Host(future, host.sleep(duration)),
-        None => Timed::Tokio(tokio::time::timeout(duration, future)),
+        None => Timed::Executor(future, nanocode_executor::sleep(duration)),
     };
     timed.run()
 }
 pub fn sleep_until(deadline: Instant) -> impl Future<Output = ()> + Send + 'static {
     let delay = match host() {
         Some(host) => Delay::Host(host.sleep(deadline.saturating_duration_since(host.now()))),
-        None => Delay::Tokio(tokio::time::sleep_until(deadline.into())),
+        None => Delay::Executor(nanocode_executor::sleep_until(deadline)),
     };
     async move {
         match delay {
-            Delay::Tokio(delay) => delay.await,
+            Delay::Executor(delay) => delay.await,
             Delay::Host(delay) => delay.await,
         }
     }
@@ -111,13 +123,13 @@ pub fn timeout_at<F: Future>(
             future,
             host.sleep(deadline.saturating_duration_since(host.now())),
         ),
-        None => Timed::Tokio(tokio::time::timeout_at(deadline.into(), future)),
+        None => Timed::Executor(future, nanocode_executor::sleep_until(deadline)),
     };
     timed.run()
 }
 
 enum Wake {
-    Tokio(Pin<Box<tokio::time::Sleep>>),
+    Executor(nanocode_executor::Sleep),
     Host(HostFuture),
 }
 
@@ -134,7 +146,7 @@ impl Sleep {
     pub fn until(deadline: Instant) -> Self {
         let wake = match host() {
             Some(host) => Wake::Host(host.sleep(deadline.saturating_duration_since(host.now()))),
-            None => Wake::Tokio(Box::pin(tokio::time::sleep_until(deadline.into()))),
+            None => Wake::Executor(nanocode_executor::sleep_until(deadline)),
         };
         Self { deadline, wake }
     }
@@ -146,7 +158,7 @@ impl Sleep {
     pub fn reset(&mut self, deadline: Instant) {
         self.deadline = deadline;
         match (&mut self.wake, host()) {
-            (Wake::Tokio(delay), None) => delay.as_mut().reset(deadline.into()),
+            (Wake::Executor(delay), None) => delay.reset(deadline),
             (wake, _) => *wake = Self::until(deadline).wake,
         }
     }
@@ -157,7 +169,7 @@ impl Future for Sleep {
 
     fn poll(self: Pin<&mut Self>, context: &mut std::task::Context<'_>) -> Poll<()> {
         match &mut self.get_mut().wake {
-            Wake::Tokio(delay) => delay.as_mut().poll(context),
+            Wake::Executor(delay) => Pin::new(delay).poll(context),
             Wake::Host(delay) => delay.as_mut().poll(context),
         }
     }
@@ -169,7 +181,7 @@ pub struct TryCurrentError;
 impl std::fmt::Display for TryCurrentError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(
-            "there is no reactor running, must be called from the context of a Tokio 1.x runtime",
+            "there is no reactor running, must be called from the context of a nanocode runtime",
         )
     }
 }
@@ -179,7 +191,7 @@ impl std::error::Error for TryCurrentError {}
 #[derive(Clone)]
 pub enum Handle {
     Host(&'static dyn Host),
-    Tokio(tokio::runtime::Handle),
+    Executor(nanocode_executor::Handle),
 }
 
 impl Handle {
@@ -187,15 +199,15 @@ impl Handle {
         if let Some(host) = host() {
             return Ok(Self::Host(host));
         }
-        tokio::runtime::Handle::try_current()
-            .map(Self::Tokio)
+        nanocode_executor::Handle::try_current()
+            .map(Self::Executor)
             .map_err(|_| TryCurrentError)
     }
 
-    pub fn enter(&self) -> Option<tokio::runtime::EnterGuard<'_>> {
+    pub fn enter(&self) -> Option<nanocode_executor::EnterGuard<'_>> {
         match self {
             Self::Host(_) => None,
-            Self::Tokio(runtime) => Some(runtime.enter()),
+            Self::Executor(runtime) => Some(runtime.enter()),
         }
     }
 
@@ -203,7 +215,7 @@ impl Handle {
         let future: HostFuture = Box::pin(future);
         match self {
             Self::Host(host) => host.spawn(future),
-            Self::Tokio(runtime) => drop(runtime.spawn(future)),
+            Self::Executor(runtime) => drop(runtime.spawn(future)),
         }
     }
 }
@@ -212,40 +224,52 @@ pub fn spawn(future: impl Future<Output = ()> + Send + 'static) {
     let future: HostFuture = Box::pin(future);
     match host() {
         Some(host) => host.spawn(future),
-        None => drop(tokio::spawn(future)),
+        None => drop(nanocode_executor::spawn(future)),
     }
 }
 
 #[track_caller]
 pub fn spawn_task<T: Send + 'static>(
     future: impl Future<Output = T> + Send + 'static,
-) -> tokio::task::JoinHandle<T> {
-    let future: Pin<Box<dyn Future<Output = T> + Send + 'static>> = Box::pin(future);
-    tokio::spawn(future)
+) -> nanocode_executor::JoinHandle<T> {
+    match host() {
+        Some(host) => nanocode_executor::spawn_with(future, |driven| host.spawn(driven)),
+        None => {
+            let future: Pin<Box<dyn Future<Output = T> + Send + 'static>> = Box::pin(future);
+            nanocode_executor::spawn(future)
+        }
+    }
 }
 
 #[track_caller]
 pub fn spawn_on<T: Send + 'static>(
-    runtime: &tokio::runtime::Handle,
+    runtime: &nanocode_executor::Handle,
     future: impl Future<Output = T> + Send + 'static,
-) -> tokio::task::JoinHandle<T> {
+) -> nanocode_executor::JoinHandle<T> {
     let future: Pin<Box<dyn Future<Output = T> + Send + 'static>> = Box::pin(future);
     runtime.spawn(future)
 }
 
 #[track_caller]
 pub fn spawn_joined<T: Send + 'static>(
-    set: &mut tokio::task::JoinSet<T>,
+    set: &mut nanocode_executor::JoinSet<T>,
     future: impl Future<Output = T> + Send + 'static,
-) -> tokio::task::AbortHandle {
-    let future: Pin<Box<dyn Future<Output = T> + Send + 'static>> = Box::pin(future);
-    set.spawn(future)
+) -> nanocode_executor::AbortHandle {
+    match host() {
+        Some(host) => set.push(nanocode_executor::spawn_with(future, |driven| {
+            host.spawn(driven);
+        })),
+        None => {
+            let future: Pin<Box<dyn Future<Output = T> + Send + 'static>> = Box::pin(future);
+            set.spawn(future)
+        }
+    }
 }
 
 #[track_caller]
 pub fn spawn_blocking<T: Send + 'static>(
     work: impl FnOnce() -> T + Send + 'static,
-) -> tokio::task::JoinHandle<T> {
+) -> nanocode_executor::JoinHandle<T> {
     let work: Box<dyn FnOnce() -> T + Send + 'static> = Box::new(work);
-    tokio::task::spawn_blocking(work)
+    nanocode_executor::spawn_blocking(work)
 }

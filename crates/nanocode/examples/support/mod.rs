@@ -23,7 +23,7 @@ pub fn tools() -> Result<Tools> {
 }
 
 pub fn main(run: impl Future<Output = Result<()>>) {
-    let outcome = tokio::runtime::Builder::new_current_thread()
+    let outcome = nanocode_executor::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|error| error.into())

@@ -312,7 +312,7 @@ pub struct App {
     pub(crate) quit: bool,
     reload: bool,
     reload_all: bool,
-    pub(crate) submissions: tokio::task::JoinSet<()>,
+    pub(crate) submissions: nanocode_executor::JoinSet<()>,
     reload_side: Option<crate::side::SavedSide>,
     pub(crate) reload_focus: Option<nanocode::subagents::AgentId>,
     quit_armed: Option<Instant>,
@@ -391,7 +391,7 @@ pub async fn run(launch: Launch, mut terminal: TerminalSession) -> Result<()> {
         quit: false,
         reload: false,
         reload_all: false,
-        submissions: tokio::task::JoinSet::new(),
+        submissions: nanocode_executor::JoinSet::new(),
         reload_side: None,
         reload_focus: None,
         quit_armed: None,
@@ -438,11 +438,11 @@ pub async fn run(launch: Launch, mut terminal: TerminalSession) -> Result<()> {
         app.starting = false;
         app.open_session_picker();
         if let Some(path) = launch.reload_path {
-            tokio::fs::remove_file(path).await?;
+            nanocode_executor::fs::remove_file(path).await?;
         }
     } else if app.host.runtime.runner_pool().awaiting_replacement() {
         if let Some(path) = launch.reload_path {
-            tokio::fs::remove_file(path).await?;
+            nanocode_executor::fs::remove_file(path).await?;
         }
         app.notice(
             NoticeLevel::Info,
@@ -1196,7 +1196,7 @@ impl App {
                 if let Some(path) = self.reload_file.take() {
                     let tx = self.tx.clone();
                     nanocode_platform::spawn_task(async move {
-                        if let Err(error) = tokio::fs::remove_file(&path).await {
+                        if let Err(error) = nanocode_executor::fs::remove_file(&path).await {
                             drop(tx.send(AppEvent::Notice(
                                 NoticeLevel::Error,
                                 format!("could not remove {}: {error}", path.display()),

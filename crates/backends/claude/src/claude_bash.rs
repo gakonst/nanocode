@@ -6,6 +6,7 @@ use crate::{
     },
 };
 use nanocode_agent_core::{Agent, PromptRequest, WeakAgent};
+use nanocode_io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use nanocode_process_contracts::{ForegroundExecutor, LastActivity, OutputSink};
 use nanocode_sync::{Atom, Signal, Slot};
 use nanocode_sync::{mpsc, oneshot, watch};
@@ -23,7 +24,6 @@ use std::{
     },
     time::Duration,
 };
-use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
 const STALL_POLL: Duration = Duration::from_secs(5);
 const STALL_SILENCE: Duration = Duration::from_secs(45);
@@ -80,7 +80,7 @@ impl AtomicPhase {
 struct Job {
     result: watch::Receiver<Option<Outcome>>,
     finished: Arc<Signal>,
-    abort: tokio::task::AbortHandle,
+    abort: nanocode_executor::AbortHandle,
     phase: AtomicPhase,
     expired: Arc<AtomicBool>,
     capped: Arc<Signal>,
@@ -180,7 +180,11 @@ impl Job {
             return;
         };
         let line = self.exit_line();
-        let appended = match tokio::fs::OpenOptions::new().append(true).open(path).await {
+        let appended = match nanocode_executor::fs::OpenOptions::new()
+            .append(true)
+            .open(path)
+            .await
+        {
             Ok(mut file) => file.write_all(line.as_bytes()).await,
             Err(error) => Err(error),
         };
@@ -211,7 +215,7 @@ impl Job {
         let Some(path) = &self.output else {
             return text;
         };
-        let Ok(metadata) = tokio::fs::metadata(path).await else {
+        let Ok(metadata) = nanocode_executor::fs::metadata(path).await else {
             return text;
         };
         let Some(tail) = tail(path, metadata.len()).await else {
@@ -304,13 +308,13 @@ async fn output_file(
         .join("nanocode")
         .join(session)
         .join("tasks");
-    let mut builder = tokio::fs::DirBuilder::new();
+    let mut builder = nanocode_executor::fs::DirBuilder::new();
     builder.recursive(true);
     #[cfg(unix)]
     builder.mode(0o700);
     builder.create(&directory).await.ok()?;
     let path = directory.join(format!("{id}.output"));
-    let mut file = tokio::fs::File::create(&path).await.ok()?;
+    let mut file = nanocode_executor::fs::File::create(&path).await.ok()?;
     let (sender, mut chunks) = mpsc::unbounded_channel::<Vec<u8>>();
     let written = Arc::new(Signal::new());
     let done = Arc::clone(&written);
@@ -344,7 +348,7 @@ async fn stall(jobs: &Arc<Jobs>, job: &Job, binding: &Binding) {
     let mut quiet = nanocode_platform::now();
     loop {
         nanocode_platform::sleep(STALL_POLL).await;
-        let Ok(metadata) = tokio::fs::metadata(path).await else {
+        let Ok(metadata) = nanocode_executor::fs::metadata(path).await else {
             continue;
         };
         if metadata.len() > size {
@@ -380,7 +384,7 @@ async fn stall(jobs: &Arc<Jobs>, job: &Job, binding: &Binding) {
     }
 }
 async fn head(path: &Path, bytes: usize) -> Option<String> {
-    let file = tokio::fs::File::open(path).await.ok()?;
+    let mut file = nanocode_executor::fs::File::open(path).await.ok()?;
     let mut read = Vec::new();
     file.take(bytes as u64).read_to_end(&mut read).await.ok()?;
     Some(String::from_utf8_lossy(&read).into_owned())
@@ -398,7 +402,7 @@ fn timed_out_after(timeout: Duration) -> String {
     }
 }
 async fn tail(path: &Path, size: u64) -> Option<String> {
-    let mut file = tokio::fs::File::open(path).await.ok()?;
+    let mut file = nanocode_executor::fs::File::open(path).await.ok()?;
     let start = size.saturating_sub(STALL_TAIL_BYTES);
     file.seek(std::io::SeekFrom::Start(start)).await.ok()?;
     let mut bytes = Vec::new();
@@ -763,7 +767,7 @@ fn discard(job: &Job) {
     };
     drop(nanocode_platform::spawn_task(async move {
         written.wait().await;
-        let _ = tokio::fs::remove_file(path).await;
+        let _ = nanocode_executor::fs::remove_file(path).await;
     }));
 }
 #[derive(Clone)]
@@ -959,7 +963,7 @@ impl BashExecutor for LocalBash {
             job
         };
 
-        struct Admission(Option<tokio::task::AbortHandle>);
+        struct Admission(Option<nanocode_executor::AbortHandle>);
         impl Drop for Admission {
             fn drop(&mut self) {
                 if let Some(abort) = self.0.take() {
@@ -1040,12 +1044,12 @@ impl BashExecutor for LocalBash {
 }
 impl LocalBash {
     async fn moved(&self, marker: &Path, result: &mut BashResult) {
-        let Ok(text) = tokio::fs::read_to_string(marker).await else {
+        let Ok(text) = nanocode_executor::fs::read_to_string(marker).await else {
             return;
         };
-        let _ = tokio::fs::remove_file(marker).await;
+        let _ = nanocode_executor::fs::remove_file(marker).await;
         let now = PathBuf::from(text.trim_end_matches('\n'));
-        let root = tokio::fs::canonicalize(&self.workspace)
+        let root = nanocode_executor::fs::canonicalize(&self.workspace)
             .await
             .unwrap_or_else(|_| self.workspace.clone());
         if now.starts_with(&root) {
@@ -1068,7 +1072,7 @@ fn quoted(text: &str) -> String {
 async fn kept(job: &Job, result: BashResult) -> BashExecution {
     job.written.wait().await;
     let size = match &job.output {
-        Some(path) => tokio::fs::metadata(path)
+        Some(path) => nanocode_executor::fs::metadata(path)
             .await
             .ok()
             .map(|metadata| (path.display().to_string(), metadata.len())),

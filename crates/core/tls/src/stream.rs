@@ -1,3 +1,4 @@
+use nanocode_io::{AsyncRead, AsyncWrite, ReadBuf};
 use rustls::{
     ClientConfig, ClientConnection, ConnectionCommon, ServerConfig, ServerConnection, SideData,
     pki_types::ServerName,
@@ -10,7 +11,6 @@ use std::{
     sync::Arc,
     task::{Context, Poll, ready},
 };
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 const HANDSHAKE_EOF: &str = "tls handshake eof";
 

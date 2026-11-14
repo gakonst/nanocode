@@ -14,6 +14,7 @@ description = "The Tempo Machine Payments Protocol client: charges, sessions, ac
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 nanocode-bytes.workspace = true
+nanocode-io.workspace = true
 graviola.workspace = true
 nanocode-http.workspace = true
 nanocode-platform.workspace = true
@@ -22,7 +23,7 @@ nanocode-tempo.workspace = true
 nanocode-tls.workspace = true
 serde.workspace = true
 serde_json = { workspace = true, features = ["preserve_order"] }
-tokio = { workspace = true, features = ["io-util", "net", "rt", "time"] }
+nanocode-executor.workspace = true
 nanocode-trace.workspace = true
 
 [lints]

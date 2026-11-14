@@ -8052,7 +8052,7 @@ impl State {
                 pending.push(
                     Message::text(
                         Role::User,
-                        "Continue the current task from the interrupted response. The output token limit was reached. Do not repeat completed tool actions. Any incomplete tool input was not executed; issue a fresh complete call if still needed.",
+                        "Output token limit hit. Resume directly \u{2014} no apology, no recap of what you were doing. Pick up mid-thought if that is where the cut happened. Break remaining work into smaller pieces.",
                     )
                     .into(),
                 );

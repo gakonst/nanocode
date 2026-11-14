@@ -106,6 +106,9 @@ impl HostFileTool {
         let path = self.workspace.join(file_path);
         match self.name.as_str() {
             "Read" => {
+                if let Some(error) = text_files::binary(file_path) {
+                    return Err(error);
+                }
                 if input.get("pages").is_some() {
                     return Err("pages is only applicable to PDF files".into());
                 }

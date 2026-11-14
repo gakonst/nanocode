@@ -1255,7 +1255,7 @@ impl TaskStopTool {
             .filter(|id| !id.is_null())
             .or_else(|| fields.get("shell_id"))
             .and_then(Value::as_str)
-            .ok_or("task_id or its deprecated shell_id alias must be a string")?;
+            .ok_or("<tool_use_error>Missing required parameter: task_id</tool_use_error>")?;
         let Some(job) = self
             .jobs
             .entries
@@ -1277,7 +1277,7 @@ impl TaskStopTool {
         }))
     }
     async fn stop_agent(&self, id: &str, context: ToolContext<'_>) -> Result<Value, String> {
-        let unknown = || "unknown task_id in this session".to_owned();
+        let unknown = || format!("<tool_use_error>No task found with ID: {id}</tool_use_error>");
         let (Some(subagents), Some(after)) = (
             &self.jobs.subagents,
             id.parse::<u64>()

@@ -10,6 +10,16 @@ const FITS_WITH_ALLOW_LARGE: &str = " To read it anyway, up to what still fits i
 const TOO_LARGE_FOR_ROOM: &str = " Even with allow_large, this is more than fits in the context you have left this turn (other large reads in the same turn share that room).";
 const ALLOW_LARGE_UNAVAILABLE: &str =
     " allow_large is not available where this read runs; read it in parts with offset and limit.";
+const BINARY_EXTENSIONS: [&str; 88] = [
+    ".bmp", ".ico", ".tiff", ".tif", ".mp4", ".mov", ".avi", ".mkv", ".webm", ".wmv", ".flv",
+    ".m4v", ".mpeg", ".mpg", ".mp3", ".wav", ".ogg", ".flac", ".aac", ".m4a", ".wma", ".aiff",
+    ".opus", ".zip", ".tar", ".gz", ".bz2", ".7z", ".rar", ".xz", ".z", ".tgz", ".iso", ".exe",
+    ".dll", ".so", ".dylib", ".bin", ".o", ".a", ".obj", ".lib", ".app", ".msi", ".deb", ".rpm",
+    ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".odt", ".ods", ".odp", ".ttf", ".otf",
+    ".woff", ".woff2", ".eot", ".pyc", ".pyo", ".class", ".jar", ".war", ".ear", ".node", ".wasm",
+    ".rlib", ".sqlite", ".sqlite3", ".db", ".mdb", ".idx", ".psd", ".ai", ".eps", ".sketch",
+    ".fig", ".xd", ".blend", ".3ds", ".max", ".swf", ".fla", ".lockb", ".dat", ".data",
+];
 
 #[derive(Clone, Copy)]
 struct ReadLimits {
@@ -40,17 +50,27 @@ pub fn read<I: Iterator<Item = Result<String, String>>>(
     read_token_budget: usize,
     open: impl FnOnce() -> Result<I, String>,
 ) -> Result<String, String> {
+    read_view(file_path, size, input, read_token_budget, open).map(|(text, _)| text)
+}
+
+pub fn read_view<I: Iterator<Item = Result<String, String>>>(
+    file_path: &str,
+    size: u64,
+    input: &Value,
+    read_token_budget: usize,
+    open: impl FnOnce() -> Result<I, String>,
+) -> Result<(String, bool), String> {
     let offset = input
         .get("offset")
-        .map_or(Some(1), Value::as_u64)
+        .map_or(Some(1), |value| {
+            value.as_i64().map(|offset| offset.max(0).unsigned_abs())
+        })
         .ok_or("invalid offset")?;
     let limit = input
         .get("limit")
         .map(|value| value.as_u64().ok_or("invalid limit"))
-        .transpose()?;
-    if limit == Some(0) {
-        return Err("limit must be positive".into());
-    }
+        .transpose()?
+        .filter(|limit| *limit > 0);
     let opted = input
         .get("allow_large")
         .and_then(Value::as_bool)
@@ -118,6 +138,7 @@ pub fn read<I: Iterator<Item = Result<String, String>>>(
         total += 1;
     }
     let first = offset.max(1);
+    let whole = start == 0 && end.is_none_or(|end| end >= total);
     let content = lines.join("\n");
     let tokens = content.len().div_ceil(BYTES_PER_TOKEN);
     let mut banner = None;
@@ -194,10 +215,19 @@ pub fn read<I: Iterator<Item = Result<String, String>>>(
             "<system-reminder>Warning: the file exists but is shorter than the provided offset ({first}). The file has {total} lines.</system-reminder>"
         )
     };
+    let whole = whole && banner.is_none();
     if let Some(banner) = banner {
         out.push_str(&format!("\n<system-reminder>{banner}</system-reminder>"));
     }
-    Ok(out)
+    Ok((out, whole))
+}
+
+#[must_use]
+pub fn binary(file_path: &str) -> Option<String> {
+    let extension = file_path[file_path.rfind('.')?..].to_ascii_lowercase();
+    BINARY_EXTENSIONS.contains(&extension.as_str()).then(|| {
+        format!("This tool cannot read binary files. The file appears to be a binary {extension} file. Use a skill for this file type if one is available, or a shell command or script that can read the format.")
+    })
 }
 
 pub fn definitions() -> Vec<Value> {
@@ -239,9 +269,6 @@ impl<'a> Edit<'a> {
         };
         let old = field("old_string")?;
         let new = field("new_string")?;
-        if old.is_empty() {
-            return Err("old_string must not be empty".into());
-        }
         let replace_all = input
             .get("replace_all")
             .map_or(Some(false), Value::as_bool)
@@ -258,7 +285,23 @@ impl<'a> Edit<'a> {
         self.replace_all
     }
 
+    #[must_use]
+    pub const fn creates(&self) -> bool {
+        self.old.is_empty()
+    }
+
+    #[must_use]
+    pub fn changes(&self) -> bool {
+        self.old != self.new
+    }
+
     pub fn apply(&self, content: &str) -> Result<(String, usize), String> {
+        if self.creates() {
+            if !content.trim().is_empty() {
+                return Err("Cannot create new file - file already exists.".into());
+            }
+            return Ok((self.new.to_owned(), 1));
+        }
         if self.old == self.new {
             return Err(
                 "No changes to make: old_string and new_string are exactly the same.".into(),
@@ -288,15 +331,34 @@ impl<'a> Edit<'a> {
 
 const FILE_STATE: &str =
     " (file state is current in your context \u{2014} no need to Read it back)";
+const STALE: &str = " (note: the file had been modified on disk since you last read it \u{2014} the edit applied cleanly, but the file contains other changes not in your context. Read it before edits that depend on surrounding content.)";
+pub const MODIFIED_SINCE_READ: &str = "File has been modified since read, either by the user or by a linter. Read it again before attempting to write it.";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Known {
+    Current,
+    Unread,
+    Stale,
+}
 
 #[must_use]
 pub fn edited(shown: &str, replace_all: bool) -> String {
+    edited_with(shown, replace_all, Known::Current)
+}
+
+#[must_use]
+pub fn edited_with(shown: &str, replace_all: bool, known: Known) -> String {
+    let note = match known {
+        Known::Current => FILE_STATE,
+        Known::Unread => "",
+        Known::Stale => STALE,
+    };
     if replace_all {
         format!(
-            "The file {shown} has been updated. All occurrences were successfully replaced.{FILE_STATE}"
+            "The file {shown} has been updated. All occurrences were successfully replaced.{note}"
         )
     } else {
-        format!("The file {shown} has been updated successfully.{FILE_STATE}")
+        format!("The file {shown} has been updated successfully.{note}")
     }
 }
 

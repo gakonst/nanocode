@@ -881,6 +881,20 @@ impl State {
             _ => None,
         };
         let interrupted = interrupted && recovered.is_none();
+        let checked = handler
+            .filter(|_| crate::upstream::tool_definition(name).is_some())
+            .and_then(|_| {
+                cursor.template.tools.iter().find_map(|tool| match tool {
+                    ClaudeToolSpec::Client(tool) if tool.name == name => Some(
+                        crate::tools::input::validate(name, &tool.input_schema, input),
+                    ),
+                    _ => None,
+                })
+            });
+        let called = match &checked {
+            Some(Ok(Some(coerced))) => coerced,
+            _ => input,
+        };
         let result = if let Some(recovered) = recovered {
             recovered
         } else if interrupted {
@@ -909,6 +923,14 @@ impl State {
                 "<tool_use_error>InputValidationError: {name} was called with input that could not be parsed as JSON.\nYou sent (first {} of {len} bytes): {shown}\nCommon causes: unescaped backslashes in file paths (use / or \\\\), unescaped control characters, or truncated output. Retry with valid JSON.</tool_use_error>",
                 shown.encode_utf16().count()
             )), true)
+        } else if let Some(Err(error)) = &checked {
+            ContentBlock::tool_result_content(
+                id,
+                ToolResultContent::Text(format!(
+                    "<tool_use_error>InputValidationError: {error}</tool_use_error>"
+                )),
+                true,
+            )
         } else if self.code_only && cursor.recovered_code_index == Some(index) && name == "exec" {
             ContentBlock::tool_result_content(id, ToolResultContent::Text(
                 "Code Mode admission was lost during recovery; prior effects may have outcome unknown. No code was executed in this attempt. Reconcile those effects before using a fresh cell from a new model request.".into()
@@ -916,11 +938,11 @@ impl State {
         } else if let Some(handler) = handler
             && matches!(name, "exec" | "wait")
         {
-            self.call_tool(id, name, input, handler, events, (cursor, cancel, None))
+            self.call_tool(id, name, called, handler, events, (cursor, cancel, None))
                 .await?
         } else if let Some(handler) = handler {
             nanocode_sync::select! {
-                result = self.call_tool(id, name, input, handler, events, (cursor, cancel, None)) => result?,
+                result = self.call_tool(id, name, called, handler, events, (cursor, cancel, None)) => result?,
                 () = cancel.cancelled() => unknown(),
             }
         } else if self.code_only
@@ -960,10 +982,7 @@ impl State {
         } else {
             ContentBlock::tool_result_content(
                 id,
-                ToolResultContent::Text(
-                    "Tool is not available in the admitted catalog or current host; no handler was invoked. Use an available tool."
-                        .into(),
-                ),
+                ToolResultContent::Text(unavailable(name, &cursor.template.tools)),
                 true,
             )
         };
@@ -1782,4 +1801,30 @@ impl Snapshot {
         }
         items
     }
+}
+
+fn unavailable(name: &str, tools: &[ClaudeToolSpec]) -> String {
+    let offered = tools
+        .iter()
+        .filter_map(|tool| match tool {
+            ClaudeToolSpec::Client(tool) => Some(tool.name.as_str()),
+            ClaudeToolSpec::Server(_) => None,
+        })
+        .collect::<Vec<_>>();
+    let hint = match name {
+        "Grep" | "Glob" if !offered.contains(&"Bash") => {
+            format!(". {name} is disabled for this session.")
+        }
+        "Grep" => ". Grep is not available in this session \u{2014} search file contents with `grep` via the Bash tool instead.".to_owned(),
+        "Glob" => ". Glob is not available in this session \u{2014} find files with `find` via the Bash tool instead.".to_owned(),
+        _ => match offered
+            .iter()
+            .filter(|tool| tool.eq_ignore_ascii_case(name))
+            .collect::<Vec<_>>()[..]
+        {
+            [tool] => format!(". Tool names are case-sensitive: call {tool} instead."),
+            _ => String::new(),
+        },
+    };
+    format!("<tool_use_error>Error: No such tool available: {name}{hint}</tool_use_error>")
 }

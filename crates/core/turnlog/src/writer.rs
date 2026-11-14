@@ -4,8 +4,8 @@ use nanocode_durability_core::StoreError;
 use nanocode_sync::{Held, Owned};
 
 use crate::{
-    Event, Fold, LogHost, Record,
-    codec::{self, BOUNDARY, History, PART, RECORDS, SNAPSHOT, Stream},
+    Compaction, Event, Fold, LogHost, Record,
+    codec::{self, ARCHIVE, BOUNDARY, History, PART, RECORDS, SNAPSHOT, Stream, WINDOW},
 };
 
 pub const EVENT_GAP: u64 = 1 << 14;
@@ -87,7 +87,7 @@ pub fn rows(stored: &[(u64, String)]) -> Result<Vec<Row>, StoreError> {
                     )));
                 }
             },
-            Some(tag @ (BOUNDARY | RECORDS | SNAPSHOT)) => {
+            Some(tag @ (ARCHIVE | BOUNDARY | RECORDS | SNAPSHOT)) => {
                 logical.push((*seq, tag, chars.as_str().to_owned(), body.len()));
             }
             _ => {
@@ -101,7 +101,7 @@ pub fn rows(stored: &[(u64, String)]) -> Result<Vec<Row>, StoreError> {
     let mut decoded = Vec::with_capacity(logical.len());
     for (seq, tag, text, bytes) in logical {
         let snapshot = tag == SNAPSHOT;
-        let boundary = snapshot || tag == BOUNDARY;
+        let boundary = snapshot || tag == BOUNDARY || tag == ARCHIVE;
         if boundary {
             history.clear();
         }
@@ -121,6 +121,66 @@ pub fn rows(stored: &[(u64, String)]) -> Result<Vec<Row>, StoreError> {
     Ok(decoded)
 }
 
+fn stored(seq: u64, parts: &[&str]) -> Vec<(u64, String)> {
+    parts
+        .iter()
+        .enumerate()
+        .map(|(index, part)| {
+            let row = seq + index as u64;
+            if index == 0 {
+                (row, (*part).to_owned())
+            } else {
+                (row, format!("{PART}{part}"))
+            }
+        })
+        .collect()
+}
+
+fn suffix(plain: &str, events: usize) -> Option<&str> {
+    let floor = plain.len().saturating_sub(WINDOW);
+    if floor == 0 {
+        return None;
+    }
+    let (mut start, mut cut, mut found) = (plain.len(), plain.len(), 0);
+    while start > floor || found < events {
+        let boundary = plain[..cut].rfind('\n')? + 1;
+        if let Ok(records) = crate::decode(&plain[boundary..start]) {
+            found += records
+                .iter()
+                .filter(|record| matches!(record, Record::Event { .. }))
+                .count();
+            start = boundary;
+        }
+        cut = boundary - 1;
+    }
+    Some(&plain[start..])
+}
+
+struct Previous {
+    bytes: usize,
+    parts: usize,
+    seq: u64,
+    suffix: String,
+}
+
+impl Previous {
+    fn of(seq: u64, parts: usize, bytes: usize, plain: &str, events: usize) -> Option<Self> {
+        suffix(plain, events).map(|suffix| Self {
+            bytes,
+            parts,
+            seq,
+            suffix: suffix.to_owned(),
+        })
+    }
+
+    fn archive(&self, limit: Option<usize>) -> Result<Option<Vec<(u64, String)>>, StoreError> {
+        let body = codec::pack(ARCHIVE, self.suffix.as_bytes(), &[])?;
+        let rows = stored(self.seq, &codec::parts(&body, limit)?);
+        let bytes = rows.iter().map(|(_, body)| body.len()).sum::<usize>();
+        Ok((bytes < self.bytes && rows.len() <= self.parts).then_some(rows))
+    }
+}
+
 struct Writer {
     buffer: Vec<Record>,
     check: usize,
@@ -128,6 +188,7 @@ struct Writer {
     fold: Fold,
     history: History,
     next: u64,
+    previous: Option<Previous>,
     snapshot: usize,
     state: usize,
     stats: Stats,
@@ -173,6 +234,7 @@ impl TurnLog {
         let mut fold = Fold::default();
         let mut history = History::default();
         let (mut snapshot, mut tail) = (0, 0);
+        let mut previous = None;
         if let Some((first, _)) = stored.first() {
             fold.start_segment(*first);
         }
@@ -199,6 +261,16 @@ impl TurnLog {
                 tail += row.bytes;
             }
             fold.load(row.seq, &row.plain)?;
+            if row.snapshot {
+                let parts = stored
+                    .iter()
+                    .skip_while(|(seq, _)| *seq != row.seq)
+                    .skip(1)
+                    .take_while(|(_, body)| body.starts_with(PART))
+                    .count()
+                    + 1;
+                previous = Previous::of(row.seq, parts, row.bytes, &row.plain, fold.events().len());
+            }
             history.extend(row.plain.as_bytes());
         }
         let collected = fold.collect() as u64;
@@ -218,6 +290,7 @@ impl TurnLog {
                 fold,
                 history,
                 next,
+                previous,
                 snapshot,
                 state: 0,
                 stats: Stats {
@@ -450,21 +523,29 @@ impl Lease<'_> {
             (None, Some(boundary)) => boundary.as_str(),
             (None, None) => body.as_str(),
         };
-        let parts = codec::parts(written, self.limit)?;
-        let stored = parts
-            .iter()
-            .enumerate()
-            .map(|(index, part)| {
-                let row = seq + index as u64;
-                if index == 0 {
-                    (row, (*part).to_owned())
-                } else {
-                    (row, format!("{PART}{part}"))
-                }
-            })
-            .collect::<Vec<_>>();
+        let stored = stored(seq, &codec::parts(written, self.limit)?);
         let bytes = stored.iter().map(|(_, body)| body.len()).sum::<usize>();
-        self.host.append(self.scope, &stored).await?;
+        let archived = match (&snapshot, &writer.previous) {
+            (Some(_), Some(previous)) => previous
+                .archive(self.limit)?
+                .map(|rows| (rows, previous.seq, previous.parts)),
+            _ => None,
+        };
+        match &archived {
+            Some((rows, from, parts)) => {
+                self.host
+                    .append_compacting(
+                        self.scope,
+                        &stored,
+                        Compaction {
+                            archived: rows,
+                            dropped: from + rows.len() as u64..from + *parts as u64,
+                        },
+                    )
+                    .await?;
+            }
+            None => self.host.append(self.scope, &stored).await?,
+        }
         let writer = &mut *self.writer;
         writer.next = seq + stored.len() as u64;
         writer.fold.committed(seq);
@@ -481,6 +562,13 @@ impl Lease<'_> {
         match snapshot {
             Some((state, encoded)) => {
                 writer.fold.seal(seq, keep);
+                writer.previous = Previous::of(
+                    seq,
+                    stored.len(),
+                    bytes,
+                    &encoded,
+                    writer.fold.events().len(),
+                );
                 writer.history.clear();
                 writer.history.extend(encoded.as_bytes());
                 writer.snapshot = bytes;

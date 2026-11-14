@@ -12,6 +12,7 @@ const STREAM_LEVEL: i32 = 7;
 const DEFAULT_MEM_LEVEL: i32 = 8;
 const FINAL_EMPTY_BLOCK: [u8; 2] = [0x03, 0x00];
 
+pub(crate) const ARCHIVE: char = 'a';
 pub(crate) const RECORDS: char = 'r';
 pub(crate) const SNAPSHOT: char = 's';
 pub(crate) const PART: char = '+';

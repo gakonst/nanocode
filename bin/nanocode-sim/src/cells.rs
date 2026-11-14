@@ -29,7 +29,7 @@ use crate::{
     rng::{FNV_OFFSET, PPM, Rng, fnv},
     turns::{
         Invariant, SESSION_TURNS_MAX, STEP_LATENCY_MS_MAX, STEP_LATENCY_MS_MIN,
-        TOOL_LATENCY_MS_MAX, TOOL_LATENCY_MS_MIN, TurnOptions,
+        TOOL_LATENCY_MS_MAX, TOOL_LATENCY_MS_MIN, TurnMutation, TurnOptions,
     },
 };
 
@@ -51,10 +51,11 @@ enum Kind {
 impl Kind {
     const ALL: [Self; 4] = [Self::Sync, Self::Timer, Self::External, Self::ReadOnly];
 
-    const fn rows(self) -> u64 {
+    const fn rows(self, buffered: bool) -> u64 {
+        let admission = if buffered { 0 } else { 1 };
         match self {
-            Self::Sync | Self::ReadOnly => 2,
-            Self::Timer | Self::External => 3,
+            Self::Sync | Self::ReadOnly => 1 + admission,
+            Self::Timer | Self::External => 2 + admission,
         }
     }
 
@@ -69,6 +70,8 @@ impl Kind {
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct CellStats {
+    pub buffered: [u64; 4],
+    pub buffered_rows: [u64; 4],
     pub charges: u64,
     pub clean: [u64; 4],
     pub crashes: u64,
@@ -89,6 +92,8 @@ impl CellStats {
         self.unknown += other.unknown;
         let mut kind = 0;
         while kind < Kind::ALL.len() {
+            self.buffered[kind] += other.buffered[kind];
+            self.buffered_rows[kind] += other.buffered_rows[kind];
             self.clean[kind] += other.clean[kind];
             self.rows[kind] += other.rows[kind];
             kind += 1;
@@ -96,31 +101,37 @@ impl CellStats {
     }
 
     pub fn summary(&self) -> String {
-        let per_turn = |kind: Kind| {
+        let per_turn = |rows: &[u64; 4], clean: &[u64; 4], kind: Kind| {
             let index = kind as usize;
-            if self.clean[index] == 0 {
+            if clean[index] == 0 {
                 return "-".to_owned();
             }
-            let hundredths = self.rows[index] * 100 / self.clean[index];
+            let hundredths = rows[index] * 100 / clean[index];
             format!(
                 "{}.{:02}/{}",
                 hundredths / 100,
                 hundredths % 100,
-                self.clean[index]
+                clean[index]
             )
         };
+        let all = |kind| per_turn(&self.rows, &self.clean, kind);
+        let buffered = |kind| per_turn(&self.buffered_rows, &self.buffered, kind);
         format!(
-            "cell_turns={} cell_crashes={} cell_opens={} cell_reasks={} cell_unknown={} cell_charges={} cell_rows/clean_turn sync={} timer={} external={} read={}",
+            "cell_turns={} cell_crashes={} cell_opens={} cell_reasks={} cell_unknown={} cell_charges={} cell_rows/clean_turn sync={} timer={} external={} read={} buffered sync={} timer={} external={} read={}",
             self.turns,
             self.crashes,
             self.opens,
             self.reasks,
             self.unknown,
             self.charges,
-            per_turn(Kind::Sync),
-            per_turn(Kind::Timer),
-            per_turn(Kind::External),
-            per_turn(Kind::ReadOnly)
+            all(Kind::Sync),
+            all(Kind::Timer),
+            all(Kind::External),
+            all(Kind::ReadOnly),
+            buffered(Kind::Sync),
+            buffered(Kind::Timer),
+            buffered(Kind::External),
+            buffered(Kind::ReadOnly)
         )
     }
 }
@@ -228,6 +239,7 @@ impl LogHost for CellHost {
 }
 
 struct Turn {
+    buffered: bool,
     delay_ms: u64,
     id: String,
     kind: Kind,
@@ -321,10 +333,12 @@ struct Live {
 }
 
 struct Cells {
+    acknowledged: BTreeSet<String>,
     asks: BTreeMap<String, u64>,
     charges: BTreeMap<String, u64>,
     digest: u64,
     finished: BTreeSet<String>,
+    floor: bool,
     host: Arc<CellHost>,
     lines: u64,
     live: Option<Live>,
@@ -440,6 +454,7 @@ impl Cells {
             let mut store = log.store();
             let owner = refused(ready(store.acquire(STATE, OwnerId::new()))).owner;
             let sink = log.sink();
+            self.floor = true;
             self.stats.opens += 1;
             self.live = Some(Live {
                 log,
@@ -617,6 +632,16 @@ impl Cells {
         let live = self.live();
         let record = refused(ready(live.log.turn(&turn.id)));
         let Some(record) = record else {
+            if self.acknowledged.contains(&turn.id) {
+                self.wrong(
+                    Invariant::AdmissionKept,
+                    format!(
+                        "turn {} was acknowledged to its client and is not in the log",
+                        turn.id
+                    ),
+                );
+                return None;
+            }
             let mut ops = vec![Op::Submit, Op::Start];
             ops.extend(self.ask_fresh(turn));
             return Some(ops);
@@ -726,9 +751,18 @@ impl Cells {
                     hand: None,
                     metadata: to_raw_value(&Value::Null).expect("null encodes as JSON"),
                 };
+                let buffered = turn.buffered;
                 let live = self.live();
-                let result = ready(live.log.submit(&submission));
-                self.settled(result);
+                let result = if buffered {
+                    ready(live.log.submit_buffered(&submission))
+                } else {
+                    ready(live.log.submit(&submission))
+                };
+                if self.settled(result).is_some()
+                    && (!buffered || self.options.mutation == TurnMutation::AckBufferedAdmission)
+                {
+                    self.acknowledged.insert(turn.id.clone());
+                }
             }
             Op::Start => {
                 let live = self.live();
@@ -774,11 +808,12 @@ impl Cells {
     fn turn(&mut self, turn: &Turn) {
         let mut crashes = self.rng.range(0, CRASHES_MAX);
         let clean = crashes == 0;
+        let floor = u64::from(self.floor || self.live.is_none());
         let before = self.host.appends();
         self.stats.turns += 1;
         self.trace(&format!(
-            "turn {} kind={:?} split={} crashes={crashes}",
-            turn.id, turn.kind, turn.split
+            "turn {} kind={:?} split={} buffered={} crashes={crashes}",
+            turn.id, turn.kind, turn.split, turn.buffered
         ));
         loop {
             let Some(ops) = self.plan(turn) else {
@@ -805,7 +840,14 @@ impl Cells {
                 if crash == Some((index, true)) {
                     self.host.armed.store(true, Ordering::SeqCst);
                 }
+                let landed = self.host.appends();
                 self.run_op(turn, op);
+                if self.host.appends() > landed {
+                    self.floor = false;
+                    if !matches!(op, Op::Submit) {
+                        self.acknowledged.insert(turn.id.clone());
+                    }
+                }
                 if self.wrong.is_some() {
                     return;
                 }
@@ -842,17 +884,20 @@ impl Cells {
         }
         if clean {
             let rows = self.host.appends() - before;
+            let expected = turn.kind.rows(turn.buffered) + if turn.buffered { floor } else { 0 };
             let index = turn.kind as usize;
             self.stats.clean[index] += 1;
             self.stats.rows[index] += rows;
-            if rows != turn.kind.rows() {
+            if turn.buffered {
+                self.stats.buffered[index] += 1;
+                self.stats.buffered_rows[index] += rows;
+            }
+            if rows != expected {
                 self.wrong(
                     Invariant::CellRows,
                     format!(
-                        "turn {} with a {:?} cell wrote {rows} rows, not {}",
-                        turn.id,
-                        turn.kind,
-                        turn.kind.rows()
+                        "turn {} with a {:?} cell and buffered={} wrote {rows} rows, not {expected}",
+                        turn.id, turn.kind, turn.buffered
                     ),
                 );
             }
@@ -867,26 +912,41 @@ pub fn run(seed: u64, options: TurnOptions) -> CellOutcome {
     let count = rng.range(1, SESSION_TURNS_MAX);
     let yield_ms = rng.range(STEP_LATENCY_MS_MIN, STEP_LATENCY_MS_MAX);
     let turns: Vec<Turn> = (0..count)
-        .map(|index| Turn {
-            delay_ms: rng.range(TOOL_LATENCY_MS_MIN, TOOL_LATENCY_MS_MAX),
-            id: format!("cell-turn-{index}"),
-            kind: Kind::ALL[rng.pick(Kind::ALL.len())],
-            split: rng.chance(PPM / 2),
+        .map(|index| {
+            let delay_ms = rng.range(TOOL_LATENCY_MS_MIN, TOOL_LATENCY_MS_MAX);
+            let kind = Kind::ALL[rng.pick(Kind::ALL.len())];
+            let split = rng.chance(PPM / 2);
+            Turn {
+                buffered: rng.chance(PPM / 2),
+                delay_ms,
+                id: format!("cell-turn-{index}"),
+                kind,
+                split,
+            }
         })
         .collect();
     let shape = format!(
         "cells=[{}]",
         turns
             .iter()
-            .map(|turn| format!("{:?}{}", turn.kind, if turn.split { "/split" } else { "" }))
+            .map(|turn| {
+                format!(
+                    "{:?}{}{}",
+                    turn.kind,
+                    if turn.split { "/split" } else { "" },
+                    if turn.buffered { "/buffered" } else { "" }
+                )
+            })
             .collect::<Vec<_>>()
             .join(",")
     );
     let mut cells = Cells {
+        acknowledged: BTreeSet::new(),
         asks: BTreeMap::new(),
         charges: BTreeMap::new(),
         digest: FNV_OFFSET,
         finished: BTreeSet::new(),
+        floor: false,
         host: Arc::new(CellHost::default()),
         lines: 0,
         live: None,

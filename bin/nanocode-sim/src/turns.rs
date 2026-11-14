@@ -55,6 +55,7 @@ const ORIGINS: [Origin; 2] = [Origin::Alarm, Origin::Completion];
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TurnMutation {
     None,
+    AckBufferedAdmission,
     DurableSeqBeforeCommit,
     FinishBeforeRow,
     GateReleasesEarly,
@@ -62,13 +63,15 @@ pub enum TurnMutation {
     RecoverySkipsClientless,
     RetireSkipped,
     SealSkipped,
+    SnapshotKept,
     SnapshotRowsIgnored,
     TickNotAtomic,
 }
 
 impl TurnMutation {
-    const ALL: [Self; 10] = [
+    const ALL: [Self; 12] = [
         Self::None,
+        Self::AckBufferedAdmission,
         Self::DurableSeqBeforeCommit,
         Self::FinishBeforeRow,
         Self::GateReleasesEarly,
@@ -76,6 +79,7 @@ impl TurnMutation {
         Self::RecoverySkipsClientless,
         Self::RetireSkipped,
         Self::SealSkipped,
+        Self::SnapshotKept,
         Self::SnapshotRowsIgnored,
         Self::TickNotAtomic,
     ];
@@ -89,6 +93,7 @@ impl TurnMutation {
     pub const fn name(self) -> &'static str {
         match self {
             Self::None => "none",
+            Self::AckBufferedAdmission => "ack_buffered_admission",
             Self::DurableSeqBeforeCommit => "durable_seq_before_commit",
             Self::FinishBeforeRow => "finish_before_row",
             Self::GateReleasesEarly => "gate_releases_early",
@@ -96,6 +101,7 @@ impl TurnMutation {
             Self::RecoverySkipsClientless => "recovery_skips_clientless",
             Self::RetireSkipped => "retire_skipped",
             Self::SealSkipped => "seal_skipped",
+            Self::SnapshotKept => "snapshot_kept",
             Self::SnapshotRowsIgnored => "snapshot_rows_ignored",
             Self::TickNotAtomic => "tick_not_atomic",
         }
@@ -108,6 +114,7 @@ impl TurnMutation {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Invariant {
+    AdmissionKept,
     CellExternalOnce,
     CellLost,
     CellModelOnce,
@@ -124,6 +131,7 @@ pub enum Invariant {
 impl Invariant {
     pub const fn name(self) -> &'static str {
         match self {
+            Self::AdmissionKept => "admission_kept",
             Self::CellExternalOnce => "cell_external_once",
             Self::CellLost => "cell_lost",
             Self::CellModelOnce => "cell_model_once",
@@ -146,6 +154,7 @@ pub struct TurnOptions {
     pub retain: Option<usize>,
     pub snapshot_ratio: usize,
     pub snapshot_rows: Option<usize>,
+    pub state_bytes: Option<usize>,
     pub mutation: TurnMutation,
     pub policy: PolicyKind,
     pub row_limit: Option<usize>,
@@ -1137,6 +1146,10 @@ impl Sim {
                         self.options.snapshot_rows
                     },
                     self.options.snapshot_rows,
+                )
+                .state_bytes(
+                    self.options.state_bytes,
+                    self.options.mutation == TurnMutation::SnapshotKept,
                 ),
             ),
         };
@@ -1204,6 +1217,7 @@ impl Sim {
             rows.appends.clear();
             rows.staged.clear();
             rows.tappends.clear();
+            rows.tcompactions.clear();
         });
         self.stats.crashes += 1;
         self.trace(&format!("down: {cause}"));
@@ -1488,11 +1502,12 @@ impl Sim {
             return false;
         };
         let tick = std::mem::take(&mut object.tick);
-        let (appends, staged, tappends) = self.disk.with(|rows| {
+        let (appends, staged, tappends, compactions) = self.disk.with(|rows| {
             (
                 std::mem::take(&mut rows.appends),
                 std::mem::take(&mut rows.staged),
                 std::mem::take(&mut rows.tappends),
+                std::mem::take(&mut rows.tcompactions),
             )
         });
         if !tick.writes() && appends.is_empty() && staged.is_empty() && tappends.is_empty() {
@@ -1509,6 +1524,21 @@ impl Sim {
             return false;
         }
         self.apply(&tick, &appends, &staged, &tappends);
+        self.disk.with(|rows| {
+            for (scope, archived, dropped) in &compactions {
+                let mut stored = rows
+                    .committed(scope)
+                    .into_iter()
+                    .collect::<BTreeMap<_, _>>();
+                crate::disk::compact(&mut stored, archived, dropped);
+                rows.tlog.retain(|(owner, _), _| owner != scope);
+                rows.tlog.extend(
+                    stored
+                        .into_iter()
+                        .map(|(seq, body)| ((scope.clone(), seq), body)),
+                );
+            }
+        });
         let after = if self.rng.crash.chance(self.shape.crash_after_ppm) {
             Some("crash after commit")
         } else if self.rng.faults.chance(self.profile.after_ppm) {

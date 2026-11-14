@@ -1,9 +1,12 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
+    ops::Range,
     sync::Arc,
 };
 
 use nanocode_sync::Slot;
+
+pub type Compacted = (String, Vec<(u64, String)>, Range<u64>);
 
 #[derive(Default)]
 pub struct Rows {
@@ -14,7 +17,23 @@ pub struct Rows {
     pub snaps: BTreeMap<String, (u64, String)>,
     pub staged: Vec<(String, u64, String)>,
     pub tappends: Vec<(String, u64, String)>,
+    pub tcompactions: Vec<Compacted>,
     pub tlog: BTreeMap<(String, u64), String>,
+}
+
+pub fn compact(rows: &mut BTreeMap<u64, String>, archived: &[(u64, String)], dropped: &Range<u64>) {
+    for (seq, body) in archived {
+        assert!(
+            rows.insert(*seq, body.clone()).is_some(),
+            "an archived turn log row {seq} replaces no stored row"
+        );
+    }
+    for seq in dropped.clone() {
+        assert!(
+            rows.remove(&seq).is_some(),
+            "a dropped turn log row {seq} is not stored"
+        );
+    }
 }
 
 fn count(len: usize) -> u64 {
@@ -87,27 +106,34 @@ impl Rows {
             .collect()
     }
 
+    pub fn view(&self, scope: &str) -> Vec<(u64, String)> {
+        let mut rows = self
+            .committed(scope)
+            .into_iter()
+            .chain(
+                self.tappends
+                    .iter()
+                    .filter(|(owner, ..)| owner == scope)
+                    .map(|(_, seq, body)| (*seq, body.clone())),
+            )
+            .collect::<BTreeMap<_, _>>();
+        for (owner, archived, dropped) in &self.tcompactions {
+            if owner == scope {
+                compact(&mut rows, archived, dropped);
+            }
+        }
+        rows.into_iter().collect()
+    }
+
     pub fn tscan(&mut self, scope: &str, from: u64, to: u64) -> Vec<(u64, String)> {
-        let mut rows = self.committed(scope);
-        rows.extend(
-            self.tappends
-                .iter()
-                .filter(|(owner, ..)| owner == scope)
-                .map(|(_, seq, body)| (*seq, body.clone())),
-        );
+        let mut rows = self.view(scope);
         rows.retain(|(seq, _)| (from..to).contains(seq));
         self.page_reads += count(rows.len());
         rows
     }
 
     pub fn tload(&mut self, scope: &str) -> Vec<(u64, String)> {
-        let mut rows = self.committed(scope);
-        rows.extend(
-            self.tappends
-                .iter()
-                .filter(|(owner, ..)| owner == scope)
-                .map(|(_, seq, body)| (*seq, body.clone())),
-        );
+        let mut rows = self.view(scope);
         let start = rows
             .iter()
             .rposition(|(_, body)| body.starts_with('s'))

@@ -7,8 +7,8 @@ use std::{
 use nanocode_durability_core::{StoreError, StoreFuture};
 use nanocode_sync::FutureExt;
 use nanocode_turnlog::{
-    EffectClass, LogHost, Outcome as LogOutcome, Phase, Point as LogPoint, Record as LogRecord,
-    Status as LogStatus, TurnLog,
+    Compaction, EffectClass, LogHost, Outcome as LogOutcome, Phase, Point as LogPoint,
+    Record as LogRecord, Status as LogStatus, TurnLog,
 };
 use serde_json::value::{RawValue, to_raw_value};
 
@@ -20,7 +20,10 @@ use crate::{
     },
 };
 
-pub struct SimHost(pub Arc<Disk>);
+pub struct SimHost {
+    disk: Arc<Disk>,
+    kept: bool,
+}
 
 impl LogHost for SimHost {
     fn scan<'a>(
@@ -29,7 +32,7 @@ impl LogHost for SimHost {
         from: u64,
         to: u64,
     ) -> StoreFuture<'a, Result<Vec<(u64, String)>, StoreError>> {
-        let rows = self.0.with(|rows| rows.tscan(scope, from, to));
+        let rows = self.disk.with(|rows| rows.tscan(scope, from, to));
         Box::pin(async move { Ok(rows) })
     }
 
@@ -37,7 +40,7 @@ impl LogHost for SimHost {
         &'a self,
         scope: &'a str,
     ) -> StoreFuture<'a, Result<Vec<(u64, String)>, StoreError>> {
-        let rows = self.0.with(|rows| rows.tload(scope));
+        let rows = self.disk.with(|rows| rows.tload(scope));
         Box::pin(async move { Ok(rows) })
     }
 
@@ -46,7 +49,7 @@ impl LogHost for SimHost {
         scope: &'a str,
         rows: &'a [(u64, String)],
     ) -> StoreFuture<'a, Result<(), StoreError>> {
-        let inserted = self.0.with(|disk| disk.insert(scope, rows));
+        let inserted = self.disk.with(|disk| disk.insert(scope, rows));
         Box::pin(async move {
             if inserted {
                 Ok(())
@@ -55,6 +58,85 @@ impl LogHost for SimHost {
             }
         })
     }
+
+    fn append_compacting<'a>(
+        &'a self,
+        scope: &'a str,
+        rows: &'a [(u64, String)],
+        compaction: Compaction<'a>,
+    ) -> StoreFuture<'a, Result<(), StoreError>> {
+        let kept = self.kept;
+        if let Some((first, _)) = compaction.archived.first() {
+            let replaced = self.disk.with(|disk| {
+                disk.view(scope)
+                    .into_iter()
+                    .filter(|(seq, _)| *seq >= *first)
+                    .take(compaction.archived.len() + compaction.dropped.clone().count())
+                    .collect::<Vec<_>>()
+            });
+            let plain = |stored: &[(u64, String)]| {
+                let rows = nanocode_turnlog::rows(stored).unwrap_or_else(|error| {
+                    panic!("an archived or replaced turn log row does not decode: {error}")
+                });
+                assert_eq!(rows.len(), 1, "an archive replaces one snapshot row");
+                rows.into_iter()
+                    .next()
+                    .map(|row| row.plain)
+                    .unwrap_or_default()
+            };
+            let (snapshot, archive) = (plain(&replaced), plain(compaction.archived));
+            let events = |text: &str| {
+                nanocode_turnlog::decode(text)
+                    .unwrap_or_else(|error| panic!("a turn log row does not decode: {error}"))
+                    .into_iter()
+                    .filter_map(|record| match record {
+                        LogRecord::Event { seq, .. } => Some(seq),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+            };
+            assert!(
+                replaced
+                    .first()
+                    .is_some_and(|(_, body)| body.starts_with('s'))
+                    && snapshot.ends_with(&archive)
+                    && events(&snapshot) == events(&archive),
+                "the archive of {scope} row {first} is not a suffix of its snapshot holding every event"
+            );
+        }
+        let inserted = self.disk.with(|disk| {
+            let inserted = disk.insert(scope, rows);
+            if inserted && !kept {
+                disk.tcompactions.push((
+                    scope.to_owned(),
+                    compaction.archived.to_vec(),
+                    compaction.dropped,
+                ));
+            }
+            inserted
+        });
+        Box::pin(async move {
+            if inserted {
+                Ok(())
+            } else {
+                Err(StoreError::Fenced)
+            }
+        })
+    }
+}
+
+fn padding(scope: &str, bytes: usize) -> String {
+    let mut seed = scope.bytes().fold(0x9e37_79b9_7f4a_7c15_u64, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+    });
+    (0..bytes)
+        .map(|_| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            char::from(b'a' + u8::try_from(seed % 26).expect("a letter index fits in u8"))
+        })
+        .collect()
 }
 
 fn ready<T>(future: impl Future<Output = T>) -> T {
@@ -87,6 +169,7 @@ pub struct TurnLogPolicy {
     retain: Option<usize>,
     retention: Option<usize>,
     rows: Option<usize>,
+    state: Option<usize>,
     unsealed: BTreeSet<String>,
 }
 
@@ -102,7 +185,7 @@ impl TurnLogPolicy {
         Self {
             bound: None,
             disk: Arc::clone(&disk),
-            host: Arc::new(SimHost(disk)),
+            host: Arc::new(SimHost { disk, kept: false }),
             limit,
             logs: BTreeMap::new(),
             ratio,
@@ -111,8 +194,18 @@ impl TurnLogPolicy {
             retain,
             retention,
             rows: None,
+            state: None,
             unsealed: BTreeSet::new(),
         }
+    }
+
+    pub fn state_bytes(mut self, bytes: Option<usize>, kept: bool) -> Self {
+        self.state = bytes;
+        self.host = Arc::new(SimHost {
+            disk: Arc::clone(&self.disk),
+            kept,
+        });
+        self
     }
 
     pub const fn snapshot_rows(mut self, rows: Option<usize>, bound: Option<usize>) -> Self {
@@ -334,6 +427,14 @@ impl TurnDurability for TurnLogPolicy {
         let log = &self.logs[scope];
         let before = ready(log.stats());
         let mut lease = ready(log.lease());
+        if let Some(bytes) = self.state
+            && lease.fold().host("state").is_none()
+        {
+            refused(lease.push(LogRecord::Host {
+                key: "state".to_owned(),
+                value: raw(&padding(scope, bytes)),
+            }));
+        }
         let mut checkpoint = state.clone();
         checkpoint.events.clear();
         refused(lease.push(LogRecord::Checkpoint {
@@ -368,6 +469,18 @@ impl TurnDurability for TurnLogPolicy {
             assert!(
                 loaded as u64 <= bound as u64 + parts + 1,
                 "a cold open of {scope} reads {loaded} rows past a snapshot row bound of {bound}"
+            );
+        }
+        if self.state.is_some() {
+            let snapshots = self.disk.with(|rows| {
+                rows.view(scope)
+                    .iter()
+                    .filter(|(_, body)| body.starts_with('s'))
+                    .count()
+            });
+            assert!(
+                snapshots <= 1,
+                "{scope} stores {snapshots} snapshot rows, so a superseded snapshot was not archived"
             );
         }
         Some(Appended {

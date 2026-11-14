@@ -373,6 +373,14 @@ impl OneLog {
     }
 
     pub async fn submit(&self, submission: &Submission) -> Result<Submitted, StoreError> {
+        self.admit(submission, true).await
+    }
+
+    pub async fn submit_buffered(&self, submission: &Submission) -> Result<Submitted, StoreError> {
+        self.admit(submission, false).await
+    }
+
+    async fn admit(&self, submission: &Submission, durable: bool) -> Result<Submitted, StoreError> {
         let id = submission.request_id.as_str();
         let digest = submission_digest(&submission.prompt, submission.hand.as_deref())?;
         let mut lease = self.log.lease().await;
@@ -383,6 +391,9 @@ impl OneLog {
             } else {
                 Submitted::Conflict(record)
             });
+        }
+        if !durable {
+            lease.secure().await?;
         }
         let first = lease.next_event();
         let at = now();
@@ -404,7 +415,9 @@ impl OneLog {
             seq: first,
             turn: Some(id.to_owned()),
         })?;
-        lease.commit(Point::Admission).await?;
+        if durable {
+            lease.commit(Point::Admission).await?;
+        }
         let record = record_of(
             lease
                 .fold()

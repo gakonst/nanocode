@@ -136,6 +136,9 @@ impl Connection {
             if !self.unread().is_empty()
                 && let Some((head, length)) = parse(self.unread())?
             {
+                if length > HEAD_BYTES_MAX {
+                    return Err(WireError::HeadTooLarge);
+                }
                 self.consume(length);
                 return Ok(head);
             }

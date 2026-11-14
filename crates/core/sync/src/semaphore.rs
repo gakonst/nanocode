@@ -1,74 +1,50 @@
-use crate::{Atom, OrdMap};
-use nanocode_sys::AtomicWaker;
+use nanocode_sys::{
+    AtomicBox, AtomicWaker,
+    queue::{Consumer, Pop, Queue},
+};
 use std::{
     fmt,
     future::Future,
     pin::Pin,
     sync::{
         Arc,
-        atomic::{AtomicU8, Ordering},
+        atomic::{AtomicUsize, Ordering},
     },
     task::{Context, Poll},
 };
 
-const GRANT_WAITING: u8 = 0;
-const GRANT_GIVEN: u8 = 1;
-const GRANT_CLOSED: u8 = 2;
+const CLOSED: usize = 0b001;
+const DRAINING: usize = 0b010;
+const AGAIN: usize = 0b100;
+const FLAG_BITS: u32 = 3;
 
-struct Grant {
-    waker: AtomicWaker,
-    state: AtomicU8,
-}
+const GRANTED: usize = 0b001;
+const CANCELLED: usize = 0b010;
+const SHUT: usize = 0b100;
+const NODE_FLAG_BITS: u32 = 3;
 
-#[derive(Clone)]
-struct Waiter {
+struct Node {
     needed: usize,
-    assigned: usize,
-    grant: Arc<Grant>,
+    state: AtomicUsize,
+    waker: AtomicWaker,
 }
 
-#[derive(Clone, Default)]
-struct State {
-    permits: usize,
-    closed: bool,
-    next: u64,
-    waiters: OrdMap<u64, Waiter>,
-}
-
-impl State {
-    fn assign(&mut self) -> Vec<Arc<Grant>> {
-        let mut given = Vec::new();
-        if self.closed {
-            return given;
-        }
-        while let Some((ticket, waiter)) = self.waiters.get_min() {
-            let ticket = *ticket;
-            let take = (waiter.needed - waiter.assigned).min(self.permits);
-            self.permits -= take;
-            let waiter = self
-                .waiters
-                .get_mut(&ticket)
-                .expect("the first waiter is still queued");
-            waiter.assigned += take;
-            if waiter.assigned < waiter.needed {
-                break;
-            }
-            let waiter = self
-                .waiters
-                .remove(&ticket)
-                .expect("a satisfied waiter is still queued");
-            given.push(waiter.grant);
-        }
-        assert!(
-            self.permits == 0 || self.waiters.get_min().is_none(),
-            "free permits never sit beside a waiter"
-        );
-        given
+impl Node {
+    fn assigned(state: usize) -> usize {
+        state >> NODE_FLAG_BITS
     }
 }
 
+struct Drainer {
+    consumer: Consumer,
+    head: Option<Arc<Node>>,
+}
+
 pub struct Semaphore {
-    state: Atom<State>,
+    word: AtomicUsize,
+    queued: AtomicUsize,
+    queue: Box<Queue<Arc<Node>>>,
+    drainer: AtomicBox<Drainer>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -108,15 +84,14 @@ impl fmt::Debug for Semaphore {
     }
 }
 
-fn give(grants: Vec<Arc<Grant>>, state: u8) {
-    for grant in grants {
-        grant.state.store(state, Ordering::Release);
-        grant.waker.wake();
-    }
+enum Assigned {
+    Granted,
+    Partial,
+    Cancelled,
 }
 
 impl Semaphore {
-    pub const MAX_PERMITS: usize = usize::MAX >> 3;
+    pub const MAX_PERMITS: usize = usize::MAX >> FLAG_BITS;
 
     #[must_use]
     pub fn new(permits: usize) -> Self {
@@ -124,68 +99,216 @@ impl Semaphore {
             permits <= Self::MAX_PERMITS,
             "a semaphore holds at most MAX_PERMITS permits"
         );
+        let queue = Box::new(Queue::new());
+        let consumer = queue.consumer().expect("a new queue has no consumer yet");
         Self {
-            state: Atom::new(State {
-                permits,
-                ..State::default()
-            }),
+            word: AtomicUsize::new(permits << FLAG_BITS),
+            queued: AtomicUsize::new(0),
+            queue,
+            drainer: AtomicBox::new(Some(Box::new(Drainer {
+                consumer,
+                head: None,
+            }))),
         }
     }
 
     pub fn available_permits(&self) -> usize {
-        self.state.read(|state| state.permits)
+        self.word.load(Ordering::Acquire) >> FLAG_BITS
+    }
+
+    pub fn is_closed(&self) -> bool {
+        self.word.load(Ordering::Acquire) & CLOSED != 0
     }
 
     pub fn add_permits(&self, added: usize) {
         if added == 0 {
             return;
         }
-        let given = self.state.update(|state| {
-            state.permits += added;
-            assert!(
-                state.permits <= Self::MAX_PERMITS,
-                "a semaphore holds at most MAX_PERMITS permits"
-            );
-            state.assign()
-        });
-        give(given, GRANT_GIVEN);
+        assert!(
+            added <= Self::MAX_PERMITS,
+            "a semaphore holds at most MAX_PERMITS permits"
+        );
+        let previous = self.word.fetch_add(added << FLAG_BITS, Ordering::SeqCst);
+        assert!(
+            (previous >> FLAG_BITS) <= Self::MAX_PERMITS - added,
+            "a semaphore holds at most MAX_PERMITS permits"
+        );
+        if self.queued.load(Ordering::SeqCst) != 0 {
+            self.drain();
+        }
     }
 
     pub fn forget_permits(&self, forgotten: usize) -> usize {
-        self.state.update(|state| {
-            let taken = forgotten.min(state.permits);
-            state.permits -= taken;
-            taken
-        })
+        let mut current = self.word.load(Ordering::Acquire);
+        loop {
+            let taken = forgotten.min(current >> FLAG_BITS);
+            match self.word.compare_exchange_weak(
+                current,
+                current - (taken << FLAG_BITS),
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return taken,
+                Err(actual) => current = actual,
+            }
+        }
     }
 
     pub fn close(&self) {
-        let woken = self.state.update(|state| {
-            state.closed = true;
-            state
-                .waiters
-                .values()
-                .map(|waiter| Arc::clone(&waiter.grant))
-                .collect()
-        });
-        give(woken, GRANT_CLOSED);
-    }
-
-    pub fn is_closed(&self) -> bool {
-        self.state.read(|state| state.closed)
+        self.word.fetch_or(CLOSED, Ordering::SeqCst);
+        self.drain();
     }
 
     fn try_take(&self, permits: usize) -> Result<(), TryAcquireError> {
-        self.state.modify(|state| {
-            if state.closed {
+        let mut current = self.word.load(Ordering::Acquire);
+        loop {
+            if current & CLOSED != 0 {
                 return Err(TryAcquireError::Closed);
             }
-            if state.permits < permits {
+            if current >> FLAG_BITS < permits {
                 return Err(TryAcquireError::NoPermits);
             }
-            state.permits -= permits;
-            Ok(())
-        })
+            match self.word.compare_exchange_weak(
+                current,
+                current - (permits << FLAG_BITS),
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return Ok(()),
+                Err(actual) => current = actual,
+            }
+        }
+    }
+
+    fn take_up_to(&self, wanted: usize) -> usize {
+        let mut current = self.word.load(Ordering::Acquire);
+        loop {
+            let taken = wanted.min(current >> FLAG_BITS);
+            if taken == 0 || current & CLOSED != 0 {
+                return 0;
+            }
+            match self.word.compare_exchange_weak(
+                current,
+                current - (taken << FLAG_BITS),
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return taken,
+                Err(actual) => current = actual,
+            }
+        }
+    }
+
+    fn drain(&self) {
+        let mut current = self.word.load(Ordering::SeqCst);
+        loop {
+            let next = if current & DRAINING != 0 {
+                current | AGAIN
+            } else {
+                (current | DRAINING) & !AGAIN
+            };
+            match self
+                .word
+                .compare_exchange_weak(current, next, Ordering::SeqCst, Ordering::SeqCst)
+            {
+                Ok(_) if current & DRAINING != 0 => return,
+                Ok(_) => break,
+                Err(actual) => current = actual,
+            }
+        }
+        loop {
+            let mut drainer = self
+                .drainer
+                .take()
+                .expect("the draining flag's holder owns the drainer");
+            self.drain_queue(&mut drainer);
+            self.drainer.store(Some(drainer));
+            let mut current = self.word.load(Ordering::SeqCst);
+            loop {
+                let next = if current & AGAIN != 0 {
+                    current & !AGAIN
+                } else {
+                    current & !DRAINING
+                };
+                match self.word.compare_exchange_weak(
+                    current,
+                    next,
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
+                ) {
+                    Ok(_) if current & AGAIN != 0 => break,
+                    Ok(_) => return,
+                    Err(actual) => current = actual,
+                }
+            }
+        }
+    }
+
+    fn next_node(&self, drainer: &mut Drainer) -> Option<Arc<Node>> {
+        if let Some(node) = drainer.head.take() {
+            return Some(node);
+        }
+        match self.queue.pop(&mut drainer.consumer) {
+            Pop::Value(node) => Some(node),
+            Pop::Empty | Pop::Pushing => None,
+        }
+    }
+
+    fn drain_queue(&self, drainer: &mut Drainer) {
+        while let Some(node) = self.next_node(drainer) {
+            if self.is_closed() {
+                node.state.fetch_or(SHUT, Ordering::AcqRel);
+                node.waker.wake();
+                continue;
+            }
+            let state = node.state.load(Ordering::Acquire);
+            if state & CANCELLED != 0 {
+                continue;
+            }
+            let taken = self.take_up_to(node.needed - Node::assigned(state));
+            if taken == 0 {
+                drainer.head = Some(node);
+                return;
+            }
+            match Self::assign(&node, taken) {
+                Assigned::Granted => {
+                    self.queued.fetch_sub(1, Ordering::SeqCst);
+                    node.waker.wake();
+                }
+                Assigned::Partial => {
+                    drainer.head = Some(node);
+                    return;
+                }
+                Assigned::Cancelled => {
+                    self.word.fetch_add(taken << FLAG_BITS, Ordering::SeqCst);
+                }
+            }
+        }
+    }
+
+    fn assign(node: &Node, taken: usize) -> Assigned {
+        let mut state = node.state.load(Ordering::Acquire);
+        loop {
+            if state & CANCELLED != 0 {
+                return Assigned::Cancelled;
+            }
+            let assigned = Node::assigned(state) + taken;
+            assert!(
+                assigned <= node.needed,
+                "a waiter is assigned at most what it needs"
+            );
+            let granted = assigned == node.needed;
+            let next =
+                (assigned << NODE_FLAG_BITS) | (state & SHUT) | if granted { GRANTED } else { 0 };
+            match node
+                .state
+                .compare_exchange_weak(state, next, Ordering::AcqRel, Ordering::Acquire)
+            {
+                Ok(_) if granted => return Assigned::Granted,
+                Ok(_) => return Assigned::Partial,
+                Err(actual) => state = actual,
+            }
+        }
     }
 
     pub fn try_acquire(&self) -> Result<SemaphorePermit<'_>, TryAcquireError> {
@@ -249,7 +372,7 @@ impl Semaphore {
 
 enum Queued {
     Start,
-    Waiting { ticket: u64, grant: Arc<Grant> },
+    Waiting(Arc<Node>),
     Done,
 }
 
@@ -267,12 +390,43 @@ impl<'a> Acquire<'a> {
             queued: Queued::Start,
         }
     }
-}
 
-enum Entry {
-    Taken,
-    Closed,
-    Queued(u64),
+    fn enqueue(&mut self, context: &Context<'_>) -> Poll<Result<(), AcquireError>> {
+        let semaphore = self.semaphore;
+        match semaphore.try_take(self.permits) {
+            Ok(()) => {
+                self.queued = Queued::Done;
+                return Poll::Ready(Ok(()));
+            }
+            Err(TryAcquireError::Closed) => {
+                self.queued = Queued::Done;
+                return Poll::Ready(Err(AcquireError(())));
+            }
+            Err(TryAcquireError::NoPermits) => {}
+        }
+        let node = Arc::new(Node {
+            needed: self.permits,
+            state: AtomicUsize::new(0),
+            waker: AtomicWaker::new(),
+        });
+        node.waker.register(context.waker());
+        semaphore.queued.fetch_add(1, Ordering::SeqCst);
+        semaphore.queue.push(Arc::clone(&node));
+        self.queued = Queued::Waiting(Arc::clone(&node));
+        semaphore.drain();
+        self.settle(&node)
+    }
+
+    fn settle(&mut self, node: &Node) -> Poll<Result<(), AcquireError>> {
+        if self.semaphore.is_closed() {
+            return Poll::Ready(Err(AcquireError(())));
+        }
+        if node.state.load(Ordering::Acquire) & GRANTED != 0 {
+            self.queued = Queued::Done;
+            return Poll::Ready(Ok(()));
+        }
+        Poll::Pending
+    }
 }
 
 impl Future for Acquire<'_> {
@@ -280,91 +434,31 @@ impl Future for Acquire<'_> {
 
     fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
-        let grant = match &this.queued {
+        match &this.queued {
             Queued::Done => panic!("an acquire is polled after it finished"),
-            Queued::Waiting { grant, .. } => Arc::clone(grant),
-            Queued::Start => {
-                let grant = Arc::new(Grant {
-                    waker: AtomicWaker::new(),
-                    state: AtomicU8::new(GRANT_WAITING),
-                });
-                grant.waker.register(context.waker());
-                let needed = this.permits;
-                let entry = this.semaphore.state.update(|state| {
-                    if state.closed {
-                        return Entry::Closed;
-                    }
-                    if state.waiters.get_min().is_none() && state.permits >= needed {
-                        state.permits -= needed;
-                        return Entry::Taken;
-                    }
-                    let assigned = if state.waiters.get_min().is_none() {
-                        std::mem::take(&mut state.permits)
-                    } else {
-                        0
-                    };
-                    let ticket = state.next;
-                    state.next += 1;
-                    state.waiters.insert(
-                        ticket,
-                        Waiter {
-                            needed,
-                            assigned,
-                            grant: Arc::clone(&grant),
-                        },
-                    );
-                    Entry::Queued(ticket)
-                });
-                match entry {
-                    Entry::Taken => {
-                        this.queued = Queued::Done;
-                        return Poll::Ready(Ok(()));
-                    }
-                    Entry::Closed => {
-                        this.queued = Queued::Done;
-                        return Poll::Ready(Err(AcquireError(())));
-                    }
-                    Entry::Queued(ticket) => {
-                        this.queued = Queued::Waiting {
-                            ticket,
-                            grant: Arc::clone(&grant),
-                        };
-                        return Poll::Pending;
-                    }
-                }
+            Queued::Start => this.enqueue(context),
+            Queued::Waiting(node) => {
+                let node = Arc::clone(node);
+                node.waker.register(context.waker());
+                this.settle(&node)
             }
-        };
-        grant.waker.register(context.waker());
-        if this.semaphore.is_closed() {
-            return Poll::Ready(Err(AcquireError(())));
-        }
-        match grant.state.load(Ordering::Acquire) {
-            GRANT_GIVEN => {
-                this.queued = Queued::Done;
-                Poll::Ready(Ok(()))
-            }
-            GRANT_CLOSED => Poll::Ready(Err(AcquireError(()))),
-            _ => Poll::Pending,
         }
     }
 }
 
 impl Drop for Acquire<'_> {
     fn drop(&mut self) {
-        let Queued::Waiting { ticket, .. } = &self.queued else {
+        let Queued::Waiting(node) = &self.queued else {
             return;
         };
-        let ticket = *ticket;
-        let needed = self.permits;
-        let given = self.semaphore.state.update(|state| {
-            let returned = state
-                .waiters
-                .remove(&ticket)
-                .map_or(needed, |waiter| waiter.assigned);
-            state.permits += returned;
-            state.assign()
-        });
-        give(given, GRANT_GIVEN);
+        let previous = node.state.fetch_or(CANCELLED, Ordering::AcqRel);
+        let returned = if previous & GRANTED != 0 {
+            self.permits
+        } else {
+            self.semaphore.queued.fetch_sub(1, Ordering::SeqCst);
+            Node::assigned(previous)
+        };
+        self.semaphore.release(returned);
     }
 }
 

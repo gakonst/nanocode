@@ -432,8 +432,6 @@ pub mod value;
 mod io;
 #[cfg(feature = "std")]
 mod iter;
-#[cfg(feature = "float_roundtrip")]
-mod lexical;
 mod number;
 mod float;
 mod read;

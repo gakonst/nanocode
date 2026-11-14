@@ -1,8 +1,6 @@
 //! Deserialize JSON data to a Rust data structure.
 
 use crate::error::{Error, ErrorCode, Result};
-#[cfg(feature = "float_roundtrip")]
-use crate::lexical;
 use crate::number::Number;
 use crate::read::{self, Fused, Reference};
 use alloc::string::String;
@@ -12,12 +10,24 @@ use core::iter;
 use core::iter::FusedIterator;
 use core::marker::PhantomData;
 use core::result;
-use core::str::FromStr;
+use core::str::{self, FromStr};
 use serde::de::{self, Expected, Unexpected};
 use serde::forward_to_deserialize_any;
 
 #[cfg(feature = "arbitrary_precision")]
 use crate::number::NumberDeserializer;
+
+#[cfg(feature = "float_roundtrip")]
+const F64_EXACT_SIGNIFICAND_MAX: u64 = 1 << f64::MANTISSA_DIGITS;
+#[cfg(feature = "float_roundtrip")]
+const F32_EXACT_SIGNIFICAND_MAX: u64 = 1 << f32::MANTISSA_DIGITS;
+#[cfg(feature = "float_roundtrip")]
+const F64_EXACT_POW10: [f64; 23] = [
+    1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10, 1e11, 1e12, 1e13, 1e14, 1e15, 1e16,
+    1e17, 1e18, 1e19, 1e20, 1e21, 1e22,
+];
+#[cfg(feature = "float_roundtrip")]
+const F32_EXACT_POW10: [f32; 11] = [1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10];
 
 pub use crate::read::{Read, SliceRead, StrRead};
 
@@ -622,16 +632,48 @@ impl<'de, R: Read<'de>> Deserializer<R> {
 
     #[cfg(feature = "float_roundtrip")]
     fn f64_from_parts(&mut self, positive: bool, significand: u64, exponent: i32) -> Result<f64> {
-        let f = if self.single_precision {
-            lexical::parse_concise_float::<f32>(significand, exponent) as f64
-        } else {
-            lexical::parse_concise_float::<f64>(significand, exponent)
-        };
+        if let Some(f) = self.exact_from_parts(significand, exponent) {
+            return Ok(if positive { f } else { -f });
+        }
+        self.scratch.clear();
+        self.scratch
+            .extend_from_slice(itoa::Buffer::new().format(significand).as_bytes());
+        self.scratch.push(b'e');
+        self.scratch
+            .extend_from_slice(itoa::Buffer::new().format(exponent).as_bytes());
+        self.f64_from_scratch(positive)
+    }
 
-        if f.is_infinite() {
-            Err(self.error(ErrorCode::NumberOutOfRange))
+    #[cfg(feature = "float_roundtrip")]
+    fn exact_from_parts(&self, significand: u64, exponent: i32) -> Option<f64> {
+        if self.single_precision {
+            if significand > F32_EXACT_SIGNIFICAND_MAX || exponent.unsigned_abs() as usize >= F32_EXACT_POW10.len() {
+                return None;
+            }
+            let pow = F32_EXACT_POW10[exponent.unsigned_abs() as usize];
+            let f = significand as f32;
+            Some(f64::from(if exponent < 0 { f / pow } else { f * pow }))
         } else {
-            Ok(if positive { f } else { -f })
+            if significand > F64_EXACT_SIGNIFICAND_MAX || exponent.unsigned_abs() as usize >= F64_EXACT_POW10.len() {
+                return None;
+            }
+            let pow = F64_EXACT_POW10[exponent.unsigned_abs() as usize];
+            let f = significand as f64;
+            Some(if exponent < 0 { f / pow } else { f * pow })
+        }
+    }
+
+    #[cfg(feature = "float_roundtrip")]
+    fn f64_from_scratch(&mut self, positive: bool) -> Result<f64> {
+        let text = str::from_utf8(&self.scratch).unwrap_or_default();
+        let f = if self.single_precision {
+            f32::from_str(text).map(f64::from)
+        } else {
+            f64::from_str(text)
+        };
+        match f {
+            Ok(f) if !f.is_infinite() => Ok(if positive { f } else { -f }),
+            _ => Err(self.error(ErrorCode::NumberOutOfRange)),
         }
     }
 
@@ -880,20 +922,17 @@ impl<'de, R: Read<'de>> Deserializer<R> {
         integer_end: usize,
         exponent: i32,
     ) -> Result<f64> {
-        let integer = &self.scratch[..integer_end];
-        let fraction = &self.scratch[integer_end..];
-
-        let f = if self.single_precision {
-            lexical::parse_truncated_float::<f32>(integer, fraction, exponent) as f64
-        } else {
-            lexical::parse_truncated_float::<f64>(integer, fraction, exponent)
-        };
-
-        if f.is_infinite() {
-            Err(self.error(ErrorCode::NumberOutOfRange))
-        } else {
-            Ok(if positive { f } else { -f })
+        if integer_end == self.scratch.len() {
+            self.scratch.push(b'0');
         }
+        self.scratch.insert(integer_end, b'.');
+        if integer_end == 0 {
+            self.scratch.insert(0, b'0');
+        }
+        self.scratch.push(b'e');
+        self.scratch
+            .extend_from_slice(itoa::Buffer::new().format(exponent).as_bytes());
+        self.f64_from_scratch(positive)
     }
 
     fn parse_any_signed_number(&mut self) -> Result<ParserNumber> {

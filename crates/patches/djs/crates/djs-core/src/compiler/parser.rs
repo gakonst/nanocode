@@ -79,6 +79,17 @@ pub(super) struct OpenIter {
     pub it: crate::heap::Atom,
 }
 
+#[derive(Default)]
+pub(super) struct ParserSpare {
+    stack: Vec<Suspended>,
+    done: Vec<Option<FuncState>>,
+    blocks: Vec<BlockEnv>,
+    buf8: Vec<u8>,
+    pattern_vars: Vec<VarId>,
+    open_iters: Vec<OpenIter>,
+    str_pool: Vec<(Vec<u16>, crate::value::Str)>,
+}
+
 pub(super) struct Parser<'a, 'h> {
     pub lx: Lexer<'a>,
     pub tok: Token,
@@ -309,6 +320,25 @@ fn syntax_error(pos: u32, msg: impl Into<Cow<'static, str>>) -> PErr {
     PErr::syntax(pos, msg.into())
 }
 
+impl Drop for Parser<'_, '_> {
+    fn drop(&mut self) {
+        fn take<T>(v: &mut Vec<T>) -> Vec<T> {
+            v.clear();
+            core::mem::take(v)
+        }
+        let spare = ParserSpare {
+            stack: take(&mut self.stack),
+            done: take(&mut self.done),
+            blocks: take(&mut self.blocks),
+            buf8: take(&mut self.buf8),
+            pattern_vars: take(&mut self.pattern_vars),
+            open_iters: take(&mut self.open_iters),
+            str_pool: take(&mut self.str_pool),
+        };
+        self.heap.compile_scratch.parser = spare;
+    }
+}
+
 impl<'a, 'h> Parser<'a, 'h> {
     pub fn new(
         heap: &'h mut Heap,
@@ -331,6 +361,16 @@ impl<'a, 'h> Parser<'a, 'h> {
         let atom_home = crate::heap::atoms::HOME;
         let atom_active = crate::heap::atoms::ACTIVE;
         let f = FuncState::reusing(0, kind, None, heap.compile_scratch.spare());
+        let ParserSpare {
+            stack,
+            mut done,
+            blocks,
+            buf8,
+            pattern_vars,
+            open_iters,
+            str_pool,
+        } = core::mem::take(&mut heap.compile_scratch.parser);
+        done.push(None);
         let mut p = Parser {
             lx,
             tok,
@@ -339,12 +379,12 @@ impl<'a, 'h> Parser<'a, 'h> {
             heap,
             opts,
             f,
-            stack: Vec::new(),
-            done: alloc::vec![None],
+            stack,
+            done,
             scope: BODY_SCOPE,
             depth: 0,
-            blocks: Vec::new(),
-            buf8: Vec::new(),
+            blocks,
+            buf8,
             atom_undefined,
             atom_this,
             atom_arguments,
@@ -362,9 +402,9 @@ impl<'a, 'h> Parser<'a, 'h> {
             #[cfg(feature = "lazy")]
             arg_start: u32::MAX,
             pat_scan: Default::default(),
-            pattern_vars: Vec::new(),
-            open_iters: Vec::new(),
-            str_pool: Vec::new(),
+            pattern_vars,
+            open_iters,
+            str_pool,
             str_table: Vec::new(),
             ts: opts.typescript,
             #[cfg(feature = "dump")]
@@ -543,10 +583,11 @@ impl<'a, 'h> Parser<'a, 'h> {
         self.end_async_region();
         let top = core::mem::replace(&mut self.f, FuncState::new(0, FuncKind::Script, None));
         self.done[0] = Some(top);
-        let funcs = core::mem::take(&mut self.done)
-            .into_iter()
-            .map(|f| f.ok_or_else(|| super::resolve::internal("unfinished function")))
-            .collect::<PResult<Vec<_>>>()?;
+        let mut funcs = core::mem::take(&mut self.heap.compile_scratch.funcs);
+        funcs.clear();
+        for f in self.done.drain(..) {
+            funcs.push(f.ok_or_else(|| super::resolve::internal("unfinished function"))?);
+        }
         let erased = self.erased.take();
         let mut names = self.builtin_names.take();
         let t = super::resolve::finish(

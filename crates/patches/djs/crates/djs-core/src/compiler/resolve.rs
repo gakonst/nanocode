@@ -626,7 +626,8 @@ pub(super) fn finish(
     scratch.spares.clear();
     scratch
         .spares
-        .extend(funcs.into_iter().map(FuncState::recycle));
+        .extend(funcs.drain(..).map(FuncState::recycle));
+    scratch.funcs = funcs;
     heap.compile_scratch = scratch;
     #[cfg(not(feature = "lazy"))]
     {
@@ -1614,6 +1615,8 @@ fn emit_function(
         names: all_names,
         line_bytes,
         spares: core::mem::take(&mut scratch.spares),
+        parser: core::mem::take(&mut scratch.parser),
+        funcs: core::mem::take(&mut scratch.funcs),
     };
     t
 }
@@ -1697,6 +1700,8 @@ pub(crate) struct Scratch {
     names: Vec<Atom>,
     line_bytes: Vec<u8>,
     spares: Vec<super::func::Spare>,
+    pub(super) parser: super::parser::ParserSpare,
+    pub(super) funcs: Vec<FuncState>,
 }
 
 impl Scratch {

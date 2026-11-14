@@ -1,0 +1,19 @@
+{
+ "name": "fra2-epyc9254",
+ "cpu": "AMD EPYC 9254 24-Core Processor",
+ "cores": 48,
+ "memory_gb": 377,
+ "os": "Ubuntu 24.04.5 LTS",
+ "kernel": "7.0.0-43-generic",
+ "arch": "x64",
+ "governor": "performance",
+ "node": "v22.23.5",
+ "load_at_start": [
+  0.03,
+  4.09,
+  4.46
+ ],
+ "virtualization": null,
+ "at": "2026-11-14T07:19:07.044Z",
+ "commit": "437a58aee3bb06ba23f5d54953d86a314ce4df08"
+}

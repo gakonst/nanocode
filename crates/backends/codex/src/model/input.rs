@@ -116,19 +116,12 @@ pub(in crate::model) fn host_context(instructions: String) -> ResponseItem {
 }
 
 fn permissions_instructions() -> String {
-    #[cfg(not(target_family = "wasm"))]
-    {
-        let sandbox = include_str!("prompts/danger_full_access.md")
-            .replace("{{ network_access }}", "enabled");
-        format!(
-            "<permissions instructions>\n{sandbox}{}</permissions instructions>",
-            include_str!("prompts/never.md"),
-        )
-    }
-    #[cfg(target_family = "wasm")]
-    {
-        "<host_execution_context>\nExecution permissions are supplied and enforced by the host for each tool and selected environment. The embedded runtime does not grant filesystem, network, or escalation access.\n</host_execution_context>".to_owned()
-    }
+    let sandbox =
+        include_str!("prompts/danger_full_access.md").replace("{{ network_access }}", "enabled");
+    format!(
+        "<permissions instructions>\n{sandbox}{}</permissions instructions>",
+        include_str!("prompts/never.md"),
+    )
 }
 
 pub(in crate::model) fn custom_tool_output(

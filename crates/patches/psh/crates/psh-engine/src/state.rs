@@ -119,6 +119,12 @@ impl NestedSigs {
     }
 }
 
+pub(crate) fn bash_path(core: &Core) -> Vec<u8> {
+    core.own_program
+        .clone()
+        .unwrap_or_else(|| b"/bin/bash".to_vec())
+}
+
 impl Sigs {
     pub(crate) fn peek(&self, core: &Core) -> u64 {
         match self {
@@ -154,7 +160,10 @@ impl Sigs {
     /// Sends `sig` to the shell itself (`kill $$`, D1284).
     pub(crate) fn raise(&self, core: &Core, sig: i32) {
         match self {
-            Sigs::Shell => core.sched.raise(sig),
+            Sigs::Shell => {
+                core.sched.raise(sig);
+                core.sched.wake_signal_waiters();
+            }
             Sigs::Nested(n) => n.raise(sig),
         }
     }
@@ -394,6 +403,7 @@ pub(crate) struct Vp {
     /// fire inside it, and a bare `exit` uses this status.
     pub in_trap: Option<i32>,
     pub signal_trap: bool,
+    pub own_sigs: Cell<u64>,
     /// This is the shell itself, not a subshell: it takes the shell's signals.
     pub top: bool,
     /// This vproc is a background job of one simple command that has not run it yet:
@@ -452,6 +462,7 @@ impl Vp {
         sub.depth += 1;
         sub.loops = 0;
         sub.top = false;
+        sub.own_sigs = Cell::new(0);
         sub.fork_job = false;
         sub.traps = self.traps.for_subshell(
             self.opts.get(crate::options::SetOpt::Errtrace),

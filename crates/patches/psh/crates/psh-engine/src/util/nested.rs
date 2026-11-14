@@ -53,7 +53,9 @@ const GRACE: Duration = Duration::from_secs(2);
 /// Whether `name` runs as a shell in psh here.
 pub(crate) fn is_shell(vp: &Vp, name: &[u8]) -> bool {
     vp.core.nested_shells
-        && (matches!(name, b"bash" | b"sh") || (cfg!(windows) && WINDOWS_PATHS.contains(&name)))
+        && (matches!(name, b"bash" | b"sh")
+            || (cfg!(windows) && WINDOWS_PATHS.contains(&name))
+            || vp.core.own_program.as_deref() == Some(name))
 }
 
 /// What a nested shell takes from the shell that starts it.
@@ -207,6 +209,7 @@ async fn shell(mut sub: Vp, argv: Vec<Vec<u8>>, ignore: Vec<Signal>, caller: Cal
     if !ignore.is_empty() {
         let traps = Rc::make_mut(&mut sub.traps);
         for sig in ignore {
+            traps.locked |= 1u64 << sig;
             traps.map.insert(
                 TrapKey::Signal(sig),
                 Trap {
@@ -257,7 +260,9 @@ async fn fall_through(sub: &mut Vp, argv: Vec<Vec<u8>>, why: &str) -> i32 {
 /// have a `bash`, and a miss is recorded. `$0` stays the name as written.
 async fn real_program(sub: &mut Vp, argv: &[Vec<u8>]) -> Option<i32> {
     let name = &argv[0];
-    let program = if name.contains(&b'/') {
+    let program = if sub.core.own_program.as_deref() == Some(&name[..]) {
+        name.clone()
+    } else if name.contains(&b'/') {
         // `/bin/bash` on Windows, which does not exist there.
         crate::builtins::hash::search(sub, name, None).await?
     } else {

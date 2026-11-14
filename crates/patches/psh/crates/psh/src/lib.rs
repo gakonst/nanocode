@@ -445,10 +445,10 @@ struct Signals {
 }
 
 /// The signals the standalone shell catches (Linux numbers): those a script may trap
-/// whose default action ends a process, but not QUIT (bash ignores it), PIPE (writes
-/// see EPIPE) or the synchronous faults.
+/// whose default action ends a process, and QUIT, which the shell ignores unless it is
+/// trapped; not PIPE (writes see EPIPE) or the synchronous faults.
 #[cfg(unix)]
-const CAUGHT: [psh_engine::host::Signal; 12] = [1, 2, 10, 12, 14, 15, 24, 25, 26, 27, 29, 30];
+const CAUGHT: [psh_engine::host::Signal; 13] = [1, 2, 3, 10, 12, 14, 15, 24, 25, 26, 27, 29, 30];
 
 type Control = std::sync::Arc<std::sync::OnceLock<psh_engine::ControlHandle>>;
 

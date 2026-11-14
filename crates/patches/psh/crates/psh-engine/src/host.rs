@@ -643,6 +643,9 @@ pub trait Host {
     fn sleep(&self, duration: Duration) -> HostFuture<()>;
     /// The shell's process id (`$$`).
     fn pid(&self) -> u32;
+    fn ignored_at_start(&self) -> Vec<Signal> {
+        Vec::new()
+    }
     /// The home directory of a user (`~user`), if the host knows it.
     fn home_dir(&self, user: &[u8]) -> Option<Vec<u8>> {
         let _ = user;

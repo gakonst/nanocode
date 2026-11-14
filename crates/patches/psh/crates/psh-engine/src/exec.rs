@@ -750,7 +750,7 @@ fn before_command<'a>(
     code: &'a Rc<Code>,
     cmd: &'a Command,
 ) -> Option<LocalBoxFuture<'a, Result<bool, Unwind>>> {
-    let signals = vp.top && vp.sigs.peek(&vp.core) != 0;
+    let signals = (vp.top && vp.sigs.peek(&vp.core) != 0) || vp.own_sigs.get() != 0;
     let debug = !vp.traps.map.is_empty()
         && matches!(
             cmd.kind,
@@ -2327,7 +2327,11 @@ async fn run_in_shell(vp: &mut Vp, program: &[u8], argv: Vec<Vec<u8>>, shown: &s
 /// it, D1413). Descriptors, cwd, umask and limits stay.
 pub(crate) fn start_afresh(sub: &mut Vp) {
     let env = sub.env(&[]);
-    let (vars, foreign) = crate::initial_vars(&*sub.core.host.clone(), &env, &sub.cwd);
+    let (mut vars, foreign) = crate::initial_vars(&*sub.core.host.clone(), &env, &sub.cwd);
+    vars.insert(
+        "BASH",
+        crate::vars::Var::scalar(crate::state::bash_path(&sub.core)),
+    );
     sub.vars = vars;
     sub.foreign_env = Rc::new(foreign);
     sub.subshell_level = 0;

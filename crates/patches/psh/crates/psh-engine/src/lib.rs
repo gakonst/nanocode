@@ -280,7 +280,8 @@ impl Shell {
             seconds_base: Cell::new(cfg.host.now().as_nanos() as i128),
             forked: Cell::new(None),
         });
-        let (vars, foreign) = initial_vars(&*cfg.host, &cfg.env, &cfg.cwd);
+        let (mut vars, foreign) = initial_vars(&*cfg.host, &cfg.env, &cfg.cwd);
+        vars.insert("BASH", Var::scalar(state::bash_path(&core)));
         let opts = options::inherited(&vars);
         let mut fds = FdTable::default();
         for (n, f) in [(0, cfg.stdin), (1, cfg.stdout), (2, cfg.stderr)] {
@@ -328,9 +329,12 @@ impl Shell {
             opts,
             no_errexit: false,
             bad_assign: false,
-            traps: Rc::new(Default::default()),
+            traps: Rc::new(builtins::trap::Traps::ignored_at_start(
+                &cfg.host.ignored_at_start(),
+            )),
             in_trap: None,
             signal_trap: false,
+            own_sigs: Cell::new(0),
             top: true,
             fork_job: false,
             sigs: state::Sigs::Shell,

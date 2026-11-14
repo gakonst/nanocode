@@ -268,7 +268,18 @@ pub(crate) async fn write_fd(vp: &Vp, fd: u32, name: &str, data: &[u8]) -> Resul
     match f.write_all(data).await {
         Ok(()) => Ok(true),
         Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {
-            Err(Unwind::Exit(128 + crate::host::SIGPIPE))
+            let pipe = crate::host::SIGPIPE;
+            match vp.traps.action(trap::TrapKey::Signal(pipe)) {
+                None => Err(Unwind::Exit(128 + pipe)),
+                Some(action) => {
+                    if !action.is_empty() {
+                        vp.own_sigs.set(vp.own_sigs.get() | 1u64 << pipe);
+                    }
+                    vp.error(&format!("{name}: write error: {}", error_text(&e)))
+                        .await;
+                    Ok(false)
+                }
+            }
         }
         Err(e) => {
             vp.error(&format!("{name}: write error: {}", error_text(&e)))

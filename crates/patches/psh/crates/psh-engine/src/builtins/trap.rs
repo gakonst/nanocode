@@ -101,9 +101,25 @@ pub(crate) struct Trap {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Traps {
     pub map: BTreeMap<TrapKey, Trap>,
+    pub locked: u64,
 }
 
 impl Traps {
+    pub(crate) fn ignored_at_start(sigs: &[i32]) -> Traps {
+        let mut t = Traps::default();
+        for &sig in sigs.iter().filter(|s| (1..64).contains(*s)) {
+            t.locked |= 1u64 << sig;
+            t.map.insert(
+                TrapKey::Signal(sig),
+                Trap {
+                    action: Rc::from(&b""[..]),
+                    active: true,
+                },
+            );
+        }
+        t
+    }
+
     /// The action that runs for `key` here, if any.
     pub(crate) fn action(&self, key: TrapKey) -> Option<Rc<[u8]>> {
         self.map
@@ -255,10 +271,11 @@ pub(crate) fn terminates(sig: i32) -> bool {
 /// the shell itself. A trap runs its action; an ignored signal does nothing; otherwise
 /// the default action ends the shell with `128+n` after the EXIT trap.
 pub(crate) async fn take_signals(vp: &mut Vp) -> Result<(), Unwind> {
-    if !vp.top || (vp.in_trap.is_some() && !vp.signal_trap) {
+    if vp.in_trap.is_some() && !vp.signal_trap {
         return Ok(());
     }
-    let pending = vp.sigs.take(&vp.core);
+    let shell = if vp.top { vp.sigs.take(&vp.core) } else { 0 };
+    let pending = shell | vp.own_sigs.take();
     if pending == 0 {
         return Ok(());
     }
@@ -298,7 +315,7 @@ pub(crate) async fn take_signals(vp: &mut Vp) -> Result<(), Unwind> {
                 }
                 vp.signal_trap = saved;
             }
-            None if terminates(sig) => {
+            None if terminates(sig) && sig != crate::host::SIGQUIT => {
                 vp.sigs.died_of(&vp.core, sig);
                 return Err(Unwind::Exit(128 + sig));
             }
@@ -418,6 +435,7 @@ pub(crate) async fn trap(vp: &mut Vp, args: &[Vec<u8>]) -> R {
     let mut bad = Vec::new();
     for spec in specs {
         match TrapKey::parse(spec) {
+            Some(TrapKey::Signal(n)) if traps.locked & (1u64 << n) != 0 => {}
             Some(k) => match action {
                 Some(a) => {
                     traps.map.insert(

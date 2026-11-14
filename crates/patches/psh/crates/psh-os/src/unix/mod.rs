@@ -675,6 +675,13 @@ impl Host for UnixHost {
         self.pid.unwrap_or_else(std::process::id)
     }
 
+    fn ignored_at_start(&self) -> Vec<Signal> {
+        (1..spawn::NSIG)
+            .filter(|&n| self.shared.ignored_at_start[n as usize])
+            .map(signum::from_os)
+            .collect()
+    }
+
     fn home_dir(&self, user: &[u8]) -> Option<Vec<u8>> {
         let name = CString::new(user).ok()?;
         let mut buf = vec![0u8; 16 * 1024];

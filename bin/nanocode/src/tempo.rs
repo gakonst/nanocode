@@ -1835,13 +1835,14 @@ pub(crate) fn apply(
         false => Vec::new(),
     };
     let payments = Payments::new(machine, served, args.tempo_session.clone());
+    let asker = asker(args, exec);
     let identity = Arc::new(Identity::new(
         payments.client.clone(),
         payments.listeners.clone(),
         &args.identity_issuer,
         args.identity_email.clone(),
         &args.identity_attestation,
-        asker(args, exec),
+        asker,
     )?);
     let mut clients = clients;
     if models {
@@ -1859,13 +1860,16 @@ pub(crate) fn apply(
     let (notices, status, panel) = (payments.clone(), payments.clone(), payments.clone());
     let clients = clients
         .notices(move || notices.notices())
-        .status(move || status.status())
-        .answer(move |text| identity.answer(text))
-        .panel(
-            "/spend",
-            "show or hide what models and tools have spent",
-            move || panel.panel(),
-        );
+        .status(move || status.status());
+    let clients = match asker {
+        Asker::Nobody => clients,
+        Asker::Pass | Asker::Stdin => clients.answer(move |text| identity.answer(text)),
+    };
+    let clients = clients.panel(
+        "/spend",
+        "show or hide what models and tools have spent",
+        move || panel.panel(),
+    );
     Ok((
         clients,
         Some(Closing {

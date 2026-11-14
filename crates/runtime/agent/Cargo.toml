@@ -25,6 +25,9 @@ nanocode-sync.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 
+[target.'cfg(target_family = "wasm")'.dependencies]
+nanocode-code-mode = { workspace = true, features = ["local-cells"] }
+
 [lints]
 workspace = true
 

@@ -50,8 +50,9 @@ nanocode-trace.workspace = true
 nanocode-process.workspace = true
 nanocode-psh.workspace = true
 nanocode-psh-embedded.workspace = true
-nanocode-python.workspace = true
+nanocode-compression.workspace = true
 psh.workspace = true
+psh-engine.workspace = true
 
 [lints]
 workspace = true

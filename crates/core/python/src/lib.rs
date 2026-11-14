@@ -15,6 +15,8 @@ use rustpython_vm::{
     vm::limit::Limiter,
 };
 
+#[cfg(unix)]
+pub use psh::serve;
 pub use psh::UTILITY;
 pub use rustpython_vm::vm::limit::Metered;
 pub use shell::{Budget, Command};

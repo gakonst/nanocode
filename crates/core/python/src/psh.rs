@@ -134,8 +134,113 @@ fn execute(run: Run, files: SyncFiles) -> io::Result<Ran> {
     ran
 }
 
+const fn limits() -> Limits {
+    Limits {
+        output: INLINE_OUTPUT_LIMIT as u64,
+        file: INLINE_INPUT_LIMIT as u64,
+        sleep: Duration::MAX,
+        steps: u64::MAX,
+        time: Duration::MAX,
+        memory: None,
+        depth: usize::MAX,
+    }
+}
+
+fn ending(ended: Ended, name: &str, say: &mut dyn FnMut(&[u8])) -> i32 {
+    match ended {
+        Ended::Exited(code) => code,
+        Ended::Needs(missing) => {
+            for missing in missing {
+                say(format!("{missing}\n").as_bytes());
+            }
+            127
+        }
+        Ended::Refused(limit) => {
+            let why = match limit {
+                Limit::Output => "it printed more than this shell keeps",
+                Limit::Sleep => "it cannot wait in this shell",
+                Limit::Steps => "it ran more steps than this shell allows",
+                Limit::Time => "it ran longer than this shell allows",
+                Limit::Memory => "it held more memory than this shell allows",
+            };
+            say(format!("{name}: {why}\n").as_bytes());
+            126
+        }
+        Ended::Cancelled => 128 + psh_engine::host::SIGTERM,
+    }
+}
+
+/// `python3` as a program of its own (nanocode-python): the arguments after the
+/// program's name, stdin, the working directory and the environment are the process's,
+/// files are the machine's, and the exit status is the one the utility returns.
+#[cfg(unix)]
+#[must_use]
+pub fn serve() -> i32 {
+    use std::{
+        ffi::{OsStr, OsString},
+        io::Write as _,
+        os::unix::ffi::{OsStrExt, OsStringExt},
+        path::PathBuf,
+        sync::Arc,
+    };
+
+    let mut args = std::env::args_os();
+    let name = args.next().map_or_else(
+        || "python3".to_owned(),
+        |name| name.to_string_lossy().into_owned(),
+    );
+    let mut stderr = io::stderr().lock();
+    let Ok(argv) = args
+        .map(OsString::into_string)
+        .collect::<Result<Vec<_>, _>>()
+    else {
+        let _ = writeln!(stderr, "{name}: an argument is not UTF-8");
+        return 2;
+    };
+    let mut stdin = Vec::new();
+    if let Err(error) = io::stdin().read_to_end(&mut stdin) {
+        let _ = writeln!(stderr, "{name}: read error: {error}");
+        return 1;
+    }
+    let cwd = match std::env::current_dir() {
+        Ok(cwd) => cwd.into_os_string().into_vec(),
+        Err(error) => {
+            let _ = writeln!(stderr, "{name}: cannot start: {error}");
+            return 1;
+        }
+    };
+    let run = Run {
+        argv,
+        stdin,
+        cwd,
+        env: std::env::vars_os()
+            .map(|(key, value)| (key.into_vec(), value.into_vec()))
+            .collect(),
+        limits: limits(),
+        stop: Arc::new(|| false),
+    };
+    let python = match Python::new() {
+        Ok(python) => python,
+        Err(error) => {
+            let _ = writeln!(stderr, "{name}: cannot start: {error}");
+            return 1;
+        }
+    };
+    let machine = SyncFiles::on(|path| Ok(PathBuf::from(OsStr::from_bytes(path))));
+    let ran = python.run(run, Rc::new(Shell(machine)));
+    std::mem::forget(python);
+    let mut stdout = io::stdout().lock();
+    let _ = stdout.write_all(&ran.stdout).and_then(|()| stdout.flush());
+    let _ = stderr.write_all(&ran.stderr);
+    ending(ran.ended, &name, &mut |text| drop(stderr.write_all(text)))
+}
+
 fn body(ctx: &mut SyncCtx, argv: Vec<Vec<u8>>) -> i32 {
     ctx.no_replay();
+    let name = argv.first().map_or_else(
+        || "python3".to_owned(),
+        |name| String::from_utf8_lossy(name).into_owned(),
+    );
     let argv: Result<Vec<String>, _> = argv.into_iter().skip(1).map(String::from_utf8).collect();
     let Ok(argv) = argv else {
         ctx.error("an argument is not UTF-8");
@@ -153,15 +258,7 @@ fn body(ctx: &mut SyncCtx, argv: Vec<Vec<u8>>) -> i32 {
         stdin,
         cwd: ctx.cwd().to_vec(),
         env: ctx.env().to_vec(),
-        limits: Limits {
-            output: INLINE_OUTPUT_LIMIT as u64,
-            file: INLINE_INPUT_LIMIT as u64,
-            sleep: Duration::MAX,
-            steps: u64::MAX,
-            time: Duration::MAX,
-            memory: None,
-            depth: usize::MAX,
-        },
+        limits: limits(),
         stop: ctx.canceller(),
     };
     let ran = match execute(run, ctx.files()) {
@@ -173,24 +270,5 @@ fn body(ctx: &mut SyncCtx, argv: Vec<Vec<u8>>) -> i32 {
     };
     let _ = ctx.write(&ran.stdout);
     ctx.error_raw(&ran.stderr);
-    match ran.ended {
-        Ended::Exited(code) => code,
-        Ended::Needs(missing) => {
-            for missing in missing {
-                ctx.error_raw(format!("{missing}\n").as_bytes());
-            }
-            127
-        }
-        Ended::Refused(limit) => {
-            ctx.error(match limit {
-                Limit::Output => "it printed more than this shell keeps",
-                Limit::Sleep => "it cannot wait in this shell",
-                Limit::Steps => "it ran more steps than this shell allows",
-                Limit::Time => "it ran longer than this shell allows",
-                Limit::Memory => "it held more memory than this shell allows",
-            });
-            126
-        }
-        Ended::Cancelled => 128 + psh_engine::host::SIGTERM,
-    }
+    ending(ran.ended, &name, &mut |text| ctx.error_raw(text))
 }

@@ -1,0 +1,24 @@
+[package]
+name = "nanocode-python-cli"
+autotests = false
+autobenches = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+license = "Apache-2.0"
+repository.workspace = true
+description = "python3 for nanocode's shell as a program of its own, which nanocode downloads the first time a command runs it"
+
+[[bin]]
+name = "nanocode-python"
+path = "src/main.rs"
+test = false
+bench = false
+
+[target.'cfg(unix)'.dependencies]
+mimalloc = { workspace = true, features = ["no_thp"] }
+nanocode-python.workspace = true
+
+[lints]
+workspace = true

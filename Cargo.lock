@@ -463,6 +463,7 @@ dependencies = [
  "nanocode",
  "nanocode-agent-host",
  "nanocode-arguments",
+ "nanocode-compression",
  "nanocode-computer-repl",
  "nanocode-home",
  "nanocode-http",
@@ -472,13 +473,13 @@ dependencies = [
  "nanocode-process",
  "nanocode-psh",
  "nanocode-psh-embedded",
- "nanocode-python",
  "nanocode-store-jsonl",
  "nanocode-sync",
  "nanocode-tempo",
  "nanocode-trace",
  "nanocode-tui",
  "psh",
+ "psh-engine",
  "serde",
  "serde_json",
  "tokio",
@@ -845,6 +846,14 @@ dependencies = [
  "rustpython-ruff_python_parser",
  "rustpython-stdlib",
  "rustpython-vm",
+]
+
+[[package]]
+name = "nanocode-python-cli"
+version = "0.7.0"
+dependencies = [
+ "mimalloc",
+ "nanocode-python",
 ]
 
 [[package]]

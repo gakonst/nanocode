@@ -16,6 +16,8 @@ mod history;
 mod host;
 mod login;
 mod models;
+#[cfg(unix)]
+mod python;
 mod sessions;
 mod side;
 mod split;
@@ -109,9 +111,9 @@ pub fn run() -> ExitCode {
 
 pub fn run_with(clients: ModelClients) -> ExitCode {
     #[cfg(unix)]
-    if let Some(code) = nanocode_psh::serve_if_requested(|arguments| {
-        psh::run_with(arguments, &[nanocode_python::UTILITY])
-    }) {
+    if let Some(code) =
+        nanocode_psh::serve_if_requested(|arguments| psh::run_with(arguments, &[python::UTILITY]))
+    {
         return code;
     }
     #[cfg(unix)]

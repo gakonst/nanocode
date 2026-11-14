@@ -18,7 +18,7 @@ impl<'a> BitWriter<'a> {
     #[inline]
     pub(crate) fn add(&mut self, value: u64, bits: u32) {
         debug_assert!(bits <= BITS_PER_ADD_MAX, "{bits} bits added at once");
-        if self.count + bits > u64::BITS {
+        if self.count + bits >= u64::BITS {
             self.flush();
         }
         let mask = (1_u64 << bits).wrapping_sub(1);

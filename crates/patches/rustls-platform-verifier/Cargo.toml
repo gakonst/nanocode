@@ -23,7 +23,6 @@ nanocode-trace = { path = "../../core/trace" }
 nanocode-platform = { path = "../../core/platform" }
 nanocode-sys = { path = "../../core/sys" }
 webpki = { package = "rustls-webpki", version = "0.103", default-features = false }
-webpki-root-certs = "1"
 
 [target.'cfg(all(target_vendor = "apple", not(target_os = "macos")))'.dependencies]
 nanocode-sys = { path = "../../core/sys" }
@@ -31,7 +30,6 @@ nanocode-sys = { path = "../../core/sys" }
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 nanocode-sys = { path = "../../core/sys" }
 webpki = { package = "rustls-webpki", version = "0.103", default-features = false }
-webpki-root-certs = "1"
 
 [target."cfg(windows)".dependencies]
 windows-sys = { version = "0.61", default-features = false, features = ["Win32_Foundation", "Win32_Security_Cryptography"] }

@@ -77,13 +77,6 @@ impl Verifier {
             }
         }
 
-        #[cfg(target_arch = "wasm32")]
-        {
-            root_store.add_parsable_certificates(
-                webpki_root_certs::TLS_SERVER_ROOT_CERTS.iter().cloned(),
-            );
-        };
-
         let inner = WebPkiServerVerifier::builder_with_provider(
             root_store.into(),
             self.crypto_provider.clone(),
@@ -204,9 +197,7 @@ pub mod system {
         }
         nanocode_trace::debug!("Loaded {added} CA root certificates from the system");
         if store.is_empty() {
-            let (bundled, _) = store.add_parsable_certificates(
-                webpki_root_certs::TLS_SERVER_ROOT_CERTS.iter().cloned(),
-            );
+            let (bundled, _) = store.add_parsable_certificates(nanocode_platform::trust::mozilla_roots());
             nanocode_trace::warn!("No CA certificates were loaded from the system; trusting {bundled} bundled Mozilla root certificates");
         }
         let roots = Arc::new(store);

@@ -12,6 +12,10 @@ use std::{
 
 const CERTIFICATE_FILE_VARIABLE: &str = "SSL_CERT_FILE";
 const CERTIFICATE_DIRECTORY_VARIABLE: &str = "SSL_CERT_DIR";
+const MOZILLA_ROOTS: &[u8] = include_bytes!("trust/mozilla_roots.der");
+const DER_SEQUENCE: u8 = 0x30;
+const DER_LONG_LENGTH: u8 = 0x80;
+const DER_HEADER_BYTES: usize = 2;
 
 #[derive(Debug, Default)]
 pub struct NativeCertificates {
@@ -99,6 +103,30 @@ pub fn load_native_certificates() -> NativeCertificates {
         return load_paths(file.as_deref(), &directories);
     }
     platform::load()
+}
+
+pub fn mozilla_roots() -> Vec<CertificateDer<'static>> {
+    let mut roots = Vec::new();
+    let mut rest = MOZILLA_ROOTS;
+    while !rest.is_empty() {
+        let (root, after) = rest.split_at(der_length(rest));
+        roots.push(CertificateDer::from_slice(root));
+        rest = after;
+    }
+    roots
+}
+
+fn der_length(der: &[u8]) -> usize {
+    assert_eq!(der[0], DER_SEQUENCE, "a generated Mozilla root is a DER sequence");
+    let first = der[1];
+    if first < DER_LONG_LENGTH {
+        return DER_HEADER_BYTES + usize::from(first);
+    }
+    let count = usize::from(first & !DER_LONG_LENGTH);
+    let length = der[DER_HEADER_BYTES..DER_HEADER_BYTES + count]
+        .iter()
+        .fold(0, |length, byte| (length << u8::BITS) | usize::from(*byte));
+    DER_HEADER_BYTES + count + length
 }
 
 pub fn native_bundle_file() -> Option<PathBuf> {

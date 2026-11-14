@@ -28,6 +28,8 @@ struct CodeLink {
     latest: String,
 }
 
+pub const COMPACTED: &str = "context compacted";
+
 #[derive(Default)]
 pub struct EventMapper {
     assistant: HashMap<String, usize>,
@@ -44,6 +46,7 @@ pub struct EventMapper {
     last: Usage,
     session: Usage,
     turn_start: usize,
+    compaction_start: usize,
     reported: bool,
     subagent: bool,
     replayed: Option<String>,
@@ -370,11 +373,19 @@ impl EventMapper {
                 true
             }
             AgentEventKind::ModelCompactionStarted => {
-                transcript.push(CellKind::Notice(
+                self.compaction_start = transcript.push(CellKind::Notice(
                     NoticeLevel::Info,
                     "compacting context…".into(),
                 ));
                 true
+            }
+            AgentEventKind::ModelCompactionCompleted => {
+                let fresh =
+                    !transcript.has_notice_since(self.compaction_start, NoticeLevel::Info, COMPACTED);
+                if fresh {
+                    transcript.push(CellKind::Notice(NoticeLevel::Info, COMPACTED.into()));
+                }
+                fresh
             }
             AgentEventKind::ModelCompactionFailed => {
                 transcript.push(CellKind::Notice(

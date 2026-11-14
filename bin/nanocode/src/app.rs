@@ -62,6 +62,9 @@ pub const DIFF_PREVIEW_LINES: usize = 40;
 
 pub enum AppEvent {
     Reload,
+    Compacted {
+        since: usize,
+    },
     TurnStarted {
         generation: u64,
         control: TurnControl,
@@ -146,6 +149,7 @@ impl AppEvent {
     const fn kind(&self) -> &'static str {
         match self {
             Self::Reload => "reload",
+            Self::Compacted { .. } => "compacted",
             Self::TurnStarted { .. } => "turn_started",
             Self::RoutedTurn { .. } => "routed_turn",
             Self::Files(_) => "files",
@@ -1227,6 +1231,16 @@ impl App {
             }
             AppEvent::Notice(level, text) => {
                 self.notice(level, text);
+                Redraw::Immediate
+            }
+            AppEvent::Compacted { since } => {
+                if !self.transcript.has_notice_since(
+                    since,
+                    NoticeLevel::Info,
+                    crate::events::COMPACTED,
+                ) {
+                    self.notice(NoticeLevel::Info, crate::events::COMPACTED);
+                }
                 Redraw::Immediate
             }
             AppEvent::FocusReady(ready) => {

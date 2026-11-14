@@ -4909,17 +4909,44 @@ impl State {
         })
     }
 
-    fn emit_compacted(
+    async fn compact_in_turn(
         &self,
         events: &AgentEventPublisher,
         after_model_call_index: u32,
-        started: Instant,
-    ) {
+        compaction: (&mut Conversation, &Cancellation, CompactionMode),
+        cursor: &Cursor,
+        step: &str,
+    ) -> Result<Usage> {
+        let (conversation, cancel, mode) = compaction;
+        let started = nanocode_platform::now();
         self.emit(
             events,
-            AgentEventKind::ModelCompactionCompleted,
-            Self::compacted_payload(after_model_call_index, started),
+            AgentEventKind::ModelCompactionStarted,
+            json!({
+                "after_model_call_index": after_model_call_index,
+                "active_context_tokens": conversation.active_context_tokens,
+                "auto_compact_token_limit": cursor.threshold,
+            }),
         );
+        let result =
+            Box::pin(self.compact_locked(conversation, cancel, mode, cursor, step)).await;
+        match &result {
+            Ok(_) => self.emit(
+                events,
+                AgentEventKind::ModelCompactionCompleted,
+                Self::compacted_payload(after_model_call_index, started),
+            ),
+            Err(error) => self.emit(
+                events,
+                AgentEventKind::ModelCompactionFailed,
+                json!({
+                    "after_model_call_index": after_model_call_index,
+                    "duration_ns": u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX),
+                    "error": error.to_string(),
+                }),
+            ),
+        }
+        result
     }
     fn emit_run_started(&self, request: &BackendPrompt) -> (&'static str, String) {
         let (reasoning_mode, effort) = self.run_labels();
@@ -7236,22 +7263,21 @@ impl State {
                     .saturating_add(incoming_tokens)
                     >= cursor.threshold
             {
-                let compaction_started = nanocode_platform::now();
                 self.stage_cursor(&mut cursor, conversation, journal)
                     .await?;
                 self.flush_journal(journal).await?;
                 add_usage(
                     &mut usage,
-                    &Box::pin(self.compact_locked(
-                        conversation,
-                        cancel,
-                        CompactionMode::Automatic,
-                        &cursor,
-                        "prepare-compact",
-                    ))
-                    .await?,
+                    &self
+                        .compact_in_turn(
+                            &request.events,
+                            0,
+                            (conversation, cancel, CompactionMode::Automatic),
+                            &cursor,
+                            "prepare-compact",
+                        )
+                        .await?,
                 );
-                self.emit_compacted(&request.events, 0, compaction_started);
             }
             let _update = self.persistence_update.enter().await;
             let mut notices = self.context_notices(conversation);
@@ -7343,20 +7369,19 @@ impl State {
                 && !conversation.messages.is_empty()
                 && conversation.active_context_tokens >= cursor.threshold
             {
-                let compaction_started = nanocode_platform::now();
                 self.flush_journal(journal).await?;
                 add_usage(
                     &mut usage,
-                    &Box::pin(self.compact_locked(
-                        conversation,
-                        cancel,
-                        CompactionMode::Automatic,
-                        &cursor,
-                        &format!("compact-{index}"),
-                    ))
-                    .await?,
+                    &self
+                        .compact_in_turn(
+                            &request.events,
+                            index,
+                            (conversation, cancel, CompactionMode::Automatic),
+                            &cursor,
+                            &format!("compact-{index}"),
+                        )
+                        .await?,
                 );
-                self.emit_compacted(&request.events, index, compaction_started);
                 pending = conversation.packed_messages();
                 pending.extend(self.tool_changes(&pending));
                 previous_message_id = conversation.previous_message_id.clone();
@@ -7517,20 +7542,19 @@ impl State {
                         cursor.context_recovery_attempted = true;
                         conversation.messages = pending.clone();
                         conversation.pending_continuation = false;
-                        let compaction_started = nanocode_platform::now();
                         self.flush_journal(journal).await?;
                         add_usage(
                             &mut usage,
-                            &Box::pin(self.compact_locked(
-                                conversation,
-                                cancel,
-                                CompactionMode::ContextRecovery,
-                                &cursor,
-                                &format!("size-recovery-{index}"),
-                            ))
-                            .await?,
+                            &self
+                                .compact_in_turn(
+                                    &request.events,
+                                    index,
+                                    (conversation, cancel, CompactionMode::ContextRecovery),
+                                    &cursor,
+                                    &format!("size-recovery-{index}"),
+                                )
+                                .await?,
                         );
-                        self.emit_compacted(&request.events, index, compaction_started);
                         pending = conversation.packed_messages();
                         previous_message_id = conversation.previous_message_id.clone();
                         self.retain_pending(&mut cursor, &pending);
@@ -8074,20 +8098,19 @@ impl State {
                     return Err(provider_error("context window exhausted after recovery"));
                 }
                 cursor.context_recovery_attempted = true;
-                let compaction_started = nanocode_platform::now();
                 self.flush_journal(journal).await?;
                 add_usage(
                     &mut usage,
-                    &Box::pin(self.compact_locked(
-                        conversation,
-                        cancel,
-                        CompactionMode::ContextRecovery,
-                        &cursor,
-                        &format!("context-recovery-{index}"),
-                    ))
-                    .await?,
+                    &self
+                        .compact_in_turn(
+                            &request.events,
+                            index,
+                            (conversation, cancel, CompactionMode::ContextRecovery),
+                            &cursor,
+                            &format!("context-recovery-{index}"),
+                        )
+                        .await?,
                 );
-                self.emit_compacted(&request.events, index, compaction_started);
 
                 conversation.messages.push(
                     Message::text(

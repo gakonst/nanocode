@@ -453,10 +453,11 @@ impl App {
             return;
         }
         let tx = self.tx.clone();
+        let since = self.transcript.len();
         self.flash("compacting…");
         nanocode_platform::spawn_task(async move {
             let event = match agent.compact().await {
-                Ok(()) => AppEvent::Notice(NoticeLevel::Info, "context compacted".into()),
+                Ok(()) => AppEvent::Compacted { since },
                 Err(error) => {
                     AppEvent::Notice(NoticeLevel::Error, format!("compaction failed: {error}"))
                 }

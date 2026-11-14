@@ -410,7 +410,7 @@ pub async fn run(launch: Launch, mut terminal: TerminalSession) -> Result<()> {
         views: HashMap::new(),
         panes: crate::side::Panes::default(),
     };
-    let instance = reload::Instance::start(app.tx.clone()).await?;
+    let instance = reload::Instance::start(app.tx.clone())?;
     if let Some(state) = launch.reload {
         app.restore_reload(state);
     }

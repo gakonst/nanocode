@@ -309,21 +309,20 @@ pub(super) struct Instance {
 
 #[cfg(unix)]
 impl Instance {
-    pub(super) async fn start(tx: tokio::sync::mpsc::UnboundedSender<AppEvent>) -> Result<Self> {
-        use std::os::unix::fs::PermissionsExt;
+    pub(super) fn start(tx: tokio::sync::mpsc::UnboundedSender<AppEvent>) -> Result<Self> {
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
         let directory =
             std::env::temp_dir().join(format!("nanocode-{}", nanocode_platform::unix::user_id()));
-        tokio::fs::DirBuilder::new()
+        std::fs::DirBuilder::new()
             .recursive(true)
             .mode(0o700)
-            .create(&directory)
-            .await?;
-        let permissions = tokio::fs::metadata(&directory).await?.permissions();
+            .create(&directory)?;
+        let permissions = std::fs::metadata(&directory)?.permissions();
         if permissions.mode() & 0o077 != 0 {
             return Err(format!("reload directory {} must be private", directory.display()).into());
         }
         let path = directory.join(format!("{}.sock", std::process::id()));
-        match tokio::fs::remove_file(&path).await {
+        match std::fs::remove_file(&path) {
             Ok(()) => {}
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(error.into()),
@@ -423,7 +422,7 @@ pub(super) struct Instance;
 
 #[cfg(not(unix))]
 impl Instance {
-    pub(super) async fn start(_: tokio::sync::mpsc::UnboundedSender<AppEvent>) -> Result<Self> {
+    pub(super) fn start(_: tokio::sync::mpsc::UnboundedSender<AppEvent>) -> Result<Self> {
         Ok(Self)
     }
     pub(super) async fn broadcast(&self) -> Result<()> {

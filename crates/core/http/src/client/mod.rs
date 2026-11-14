@@ -633,7 +633,7 @@ impl Payload {
         let declared = headers
             .get(CONTENT_LENGTH)
             .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.trim().parse::<u64>().ok());
+            .and_then(crate::wire::decimal);
         let chunked = headers.contains_key(TRANSFER_ENCODING);
         let encoding = match &body {
             Ok(bytes) if bytes.is_empty() => {

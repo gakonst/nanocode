@@ -267,14 +267,21 @@ fn chunked(headers: &HeaderMap) -> Option<bool> {
     last
 }
 
+#[must_use]
+pub fn decimal(value: &str) -> Option<u64> {
+    let value = value.trim();
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    value.parse().ok()
+}
+
 fn content_length(headers: &HeaderMap) -> Result<Option<u64>, WireError> {
     let mut length = None;
     for value in headers.get_all(header::CONTENT_LENGTH) {
         for part in value.to_str().unwrap_or_default().split(',') {
-            let parsed = part
-                .trim()
-                .parse::<u64>()
-                .map_err(|_| WireError::Parse("invalid content-length".to_owned()))?;
+            let parsed = decimal(part)
+                .ok_or_else(|| WireError::Parse("invalid content-length".to_owned()))?;
             if length.is_some_and(|length| length != parsed) {
                 return Err(WireError::Parse("conflicting content-length".to_owned()));
             }
@@ -529,9 +536,13 @@ impl BodyReader {
                     .iter()
                     .position(|byte| !byte.is_ascii_hexdigit())
                     .unwrap_or(line.len());
+                let extension = line[digits..]
+                    .iter()
+                    .find(|byte| !matches!(byte, b' ' | b'\t'))
+                    .is_none_or(|byte| *byte == b';');
                 let size = std::str::from_utf8(&line[..digits])
                     .ok()
-                    .filter(|digits| !digits.is_empty())
+                    .filter(|digits| !digits.is_empty() && extension)
                     .and_then(|digits| u64::from_str_radix(digits, HEX_RADIX).ok())
                     .ok_or_else(|| WireError::Parse("invalid chunk size".to_owned()))?;
                 self.connection.consume(end + CRLF.len());

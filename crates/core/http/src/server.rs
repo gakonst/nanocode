@@ -458,13 +458,7 @@ async fn final_head(connection: &mut Connection) -> Result<ResponseHead, WireErr
 }
 
 fn declared_length(headers: &HeaderMap) -> Option<u64> {
-    headers
-        .get(CONTENT_LENGTH)?
-        .to_str()
-        .ok()?
-        .trim()
-        .parse()
-        .ok()
+    wire::decimal(headers.get(CONTENT_LENGTH)?.to_str().ok()?)
 }
 
 #[must_use]

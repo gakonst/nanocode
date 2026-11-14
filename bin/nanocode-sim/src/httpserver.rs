@@ -53,7 +53,13 @@ const READ_BYTES: usize = 8192;
 const BYTE_VALUES: u64 = 256;
 const METHODS: [&str; 5] = ["GET", "POST", "PUT", "DELETE", "HEAD"];
 const STATUSES: [u16; 7] = [200, 201, 204, 304, 404, 500, 503];
-const MALFORMED: &[u8] = b"GET /broken HTTP/1.1\r\nhost: sim.test\r\nno colon here\r\n\r\n";
+const NO_COLON: &[u8] = b"GET /broken HTTP/1.1\r\nhost: sim.test\r\nno colon here\r\n\r\n";
+const SIGNED_LENGTH: &[u8] =
+    b"POST /broken HTTP/1.1\r\nhost: sim.test\r\ncontent-length: +5\r\n\r\nhello";
+const CHUNK_JUNK_HEAD: &[u8] =
+    b"POST /broken HTTP/1.1\r\nhost: sim.test\r\ntransfer-encoding: chunked\r\n\r\n";
+const CHUNK_JUNK_BODY: &[u8] = b"5x\r\nhello\r\n0\r\n\r\n";
+const BROKEN_TARGET: &str = "/broken";
 const CRLF: &[u8] = b"\r\n";
 const HEX_RADIX: u32 = 16;
 
@@ -158,6 +164,37 @@ struct Exchange {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Malformed {
+    NoColon,
+    SignedLength,
+    ChunkJunk,
+}
+
+impl Malformed {
+    const ALL: [Self; 3] = [Self::NoColon, Self::SignedLength, Self::ChunkJunk];
+
+    fn bytes(self) -> Vec<u8> {
+        match self {
+            Self::NoColon => NO_COLON.to_vec(),
+            Self::SignedLength => SIGNED_LENGTH.to_vec(),
+            Self::ChunkJunk => [CHUNK_JUNK_HEAD, CHUNK_JUNK_BODY].concat(),
+        }
+    }
+
+    const fn head_len(self) -> usize {
+        match self {
+            Self::NoColon => NO_COLON.len(),
+            Self::SignedLength => SIGNED_LENGTH.len(),
+            Self::ChunkJunk => CHUNK_JUNK_HEAD.len(),
+        }
+    }
+
+    const fn handled(self) -> bool {
+        matches!(self, Self::ChunkJunk)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Cut {
     Eof,
     Reset,
@@ -165,7 +202,7 @@ enum Cut {
 
 struct Script {
     exchanges: Vec<Exchange>,
-    malformed: Option<usize>,
+    malformed: Option<(usize, Malformed)>,
     cut: Option<(usize, Cut)>,
     pipelined: bool,
     read_piece_max: usize,
@@ -174,6 +211,7 @@ struct Script {
     gap_ms_max: u64,
     stream: Vec<u8>,
     starts: Vec<usize>,
+    heads: Vec<usize>,
     ends: Vec<usize>,
 }
 
@@ -325,21 +363,48 @@ fn exchange(rng: &mut Rng, index: usize) -> Exchange {
 }
 
 impl Script {
+    fn malformed_at(&self, index: usize) -> Option<Malformed> {
+        self.malformed
+            .and_then(|(at, kind)| (at == index).then_some(kind))
+    }
+
+    fn method_at(&self, index: usize) -> Method {
+        match self.malformed_at(index) {
+            Some(Malformed::NoColon) => Method::GET,
+            Some(Malformed::SignedLength | Malformed::ChunkJunk) => Method::POST,
+            None => self
+                .exchanges
+                .get(index)
+                .map_or(Method::GET, |exchange| exchange.method.clone()),
+        }
+    }
+
     fn of(seed: u64, mutation: HttpServerMutation) -> Self {
         let mut rng = Rng::derive(seed, "http-server-script");
         let exchanges = (0..size(rng.range(1, EXCHANGES_MAX)))
             .map(|index| exchange(&mut rng, index))
             .collect::<Vec<_>>();
-        let malformed = rng.chance(MALFORMED_PPM).then(|| rng.pick(exchanges.len()));
+        let malformed = rng.chance(MALFORMED_PPM).then(|| {
+            (
+                rng.pick(exchanges.len()),
+                Malformed::ALL[rng.pick(Malformed::ALL.len())],
+            )
+        });
         let mut stream = Vec::new();
         let mut starts = Vec::new();
+        let mut heads = Vec::new();
         let mut ends = Vec::new();
         for (index, exchange) in exchanges.iter().enumerate() {
             starts.push(stream.len());
-            if malformed == Some(index) {
-                stream.extend_from_slice(MALFORMED);
-            } else {
-                stream.extend_from_slice(&exchange.bytes);
+            match malformed {
+                Some((at, kind)) if at == index => {
+                    heads.push(kind.head_len());
+                    stream.extend(kind.bytes());
+                }
+                _ => {
+                    heads.push(exchange.head_len);
+                    stream.extend_from_slice(&exchange.bytes);
+                }
             }
             ends.push(stream.len());
         }
@@ -372,6 +437,7 @@ impl Script {
             gap_ms_max: rng.range(0, GAP_MS_MAX),
             stream,
             starts,
+            heads,
             ends,
         }
     }
@@ -587,7 +653,12 @@ async fn handle(
         return Reply::new(StatusCode::INTERNAL_SERVER_ERROR, Outgoing::Empty);
     };
     let mut body = request.body;
-    match exchange.handling {
+    let handling = if script.malformed_at(index).is_some() {
+        Handling::ReadAll
+    } else {
+        exchange.handling
+    };
+    match handling {
         Handling::ReadAll => {
             let read = body
                 .collect()
@@ -787,10 +858,7 @@ async fn read_responses(
 ) {
     while log.borrow().responses.len() < until && log.borrow().parse_error.is_none() {
         let index = log.borrow().responses.len();
-        let method = script
-            .exchanges
-            .get(index)
-            .map_or(Method::GET, |exchange| exchange.method.clone());
+        let method = script.method_at(index);
         match reader.next(side, &method).await {
             None => return,
             Some(Ok(response)) => {
@@ -875,8 +943,10 @@ fn bounds(script: &Script, expected: &[Option<Expected>]) -> (usize, usize) {
     for (index, expected) in expected.iter().enumerate() {
         match expected {
             None => {
-                lowest = lowest.min(index);
-                highest = highest.min(index);
+                let reached =
+                    index + usize::from(script.malformed_at(index).is_some_and(Malformed::handled));
+                lowest = lowest.min(reached);
+                highest = highest.min(reached);
             }
             Some(expected) => match expected.after {
                 After::Continue => {}
@@ -891,7 +961,7 @@ fn bounds(script: &Script, expected: &[Option<Expected>]) -> (usize, usize) {
     if let Some((at, kind)) = script.cut {
         let delivered = script.ends.iter().filter(|end| **end <= at).count();
         let headed = (0..total)
-            .filter(|index| script.starts[*index] + script.exchanges[*index].head_len <= at)
+            .filter(|index| script.starts[*index] + script.heads[*index] <= at)
             .count();
         lowest = lowest.min(if kind == Cut::Reset { 0 } else { delivered });
         highest = highest.min(headed);
@@ -912,6 +982,21 @@ fn check_handled(
         ));
     }
     for (index, handled) in server.handled.iter().enumerate() {
+        if script.malformed_at(index).is_some() {
+            if handled.method != Method::POST || handled.target != BROKEN_TARGET {
+                return Err(format!(
+                    "request {index}: the server saw {} {} where the client sent POST {BROKEN_TARGET}",
+                    handled.method, handled.target
+                ));
+            }
+            if let Some(Ok(body)) = &handled.body {
+                return Err(format!(
+                    "request {index}: the handler read a body of {} bytes behind a malformed chunk size",
+                    body.len()
+                ));
+            }
+            continue;
+        }
         let exchange = &script.exchanges[index];
         let target = format!("/r{index}");
         if handled.method != exchange.method
@@ -969,6 +1054,9 @@ fn check_responses(
         ));
     }
     for (index, response) in client.responses.iter().enumerate() {
+        if script.malformed_at(index).is_some_and(Malformed::handled) {
+            continue;
+        }
         let Some(Some(wanted)) = expected.get(index) else {
             return Err(format!(
                 "response {index} answers a request the script never sent whole"
@@ -1019,7 +1107,9 @@ fn check_result(
         return Err("the server never returned".to_owned());
     };
     let handled = server.handled.len();
-    let reached_malformed = script.malformed == Some(handled)
+    let reached_malformed = script
+        .malformed_at(handled)
+        .is_some_and(|kind| !kind.handled())
         && (handled == 0
             || expected
                 .get(handled - 1)
@@ -1033,9 +1123,14 @@ fn check_result(
                 "the server accepted the malformed request {handled} without an error"
             ))
         }
-        Err(error) if error.starts_with("parse:") && script.malformed != Some(handled) => Err(
-            format!("the server failed to parse request {handled}, which is well formed: {error}"),
-        ),
+        Err(error)
+            if error.starts_with("parse:")
+                && script.malformed_at(handled).is_none_or(Malformed::handled) =>
+        {
+            Err(format!(
+                "the server failed to parse request {handled}, which is well formed: {error}"
+            ))
+        }
         Err(error) if !error.starts_with("parse:") && script.cut.is_none() => {
             Err(format!("the server failed without a fault: {error}"))
         }
@@ -1067,7 +1162,12 @@ fn judge_run(
         .exchanges
         .iter()
         .enumerate()
-        .map(|(index, exchange)| (script.malformed != Some(index)).then(|| expect(exchange)))
+        .map(|(index, exchange)| {
+            script
+                .malformed_at(index)
+                .is_none()
+                .then(|| expect(exchange))
+        })
         .collect::<Vec<_>>();
     check_handled(script, server, bounds(script, &expected))?;
     check_responses(script, &expected, client, server)?;

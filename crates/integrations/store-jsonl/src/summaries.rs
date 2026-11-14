@@ -18,6 +18,7 @@ use super::{
 const FILE: &str = ".summaries";
 const LEGACY: [&str; 2] = [".summaries.json.zst", ".summaries.json"];
 const LENGTH_BYTES: usize = 4;
+const PLAIN: u8 = b'{';
 
 pub(super) struct Summaries {
     path: PathBuf,
@@ -361,7 +362,13 @@ impl Summaries {
         };
         let length = file.metadata().map_err(backend)?.len();
         let mut prefix = [0; LENGTH_BYTES];
-        if file.read_exact(&mut prefix).is_err() {
+        let mut format = [0];
+        if file
+            .read_exact(&mut prefix)
+            .and_then(|()| file.read_exact(&mut format))
+            .is_err()
+            || format != [PLAIN]
+        {
             return Ok(false);
         }
         let base = LENGTH_BYTES as u64 + u64::from(u32::from_le_bytes(prefix));
@@ -397,8 +404,7 @@ impl Summaries {
             .ok_or_else(|| backend("JSONL session summaries have no directory"))?;
         let mut temporary =
             nanocode_platform::TemporaryFile::create_in(directory, FILE, None).map_err(backend)?;
-        let frame = archive::compress(&serde_json::to_vec(&self.entries).map_err(backend)?)
-            .map_err(backend)?;
+        let frame = serde_json::to_vec(&self.entries).map_err(backend)?;
         let length = u32::try_from(frame.len())
             .map_err(|_| backend("JSONL session summaries are too large"))?;
         temporary
@@ -466,7 +472,10 @@ fn base(bytes: &[u8]) -> Result<(HashMap<String, Summary>, &[u8]), StoreError> {
         .ok_or_else(unreadable)?;
     let length = usize::try_from(u32::from_le_bytes(*length)).map_err(|_| unreadable())?;
     let frame = rest.get(..length).ok_or_else(unreadable)?;
-    let entries =
-        serde_json::from_slice(&archive::decompress(frame).map_err(backend)?).map_err(backend)?;
+    let entries = match frame.first() {
+        Some(&PLAIN) => serde_json::from_slice(frame),
+        _ => serde_json::from_slice(&archive::decompress(frame).map_err(backend)?),
+    }
+    .map_err(backend)?;
     Ok((entries, &rest[length..]))
 }

@@ -566,6 +566,10 @@ declare function EachDense(mode: i32, o: Obj, k: f64, len: f64, f: Value, thisAr
  * general loop. @leaf
  */
 declare function ArrayJoinDense(o: Obj, len: f64, sep: Str): Value;
+/** Pushes o on the realm's join stack, or returns false when o is already on it. @leaf */
+declare function ArrayJoinEnter(o: Obj): boolean;
+/** Pops the realm's join stack. @leaf */
+declare function ArrayJoinLeave(): void;
 /**
  * EnumerableOwnProperties ( o, kind ) for kind 1 (values) and 2 (entries) in one step
  * when no enumerable string-keyed own property is an accessor and `o` is not exotic

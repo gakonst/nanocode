@@ -1272,15 +1272,22 @@ function TypedArrayPrototypeJoin(this: Value, separator: Value): Str {
   if (separator !== undefined) {
     sep = ToString(separator);
   }
+  if (!ArrayJoinEnter(o)) {
+    return "";
+  }
   let r: Str = "";
-  for (let k: f64 = 0; k < len; k++) {
-    if (k > 0) {
-      r += sep;
+  try {
+    for (let k: f64 = 0; k < len; k++) {
+      if (k > 0) {
+        r += sep;
+      }
+      const element: Value = TypedArrayGet(o, k);
+      if (element !== undefined) {
+        r += ToString(element);
+      }
     }
-    const element: Value = TypedArrayGet(o, k);
-    if (element !== undefined) {
-      r += ToString(element);
-    }
+  } finally {
+    ArrayJoinLeave();
   }
   return r;
 }
@@ -1450,15 +1457,22 @@ function TypedArrayPrototypeWith(this: Value, index: Value, value: Value): Obj {
 function TypedArrayPrototypeToLocaleString(this: Value): Str {
   const o: Obj = ValidateTypedArray(this);
   const len: f64 = TALength(o);
+  if (!ArrayJoinEnter(o)) {
+    return "";
+  }
   let r: Str = "";
-  for (let k: f64 = 0; k < len; k++) {
-    if (k > 0) {
-      r += ",";
+  try {
+    for (let k: f64 = 0; k < len; k++) {
+      if (k > 0) {
+        r += ",";
+      }
+      const v: Value = TypedArrayGet(o, k);
+      if (v !== undefined) {
+        r += ToString(Call(GetV(v, "toLocaleString"), v));
+      }
     }
-    const v: Value = TypedArrayGet(o, k);
-    if (v !== undefined) {
-      r += ToString(Call(GetV(v, "toLocaleString"), v));
-    }
+  } finally {
+    ArrayJoinLeave();
   }
   return r;
 }

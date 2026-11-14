@@ -258,6 +258,8 @@ const ARRAY_SEARCH_DENSE: u16 = id("ArraySearchDense");
 const ARRAY_SLICE_DENSE: u16 = id("ArraySliceDense");
 const EACH_DENSE: u16 = id("EachDense");
 const ARRAY_JOIN_DENSE: u16 = id("ArrayJoinDense");
+const ARRAY_JOIN_ENTER: u16 = id("ArrayJoinEnter");
+const ARRAY_JOIN_LEAVE: u16 = id("ArrayJoinLeave");
 const ITERATOR_FAST_READY: u16 = id("IteratorFastReady");
 const ITERATOR_FAST_DRAIN: u16 = id("IteratorFastDrain");
 const IS_ORIGINAL_COLLECTION_ADDER: u16 = id("IsOriginalCollectionAdder");
@@ -2269,6 +2271,14 @@ impl Exec<'_> {
                     return bad_argument(id);
                 };
                 Value::object(promise::alloc(self.heap, Some(proto))?)
+            }
+            ARRAY_JOIN_ENTER => match a0.as_object() {
+                Some(o) => Value::bool(crate::builtins::array::join_enter(self.heap, o)?),
+                None => return bad_argument(id),
+            },
+            ARRAY_JOIN_LEAVE => {
+                crate::builtins::array::join_leave(self.heap)?;
+                Value::UNDEFINED
             }
             ERROR_CREATE => {
                 let Some(proto) = a0.as_object() else {

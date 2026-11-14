@@ -7,10 +7,10 @@ use alloc::vec::Vec;
 use crate::builtins::{fast, string};
 use crate::bytecode::Op;
 use crate::bytecode::decode::insns;
-use crate::heap::cells::FuncTemplate;
+use crate::heap::cells::{FuncTemplate, ValueArray};
 use crate::heap::{Atom, Heap, ObjectClass, Property, StrView};
 use crate::interp::conv::{self, Fault};
-use crate::interp::{Intrinsic, realm};
+use crate::interp::{ErrorKind, Intrinsic, realm};
 use crate::value::{Kind, Obj, Str, Value};
 
 /// `%SortPrimitives(list)`: sorts a dense array of non-symbol primitives by
@@ -472,4 +472,48 @@ mod tests {
             }
         }
     }
+}
+
+pub(crate) fn join_active(heap: &Heap, o: Obj) -> bool {
+    let list = realm::intrinsic(heap, Intrinsic::JoinStack)
+        .as_internal()
+        .unwrap_or(0);
+    list != 0
+        && (0..heap.value_array_len(list))
+            .any(|i| heap.value_array_get(list, i).as_object() == Some(o))
+}
+
+pub(crate) fn join_enter(heap: &mut Heap, o: Obj) -> Result<bool, Fault> {
+    if join_active(heap, o) {
+        return Ok(false);
+    }
+    let list = realm::intrinsic(heap, Intrinsic::JoinStack)
+        .as_internal()
+        .unwrap_or(0);
+    let n = if list == 0 {
+        0
+    } else {
+        heap.value_array_len(list)
+    };
+    let list = heap.value_array_reserve(list, n + 1)?;
+    heap.value_array_set(list, n, Value::object(o));
+    heap.arena_mut().set(list, ValueArray::LEN, n + 1);
+    realm::set_intrinsic(heap, Intrinsic::JoinStack, Value::internal(list));
+    Ok(true)
+}
+
+pub(crate) fn join_leave(heap: &mut Heap) -> Result<(), Fault> {
+    let list = realm::intrinsic(heap, Intrinsic::JoinStack)
+        .as_internal()
+        .unwrap_or(0);
+    if list == 0 || heap.value_array_len(list) == 0 {
+        return Err(Fault::error(
+            ErrorKind::InternalError,
+            "join stack underflow".into(),
+        ));
+    }
+    let n = heap.value_array_len(list) - 1;
+    heap.value_array_set(list, n, Value::UNDEFINED);
+    heap.arena_mut().set(list, ValueArray::LEN, n);
+    Ok(())
 }

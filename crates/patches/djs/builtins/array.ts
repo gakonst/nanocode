@@ -116,19 +116,27 @@ function ArrayPrototypeJoin(this: Value, separator: Value): Str {
   if (separator !== undefined) {
     sep = ToString(separator);
   }
-  const dense: Value = ArrayJoinDense(o, len, sep);
-  if (dense !== undefined) {
-    return AsStr(dense);
+  if (!ArrayJoinEnter(o)) {
+    return "";
   }
   let r: Str = "";
-  for (let k: f64 = 0; k < len; k++) {
-    if (k > 0) {
-      r += sep;
+  try {
+    const dense: Value = ArrayJoinDense(o, len, sep);
+    if (dense !== undefined) {
+      r = AsStr(dense);
+    } else {
+      for (let k: f64 = 0; k < len; k++) {
+        if (k > 0) {
+          r += sep;
+        }
+        const element: Value = Get(o, k);
+        if (element !== undefined && element !== null) {
+          r += ToString(element);
+        }
+      }
     }
-    const element: Value = Get(o, k);
-    if (element !== undefined && element !== null) {
-      r += ToString(element);
-    }
+  } finally {
+    ArrayJoinLeave();
   }
   return r;
 }
@@ -1155,15 +1163,22 @@ function ArrayPrototypeToString(this: Value): Value {
 function ArrayPrototypeToLocaleString(this: Value): Str {
   const array: Obj = ToObject(this);
   const len: f64 = LengthOfArrayLike(array);
+  if (!ArrayJoinEnter(array)) {
+    return "";
+  }
   let r: Str = "";
-  for (let k: f64 = 0; k < len; k++) {
-    if (k > 0) {
-      r += ",";
+  try {
+    for (let k: f64 = 0; k < len; k++) {
+      if (k > 0) {
+        r += ",";
+      }
+      const nextElement: Value = Get(array, k);
+      if (nextElement !== undefined && nextElement !== null) {
+        r += ToString(Call(GetV(nextElement, "toLocaleString"), nextElement));
+      }
     }
-    const nextElement: Value = Get(array, k);
-    if (nextElement !== undefined && nextElement !== null) {
-      r += ToString(Call(GetV(nextElement, "toLocaleString"), nextElement));
-    }
+  } finally {
+    ArrayJoinLeave();
   }
   return r;
 }

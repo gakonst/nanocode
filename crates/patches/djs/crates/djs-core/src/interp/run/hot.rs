@@ -81,6 +81,8 @@ pub(super) const PURE_LEAVES: &[&str] = &[
     "ConstructorPrototype",
     "CollectionCreate",
     "PromiseCreate",
+    "ArrayJoinEnter",
+    "ArrayJoinLeave",
     "ErrorCreate",
     "DateCreate",
     "NewBuiltinClosure",

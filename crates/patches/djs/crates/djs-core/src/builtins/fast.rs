@@ -1536,6 +1536,9 @@ fn array_join(heap: &mut Heap, this: Value, args: &[Value]) -> Fast {
     let Some((o, len)) = this_array(heap, this) else {
         return Ok(None);
     };
+    if crate::builtins::array::join_active(heap, o) {
+        return Ok(None);
+    }
     let sep = match arg(args, 0) {
         v if v.is_undefined() => heap.alloc_latin1(b",")?,
         v => match str(heap, v)? {

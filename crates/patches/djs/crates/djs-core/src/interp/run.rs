@@ -257,7 +257,7 @@ mod retry {
     pub const LAZY: u8 = Op::Lazy as u8;
     /// Intrinsics that allocate before they change anything (and take at most 4
     /// arguments).
-    pub const INTRINSICS: [u16; 8] = [
+    pub const INTRINSICS: [u16; 9] = [
         id("Set"),
         id("CreateDataPropertyOrThrow"),
         id("DefineDataPropertyOrThrow"),
@@ -266,6 +266,7 @@ mod retry {
         id("NewRecord"),
         id("CreateIterResultObject"),
         id("CreateArrayFromPair"),
+        id("ArrayJoinEnter"),
     ];
 
     /// `INTRINSICS` as a table by id (`contains` on the hot native call path was ~55
@@ -806,6 +807,7 @@ impl<'h> Exec<'h> {
         self.bp = 0;
         self.hp = 0;
         self.pc = 0;
+        realm::set_intrinsic(self.heap, Intrinsic::JoinStack, Value::UNDEFINED);
         match (cont, r) {
             (Continuation::Job, Ok(_)) => self.next_job(),
             (_, Ok(v)) => {

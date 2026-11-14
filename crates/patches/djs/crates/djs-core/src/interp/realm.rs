@@ -176,6 +176,7 @@ pub enum Intrinsic {
     /// WeakRef targets created or dereferenced since the last ClearKeptObjects, or
     /// undefined (D1513).
     KeptObjects,
+    JoinStack,
     /// The live FinalizationRegistries: an internal EphemeronArray of `[registry,
     /// true]`, or undefined (heap/weakref.rs).
     Registries,
@@ -402,6 +403,7 @@ pub(crate) fn init(heap: &mut Heap) -> Result<(), HeapError> {
     }
     set(heap, Intrinsic::TypedArrayCtor, Value::UNDEFINED);
     set(heap, Intrinsic::KeptObjects, Value::UNDEFINED);
+    set(heap, Intrinsic::JoinStack, Value::UNDEFINED);
     set(heap, Intrinsic::RegExpCache, Value::UNDEFINED);
     set(heap, Intrinsic::Registries, Value::UNDEFINED);
     set(heap, Intrinsic::GlobalLexEpoch, Value::int(0));

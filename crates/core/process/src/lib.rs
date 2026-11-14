@@ -142,6 +142,9 @@ pub trait ShellExecutor: Send + Sync {
     fn running(&self) -> Vec<RunningProcess> {
         Vec::new()
     }
+    fn keeps_sessions(&self) -> bool {
+        true
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

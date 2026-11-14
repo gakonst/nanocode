@@ -16,18 +16,21 @@ pub fn host_tools(
     files: Arc<dyn FileHost>,
     shell: Arc<dyn ShellExecutor>,
 ) -> Result<Tools, ToolsBuildError> {
-    Tools::builder()
+    let tools = Tools::builder()
         .without_defaults()
         .tool(HostApplyPatchHandler::new(
             workspace.clone(),
             Arc::clone(&files),
         ))
         .tool(HostViewImageHandler::new(workspace.clone(), files))
-        .tool(ExecCommandHandler::new(workspace, Arc::clone(&shell)))
-        .tool(WriteStdinHandler::new(shell))
-        .tool(UpdatePlanTool::new())
-        .build()
-        .map(|tools| tools.with_code_mode_policy(standard_tool_policy()))
+        .tool(ExecCommandHandler::new(workspace, Arc::clone(&shell)));
+    match shell.keeps_sessions() {
+        true => tools.tool(WriteStdinHandler::new(shell)),
+        false => tools,
+    }
+    .tool(UpdatePlanTool::new())
+    .build()
+    .map(|tools| tools.with_code_mode_policy(standard_tool_policy()))
 }
 
 pub fn host_file_tools(

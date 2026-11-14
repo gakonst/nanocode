@@ -3246,7 +3246,7 @@ impl BlockAccumulator {
         }
     }
 
-    fn finish(self, truncated: bool) -> Result<ContentBlock, ClaudeError> {
+    fn finish(self) -> Result<ContentBlock, ClaudeError> {
         let block = match self {
             Self::Text { text, extra } => ContentBlock::Text { text, extra },
             Self::ToolUse {
@@ -3263,11 +3263,6 @@ impl BlockAccumulator {
                 };
                 let input = match input {
                     Ok(input) if input.is_object() => input,
-                    _ if truncated => {
-                        return Ok(ContentBlock::text(format!(
-                            "Incomplete tool input for {name} ({id}) was not executed because the output token limit was reached. Issue a fresh complete call if needed."
-                        )));
-                    }
                     Err(_) => {
                         let mut units = 0;
                         let raw: String = fragments
@@ -3573,11 +3568,8 @@ impl MessageAccumulator {
         let truncated = message.stop_reason == Some(StopReason::MaxTokens);
         for (index, block) in active {
             let block = match block {
-                BlockAccumulator::Text { .. } if truncated => block,
-                BlockAccumulator::ToolUse { id, name, .. } if truncated => {
-                    BlockAccumulator::Other(ContentBlock::text(format!(
-                        "Incomplete tool input for {name} ({id}) was not executed because the output token limit was reached. Issue a fresh complete call if needed."
-                    )))
+                BlockAccumulator::Text { .. } | BlockAccumulator::ToolUse { .. } if truncated => {
+                    block
                 }
                 _ => {
                     return Err(ClaudeError::Protocol(format!(
@@ -3609,7 +3601,7 @@ impl MessageAccumulator {
         }
         message.content = completed
             .into_values()
-            .map(|block| block.finish(truncated))
+            .map(BlockAccumulator::finish)
             .collect::<Result<Vec<_>, _>>()?;
         Ok(message)
     }

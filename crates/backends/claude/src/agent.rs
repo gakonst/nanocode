@@ -8115,7 +8115,10 @@ impl State {
                 cursor.usage = usage.clone();
 
                 self.refresh_dynamic_tools(&mut cursor);
-                if response.stop_reason == Some(StopReason::ToolUse) {
+                if matches!(
+                    response.stop_reason,
+                    Some(StopReason::ToolUse | StopReason::MaxTokens)
+                ) {
                     cursor.output_continuations = 0;
                     self.defer_cursor(&mut cursor, conversation, journal)
                         .await?;

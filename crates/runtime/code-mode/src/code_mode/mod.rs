@@ -1898,7 +1898,9 @@ async fn observe_updates(
     loop {
         let yield_deadline_elapsed =
             yield_deadline.is_some_and(|yield_deadline| yield_deadline <= nanocode_platform::now());
-        if preempt_remaining.is_none() && preempt.as_ref().is_some_and(Preemption::take) {
+        if preempt_remaining.is_none()
+            && (preempt.as_ref().is_some_and(Preemption::take) || yield_deadline_elapsed)
+        {
             preempt_remaining = Some(observation.updates.len() + observation.replay.len());
         }
         let preempted = preempt_remaining.is_some();
@@ -1941,14 +1943,15 @@ async fn observe_updates(
                     None => std::future::pending().await,
                 }
             } => {
-                return yielded_observation(tools, cell.id, started_at, observation, max_output_tokens);
+                preempt_remaining = Some(observation.updates.len() + observation.replay.len());
+                continue;
             }
             () = stream_timer.as_mut(), if !terminating && !stream_open => {
                 stream_open = true;
                 stream_output(&cell.origin_call_id, observation, observer);
                 continue;
             }
-            update = observation.updates.recv(), if !yield_deadline_elapsed => update,
+            update = observation.updates.recv() => update,
             }
         };
         if let Some(remaining) = &mut preempt_remaining {

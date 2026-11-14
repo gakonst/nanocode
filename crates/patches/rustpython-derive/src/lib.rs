@@ -2,10 +2,36 @@
 #![doc(html_logo_url = "https://raw.githubusercontent.com/RustPython/RustPython/main/logo.png")]
 #![doc(html_root_url = "https://docs.rs/rustpython-derive/")]
 
+use derive_impl::syn_ext::types::{NestedMeta, PunctuatedNestedMeta};
+use nanocode_macro_support::{Parse, ParseBuffer, parse_terminated, token::Comma};
 use proc_macro::TokenStream;
 use rustpython_derive_impl as derive_impl;
-use syn::parse_macro_input;
-use syn::punctuated::Punctuated;
+
+macro_rules! parse_macro_input {
+    ($input:ident with nested_metas) => {
+        match parse_nested_metas($input) {
+            Ok(value) => value,
+            Err(error) => return error.into_compile_error().into(),
+        }
+    };
+    ($input:ident as $kind:ty) => {
+        match nanocode_macro_support::parse_stream::<$kind>($input) {
+            Ok(value) => value,
+            Err(error) => return error.into_compile_error().into(),
+        }
+    };
+    ($input:ident) => {
+        match nanocode_macro_support::parse_stream($input) {
+            Ok(value) => value,
+            Err(error) => return error.into_compile_error().into(),
+        }
+    };
+}
+
+fn parse_nested_metas(input: TokenStream) -> nanocode_macro_support::Result<PunctuatedNestedMeta> {
+    let buffer = ParseBuffer::from_stream(input);
+    parse_terminated::<NestedMeta, Comma>(&buffer, NestedMeta::parse)
+}
 
 /// Derive `FromArgs` for a struct whose fields are Python arguments.
 ///
@@ -260,7 +286,7 @@ pub fn derive_from_args(input: TokenStream) -> TokenStream {
 /// have a body, abstract functions should be wrapped before applying an annotation.
 #[proc_macro_attribute]
 pub fn pyclass(attr: TokenStream, item: TokenStream) -> TokenStream {
-    let attr = parse_macro_input!(attr with Punctuated::parse_terminated);
+    let attr = parse_macro_input!(attr with nested_metas);
     let item = parse_macro_input!(item);
     derive_impl::pyclass(attr, item).into()
 }
@@ -277,7 +303,7 @@ pub fn pyclass(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// <https://github.com/python/cpython/blob/main/Objects/exceptions.c>
 #[proc_macro_attribute]
 pub fn pyexception(attr: TokenStream, item: TokenStream) -> TokenStream {
-    let attr = parse_macro_input!(attr with Punctuated::parse_terminated);
+    let attr = parse_macro_input!(attr with nested_metas);
     let item = parse_macro_input!(item);
     derive_impl::pyexception(attr, item).into()
 }
@@ -380,7 +406,7 @@ pub fn pymodule(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// ```
 #[proc_macro_attribute]
 pub fn pystruct_sequence(attr: TokenStream, item: TokenStream) -> TokenStream {
-    let attr = parse_macro_input!(attr with Punctuated::parse_terminated);
+    let attr = parse_macro_input!(attr with nested_metas);
     let item = parse_macro_input!(item);
     derive_impl::pystruct_sequence(attr, item).into()
 }
@@ -409,7 +435,7 @@ pub fn pystruct_sequence(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// ```
 #[proc_macro_attribute]
 pub fn pystruct_sequence_data(attr: TokenStream, item: TokenStream) -> TokenStream {
-    let attr = parse_macro_input!(attr with Punctuated::parse_terminated);
+    let attr = parse_macro_input!(attr with nested_metas);
     let item = parse_macro_input!(item);
     derive_impl::pystruct_sequence_data(attr, item).into()
 }

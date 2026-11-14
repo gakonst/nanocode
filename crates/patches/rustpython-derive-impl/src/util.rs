@@ -1,15 +1,11 @@
-use proc_macro2::{Span, TokenStream};
-use quote::{ToTokens, quote};
-use std::collections::{HashMap, HashSet};
-use syn::visit::Visit;
-use syn::visit_mut::VisitMut;
-use syn::{
-    Attribute, FnArg, Ident, Result, Signature, Type, UseTree, ext::IdentExt, spanned::Spanned,
-};
 use crate::syn_ext::{
     ext::{AttributeExt as SynAttributeExt, *},
     types::*,
 };
+use nanocode_macro_support::{Attribute, FnArg, Ident, Result, Signature, Spanned, Type, UseTree};
+use nanocode_macro_support::{Span, Tokens};
+use nanocode_macro_support::{ToTokens, quote};
+use std::collections::{HashMap, HashSet};
 
 pub(crate) const ALL_ALLOWED_NAMES: &[&str] = &[
     "pymethod",
@@ -26,12 +22,44 @@ pub(crate) const ALL_ALLOWED_NAMES: &[&str] = &[
     "pymember",
 ];
 
+pub(crate) fn attribute_texts(attributes: &[Attribute]) -> Vec<String> {
+    attributes
+        .iter()
+        .map(|attribute| attribute.to_token_stream().to_string())
+        .collect()
+}
+
+#[derive(Clone)]
+pub(crate) struct AttributeList(pub Vec<Attribute>);
+
+impl PartialEq for AttributeList {
+    fn eq(&self, other: &Self) -> bool {
+        attribute_texts(&self.0) == attribute_texts(&other.0)
+    }
+}
+
+impl Eq for AttributeList {}
+
+impl core::hash::Hash for AttributeList {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        attribute_texts(&self.0).hash(state);
+    }
+}
+
+impl core::ops::Deref for AttributeList {
+    type Target = Vec<Attribute>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
 #[derive(Clone)]
 struct NurseryItem {
     attr_name: Ident,
     py_names: Vec<String>,
     cfgs: Vec<Attribute>,
-    tokens: TokenStream,
+    tokens: Tokens,
     sort_order: usize,
 }
 
@@ -46,7 +74,7 @@ impl ItemNursery {
         attr_name: Ident,
         py_names: Vec<String>,
         cfgs: Vec<Attribute>,
-        tokens: TokenStream,
+        tokens: Tokens,
         sort_order: usize,
     ) {
         self.0.push(NurseryItem {
@@ -59,12 +87,12 @@ impl ItemNursery {
     }
 
     pub(crate) fn validate(self) -> Result<ValidatedItemNursery> {
-        let mut by_name: HashSet<(String, Vec<Attribute>)> = HashSet::new();
+        let mut by_name: HashSet<(String, AttributeList)> = HashSet::new();
         for item in &self.0 {
             for py_name in &item.py_names {
-                let inserted = by_name.insert((py_name.clone(), item.cfgs.clone()));
+                let inserted = by_name.insert((py_name.clone(), AttributeList(item.cfgs.clone())));
                 if !inserted {
-                    return Err(syn::Error::new(
+                    return Err(nanocode_macro_support::Error::new(
                         item.attr_name.span(),
                         format!("Duplicated #[py*] attribute found for {:?}", item.py_names),
                     ));
@@ -76,10 +104,10 @@ impl ItemNursery {
 }
 
 impl ToTokens for ValidatedItemNursery {
-    fn to_tokens(&self, tokens: &mut TokenStream) {
+    fn to_tokens(&self, tokens: &mut Tokens) {
         let mut sorted = self.0.0.clone();
         sorted.sort_by_key(|a| a.sort_order);
-        tokens.extend(sorted.iter().map(|item| {
+        tokens.append_all(sorted.iter().map(|item| {
             let cfgs = &item.cfgs;
             let tokens = &item.tokens;
             quote! {
@@ -111,8 +139,8 @@ pub(crate) trait ContentItem {
         &self.inner().attr_name
     }
 
-    fn new_syn_error(&self, span: Span, message: &str) -> syn::Error {
-        syn::Error::new(span, format!("#[{}] {}", self.attr_name(), message))
+    fn new_syn_error(&self, span: Span, message: &str) -> nanocode_macro_support::Error {
+        nanocode_macro_support::Error::new(span, format!("#[{}] {}", self.attr_name(), message))
     }
 }
 
@@ -141,7 +169,11 @@ impl ItemMetaInner {
                     Err(err_span!(
                         ident,
                         "#[{meta_ident}({name})] is not one of allowed attributes [{}]",
-                        allowed_names.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ")
+                        allowed_names
+                            .iter()
+                            .map(ToString::to_string)
+                            .collect::<Vec<_>>()
+                            .join(", ")
                     ))
                 }
             } else {
@@ -174,10 +206,10 @@ impl ItemMetaInner {
 
     pub(crate) fn _optional_str(&self, key: &str) -> Result<Option<String>> {
         let value = if let Some((_, meta)) = self.meta_map.get(key) {
-            let Meta::NameValue(syn::MetaNameValue {
+            let Meta::NameValue(MetaNameValue {
                 value:
-                    syn::Expr::Lit(syn::ExprLit {
-                        lit: syn::Lit::Str(lit),
+                    nanocode_macro_support::Expr::Lit(nanocode_macro_support::ExprLit {
+                        lit: nanocode_macro_support::Lit::Str(lit),
                         ..
                     }),
                 ..
@@ -197,9 +229,9 @@ impl ItemMetaInner {
         Ok(value)
     }
 
-    pub(crate) fn _optional_path(&self, key: &str) -> Result<Option<syn::Path>> {
+    pub(crate) fn _optional_path(&self, key: &str) -> Result<Option<nanocode_macro_support::Path>> {
         let value = if let Some((_, meta)) = self.meta_map.get(key) {
-            let Meta::NameValue(syn::MetaNameValue { value, .. }) = meta else {
+            let Meta::NameValue(MetaNameValue { value, .. }) = meta else {
                 bail_span!(
                     meta,
                     "#[{}({} = ...)] must be a name-value pair",
@@ -209,7 +241,9 @@ impl ItemMetaInner {
             };
 
             // Try to parse as a Path (identifier or path like Foo or foo::Bar)
-            match syn::parse2::<syn::Path>(value.to_token_stream()) {
+            match nanocode_macro_support::parse_tokens::<nanocode_macro_support::Path>(
+                value.to_token_stream(),
+            ) {
                 Ok(path) => Some(path),
                 Err(_) => {
                     bail_span!(
@@ -229,10 +263,10 @@ impl ItemMetaInner {
     pub(crate) fn _bool(&self, key: &str) -> Result<bool> {
         let value = if let Some((_, meta)) = self.meta_map.get(key) {
             match meta {
-                Meta::NameValue(syn::MetaNameValue {
+                Meta::NameValue(MetaNameValue {
                     value:
-                        syn::Expr::Lit(syn::ExprLit {
-                            lit: syn::Lit::Bool(lit),
+                        nanocode_macro_support::Expr::Lit(nanocode_macro_support::ExprLit {
+                            lit: nanocode_macro_support::Lit::Bool(lit),
                             ..
                         }),
                     ..
@@ -299,7 +333,7 @@ pub(crate) trait ItemMeta: Sized {
         self.inner()._optional_str("name").ok().flatten()
     }
 
-    fn new_meta_error(&self, msg: &str) -> syn::Error {
+    fn new_meta_error(&self, msg: &str) -> nanocode_macro_support::Error {
         let inner = self.inner();
         err_span!(inner.meta_ident, "#[{}] {}", inner.meta_name(), msg)
     }
@@ -383,10 +417,10 @@ impl ClassItemMeta {
         let inner = self.inner();
         if let Some((_, meta)) = inner.meta_map.get(KEY) {
             match meta {
-                Meta::NameValue(syn::MetaNameValue {
+                Meta::NameValue(MetaNameValue {
                     value:
-                        syn::Expr::Lit(syn::ExprLit {
-                            lit: syn::Lit::Str(lit),
+                        nanocode_macro_support::Expr::Lit(nanocode_macro_support::ExprLit {
+                            lit: nanocode_macro_support::Lit::Str(lit),
                             ..
                         }),
                     ..
@@ -411,7 +445,7 @@ impl ClassItemMeta {
         Ok(self.inner()._optional_str("payload")?.as_deref() == Some("manual"))
     }
 
-    pub(crate) fn base(&self) -> Result<Option<syn::Path>> {
+    pub(crate) fn base(&self) -> Result<Option<nanocode_macro_support::Path>> {
         self.inner()._optional_path("base")
     }
 
@@ -428,12 +462,12 @@ impl ClassItemMeta {
         let inner = self.inner();
         let value = if let Some((_, meta)) = inner.meta_map.get(KEY) {
             match meta {
-                Meta::NameValue(syn::MetaNameValue {
-                    value: syn::Expr::Lit(syn::ExprLit{lit:syn::Lit::Str(lit),..}),
+                Meta::NameValue(MetaNameValue {
+                    value: nanocode_macro_support::Expr::Lit(nanocode_macro_support::ExprLit{lit:nanocode_macro_support::Lit::Str(lit),..}),
                     ..
                 }) => Ok(Some(lit.value())),
-                Meta::NameValue(syn::MetaNameValue {
-                    value: syn::Expr::Lit(syn::ExprLit{lit:syn::Lit::Bool(lit),..}),
+                Meta::NameValue(MetaNameValue {
+                    value: nanocode_macro_support::Expr::Lit(nanocode_macro_support::ExprLit{lit:nanocode_macro_support::Lit::Bool(lit),..}),
                     ..
                 }) => if lit.value {
                     Err(lit.span())
@@ -444,7 +478,7 @@ impl ClassItemMeta {
             }
         } else {
             Err(inner.item_ident.span())
-        }.map_err(|span| syn::Error::new(
+        }.map_err(|span| nanocode_macro_support::Error::new(
             span,
             format!(
                 "#[{attr_name}(module = ...)] must exist as a string or false. Try #[{attr_name}(module = false)] for built-in types.",
@@ -499,10 +533,10 @@ impl ExceptionItemMeta {
         let inner = self.inner();
         if let Some((_, meta)) = inner.meta_map.get(KEY) {
             match meta {
-                Meta::NameValue(syn::MetaNameValue {
+                Meta::NameValue(MetaNameValue {
                     value:
-                        syn::Expr::Lit(syn::ExprLit {
-                            lit: syn::Lit::Str(lit),
+                        nanocode_macro_support::Expr::Lit(nanocode_macro_support::ExprLit {
+                            lit: nanocode_macro_support::Lit::Str(lit),
                             ..
                         }),
                     ..
@@ -586,7 +620,7 @@ impl AttributeExt for Attribute {
         self.try_meta_mut(|meta| {
             let nested = match meta {
                 Meta::List(MetaList { nested, .. }) => Ok(nested),
-                other => Err(syn::Error::new(
+                other => Err(nanocode_macro_support::Error::new(
                     other.span(),
                     format!(
                         "#[{name}(...)] doesn't contain '{item}' to remove",
@@ -603,7 +637,7 @@ impl AttributeExt for Attribute {
                 }
 
                 if found.is_some() {
-                    return Err(syn::Error::new(
+                    return Err(nanocode_macro_support::Error::new(
                         item.span(),
                         format!("#[py..({item_name}...)] must be unique but found multiple times"),
                     ));
@@ -620,7 +654,7 @@ impl AttributeExt for Attribute {
         F: Fn() -> NestedMeta,
     {
         self.try_meta_mut(|meta| {
-            let list = meta.promote_to_list(Default::default())?;
+            let list = meta.promote_to_list(Span::call_site())?;
             let has_name = list
                 .nested
                 .iter()
@@ -633,18 +667,27 @@ impl AttributeExt for Attribute {
     }
 }
 
-pub(crate) fn pyclass_ident_and_attrs(item: &syn::Item) -> Result<(&Ident, &[Attribute])> {
+pub(crate) fn pyclass_ident_and_attrs(
+    item: &nanocode_macro_support::Item,
+) -> Result<(&Ident, &[Attribute])> {
     Ok(match item {
-        syn::Item::Struct(syn::ItemStruct { ident, attrs, .. }) => (ident, attrs),
-        syn::Item::Enum(syn::ItemEnum { ident, attrs, .. }) => (ident, attrs),
-        syn::Item::Use(item_use) => (
-            single(iter_use_idents(item_use, |ident, _is_unique| Ok(ident))?)
-                .map_err(|()| {
-                    err_span!(
-                        item_use,
-                        "#[pyclass] can only be on single name use statement",
-                    )
-                })?,
+        nanocode_macro_support::Item::Struct(nanocode_macro_support::ItemStruct {
+            ident,
+            attrs,
+            ..
+        }) => (ident, attrs),
+        nanocode_macro_support::Item::Enum(nanocode_macro_support::ItemEnum {
+            ident,
+            attrs,
+            ..
+        }) => (ident, attrs),
+        nanocode_macro_support::Item::Use(item_use) => (
+            single(iter_use_idents(item_use, |ident, _is_unique| Ok(ident))?).map_err(|()| {
+                err_span!(
+                    item_use,
+                    "#[pyclass] can only be on single name use statement",
+                )
+            })?,
             &item_use.attrs,
         ),
         other => {
@@ -656,10 +699,20 @@ pub(crate) fn pyclass_ident_and_attrs(item: &syn::Item) -> Result<(&Ident, &[Att
     })
 }
 
-pub(crate) fn pyexception_ident_and_attrs(item: &syn::Item) -> Result<(&Ident, &[Attribute])> {
+pub(crate) fn pyexception_ident_and_attrs(
+    item: &nanocode_macro_support::Item,
+) -> Result<(&Ident, &[Attribute])> {
     Ok(match item {
-        syn::Item::Struct(syn::ItemStruct { ident, attrs, .. }) => (ident, attrs),
-        syn::Item::Enum(syn::ItemEnum { ident, attrs, .. }) => (ident, attrs),
+        nanocode_macro_support::Item::Struct(nanocode_macro_support::ItemStruct {
+            ident,
+            attrs,
+            ..
+        }) => (ident, attrs),
+        nanocode_macro_support::Item::Enum(nanocode_macro_support::ItemEnum {
+            ident,
+            attrs,
+            ..
+        }) => (ident, attrs),
         other => {
             bail_span!(other, "#[pyexception] can only be on a struct or enum",)
         }
@@ -667,7 +720,7 @@ pub(crate) fn pyexception_ident_and_attrs(item: &syn::Item) -> Result<(&Ident, &
 }
 
 pub(crate) trait ErrorVec: Sized {
-    fn into_error(self) -> Option<syn::Error>;
+    fn into_error(self) -> Option<nanocode_macro_support::Error>;
 
     fn into_result(self) -> Result<()> {
         if let Some(error) = self.into_error() {
@@ -680,8 +733,8 @@ pub(crate) trait ErrorVec: Sized {
     fn ok_or_push<T>(&mut self, r: Result<T>) -> Option<T>;
 }
 
-impl ErrorVec for Vec<syn::Error> {
-    fn into_error(self) -> Option<syn::Error> {
+impl ErrorVec for Vec<nanocode_macro_support::Error> {
+    fn into_error(self) -> Option<nanocode_macro_support::Error> {
         let mut iter = self.into_iter();
         if let Some(mut first) = iter.next() {
             for err in iter {
@@ -704,9 +757,12 @@ impl ErrorVec for Vec<syn::Error> {
     }
 }
 
-pub(crate) fn iter_use_idents<'a, F, R: 'a>(item_use: &'a syn::ItemUse, mut f: F) -> Result<Vec<R>>
+pub(crate) fn iter_use_idents<'a, F, R: 'a>(
+    item_use: &'a nanocode_macro_support::ItemUse,
+    mut f: F,
+) -> Result<Vec<R>>
 where
-    F: FnMut(&'a syn::Ident, bool) -> Result<R>,
+    F: FnMut(&'a nanocode_macro_support::Ident, bool) -> Result<R>,
 {
     let mut result = Vec::new();
     match &item_use.tree {
@@ -723,18 +779,18 @@ where
 }
 
 fn iter_use_tree_idents<'a, F, R: 'a>(
-    tree: &'a syn::UseTree,
+    tree: &'a nanocode_macro_support::UseTree,
     result: &mut Vec<R>,
     f: &mut F,
 ) -> Result<()>
 where
-    F: FnMut(&'a syn::Ident, bool) -> Result<R>,
+    F: FnMut(&'a nanocode_macro_support::Ident, bool) -> Result<R>,
 {
     match tree {
         UseTree::Name(name) => result.push(f(&name.ident, false)?),
         UseTree::Rename(rename) => result.push(f(&rename.rename, false)?),
         UseTree::Path(path) => iter_use_tree_idents(&path.tree, result, f)?,
-        UseTree::Group(syn::UseGroup { items, .. }) => {
+        UseTree::Group(nanocode_macro_support::UseGroup { items, .. }) => {
             for subtree in items {
                 iter_use_tree_idents(subtree, result, f)?;
             }
@@ -761,55 +817,145 @@ fn is_vm_or_callee(ty: &Type) -> bool {
     (ty.starts_with('&') && ty.ends_with("VirtualMachine")) || ty.ends_with("Callee")
 }
 
-fn arg_name(pat: &syn::Pat) -> String {
+fn arg_name(pat: &nanocode_macro_support::Pat) -> String {
     match pat {
-        syn::Pat::Ident(pat) => {
+        nanocode_macro_support::Pat::Ident(pat) => {
             let ident = pat.ident.unraw().to_string();
             ident.strip_prefix('_').unwrap_or(&ident).to_owned()
         }
         // `Fildes(fd): Fildes` contributes `fd`. One binding only: a wider
         // pattern has no single parameter name. The name is unused when the
         // type supplies parameters.
-        syn::Pat::TupleStruct(pat) if pat.elems.len() == 1 => arg_name(&pat.elems[0]),
-        syn::Pat::Reference(pat) => arg_name(&pat.pat),
-        syn::Pat::Paren(pat) => arg_name(&pat.pat),
+        nanocode_macro_support::Pat::TupleStruct(pat) if pat.elems.len() == 1 => {
+            arg_name(&pat.elems[0])
+        }
+        nanocode_macro_support::Pat::Reference(pat) => arg_name(&pat.pat),
+        nanocode_macro_support::Pat::Paren(pat) => arg_name(&pat.pat),
         _ => String::new(),
     }
 }
 
+fn trees_mention_self(trees: &[nanocode_macro_support::TokenTree]) -> bool {
+    use nanocode_macro_support::TokenTree;
+    let mut index = 0;
+    while index < trees.len() {
+        match &trees[index] {
+            TokenTree::Ident(ident) if ident.to_string() == "Self" => return true,
+            TokenTree::Punct(punct)
+                if punct.as_char() == '!'
+                    && matches!(trees.get(index + 1), Some(TokenTree::Group(_))) =>
+            {
+                index += 1;
+            }
+            TokenTree::Group(group) => {
+                let inner = Tokens::from_stream(group.stream());
+                if trees_mention_self(inner.trees()) {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    false
+}
+
 fn mentions_self(ty: &Type) -> bool {
-    struct Finder(bool);
-    impl Visit<'_> for Finder {
-        fn visit_ident(&mut self, ident: &Ident) {
-            if ident == "Self" {
-                self.0 = true;
+    trees_mention_self(ty.to_token_stream().trees())
+}
+
+fn subst_self_in_path(path: &mut nanocode_macro_support::Path, self_ty: &Type) {
+    use nanocode_macro_support::{GenericArgument, PathArguments, ReturnType};
+    for segment in path.segments.iter_mut() {
+        match &mut segment.arguments {
+            PathArguments::None => {}
+            PathArguments::AngleBracketed(arguments) => {
+                for argument in arguments.args.iter_mut() {
+                    match argument {
+                        GenericArgument::Type(ty) => subst_self_in_type(ty, self_ty),
+                        GenericArgument::AssocType(assoc) => {
+                            subst_self_in_type(&mut assoc.ty, self_ty)
+                        }
+                        GenericArgument::Constraint(constraint) => {
+                            subst_self_in_bounds(constraint.bounds.iter_mut(), self_ty)
+                        }
+                        GenericArgument::Lifetime(_)
+                        | GenericArgument::Const(_)
+                        | GenericArgument::AssocConst(_) => {}
+                    }
+                }
+            }
+            PathArguments::Parenthesized(arguments) => {
+                for input in arguments.inputs.iter_mut() {
+                    subst_self_in_type(input, self_ty);
+                }
+                if let ReturnType::Type(_, output) = &mut arguments.output {
+                    subst_self_in_type(output, self_ty);
+                }
             }
         }
     }
-    let mut finder = Finder(false);
-    finder.visit_type(ty);
-    finder.0
+}
+
+fn subst_self_in_bounds<'a>(
+    bounds: impl Iterator<Item = &'a mut nanocode_macro_support::TypeParamBound>,
+    self_ty: &Type,
+) {
+    for bound in bounds {
+        if let nanocode_macro_support::TypeParamBound::Trait(bound) = bound {
+            subst_self_in_path(&mut bound.path, self_ty);
+        }
+    }
+}
+
+fn subst_self_in_type(ty: &mut Type, self_ty: &Type) {
+    if let Type::Path(path) = ty
+        && path.qself.is_none()
+        && path.path.is_ident("Self")
+    {
+        *ty = self_ty.clone();
+        return;
+    }
+    match ty {
+        Type::Array(array) => subst_self_in_type(&mut array.elem, self_ty),
+        Type::BareFn(function) => {
+            for input in function.inputs.iter_mut() {
+                subst_self_in_type(&mut input.ty, self_ty);
+            }
+            if let nanocode_macro_support::ReturnType::Type(_, output) = &mut function.output {
+                subst_self_in_type(output, self_ty);
+            }
+        }
+        Type::Group(group) => subst_self_in_type(&mut group.elem, self_ty),
+        Type::ImplTrait(implementation) => {
+            subst_self_in_bounds(implementation.bounds.iter_mut(), self_ty)
+        }
+        Type::Paren(paren) => subst_self_in_type(&mut paren.elem, self_ty),
+        Type::Path(path) => {
+            if let Some(qself) = &mut path.qself {
+                subst_self_in_type(&mut qself.ty, self_ty);
+            }
+            subst_self_in_path(&mut path.path, self_ty);
+        }
+        Type::Ptr(pointer) => subst_self_in_type(&mut pointer.elem, self_ty),
+        Type::Reference(reference) => subst_self_in_type(&mut reference.elem, self_ty),
+        Type::Slice(slice) => subst_self_in_type(&mut slice.elem, self_ty),
+        Type::TraitObject(object) => subst_self_in_bounds(object.bounds.iter_mut(), self_ty),
+        Type::Tuple(tuple) => {
+            for element in tuple.elems.iter_mut() {
+                subst_self_in_type(element, self_ty);
+            }
+        }
+        Type::Infer(_) | Type::Macro(_) | Type::Never(_) | Type::Verbatim(_) => {}
+    }
 }
 
 fn subst_self(ty: &Type, self_ty: Option<&Type>) -> Type {
-    struct Subst<'a>(&'a Type);
-    impl VisitMut for Subst<'_> {
-        fn visit_type_mut(&mut self, ty: &mut Type) {
-            if let Type::Path(path) = ty
-                && path.qself.is_none()
-                && path.path.is_ident("Self")
-            {
-                *ty = self.0.clone();
-                return;
-            }
-            syn::visit_mut::visit_type_mut(self, ty);
-        }
-    }
     let Some(self_ty) = self_ty else {
         return ty.clone();
     };
     let mut ty = ty.clone();
-    Subst(self_ty).visit_type_mut(&mut ty);
+    subst_self_in_type(&mut ty, self_ty);
     ty
 }
 
@@ -854,7 +1000,7 @@ fn sig_pieces(
     pieces
 }
 
-fn sig_arg_tokens(piece: &SigPiece) -> TokenStream {
+fn sig_arg_tokens(piece: &SigPiece) -> Tokens {
     match piece {
         SigPiece::Marker(name) => quote!(::rustpython_vm::function::SigArg::marker(#name)),
         SigPiece::Arg { name, ty } => {
@@ -864,7 +1010,7 @@ fn sig_arg_tokens(piece: &SigPiece) -> TokenStream {
     }
 }
 
-fn args_const(pieces: &[SigPiece]) -> TokenStream {
+fn args_const(pieces: &[SigPiece]) -> Tokens {
     let args = pieces.iter().map(sig_arg_tokens);
     quote! {
         const ARGS: &[::rustpython_vm::function::SigArg] = &[#(#args),*];
@@ -879,10 +1025,10 @@ pub(crate) fn internal_doc_tokens(
     sig: &Signature,
     py_name: &str,
     implicit_self: Option<&str>,
-    doc: TokenStream,
+    doc: Tokens,
     self_ty: Option<&Type>,
     leading_marker: Option<&str>,
-) -> TokenStream {
+) -> Tokens {
     let args_const = args_const(&sig_pieces(sig, implicit_self, self_ty, leading_marker));
     quote! {
         {
@@ -934,7 +1080,7 @@ pub(crate) fn internal_doc_tokens(
     }
 }
 
-pub(crate) fn infer_native_call_flags(sig: &Signature, drop_first_typed: usize) -> TokenStream {
+pub(crate) fn infer_native_call_flags(sig: &Signature, drop_first_typed: usize) -> Tokens {
     // Best-effort mapping of Rust function signatures to CPython-style
     // METH_* calling convention flags used by CALL specialization.
     let mut typed_args = Vec::new();

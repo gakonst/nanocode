@@ -1,6 +1,6 @@
-use proc_macro2::TokenStream;
-use quote::quote;
-use syn::{Attribute, DeriveInput, Field, Result};
+use nanocode_macro_support::Tokens;
+use nanocode_macro_support::quote;
+use nanocode_macro_support::{Attribute, DeriveInput, Field, Result};
 
 struct TraverseAttr {
     /// set to `true` if the attribute is `#[pytraverse(skip)]`
@@ -32,7 +32,7 @@ fn pytraverse_arg(attr: &Attribute) -> Option<Result<TraverseAttr>> {
     Some(ret())
 }
 
-fn field_to_traverse_code(field: &Field) -> Result<TokenStream> {
+fn field_to_traverse_code(field: &Field) -> Result<Tokens> {
     let pytraverse_attrs = field
         .attrs
         .iter()
@@ -47,7 +47,7 @@ fn field_to_traverse_code(field: &Field) -> Result<TokenStream> {
     }
 
     let name = field.ident.as_ref().ok_or_else(|| {
-        syn::Error::new_spanned(
+        nanocode_macro_support::Error::new_spanned(
             field.clone(),
             "Field should have a name in non-tuple struct",
         )
@@ -66,48 +66,51 @@ fn field_to_traverse_code(field: &Field) -> Result<TokenStream> {
 }
 
 /// not trace corresponding field
-fn gen_trace_code(item: &mut DeriveInput) -> Result<TokenStream> {
+fn gen_trace_code(item: &mut DeriveInput) -> Result<Tokens> {
     match &mut item.data {
-        syn::Data::Struct(s) => {
+        nanocode_macro_support::Data::Struct(s) => {
             let fields = &mut s.fields;
             match fields {
-                syn::Fields::Named(fields) => {
-                    let res: Vec<TokenStream> = fields
+                nanocode_macro_support::Fields::Named(fields) => {
+                    let res: Vec<Tokens> = fields
                         .named
                         .iter_mut()
-                        .map(|f| -> Result<TokenStream> { field_to_traverse_code(f) })
+                        .map(|f| -> Result<Tokens> { field_to_traverse_code(f) })
                         .collect::<Result<_>>()?;
-                    Ok(res.into_iter().collect::<TokenStream>())
+                    Ok(res.into_iter().collect::<Tokens>())
                 }
-                syn::Fields::Unnamed(fields) => Ok((0..fields.unnamed.len())
+                nanocode_macro_support::Fields::Unnamed(fields) => Ok((0..fields.unnamed.len())
                     .map(|i| {
-                        let i = syn::Index::from(i);
+                        let i = nanocode_macro_support::Index::from(i);
                         quote!(
                             ::rustpython_vm::object::Traverse::traverse(&self.#i, tracer_fn);
                         )
                     })
-                    .collect::<TokenStream>()),
-                _ => Err(syn::Error::new_spanned(
+                    .collect::<Tokens>()),
+                _ => Err(nanocode_macro_support::Error::new_spanned(
                     fields,
                     "Only named and unnamed fields are supported",
                 )),
             }
         }
-        _ => Err(syn::Error::new_spanned(item, "Only structs are supported")),
+        _ => Err(nanocode_macro_support::Error::new_spanned(
+            item,
+            "Only structs are supported",
+        )),
     }
 }
 
-pub(crate) fn impl_pytraverse(mut item: DeriveInput) -> Result<TokenStream> {
+pub(crate) fn impl_pytraverse(mut item: DeriveInput) -> Result<Tokens> {
     let trace_code = gen_trace_code(&mut item)?;
 
     let ty = &item.ident;
 
     // Add Traverse bound to all type parameters
     for param in &mut item.generics.params {
-        if let syn::GenericParam::Type(type_param) = param {
+        if let nanocode_macro_support::GenericParam::Type(type_param) = param {
             type_param
                 .bounds
-                .push(syn::parse_quote!(::rustpython_vm::object::Traverse));
+                .push(parse_quote!(::rustpython_vm::object::Traverse));
         }
     }
 

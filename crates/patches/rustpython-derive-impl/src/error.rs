@@ -27,13 +27,67 @@
 // DEALINGS IN THE SOFTWARE.
 #![allow(dead_code)]
 
-use proc_macro2::*;
-use quote::{ToTokens, TokenStreamExt};
-use syn::parse::Error;
+use nanocode_macro_support::{
+    Attribute, Error, Expr, ImplItem, Item, ParseBuffer, Path, Span, ToTokens, Tokens, TraitItem,
+    Type, TypeParamBound, parse_tokens,
+};
+use proc_macro::{Delimiter, Group, Ident, Literal, Punct, Spacing};
+
+use crate::syn_ext::types::{Meta, NestedMeta};
+
+macro_rules! parse_quote {
+    ($($tt:tt)*) => {
+        crate::error::ParseQuote::parse_quote(nanocode_macro_support::quote!($($tt)*))
+    };
+}
+
+pub(crate) trait ParseQuote: Sized {
+    fn parse_quote(tokens: Tokens) -> Self;
+}
+
+macro_rules! parse_quote_through_parse {
+    ($($kind:ty),*) => {
+        $(
+            impl ParseQuote for $kind {
+                fn parse_quote(tokens: Tokens) -> Self {
+                    match parse_tokens::<Self>(tokens) {
+                        Ok(value) => value,
+                        Err(error) => panic!("parse_quote: {error}"),
+                    }
+                }
+            }
+        )*
+    };
+}
+
+parse_quote_through_parse!(
+    Expr,
+    ImplItem,
+    Item,
+    Meta,
+    NestedMeta,
+    Path,
+    TraitItem,
+    Type,
+    TypeParamBound
+);
+
+impl ParseQuote for Attribute {
+    fn parse_quote(tokens: Tokens) -> Self {
+        let buffer = ParseBuffer::new(tokens);
+        let mut attributes = match Self::parse_outer(&buffer) {
+            Ok(attributes) => attributes,
+            Err(error) => panic!("parse_quote: {error}"),
+        };
+        assert!(buffer.is_empty(), "parse_quote: one attribute expected");
+        assert_eq!(attributes.len(), 1, "parse_quote: one attribute expected");
+        attributes.remove(0)
+    }
+}
 
 macro_rules! err_span {
     ($span:expr, $($msg:tt)*) => (
-        syn::Error::new_spanned(&$span, format_args!($($msg)*))
+        nanocode_macro_support::Error::new_spanned(&$span, format_args!($($msg)*))
     )
 }
 
@@ -121,7 +175,7 @@ impl From<Error> for Diagnostic {
 }
 
 pub(crate) fn extract_spans(node: &dyn ToTokens) -> Option<(Span, Span)> {
-    let mut t = TokenStream::new();
+    let mut t = Tokens::new();
     node.to_tokens(&mut t);
     let mut tokens = t.into_iter();
     let start = tokens.next().map(|t| t.span());
@@ -130,16 +184,16 @@ pub(crate) fn extract_spans(node: &dyn ToTokens) -> Option<(Span, Span)> {
 }
 
 impl ToTokens for Diagnostic {
-    fn to_tokens(&self, dst: &mut TokenStream) {
+    fn to_tokens(&self, dst: &mut Tokens) {
         match &self.inner {
             Repr::Single { text, span } => {
                 let cs2 = (Span::call_site(), Span::call_site());
                 let (start, end) = span.unwrap_or(cs2);
                 dst.append(Ident::new("compile_error", start));
                 dst.append(Punct::new('!', Spacing::Alone));
-                let mut message = TokenStream::new();
+                let mut message = Tokens::new();
                 message.append(Literal::string(text));
-                let mut group = Group::new(Delimiter::Brace, message);
+                let mut group = Group::new(Delimiter::Brace, message.into_stream());
                 group.set_span(end);
                 dst.append(group);
             }

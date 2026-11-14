@@ -1,8 +1,7 @@
 use crate::syn_ext::ident::GetIdent;
 use crate::syn_ext::meta::{self, MetaExt};
 use crate::syn_ext::meta::{Meta1, MetaList1};
-use syn::{parse_quote, Attribute, Ident};
-use syn::{punctuated::Punctuated, token::Paren, Result};
+use nanocode_macro_support::{Attribute, Ident, Punctuated, Result, Span};
 
 impl GetIdent for Attribute {
     fn get_ident(&self) -> Option<&Ident> {
@@ -22,7 +21,7 @@ pub trait AttributeExt {
 
     fn promoted_list(&self) -> Result<MetaList1>;
 
-    fn try_promoted_list_mut<F, R>(&mut self, paren: Paren, f: F) -> Result<R>
+    fn try_promoted_list_mut<F, R>(&mut self, paren: Span, f: F) -> Result<R>
     where
         F: FnOnce(&mut MetaList1) -> Result<R>;
 }
@@ -53,7 +52,7 @@ impl AttributeExt for Attribute {
         match self.parse_meta()? {
             Meta1::Path(path) => Ok(MetaList1 {
                 path,
-                paren_token: Default::default(),
+                paren_span: Span::call_site(),
                 nested: Punctuated::new(),
             }),
             Meta1::List(metalist) => Ok(metalist),
@@ -61,7 +60,7 @@ impl AttributeExt for Attribute {
         }
     }
 
-    fn try_promoted_list_mut<F, R>(&mut self, paren: Paren, f: F) -> Result<R>
+    fn try_promoted_list_mut<F, R>(&mut self, paren: Span, f: F) -> Result<R>
     where
         F: FnOnce(&mut MetaList1) -> Result<R>,
     {
@@ -73,7 +72,6 @@ impl AttributeExt for Attribute {
 }
 pub trait AttributeIteratorExt {
     fn doc(self) -> Option<String>;
-
 }
 impl<'a, I> AttributeIteratorExt for I
 where
@@ -90,7 +88,6 @@ where
             Some(items.join("\n"))
         }
     }
-
 }
 
 pub trait IntoAttribute {

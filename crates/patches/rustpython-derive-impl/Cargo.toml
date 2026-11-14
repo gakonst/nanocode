@@ -31,11 +31,8 @@ resolver = "2"
 name = "rustpython_derive_impl"
 path = "src/lib.rs"
 
-[dependencies.proc-macro2]
-version = "1.0.105"
-
-[dependencies.quote]
-version = "1.0.45"
+[dependencies.nanocode-macro-support]
+path = "../../core/macro-support"
 
 [dependencies.rustpython-compiler-core]
 version = "0.6.0"
@@ -43,14 +40,6 @@ version = "0.6.0"
 [dependencies.rustpython-doc]
 version = "0.6.0"
 
-[dependencies.syn]
-version = "2"
-features = [
-    "full",
-    "extra-traits",
-    "visit",
-    "visit-mut",
-]
 
 [lints.clippy]
 alloc_instead_of_core = "warn"

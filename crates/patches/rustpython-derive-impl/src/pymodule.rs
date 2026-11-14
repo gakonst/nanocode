@@ -1,31 +1,31 @@
 use crate::error::Diagnostic;
 use crate::pystructseq::PyStructSequenceMeta;
 use crate::util::{
-    ALL_ALLOWED_NAMES, AttrItemMeta, AttributeExt, ClassItemMeta, ContentItem, ContentItemInner,
-    ErrorVec, ItemMeta, ItemNursery, ModuleItemMeta, SimpleItemMeta, infer_native_call_flags,
-    internal_doc_tokens, iter_use_idents, pyclass_ident_and_attrs,
+    ALL_ALLOWED_NAMES, AttrItemMeta, AttributeExt, AttributeList, ClassItemMeta, ContentItem,
+    ContentItemInner, ErrorVec, ItemMeta, ItemNursery, ModuleItemMeta, SimpleItemMeta,
+    infer_native_call_flags, internal_doc_tokens, iter_use_idents, pyclass_ident_and_attrs,
 };
 use core::str::FromStr;
-use proc_macro2::{Delimiter, Group, TokenStream, TokenTree};
-use quote::{ToTokens, format_ident, quote, quote_spanned};
+use nanocode_macro_support::{Delimiter, Group, TokenTree, Tokens};
+use nanocode_macro_support::{ToTokens, format_ident, quote, quote_spanned};
 
-use std::collections::HashSet;
-use syn::{Attribute, Ident, Item, Result, parse_quote, spanned::Spanned};
 use crate::syn_ext::ext::*;
 use crate::syn_ext::types::NestedMeta;
+use nanocode_macro_support::{Attribute, Ident, Item, Result, Spanned};
+use std::collections::HashSet;
 
 /// A `with(...)` item that may be gated by `#[cfg(...)]` attributes.
 pub struct WithItem {
     pub cfg_attrs: Vec<Attribute>,
-    pub path: syn::Path,
+    pub path: nanocode_macro_support::Path,
 }
 
-impl syn::parse::Parse for WithItem {
-    fn parse(input: syn::parse::ParseStream<'_>) -> Result<Self> {
+impl nanocode_macro_support::Parse for WithItem {
+    fn parse(input: nanocode_macro_support::ParseStream<'_>) -> Result<Self> {
         let cfg_attrs = Attribute::parse_outer(input)?;
         for attr in &cfg_attrs {
             if !attr.path().is_ident("cfg") {
-                return Err(syn::Error::new_spanned(
+                return Err(nanocode_macro_support::Error::new_spanned(
                     attr,
                     "only #[cfg(...)] is supported in with()",
                 ));
@@ -42,37 +42,36 @@ pub struct PyModuleArgs {
     pub with_items: Vec<WithItem>,
 }
 
-impl syn::parse::Parse for PyModuleArgs {
-    fn parse(input: syn::parse::ParseStream<'_>) -> Result<Self> {
+impl nanocode_macro_support::Parse for PyModuleArgs {
+    fn parse(input: nanocode_macro_support::ParseStream<'_>) -> Result<Self> {
         let mut metas = Vec::new();
         let mut with_items = Vec::new();
 
         while !input.is_empty() {
             // Detect `with(...)` — an ident "with" followed by a paren group
-            if input.peek(Ident) && input.peek2(syn::token::Paren) {
-                let fork = input.fork();
-                let ident: Ident = fork.parse()?;
-                if ident == "with" {
-                    // Advance past "with"
-                    let _: Ident = input.parse()?;
-                    let content;
-                    syn::parenthesized!(content in input);
-                    let items =
-                        syn::punctuated::Punctuated::<WithItem, syn::Token![,]>::parse_terminated(
-                            &content,
-                        )?;
-                    with_items.extend(items);
-                    if !input.is_empty() {
-                        input.parse::<syn::Token![,]>()?;
-                    }
-                    continue;
+            if input.peek_keyword("with") && input.peek_tree(1).is_some_and(|tree| {
+                matches!(tree, TokenTree::Group(group) if group.delimiter() == Delimiter::Parenthesis)
+            }) {
+                input.next_tree();
+                let group = input.parse_group(Delimiter::Parenthesis)?;
+                let content = nanocode_macro_support::ParseBuffer::from_group(&group);
+                let items = nanocode_macro_support::parse_terminated::<WithItem, nanocode_macro_support::token::Comma>(
+                    &content,
+                    <WithItem as nanocode_macro_support::Parse>::parse,
+                )?;
+                with_items.extend(items);
+                if !input.is_empty() {
+                    <nanocode_macro_support::token::Comma as nanocode_macro_support::Token>::parse_token(input)?;
                 }
+                continue;
             }
             metas.push(input.parse::<NestedMeta>()?);
             if input.is_empty() {
                 break;
             }
-            input.parse::<syn::Token![,]>()?;
+            <nanocode_macro_support::token::Comma as nanocode_macro_support::Token>::parse_token(
+                input,
+            )?;
         }
 
         Ok(Self { metas, with_items })
@@ -87,7 +86,7 @@ fn negate_cfg_attrs(cfg_attrs: &[Attribute]) -> Vec<Attribute> {
     let predicates = cfg_attrs
         .iter()
         .map(|attr| match &attr.meta {
-            syn::Meta::List(list) => list.tokens.clone(),
+            nanocode_macro_support::Meta::List(list) => list.tokens.clone(),
             _ => unreachable!("only #[cfg(...)] should be here"),
         })
         .collect::<Vec<_>>();
@@ -151,10 +150,10 @@ struct ModuleContext {
     function_items: FunctionNursery,
     attribute_items: ItemNursery,
     has_module_exec: bool,
-    errors: Vec<syn::Error>,
+    errors: Vec<nanocode_macro_support::Error>,
 }
 
-pub(crate) fn impl_pymodule(args: PyModuleArgs, module_item: Item) -> Result<TokenStream> {
+pub(crate) fn impl_pymodule(args: PyModuleArgs, module_item: Item) -> Result<Tokens> {
     let PyModuleArgs { metas, with_items } = args;
     let (doc, mut module_item) = match module_item {
         Item::Mod(m) => (m.attrs.doc(), m),
@@ -204,7 +203,7 @@ pub(crate) fn impl_pymodule(args: PyModuleArgs, module_item: Item) -> Result<Tok
     }
 
     // Detect nested #[pymodule] items (non-sub) and generate submodule init code
-    let mut submodule_inits: Vec<TokenStream> = Vec::new();
+    let mut submodule_inits: Vec<Tokens> = Vec::new();
     for item in items.iter() {
         if let Item::Mod(item_mod) = item {
             let r = (|| -> Result<()> {
@@ -217,11 +216,11 @@ pub(crate) fn impl_pymodule(args: PyModuleArgs, module_item: Item) -> Result<Tok
                     None => return Ok(()),
                 };
                 let args_tokens = match &attr.meta {
-                    syn::Meta::Path(_) => TokenStream::new(),
-                    syn::Meta::List(list) => list.tokens.clone(),
+                    nanocode_macro_support::Meta::Path(_) => Tokens::new(),
+                    nanocode_macro_support::Meta::List(list) => list.tokens.clone(),
                     _ => return Ok(()),
                 };
-                let mod_args: PyModuleArgs = syn::parse2(args_tokens)?;
+                let mod_args: PyModuleArgs = nanocode_macro_support::parse_tokens(args_tokens)?;
                 let fake_ident = Ident::new("pymodule", attr.span());
                 let mod_meta = ModuleItemMeta::from_nested(
                     item_mod.ident.clone(),
@@ -535,8 +534,8 @@ struct FunctionNurseryItem {
     cfgs: Vec<Attribute>,
     ident: Ident,
     /// One internal doc per [`py_names`](Self::py_names) entry.
-    docs: Vec<TokenStream>,
-    call_flags: TokenStream,
+    docs: Vec<Tokens>,
+    call_flags: Tokens,
 }
 
 impl FunctionNursery {
@@ -548,7 +547,7 @@ impl FunctionNursery {
         let mut name_set = HashSet::new();
         for item in &self.items {
             for py_name in &item.py_names {
-                if !name_set.insert((py_name.to_owned(), &item.cfgs)) {
+                if !name_set.insert((py_name.to_owned(), AttributeList(item.cfgs.clone()))) {
                     bail_span!(item.ident, "duplicate method name `{}`", py_name);
                 }
             }
@@ -560,8 +559,8 @@ impl FunctionNursery {
 struct ValidatedFunctionNursery(FunctionNursery);
 
 impl ToTokens for ValidatedFunctionNursery {
-    fn to_tokens(&self, tokens: &mut TokenStream) {
-        let mut inner_tokens = TokenStream::new();
+    fn to_tokens(&self, tokens: &mut Tokens) {
+        let mut inner_tokens = Tokens::new();
         for item in &self.0.items {
             let ident = &item.ident;
             let cfgs = &item.cfgs;
@@ -579,8 +578,8 @@ impl ToTokens for ValidatedFunctionNursery {
                 ]);
             }
         }
-        let array: TokenTree = Group::new(Delimiter::Bracket, inner_tokens).into();
-        tokens.extend([array]);
+        let array: TokenTree = Group::new(Delimiter::Bracket, inner_tokens.into_stream()).into();
+        tokens.push(array);
     }
 }
 
@@ -742,7 +741,7 @@ impl ModuleItem for ClassItem {
                 }
             }
             let no_attr = no_attr.is_some();
-            let is_use = matches!(&args.item, syn::Item::Use(_));
+            let is_use = matches!(&args.item, nanocode_macro_support::Item::Use(_));
 
             let class_meta = ClassItemMeta::from_attr(ident.clone(), class_attr)?;
             let explicit_module = class_meta.module().ok().flatten();
@@ -862,7 +861,7 @@ impl ModuleItem for StructSequenceItem {
         let meta = PyStructSequenceMeta::from_attr(pytype_ident.clone(), structseq_attr)?;
 
         let class_name = meta.class_name()?.ok_or_else(|| {
-            syn::Error::new_spanned(
+            nanocode_macro_support::Error::new_spanned(
                 structseq_attr,
                 "#[pystruct_sequence] requires name parameter",
             )
@@ -948,7 +947,7 @@ impl ModuleItem for AttributeItem {
         let cfgs = args.cfgs.to_vec();
         let attr = args.attrs.remove(self.index());
         let (ident, py_name, let_obj) = match args.item {
-            Item::Fn(syn::ItemFn { sig, block, .. }) => {
+            Item::Fn(nanocode_macro_support::ItemFn { sig, block, .. }) => {
                 let ident = &sig.ident;
                 // If `once` keyword is in #[pyattr],
                 // wrapping it with static_cell for preventing it from using it as function
@@ -956,24 +955,24 @@ impl ModuleItem for AttributeItem {
                 if attr_meta.inner()._bool("once")? {
                     let stmts = &block.stmts;
                     let return_type = match &sig.output {
-                        syn::ReturnType::Default => {
+                        nanocode_macro_support::ReturnType::Default => {
                             unreachable!("#[pyattr] attached function must have return type.")
                         }
-                        syn::ReturnType::Type(_, ty) => ty,
+                        nanocode_macro_support::ReturnType::Type(_, ty) => ty,
                     };
-                    let stmt: syn::Stmt = parse_quote! {
+                    let stmt: Tokens = quote! {
                         {
                             rustpython_common::static_cell! {
                                 static ERROR: #return_type;
                             }
                             ERROR
                                 .get_or_init(|| {
-                                    #(#stmts)*
+                                    #stmts
                                 })
                                 .clone()
                         }
                     };
-                    block.stmts = vec![stmt];
+                    block.stmts = stmt;
                 }
 
                 let py_name = attr_meta.simple_name()?;
@@ -985,7 +984,7 @@ impl ModuleItem for AttributeItem {
                     },
                 )
             }
-            Item::Const(syn::ItemConst { ident, .. }) => {
+            Item::Const(nanocode_macro_support::ItemConst { ident, .. }) => {
                 let item_meta = SimpleItemMeta::from_attr(ident.clone(), &attr)?;
                 let py_name = item_meta.simple_name()?;
                 (

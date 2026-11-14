@@ -160,8 +160,6 @@ nanocode-mpp = { version = "0.7.0", path = "crates/integrations/mpp" }
 nanocode-code-mode-engine = { version = "0.7.0", path = "crates/runtime/code-mode-engine" }
 nanocode-tools-macros = { version = "0.7.0", path = "crates/core/tools-macros" }
 nanocode-macro-support = { version = "0.7.0", path = "crates/core/macro-support" }
-proc-macro2 = "1.0.106"
-quote = "1.0.46"
 graviola = "0.4.1"
 rustls = { version = "0.23.45", default-features = false, features = ["std"] }
 djs-embed = { path = "crates/patches/djs/crates/djs-embed" }
@@ -169,7 +167,6 @@ psh-engine = { path = "crates/patches/psh/crates/psh-engine" }
 psh-utils = { path = "crates/patches/psh/crates/psh-utils" }
 serde = { version = "1.0.228", features = ["derive", "rc"] }
 serde_json = { version = "1.0.149", features = ["float_roundtrip", "raw_value"] }
-syn = { version = "2.0.119", features = ["full"] }
 tokio = "1.48.0"
 unicode-normalization = { path = "crates/core/unicode-normalization" }
 nanocode-url = { version = "0.7.0", path = "crates/core/url" }

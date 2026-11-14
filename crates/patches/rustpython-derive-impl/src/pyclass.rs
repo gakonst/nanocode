@@ -1,16 +1,17 @@
 use super::Diagnostic;
-use crate::util::{
-    ALL_ALLOWED_NAMES, ClassItemMeta, ContentItem, ContentItemInner, ErrorVec, ExceptionItemMeta,
-    ItemMeta, ItemMetaInner, ItemNursery, SimpleItemMeta, infer_native_call_flags,
-    internal_doc_tokens, pyclass_ident_and_attrs, pyexception_ident_and_attrs,
-};
-use core::str::FromStr;
-use proc_macro2::{Delimiter, Group, Span, TokenStream, TokenTree};
-use quote::{ToTokens, quote, quote_spanned};
-use std::collections::{HashMap, HashSet};
-use syn::{Attribute, Ident, Item, Result, parse_quote, spanned::Spanned};
 use crate::syn_ext::ext::*;
 use crate::syn_ext::types::*;
+use crate::util::{
+    ALL_ALLOWED_NAMES, AttributeList, ClassItemMeta, ContentItem, ContentItemInner, ErrorVec,
+    ExceptionItemMeta, ItemMeta, ItemMetaInner, ItemNursery, SimpleItemMeta, attribute_texts,
+    infer_native_call_flags, internal_doc_tokens, pyclass_ident_and_attrs,
+    pyexception_ident_and_attrs,
+};
+use core::str::FromStr;
+use nanocode_macro_support::{Attribute, Ident, Item, Result, Spanned};
+use nanocode_macro_support::{Delimiter, Group, Span, TokenTree, Tokens};
+use nanocode_macro_support::{ToTokens, quote, quote_spanned};
+use std::collections::{HashMap, HashSet};
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 enum AttrName {
@@ -67,11 +68,11 @@ struct ImplContext {
     method_items: MethodNursery,
     getset_items: GetSetNursery,
     extend_slots_items: ItemNursery,
-    class_extensions: Vec<TokenStream>,
-    errors: Vec<syn::Error>,
+    class_extensions: Vec<Tokens>,
+    errors: Vec<nanocode_macro_support::Error>,
     /// Set when the impl has no generic parameters, so `Self` in argument
     /// types can be replaced before it appears in a nested const.
-    self_ty_subst: Option<syn::Type>,
+    self_ty_subst: Option<nanocode_macro_support::Type>,
     /// Set when `self` in this impl is the payload rather than the object:
     /// an impl for `T` rather than `Py<T>` or `PyRef<T>`, or a trait.
     self_is_payload: bool,
@@ -103,7 +104,7 @@ fn extract_items_into_context<'a, Item>(
     context.errors.ok_or_push(context.getset_items.validate());
 }
 
-pub(crate) fn impl_pyclass_impl(attr: PunctuatedNestedMeta, item: Item) -> Result<TokenStream> {
+pub(crate) fn impl_pyclass_impl(attr: PunctuatedNestedMeta, item: Item) -> Result<Tokens> {
     let mut context = ImplContext::default();
     let mut tokens = match item {
         Item::Impl(mut imp) => {
@@ -113,7 +114,7 @@ pub(crate) fn impl_pyclass_impl(attr: PunctuatedNestedMeta, item: Item) -> Resul
             }
             context.self_is_payload = !matches!(
                 imp.self_ty.as_ref(),
-                syn::Type::Path(syn::TypePath { path, .. })
+                nanocode_macro_support::Type::Path(nanocode_macro_support::TypePath { path, .. })
                     if path.segments.last().is_some_and(|segment| {
                         segment.ident == "Py" || segment.ident == "PyRef"
                     })
@@ -122,26 +123,30 @@ pub(crate) fn impl_pyclass_impl(attr: PunctuatedNestedMeta, item: Item) -> Resul
 
             let attr_nonempty = !attr.is_empty();
             let (impl_ty, payload_guess, wrapped) = match imp.self_ty.as_ref() {
-                syn::Type::Path(syn::TypePath {
-                    path: syn::Path { segments, .. },
+                nanocode_macro_support::Type::Path(nanocode_macro_support::TypePath {
+                    path: nanocode_macro_support::Path { segments, .. },
                     ..
                 }) if segments.len() == 1 => {
                     let segment = &segments[0];
                     let payload_ty = if segment.ident == "Py" || segment.ident == "PyRef" {
                         match &segment.arguments {
-                            syn::PathArguments::AngleBracketed(
-                                syn::AngleBracketedGenericArguments { args, .. },
+                            nanocode_macro_support::PathArguments::AngleBracketed(
+                                nanocode_macro_support::AngleBracketedGenericArguments {
+                                    args, ..
+                                },
                             ) if args.len() == 1 => {
                                 let arg = &args[0];
                                 match arg {
-                                    syn::GenericArgument::Type(syn::Type::Path(
-                                        syn::TypePath {
-                                            path: syn::Path { segments, .. },
-                                            ..
-                                        },
-                                    )) if segments.len() == 1 => segments[0].ident.clone(),
+                                    nanocode_macro_support::GenericArgument::Type(
+                                        nanocode_macro_support::Type::Path(
+                                            nanocode_macro_support::TypePath {
+                                                path: nanocode_macro_support::Path { segments, .. },
+                                                ..
+                                            },
+                                        ),
+                                    ) if segments.len() == 1 => segments[0].ident.clone(),
                                     _ => {
-                                        return Err(syn::Error::new_spanned(
+                                        return Err(nanocode_macro_support::Error::new_spanned(
                                             segment,
                                             "Py{Ref}<T> is expected but Py{Ref}<?> is found",
                                         ));
@@ -149,15 +154,18 @@ pub(crate) fn impl_pyclass_impl(attr: PunctuatedNestedMeta, item: Item) -> Resul
                                 }
                             }
                             _ => {
-                                return Err(syn::Error::new_spanned(
+                                return Err(nanocode_macro_support::Error::new_spanned(
                                     segment,
                                     "Py{Ref}<T> is expected but Py{Ref}? is found",
                                 ));
                             }
                         }
                     } else {
-                        if !matches!(segment.arguments, syn::PathArguments::None) {
-                            return Err(syn::Error::new_spanned(
+                        if !matches!(
+                            segment.arguments,
+                            nanocode_macro_support::PathArguments::None
+                        ) {
+                            return Err(nanocode_macro_support::Error::new_spanned(
                                 segment,
                                 "PyImpl can only be implemented for Py{Ref}<T> or T",
                             ));
@@ -168,7 +176,7 @@ pub(crate) fn impl_pyclass_impl(attr: PunctuatedNestedMeta, item: Item) -> Resul
                     (segment.ident.clone(), payload_ty, wrapped)
                 }
                 _ => {
-                    return Err(syn::Error::new_spanned(
+                    return Err(nanocode_macro_support::Error::new_spanned(
                         imp.self_ty,
                         "PyImpl can only be implemented for Py{Ref}<T> or T",
                     ));
@@ -287,7 +295,7 @@ pub(crate) fn impl_pyclass_impl(attr: PunctuatedNestedMeta, item: Item) -> Resul
             let mut has_extend_slots = false;
             for item in &trai.items {
                 let has = match item {
-                    syn::TraitItem::Fn(item) => item.sig.ident == "extend_slots",
+                    nanocode_macro_support::TraitItem::Fn(item) => item.sig.ident == "extend_slots",
                     _ => false,
                 };
                 if has {
@@ -357,7 +365,7 @@ pub(crate) fn impl_pyclass_impl(attr: PunctuatedNestedMeta, item: Item) -> Resul
 /// Validates that when a base class is specified, the struct has the base type as its first
 /// *declared* field.  Returns a token naming that field (e.g. `_base` or `0` for tuple structs)
 /// so the caller can emit compile-time layout assertions.
-fn validate_base_field(item: &Item, base_path: &syn::Path) -> Result<TokenStream> {
+fn validate_base_field(item: &Item, base_path: &nanocode_macro_support::Path) -> Result<Tokens> {
     let Item::Struct(item_struct) = item else {
         bail_span!(item, "#[pyclass] with base requires a struct");
     };
@@ -369,7 +377,7 @@ fn validate_base_field(item: &Item, base_path: &syn::Path) -> Result<TokenStream
         .map_or_else(|| quote!(#base_path).to_string(), |s| s.ident.to_string());
 
     match &item_struct.fields {
-        syn::Fields::Named(fields) => {
+        nanocode_macro_support::Fields::Named(fields) => {
             let Some(first_field) = fields.named.first() else {
                 bail_span!(
                     item_struct,
@@ -388,7 +396,7 @@ fn validate_base_field(item: &Item, base_path: &syn::Path) -> Result<TokenStream
                 .expect("named fields always have identifiers");
             Ok(quote! { #ident })
         }
-        syn::Fields::Unnamed(fields) => {
+        nanocode_macro_support::Fields::Unnamed(fields) => {
             let Some(first_field) = fields.unnamed.first() else {
                 bail_span!(
                     item_struct,
@@ -403,7 +411,7 @@ fn validate_base_field(item: &Item, base_path: &syn::Path) -> Result<TokenStream
             }
             Ok(quote! { 0 })
         }
-        syn::Fields::Unit => {
+        nanocode_macro_support::Fields::Unit => {
             bail_span!(
                 item_struct,
                 "#[pyclass] with base = {base_name} requires the first field to be of type {base_name}, but the struct is a unit struct"
@@ -430,13 +438,13 @@ fn ensure_repr_c(mut item: Item) -> Item {
 }
 
 /// Check if a type matches a given path (handles simple cases like `Foo` or `path::to::Foo`)
-fn class_def_ty(self_ty: Option<&syn::Type>) -> Option<TokenStream> {
+fn class_def_ty(self_ty: Option<&nanocode_macro_support::Type>) -> Option<Tokens> {
     let ty = self_ty?;
-    if let syn::Type::Path(type_path) = ty
+    if let nanocode_macro_support::Type::Path(type_path) = ty
         && let Some(segment) = type_path.path.segments.last()
         && (segment.ident == "Py" || segment.ident == "PyRef")
-        && let syn::PathArguments::AngleBracketed(args) = &segment.arguments
-        && let Some(syn::GenericArgument::Type(inner)) = args.args.first()
+        && let nanocode_macro_support::PathArguments::AngleBracketed(args) = &segment.arguments
+        && let Some(nanocode_macro_support::GenericArgument::Type(inner)) = args.args.first()
     {
         return Some(quote!(#inner));
     }
@@ -446,7 +454,11 @@ fn class_def_ty(self_ty: Option<&syn::Type>) -> Option<TokenStream> {
 /// Const `ItemDoc`. A non-empty Rust doc is the docstring.
 /// The attribute table is used only when there is no Rust doc. Generic impls
 /// cannot name `Self` from a nested const, so without a Rust doc they store none.
-fn attr_doc_expr(self_ty: Option<&syn::Type>, attr: &str, rust_doc: Option<String>) -> TokenStream {
+fn attr_doc_expr(
+    self_ty: Option<&nanocode_macro_support::Type>,
+    attr: &str,
+    rust_doc: Option<String>,
+) -> Tokens {
     if let Some(doc) = rust_doc.filter(|doc| !doc.is_empty()) {
         return quote!(::rustpython_vm::function::ItemDoc::static_text(#doc));
     }
@@ -486,10 +498,10 @@ fn attr_doc_expr(self_ty: Option<&syn::Type>, attr: &str, rust_doc: Option<Strin
 /// A non-empty Rust doc is the body. Otherwise the span is resolved here when
 /// the impl can name its class; a missing class or a missing span stays pending.
 fn doc_body_pending_expr(
-    self_ty: Option<&syn::Type>,
+    self_ty: Option<&nanocode_macro_support::Type>,
     attr: &str,
     rust_doc: Option<String>,
-) -> TokenStream {
+) -> Tokens {
     if rust_doc.as_ref().is_some_and(|doc| !doc.is_empty()) {
         return quote!(false);
     }
@@ -510,7 +522,10 @@ fn doc_body_pending_expr(
     }
 }
 
-fn type_matches_path(ty: &syn::Type, path: &syn::Path) -> bool {
+fn type_matches_path(
+    ty: &nanocode_macro_support::Type,
+    path: &nanocode_macro_support::Path,
+) -> bool {
     // Compare by converting both to string representation for macro hygiene
     let ty_str = quote!(#ty).to_string().replace(' ', "");
     let path_str = quote!(#path).to_string().replace(' ', "");
@@ -521,7 +536,7 @@ fn type_matches_path(ty: &syn::Type, path: &syn::Path) -> bool {
     }
 
     // Also match if just the last segment matches (e.g., foo::Bar matches Bar)
-    let syn::Type::Path(type_path) = ty else {
+    let nanocode_macro_support::Type::Path(type_path) = ty else {
         return false;
     };
     let Some(type_last) = type_path.path.segments.last() else {
@@ -534,9 +549,9 @@ fn type_matches_path(ty: &syn::Type, path: &syn::Path) -> bool {
 }
 
 struct MemberTableTokens<'a> {
-    members: &'a TokenStream,
-    parts: &'a TokenStream,
-    checks: &'a TokenStream,
+    members: &'a Tokens,
+    parts: &'a Tokens,
+    checks: &'a Tokens,
 }
 
 struct ClassDefExtras<'a> {
@@ -548,11 +563,11 @@ fn generate_class_def(
     ident: &Ident,
     name: &str,
     module_name: Option<&str>,
-    base: Option<syn::Path>,
+    base: Option<nanocode_macro_support::Path>,
     metaclass: Option<String>,
     unhashable: bool,
     extras: ClassDefExtras<'_>,
-) -> Result<TokenStream> {
+) -> Result<Tokens> {
     let attrs = extras.attrs;
     let module_key = module_name.unwrap_or("builtins");
     let (attr_docs, attr_names) = crate::class_docs::attr_docs_tokens(module_name, name);
@@ -711,8 +726,8 @@ fn generate_class_def(
     Ok(tokens)
 }
 
-pub(crate) fn impl_pyclass(attr: PunctuatedNestedMeta, item: Item) -> Result<TokenStream> {
-    if matches!(item, syn::Item::Use(_)) {
+pub(crate) fn impl_pyclass(attr: PunctuatedNestedMeta, item: Item) -> Result<Tokens> {
+    if matches!(item, nanocode_macro_support::Item::Use(_)) {
         return Ok(quote!(#item));
     }
 
@@ -958,7 +973,7 @@ pub(crate) fn impl_pyclass(attr: PunctuatedNestedMeta, item: Item) -> Result<Tok
 /// But, inside `macro_rules` we don't have an opportunity
 /// to add non-literal attributes to `pyclass`.
 /// That's why we have to use this proxy.
-pub(crate) fn impl_pyexception(attr: PunctuatedNestedMeta, item: &Item) -> Result<TokenStream> {
+pub(crate) fn impl_pyexception(attr: PunctuatedNestedMeta, item: &Item) -> Result<Tokens> {
     let (ident, _attrs) = pyexception_ident_and_attrs(item)?;
     let fake_ident = Ident::new("pyclass", item.span());
     let class_meta = ExceptionItemMeta::from_nested(ident.clone(), fake_ident, attr.into_iter())?;
@@ -999,7 +1014,7 @@ pub(crate) fn impl_pyexception(attr: PunctuatedNestedMeta, item: &Item) -> Resul
     Ok(ret)
 }
 
-pub(crate) fn impl_pyexception_impl(attr: PunctuatedNestedMeta, item: Item) -> TokenStream {
+pub(crate) fn impl_pyexception_impl(attr: PunctuatedNestedMeta, item: Item) -> Tokens {
     let Item::Impl(imp) = item else {
         return item.into_token_stream();
     };
@@ -1018,7 +1033,7 @@ pub(crate) fn impl_pyexception_impl(attr: PunctuatedNestedMeta, item: Item) -> T
             }
             extra_attrs.push(NestedMeta::Meta(Meta::List(MetaList {
                 path: path.clone(),
-                paren_token: Default::default(),
+                paren_span: Span::call_site(),
                 nested: nested.clone(),
             })));
         }
@@ -1029,7 +1044,7 @@ pub(crate) fn impl_pyexception_impl(attr: PunctuatedNestedMeta, item: Item) -> T
         with_items.iter().any(|ident| ident == s)
     };
 
-    let syn::ItemImpl {
+    let nanocode_macro_support::ItemImpl {
         generics,
         self_ty,
         items,
@@ -1132,12 +1147,16 @@ define_content_item!(
 
 /// Rejects a `self` receiver where `self` is the payload: Python methods and
 /// getset descriptors receive the object, as `&Py<Self>` or `PyRef<Self>`.
-fn check_object_receiver(sig: &syn::Signature, context: &ImplContext, attr: &str) -> Result<()> {
+fn check_object_receiver(
+    sig: &nanocode_macro_support::Signature,
+    context: &ImplContext,
+    attr: &str,
+) -> Result<()> {
     if !context.self_is_payload {
         return Ok(());
     }
     match sig.receiver() {
-        Some(receiver) => Err(syn::Error::new_spanned(
+        Some(receiver) => Err(nanocode_macro_support::Error::new_spanned(
             receiver,
             format!(
                 "#[{attr}] must receive the object, not the payload. \
@@ -1275,7 +1294,7 @@ where
                 .iter()
                 .find(|(method, _)| *method == py_name.as_str())
             {
-                return Err(syn::Error::new(
+                return Err(nanocode_macro_support::Error::new(
                     ident.span(),
                     format!(
                         "#[pymethod] cannot define '{py_name}'. Use `impl {trait_name} for ...` instead. \
@@ -1294,7 +1313,7 @@ where
             .sig()
             .inputs
             .iter()
-            .any(|arg| matches!(arg, syn::FnArg::Receiver(_)));
+            .any(|arg| matches!(arg, nanocode_macro_support::FnArg::Receiver(_)));
         // Without a `&self` receiver the first argument is the one the call
         // binds to, and CPython names it $self for a method and $type for a
         // classmethod.
@@ -1535,10 +1554,10 @@ struct MethodNurseryItem {
     ident: Ident,
     raw: bool,
     coexist: bool,
-    doc: TokenStream,
-    doc_body_pending: TokenStream,
+    doc: Tokens,
+    doc_body_pending: Tokens,
     attr_name: AttrName,
-    call_flags: TokenStream,
+    call_flags: Tokens,
 }
 
 impl MethodNursery {
@@ -1549,7 +1568,7 @@ impl MethodNursery {
     fn validate(&mut self) -> Result<()> {
         let mut name_set = HashSet::new();
         for item in &self.items {
-            if !name_set.insert((&item.py_name, &item.cfgs)) {
+            if !name_set.insert((&item.py_name, AttributeList(item.cfgs.clone()))) {
                 bail_span!(item.ident, "duplicate method name `{}`", item.py_name);
             }
         }
@@ -1558,8 +1577,8 @@ impl MethodNursery {
 }
 
 impl ToTokens for MethodNursery {
-    fn to_tokens(&self, tokens: &mut TokenStream) {
-        let mut inner_tokens = TokenStream::new();
+    fn to_tokens(&self, tokens: &mut Tokens) {
+        let mut inner_tokens = Tokens::new();
         for item in &self.items {
             let py_name = &item.py_name;
             let ident = &item.ident;
@@ -1617,8 +1636,8 @@ impl ToTokens for MethodNursery {
                 },
             ]);
         }
-        let array: TokenTree = Group::new(Delimiter::Bracket, inner_tokens).into();
-        tokens.extend([array]);
+        let array: TokenTree = Group::new(Delimiter::Bracket, inner_tokens.into_stream()).into();
+        tokens.push(array);
     }
 }
 
@@ -1631,9 +1650,9 @@ struct GetSetEntry {
 
 #[derive(Default)]
 struct GetSetNursery {
-    map: HashMap<(String, Vec<Attribute>), GetSetEntry>,
+    map: HashMap<(String, AttributeList), GetSetEntry>,
     validated: bool,
-    class_ty: Option<syn::Type>,
+    class_ty: Option<nanocode_macro_support::Type>,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -1654,7 +1673,10 @@ impl GetSetNursery {
         assert!(!self.validated, "new item is not allowed after validation");
         // Note: Both getter and setter can have #[cfg], but they must have matching cfgs
         // since the map key is (name, cfgs). This ensures getter and setter are paired correctly.
-        let entry = self.map.entry((name.to_string(), cfgs)).or_default();
+        let entry = self
+            .map
+            .entry((name.to_string(), AttributeList(cfgs)))
+            .or_default();
         let func = match kind {
             GetSetItemKind::Get => &mut entry.getter,
             GetSetItemKind::Set => &mut entry.setter,
@@ -1699,7 +1721,7 @@ impl GetSetNursery {
 }
 
 impl ToTokens for GetSetNursery {
-    fn to_tokens(&self, tokens: &mut TokenStream) {
+    fn to_tokens(&self, tokens: &mut Tokens) {
         assert!(self.validated, "Call `validate()` before token generation");
         let properties = self.map.iter().map(|((name, cfgs), entry)| {
             let getter = entry.getter.as_ref().unwrap();
@@ -1730,7 +1752,7 @@ impl ToTokens for GetSetNursery {
                 }
             }
         });
-        tokens.extend(properties);
+        tokens.append_all(properties);
     }
 }
 
@@ -1884,7 +1906,7 @@ impl SlotItemMeta {
             // Convert to lowercase to handle both SLOT_NEW and slot_new
             let ident_lower = ident_str.to_lowercase();
             let name = if let Some(stripped) = ident_lower.strip_prefix("slot_") {
-                proc_macro2::Ident::new(stripped, inner.item_ident.span())
+                nanocode_macro_support::Ident::new(stripped, inner.item_ident.span())
             } else {
                 inner.item_ident.clone()
             };
@@ -1908,7 +1930,10 @@ impl SlotItemMeta {
             &method_name_str
         };
 
-        Ok(proc_macro2::Ident::new(slot_name, slot_name.span()))
+        Ok(nanocode_macro_support::Ident::new(
+            slot_name,
+            slot_name.span(),
+        ))
     }
 }
 
@@ -1950,7 +1975,7 @@ impl MemberItemMeta {
             match value.as_str() {
                 "object_ex" => {}
                 "object" | "bool" | "double" | "int" | "uint" | "py_ssize_t" => {
-                    return Err(syn::Error::new(
+                    return Err(nanocode_macro_support::Error::new(
                         span,
                         format!(
                             "member kind is inferred from the field type; remove `type = \"{value}\"`"
@@ -1958,7 +1983,7 @@ impl MemberItemMeta {
                     ));
                 }
                 other => {
-                    return Err(syn::Error::new(
+                    return Err(nanocode_macro_support::Error::new(
                         span,
                         format!("unknown member type '{other}'"),
                     ));
@@ -1968,7 +1993,7 @@ impl MemberItemMeta {
         Ok(kind)
     }
 
-    fn path_tokens(&self) -> Result<Option<TokenStream>> {
+    fn path_tokens(&self) -> Result<Option<Tokens>> {
         let inner = self.inner();
         let Some(value) = inner._optional_str("path")? else {
             return Ok(None);
@@ -1988,12 +2013,12 @@ impl MemberItemMeta {
         self.inner()._bool("audit_read")
     }
 
-    fn offset_tokens(&self) -> Result<Option<TokenStream>> {
+    fn offset_tokens(&self) -> Result<Option<Tokens>> {
         let Some((_, meta)) = self.inner().meta_map.get("offset") else {
             return Ok(None);
         };
         let Meta::NameValue(name_value) = meta else {
-            return Err(syn::Error::new(
+            return Err(nanocode_macro_support::Error::new(
                 meta.span(),
                 "#[pymember(offset = ...)] must be an expression",
             ));
@@ -2009,15 +2034,15 @@ impl MemberItemMeta {
             return Ok(false);
         };
         match meta {
-            Meta::NameValue(syn::MetaNameValue {
+            Meta::NameValue(MetaNameValue {
                 value:
-                    syn::Expr::Lit(syn::ExprLit {
-                        lit: syn::Lit::Bool(lit),
+                    nanocode_macro_support::Expr::Lit(nanocode_macro_support::ExprLit {
+                        lit: nanocode_macro_support::Lit::Bool(lit),
                         ..
                     }),
                 ..
             }) if !lit.value => Ok(true),
-            _ => Err(syn::Error::new(
+            _ => Err(nanocode_macro_support::Error::new(
                 meta.span(),
                 "#[pymember] docstring is the `///` comment; only `doc = false` is accepted",
             )),
@@ -2025,17 +2050,20 @@ impl MemberItemMeta {
     }
 }
 
-fn parse_member_subpath(value: &str, span: Span) -> Result<TokenStream> {
+fn parse_member_subpath(value: &str, span: Span) -> Result<Tokens> {
     if value.is_empty() {
-        return Err(syn::Error::new(
+        return Err(nanocode_macro_support::Error::new(
             span,
             "#[pymember(path = ...)] must name a subfield",
         ));
     }
-    let stream: TokenStream = value.parse().map_err(|err| syn::Error::new(span, err))?;
+    let stream: Tokens = value
+        .parse::<nanocode_macro_support::TokenStream>()
+        .map(Tokens::from_stream)
+        .map_err(|err| nanocode_macro_support::Error::new(span, err))?;
     let trees: Vec<TokenTree> = stream.into_iter().collect();
     if trees.is_empty() {
-        return Err(syn::Error::new(
+        return Err(nanocode_macro_support::Error::new(
             span,
             "#[pymember(path = ...)] must name a subfield",
         ));
@@ -2048,7 +2076,7 @@ fn parse_member_subpath(value: &str, span: Span) -> Result<TokenStream> {
                 expect_ident = true;
             }
             _ => {
-                return Err(syn::Error::new(
+                return Err(nanocode_macro_support::Error::new(
                     span,
                     "#[pymember(path = ...)] must be a field path",
                 ));
@@ -2056,7 +2084,7 @@ fn parse_member_subpath(value: &str, span: Span) -> Result<TokenStream> {
         }
     }
     if expect_ident {
-        return Err(syn::Error::new(
+        return Err(nanocode_macro_support::Error::new(
             span,
             "#[pymember(path = ...)] must be a field path",
         ));
@@ -2067,11 +2095,11 @@ fn parse_member_subpath(value: &str, span: Span) -> Result<TokenStream> {
 struct BuiltMember {
     name: String,
     cfgs: Vec<Attribute>,
-    kind: TokenStream,
-    offset: TokenStream,
-    flags: TokenStream,
-    doc: TokenStream,
-    check: TokenStream,
+    kind: Tokens,
+    offset: Tokens,
+    flags: Tokens,
+    doc: Tokens,
+    check: Tokens,
     span: Span,
 }
 
@@ -2080,14 +2108,10 @@ fn is_doc_attr(attr: &Attribute) -> bool {
 }
 
 fn doc_attr_line(attr: &Attribute) -> Option<String> {
-    let syn::Meta::NameValue(name_value) = &attr.meta else {
+    let nanocode_macro_support::Meta::NameValue(name_value) = &attr.meta else {
         return None;
     };
-    let syn::Expr::Lit(syn::ExprLit {
-        lit: syn::Lit::Str(lit),
-        ..
-    }) = &name_value.value
-    else {
+    let Some(nanocode_macro_support::Lit::Str(lit)) = name_value.value_lit() else {
         return None;
     };
     Some(lit.value().trim().to_owned())
@@ -2148,8 +2172,8 @@ fn field_cfg_attrs(attrs: &[Attribute]) -> Result<Vec<Attribute>> {
     let mut cfgs = Vec::new();
     for attr in attrs {
         if attr.path().is_ident("cfg") {
-            if !matches!(attr.meta, syn::Meta::List(_)) {
-                return Err(syn::Error::new(
+            if !matches!(attr.meta, nanocode_macro_support::Meta::List(_)) {
+                return Err(nanocode_macro_support::Error::new(
                     attr.span(),
                     "#[cfg] on a #[pymember] field must have a predicate",
                 ));
@@ -2160,9 +2184,9 @@ fn field_cfg_attrs(attrs: &[Attribute]) -> Result<Vec<Attribute>> {
     Ok(cfgs)
 }
 
-fn cfg_not_all(cfgs: &[Attribute]) -> TokenStream {
+fn cfg_not_all(cfgs: &[Attribute]) -> Tokens {
     let preds = cfgs.iter().map(|attr| match &attr.meta {
-        syn::Meta::List(list) => list.tokens.clone(),
+        nanocode_macro_support::Meta::List(list) => list.tokens.clone(),
         _ => quote!(all()),
     });
     quote!(#[cfg(not(all(#(#preds),*)))] )
@@ -2170,15 +2194,15 @@ fn cfg_not_all(cfgs: &[Attribute]) -> TokenStream {
 
 fn member_kind_tokens(
     kind: Option<&str>,
-    field_tokens: Option<&TokenStream>,
+    field_tokens: Option<&Tokens>,
     span: Span,
-) -> Result<TokenStream> {
+) -> Result<Tokens> {
     let Some(field_tokens) = field_tokens else {
         let name = match kind {
             None => "Object",
             Some("object_ex") => "ObjectEx",
             Some(other) => {
-                return Err(syn::Error::new(
+                return Err(nanocode_macro_support::Error::new(
                     span,
                     format!("unknown member type '{other}'"),
                 ));
@@ -2208,7 +2232,7 @@ fn member_kind_tokens(
             }
         },
         Some(other) => {
-            return Err(syn::Error::new(
+            return Err(nanocode_macro_support::Error::new(
                 span,
                 format!("unknown member type '{other}'"),
             ));
@@ -2217,7 +2241,7 @@ fn member_kind_tokens(
     Ok(kind)
 }
 
-fn member_layout_tokens(readonly: bool) -> TokenStream {
+fn member_layout_tokens(readonly: bool) -> Tokens {
     let name = if readonly {
         "MemberLayout"
     } else {
@@ -2227,7 +2251,7 @@ fn member_layout_tokens(readonly: bool) -> TokenStream {
     quote!(::rustpython_vm::builtins::descriptor::#ident)
 }
 
-fn member_flag_tokens(readonly: bool, audit_read: bool) -> TokenStream {
+fn member_flag_tokens(readonly: bool, audit_read: bool) -> Tokens {
     match (readonly, audit_read) {
         (false, false) => {
             quote!(::rustpython_vm::builtins::descriptor::PyMemberFlags::empty())
@@ -2245,7 +2269,7 @@ fn member_flag_tokens(readonly: bool, audit_read: bool) -> TokenStream {
     }
 }
 
-fn member_atomic_flag(field_tokens: &TokenStream) -> TokenStream {
+fn member_atomic_flag(field_tokens: &Tokens) -> Tokens {
     quote! {
         if ::rustpython_vm::builtins::descriptor::member_atomic_of(
             |payload: &Self| &payload.#field_tokens,
@@ -2259,9 +2283,9 @@ fn member_atomic_flag(field_tokens: &TokenStream) -> TokenStream {
 
 fn build_member(
     attr: &Attribute,
-    field: Option<(&syn::Field, usize)>,
+    field: Option<(&nanocode_macro_support::Field, usize)>,
     cfgs: &[Attribute],
-    class_ty: &syn::Type,
+    class_ty: &nanocode_macro_support::Type,
     rust_doc: Option<String>,
     seen: &mut Vec<(String, Vec<Attribute>)>,
 ) -> Result<BuiltMember> {
@@ -2278,22 +2302,21 @@ fn build_member(
             .as_ref()
             .map(|ident| ident.to_string())
             .ok_or_else(|| {
-                syn::Error::new(
+                nanocode_macro_support::Error::new(
                     attr.span(),
                     "#[pymember] on an unnamed field requires `name`",
                 )
             })?
     } else {
-        return Err(syn::Error::new(
+        return Err(nanocode_macro_support::Error::new(
             attr.span(),
             "#[pymember] on a struct requires `name`",
         ));
     };
-    if seen
-        .iter()
-        .any(|(seen_name, seen_cfgs)| seen_name == &name && seen_cfgs == cfgs)
-    {
-        return Err(syn::Error::new(
+    if seen.iter().any(|(seen_name, seen_cfgs)| {
+        seen_name == &name && attribute_texts(seen_cfgs) == attribute_texts(cfgs)
+    }) {
+        return Err(nanocode_macro_support::Error::new(
             attr.span(),
             format!("Multiple members with name '{name}'"),
         ));
@@ -2306,13 +2329,13 @@ fn build_member(
     let audit_read = meta.audit_read()?;
     let offset_expr = meta.offset_tokens()?;
     if field.is_some() && offset_expr.is_some() {
-        return Err(syn::Error::new(
+        return Err(nanocode_macro_support::Error::new(
             attr.span(),
             "#[pymember(offset = ...)] is only valid on a struct, not on a field",
         ));
     }
     if field.is_none() && path.is_some() {
-        return Err(syn::Error::new(
+        return Err(nanocode_macro_support::Error::new(
             attr.span(),
             "#[pymember(path = ...)] is only valid on a field",
         ));
@@ -2320,7 +2343,7 @@ fn build_member(
     let (offset, check, kind_tokens, atomic_flag) = if let Some((field, index)) = field {
         let index_tokens = match &field.ident {
             Some(ident) => ident.to_token_stream(),
-            None => syn::Index::from(index).into_token_stream(),
+            None => nanocode_macro_support::Index::from(index).into_token_stream(),
         };
         let field_tokens = if let Some(path) = &path {
             quote!(#index_tokens.#path)
@@ -2348,7 +2371,7 @@ fn build_member(
         (offset, check, kind_tokens, atomic_flag)
     } else {
         let Some(offset_expr) = offset_expr else {
-            return Err(syn::Error::new(
+            return Err(nanocode_macro_support::Error::new(
                 attr.span(),
                 "#[pymember] on a struct requires `offset`",
             ));
@@ -2379,15 +2402,12 @@ fn build_member(
     })
 }
 
-fn emit_member_table(
-    ident: &Ident,
-    members: &[BuiltMember],
-) -> (TokenStream, TokenStream, TokenStream) {
+fn emit_member_table(ident: &Ident, members: &[BuiltMember]) -> (Tokens, Tokens, Tokens) {
     if members.is_empty() {
         return (quote!(&[]), quote!(), quote!());
     }
-    let mut parts = TokenStream::new();
-    let mut checks = TokenStream::new();
+    let mut parts = Tokens::new();
+    let mut checks = Tokens::new();
     let mut names = Vec::new();
     for (index, member) in members.iter().enumerate() {
         let const_name = Ident::new(&format!("__PYMEMBER_{index}"), member.span);
@@ -2435,12 +2455,12 @@ fn emit_member_table(
     (members_expr, parts_impl, checks)
 }
 
-fn extract_py_members(item: &mut Item) -> Result<(TokenStream, TokenStream, TokenStream)> {
+fn extract_py_members(item: &mut Item) -> Result<(Tokens, Tokens, Tokens)> {
     let Item::Struct(item_struct) = item else {
         return Ok((quote!(&[]), quote!(), quote!()));
     };
     let struct_ident = item_struct.ident.clone();
-    let class_ty: syn::Type = syn::parse_quote!(#struct_ident);
+    let class_ty: nanocode_macro_support::Type = parse_quote!(#struct_ident);
     let mut seen = Vec::new();
     let mut built = Vec::new();
     for (attr, rust_doc) in split_struct_pymembers(&mut item_struct.attrs) {
@@ -2454,15 +2474,15 @@ fn extract_py_members(item: &mut Item) -> Result<(TokenStream, TokenStream, Toke
         )?);
     }
     let field_count = match &item_struct.fields {
-        syn::Fields::Named(fields) => fields.named.len(),
-        syn::Fields::Unnamed(fields) => fields.unnamed.len(),
-        syn::Fields::Unit => 0,
+        nanocode_macro_support::Fields::Named(fields) => fields.named.len(),
+        nanocode_macro_support::Fields::Unnamed(fields) => fields.unnamed.len(),
+        nanocode_macro_support::Fields::Unit => 0,
     };
     for index in 0..field_count {
         let field = match &mut item_struct.fields {
-            syn::Fields::Named(fields) => &mut fields.named[index],
-            syn::Fields::Unnamed(fields) => &mut fields.unnamed[index],
-            syn::Fields::Unit => unreachable!(),
+            nanocode_macro_support::Fields::Named(fields) => &mut fields.named[index],
+            nanocode_macro_support::Fields::Unnamed(fields) => &mut fields.unnamed[index],
+            nanocode_macro_support::Fields::Unit => unreachable!(),
         };
         let cfgs = field_cfg_attrs(&field.attrs)?;
         // Every #[pymember] on the field shares that field's `///` comment.
@@ -2484,11 +2504,11 @@ fn extract_py_members(item: &mut Item) -> Result<(TokenStream, TokenStream, Toke
 
 struct ExtractedImplAttrs {
     payload: Option<Ident>,
-    flags: TokenStream,
-    with_impl: TokenStream,
-    with_method_defs: Vec<TokenStream>,
-    with_slots: TokenStream,
-    itemsize: Option<syn::Expr>,
+    flags: Tokens,
+    with_impl: Tokens,
+    with_method_defs: Vec<Tokens>,
+    with_slots: Tokens,
+    itemsize: Option<nanocode_macro_support::Expr>,
     sig_initializer: bool,
     sig_constructor: bool,
     sig_structseq: bool,
@@ -2585,10 +2605,10 @@ fn extract_impl_attrs(attr: PunctuatedNestedMeta, item: &Ident) -> Result<Extrac
                     bail_span!(path, "Unknown pyimpl attribute")
                 }
             }
-            NestedMeta::Meta(Meta::NameValue(syn::MetaNameValue { path, value, .. })) => {
+            NestedMeta::Meta(Meta::NameValue(MetaNameValue { path, value, .. })) => {
                 if path.is_ident("payload") {
-                    if let syn::Expr::Lit(syn::ExprLit {
-                        lit: syn::Lit::Str(lit),
+                    if let nanocode_macro_support::Expr::Lit(nanocode_macro_support::ExprLit {
+                        lit: nanocode_macro_support::Lit::Str(lit),
                         ..
                     }) = value
                     {
@@ -2634,7 +2654,7 @@ fn class_internal_doc(
     has_initializer: bool,
     has_constructor: bool,
     has_structseq: bool,
-) -> TokenStream {
+) -> Tokens {
     let init_params = quote!(<<#payload as ::rustpython_vm::types::Initializer>::Args as ::rustpython_vm::function::FromArgs>::PARAMS);
     let ctor_params = quote!(<<#payload as ::rustpython_vm::types::Constructor>::Args as ::rustpython_vm::function::FromArgs>::PARAMS);
     let chosen = match (has_initializer, has_constructor) {

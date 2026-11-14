@@ -1,33 +1,47 @@
 use crate::syn_ext::attribute::AttributeExt;
 use crate::syn_ext::ident::GetIdent;
 use crate::syn_ext::path::GetPath;
-use std::collections::HashMap as Map;
-use syn::ext::IdentExt;
-use syn::parse::Parser;
-use syn::Meta as Meta2;
-use syn::{
-    punctuated::Punctuated, token, Attribute, Error, Expr, ExprLit, Ident, Lit, MetaNameValue,
-    Path, Result,
+use nanocode_macro_support::Meta as Meta2;
+use nanocode_macro_support::{
+    Attribute, Delimiter, Error, Expr, ExprLit, Group, Ident, Lit, Parse, ParseStream, Path,
+    PathSegment, Punctuated, Result, Span, ToTokens, Token, TokenTree, Tokens, parse_optional,
+    parse_terminated, token,
 };
+use std::collections::HashMap as Map;
+
+#[derive(Clone)]
+pub struct MetaNameValue1 {
+    pub path: Path,
+    pub eq_token: token::Eq,
+    pub value: Expr,
+}
+
+impl ToTokens for MetaNameValue1 {
+    fn to_tokens(&self, tokens: &mut Tokens) {
+        self.path.to_tokens(tokens);
+        self.eq_token.to_tokens(tokens);
+        self.value.to_tokens(tokens);
+    }
+}
 
 #[derive(Clone)]
 pub enum Meta1 {
     Path(Path),
     List(MetaList1),
-    NameValue(MetaNameValue),
+    NameValue(MetaNameValue1),
 }
-impl syn::parse::Parse for Meta1 {
-    fn parse(input: syn::parse::ParseStream<'_>) -> Result<Self> {
-        let path = input.call(parse_meta_path)?;
-        if input.peek(token::Paren) {
+impl Parse for Meta1 {
+    fn parse(input: ParseStream<'_>) -> Result<Self> {
+        let path = parse_meta_path(input)?;
+        if input.peek_group(Delimiter::Parenthesis) {
             Ok(Meta1::List(MetaList1::parse_meta_list_after_path(
                 path, input,
             )?))
-        } else if input.peek(syn::Token![=]) {
-            Ok(Meta1::NameValue(MetaNameValue {
+        } else if input.peek_punct('=') {
+            Ok(Meta1::NameValue(MetaNameValue1 {
                 path,
-                eq_token: input.parse()?,
-                value: degroup(input.parse()?),
+                eq_token: token::Eq::parse_token(input)?,
+                value: degroup(Expr::parse(input)?),
             }))
         } else {
             Ok(Meta1::Path(path))
@@ -41,26 +55,34 @@ fn degroup(mut expr: Expr) -> Expr {
     expr
 }
 impl std::convert::TryFrom<Meta2> for Meta1 {
-    type Error = syn::Error;
+    type Error = Error;
 
     fn try_from(meta: Meta2) -> std::result::Result<Self, Self::Error> {
         Ok(match meta {
             Meta2::Path(path) => Meta1::Path(path),
-            Meta2::List(list) => Meta1::List(MetaList1 {
-                path: list.path,
-                paren_token: match list.delimiter {
-                    syn::MacroDelimiter::Paren(paren) => paren,
-                    other => return Err(syn::Error::new(other.span().open(), "expected paren")),
-                },
-                nested: PunctuatedNestedMeta::parse_terminated.parse2(list.tokens)?,
+            Meta2::List(list) => {
+                if list.delimiter != Delimiter::Parenthesis {
+                    return Err(Error::new(list.delimiter_span, "expected paren"));
+                }
+                Meta1::List(MetaList1 {
+                    path: list.path.clone(),
+                    paren_span: list.delimiter_span,
+                    nested: list.parse_args_with(|input| {
+                        parse_terminated::<NestedMeta, token::Comma>(input, NestedMeta::parse)
+                    })?,
+                })
+            }
+            Meta2::NameValue(nv) => Meta1::NameValue(MetaNameValue1 {
+                path: nv.path,
+                eq_token: nv.eq_token,
+                value: Expr::from_meta_value(&nv.value),
             }),
-            Meta2::NameValue(nv) => Meta1::NameValue(nv),
         })
     }
 }
 
-impl quote::ToTokens for Meta1 {
-    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+impl ToTokens for Meta1 {
+    fn to_tokens(&self, tokens: &mut Tokens) {
         match self {
             Meta1::Path(path) => path.to_tokens(tokens),
             Meta1::List(list) => list.to_tokens(tokens),
@@ -78,18 +100,37 @@ impl Meta1 {
         }
     }
 }
-fn parse_meta_path(input: syn::parse::ParseStream<'_>) -> Result<Path> {
+
+fn peek_any_ident_at(input: ParseStream<'_>, offset: usize) -> bool {
+    match input.peek_tree(offset) {
+        Some(TokenTree::Ident(_)) => true,
+        Some(TokenTree::Group(group)) if group.delimiter() == Delimiter::None => {
+            let mut trees = group.stream().into_iter();
+            matches!(
+                (trees.next(), trees.next()),
+                (Some(TokenTree::Ident(_)), None)
+            )
+        }
+        _ => false,
+    }
+}
+
+fn peek_bool(input: ParseStream<'_>) -> bool {
+    matches!(input.peek_tree(0), Some(TokenTree::Ident(ident)) if matches!(ident.to_string().as_str(), "true" | "false"))
+}
+
+fn parse_meta_path(input: ParseStream<'_>) -> Result<Path> {
     Ok(Path {
-        leading_colon: input.parse()?,
+        leading_colon: parse_optional::<token::PathSep>(input)?,
         segments: {
             let mut segments = Punctuated::new();
-            while input.peek(Ident::peek_any) {
-                let ident = Ident::parse_any(input)?;
-                segments.push_value(syn::PathSegment::from(ident));
-                if !input.peek(syn::Token![::]) {
+            while peek_any_ident_at(input, 0) {
+                let ident = input.parse_any_ident()?;
+                segments.push_value(PathSegment::from(ident));
+                if !input.peek_joint("::") {
                     break;
                 }
-                let punct = input.parse()?;
+                let punct = token::PathSep::parse_token(input)?;
                 segments.push_punct(punct);
             }
             if segments.is_empty() {
@@ -105,31 +146,37 @@ fn parse_meta_path(input: syn::parse::ParseStream<'_>) -> Result<Path> {
 #[derive(Clone)]
 pub struct MetaList1 {
     pub path: Path,
-    pub paren_token: token::Paren,
+    pub paren_span: Span,
     pub nested: PunctuatedNestedMeta,
 }
 impl MetaList1 {
-    fn parse_meta_list_after_path(path: Path, input: syn::parse::ParseStream<'_>) -> Result<Self> {
-        let content;
+    fn parse_meta_list_after_path(path: Path, input: ParseStream<'_>) -> Result<Self> {
+        let group = input.parse_group(Delimiter::Parenthesis)?;
+        let content = nanocode_macro_support::ParseBuffer::from_group(&group);
+        let nested = parse_terminated::<NestedMeta, token::Comma>(&content, NestedMeta::parse)?;
         Ok(MetaList1 {
             path,
-            paren_token: syn::parenthesized!(content in input),
-            nested: PunctuatedNestedMeta::parse_terminated(&content)?,
+            paren_span: group.span(),
+            nested,
         })
     }
 }
-impl syn::parse::Parse for MetaList1 {
-    fn parse(input: syn::parse::ParseStream<'_>) -> Result<Self> {
-        let path = input.call(parse_meta_path)?;
+impl Parse for MetaList1 {
+    fn parse(input: ParseStream<'_>) -> Result<Self> {
+        let path = parse_meta_path(input)?;
         Self::parse_meta_list_after_path(path, input)
     }
 }
 
-impl quote::ToTokens for MetaList1 {
-    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+impl ToTokens for MetaList1 {
+    fn to_tokens(&self, tokens: &mut Tokens) {
         self.path.to_tokens(tokens);
-        self.paren_token
-            .surround(tokens, |tokens| self.nested.to_tokens(tokens));
+        let mut group = Group::new(
+            Delimiter::Parenthesis,
+            self.nested.to_token_stream().into_stream(),
+        );
+        group.set_span(self.paren_span);
+        tokens.push(group);
     }
 }
 
@@ -138,22 +185,23 @@ pub enum NestedMeta {
     Meta(Meta1),
     Lit(Lit),
 }
-impl syn::parse::Parse for NestedMeta {
-    fn parse(input: syn::parse::ParseStream<'_>) -> Result<Self> {
-        if input.peek(Lit) && !(input.peek(syn::LitBool) && input.peek2(syn::Token![=])) {
-            input.parse().map(NestedMeta::Lit)
-        } else if input.peek(Ident::peek_any)
-            || input.peek(syn::Token![::]) && input.peek3(Ident::peek_any)
+impl Parse for NestedMeta {
+    fn parse(input: ParseStream<'_>) -> Result<Self> {
+        let literal = input.peek_literal() || peek_bool(input);
+        if literal && !(peek_bool(input) && input.peek_punct_at(1, '=')) {
+            Lit::parse(input).map(NestedMeta::Lit)
+        } else if peek_any_ident_at(input, 0)
+            || input.peek_joint("::") && peek_any_ident_at(input, 2)
         {
-            input.parse().map(NestedMeta::Meta)
+            Meta1::parse(input).map(NestedMeta::Meta)
         } else {
             Err(input.error("expected identifier or literal"))
         }
     }
 }
 
-impl quote::ToTokens for NestedMeta {
-    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+impl ToTokens for NestedMeta {
+    fn to_tokens(&self, tokens: &mut Tokens) {
         match self {
             NestedMeta::Meta(meta) => meta.to_tokens(tokens),
             NestedMeta::Lit(lit) => lit.to_tokens(tokens),
@@ -169,13 +217,13 @@ pub trait MetaExt {
     fn is_name_value(&self) -> bool;
     fn is_doc(&self) -> bool;
 
-    fn promote_to_list(&mut self, paren: token::Paren) -> Result<&mut MetaList1>;
+    fn promote_to_list(&mut self, paren: Span) -> Result<&mut MetaList1>;
 
     fn list(&self) -> Result<&MetaList1>;
     fn list_mut(&mut self) -> Result<&mut MetaList1>;
 
-    fn name_value(&self) -> Result<&MetaNameValue>;
-    fn name_value_mut(&mut self) -> Result<&mut MetaNameValue>;
+    fn name_value(&self) -> Result<&MetaNameValue1>;
+    fn name_value_mut(&mut self) -> Result<&mut MetaNameValue1>;
 
     fn doc(&self) -> Result<String>;
 }
@@ -210,7 +258,7 @@ impl MetaExt for Meta1 {
         })
     }
 
-    fn promote_to_list(&mut self, paren: token::Paren) -> Result<&mut MetaList1> {
+    fn promote_to_list(&mut self, paren: Span) -> Result<&mut MetaList1> {
         let path = match self {
             Meta1::Path(path) => path.clone(),
             Meta1::List(metalist) => return Ok(metalist),
@@ -218,7 +266,7 @@ impl MetaExt for Meta1 {
         };
         *self = Meta1::List(MetaList1 {
             path,
-            paren_token: paren,
+            paren_span: paren,
             nested: PunctuatedNestedMeta::new(),
         });
         self.list_mut()
@@ -237,13 +285,13 @@ impl MetaExt for Meta1 {
         }
     }
 
-    fn name_value(&self) -> Result<&MetaNameValue> {
+    fn name_value(&self) -> Result<&MetaNameValue1> {
         match self {
             Meta1::NameValue(name) => Ok(name),
             other => Err(Error::new_spanned(other, "Not a NameValue meta")),
         }
     }
-    fn name_value_mut(&mut self) -> Result<&mut MetaNameValue> {
+    fn name_value_mut(&mut self) -> Result<&mut MetaNameValue1> {
         match self {
             Meta1::NameValue(name) => Ok(name),
             other => Err(Error::new_spanned(other, "Not a NameValue meta")),
@@ -288,7 +336,6 @@ where
     M: 'a + std::borrow::Borrow<Meta1>,
     I: std::iter::Iterator<Item = IndexMetaRef<M>>,
 {
-
     fn to_multi_map<K, KF>(self, path_to_key: KF) -> Result<MultiMetaMap<'a, K, M>>
     where
         K: std::hash::Hash + Eq,
@@ -336,7 +383,6 @@ pub trait NestedMetaRefIteratorExt<'a, M>
 where
     M: 'a + std::borrow::Borrow<Meta1>,
 {
-
     fn to_multi_map_and_lits<K, KF>(
         self,
         path_to_key: KF,
@@ -359,7 +405,6 @@ impl<'a, I> NestedMetaRefIteratorExt<'a, &'a Meta1> for I
 where
     I: std::iter::IntoIterator<Item = &'a NestedMeta>,
 {
-
     fn to_multi_map_and_lits<K, KF>(
         self,
         path_to_key: KF,
@@ -496,7 +541,6 @@ impl<'a, I> MetaAttributeExt<'a> for I
 where
     I: std::iter::IntoIterator<Item = &'a Attribute>,
 {
-
     fn to_multi_map_and_attrs<K, KF>(
         self,
         path_to_key: KF,

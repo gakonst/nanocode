@@ -1,5 +1,5 @@
 use crate::syn_ext::ext::GetIdent;
-use syn::{GenericParam, Ident};
+use nanocode_macro_support::{GenericParam, Ident};
 
 impl GetIdent for GenericParam {
     fn get_ident(&self) -> Option<&Ident> {

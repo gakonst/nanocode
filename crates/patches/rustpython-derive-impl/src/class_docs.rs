@@ -2,8 +2,8 @@
 
 use alloc::collections::BTreeSet;
 
-use proc_macro2::TokenStream;
-use quote::quote;
+use nanocode_macro_support::Tokens;
+use nanocode_macro_support::quote;
 use rustpython_doc::DocRef;
 
 /// Modules `get_qualified` consults for `module`.
@@ -33,7 +33,7 @@ fn module_aliases(module: &str) -> Vec<String> {
     aliases
 }
 
-pub(crate) fn item_doc_tokens(doc: Option<DocRef>, rust_doc: Option<String>) -> TokenStream {
+pub(crate) fn item_doc_tokens(doc: Option<DocRef>, rust_doc: Option<String>) -> Tokens {
     if let Some(doc) = doc.filter(|doc| doc.len != 0) {
         let offset = doc.offset;
         let len = doc.len;
@@ -72,10 +72,7 @@ fn resolved_attr_doc(module_name: Option<&str>, class: &str, attr: &str) -> Opti
     }
 }
 
-pub(crate) fn attr_docs_tokens(
-    module_name: Option<&str>,
-    class: &str,
-) -> (TokenStream, TokenStream) {
+pub(crate) fn attr_docs_tokens(module_name: Option<&str>, class: &str) -> (Tokens, Tokens) {
     let module_key = module_name.unwrap_or("builtins");
     let mut names = BTreeSet::new();
     for module in module_aliases(module_key) {

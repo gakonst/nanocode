@@ -193,6 +193,17 @@ impl<'a> IntoIterator for &'a mut Fields {
 
 impl Parse for Visibility {
     fn parse(input: ParseStream<'_>) -> Result<Self> {
+        if let Some(TokenTree::Group(group)) = input.peek_tree(0)
+            && group.delimiter() == Delimiter::None
+        {
+            let content = ParseBuffer::from_group(group);
+            if let Ok(visibility) = Self::parse(&content)
+                && content.is_empty()
+            {
+                input.next_tree();
+                return Ok(visibility);
+            }
+        }
         let Some(pub_token) = input.eat_keyword("pub") else {
             return Ok(Self::Inherited);
         };
@@ -211,7 +222,7 @@ impl Parse for Visibility {
             };
             if restricted {
                 let span = group.span();
-                let tokens = Tokens::from_stream(group.stream());
+                let tokens = Tokens::from_trees(group.stream().into_iter().collect());
                 input.next_tree();
                 return Ok(Self::Restricted(pub_token, span, tokens));
             }

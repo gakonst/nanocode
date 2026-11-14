@@ -1,7 +1,7 @@
 use crate::syn_ext::ident::GetIdent;
-use syn::{
-    spanned::Spanned, Attribute, Ident, ImplItem, ImplItemFn, Item, ItemFn, ItemMod, Result,
-    TraitItem, TraitItemFn,
+use nanocode_macro_support::{
+    Attribute, Ident, ImplItem, ImplItemFn, Item, ItemFn, ItemMod, Result, Spanned, TraitItem,
+    TraitItemFn,
 };
 
 pub trait ItemLike: Spanned {
@@ -16,8 +16,8 @@ pub trait ItemLike: Spanned {
 
 impl ItemLike for Item {
     fn attrs(&self) -> Result<&[Attribute]> {
-        use syn::Item::*;
-        use syn::*;
+        use nanocode_macro_support::Item::*;
+        use nanocode_macro_support::*;
         let attrs = match self {
             Const(ItemConst { attrs, .. }) => attrs,
             Enum(ItemEnum { attrs, .. }) => attrs,
@@ -38,15 +38,15 @@ impl ItemLike for Item {
                 return Err(Error::new_spanned(
                     other,
                     "this kind of item doesn't have attrs",
-                ))
+                ));
             }
         };
         Ok(attrs)
     }
 
     fn attrs_mut(&mut self) -> Result<&mut Vec<Attribute>> {
-        use syn::Item::*;
-        use syn::*;
+        use nanocode_macro_support::Item::*;
+        use nanocode_macro_support::*;
         let attrs = match self {
             Const(ItemConst { attrs, .. }) => attrs,
             Enum(ItemEnum { attrs, .. }) => attrs,
@@ -67,7 +67,7 @@ impl ItemLike for Item {
                 return Err(Error::new_spanned(
                     other,
                     "this kind of item doesn't have attrs",
-                ))
+                ));
             }
         };
         Ok(attrs)
@@ -75,8 +75,8 @@ impl ItemLike for Item {
 
     fn function_or_method(&self) -> Result<&dyn FunctionLike> {
         match self {
-            Item::Fn(f @ syn::ItemFn { .. }) => Ok(f),
-            other => Err(syn::Error::new_spanned(
+            Item::Fn(f @ nanocode_macro_support::ItemFn { .. }) => Ok(f),
+            other => Err(nanocode_macro_support::Error::new_spanned(
                 other,
                 "this item is not a function or method",
             )),
@@ -85,8 +85,11 @@ impl ItemLike for Item {
 
     fn constant(&self) -> Result<&dyn ConstLike> {
         match self {
-            Item::Const(c @ syn::ItemConst { .. }) => Ok(c),
-            other => Err(syn::Error::new_spanned(other, "this item is not a const")),
+            Item::Const(c @ nanocode_macro_support::ItemConst { .. }) => Ok(c),
+            other => Err(nanocode_macro_support::Error::new_spanned(
+                other,
+                "this item is not a const",
+            )),
         }
     }
 
@@ -100,8 +103,8 @@ impl ItemLike for Item {
 
 impl ItemLike for ImplItem {
     fn attrs(&self) -> Result<&[Attribute]> {
-        use syn::ImplItem::*;
-        use syn::*;
+        use nanocode_macro_support::ImplItem::*;
+        use nanocode_macro_support::*;
         let attrs = match self {
             Const(ImplItemConst { attrs, .. }) => attrs,
             Fn(ImplItemFn { attrs, .. }) => attrs,
@@ -111,15 +114,15 @@ impl ItemLike for ImplItem {
                 return Err(Error::new_spanned(
                     other,
                     "this kind of item doesn't have attrs",
-                ))
+                ));
             }
         };
         Ok(attrs)
     }
 
     fn attrs_mut(&mut self) -> Result<&mut Vec<Attribute>> {
-        use syn::ImplItem::*;
-        use syn::*;
+        use nanocode_macro_support::ImplItem::*;
+        use nanocode_macro_support::*;
         let attrs = match self {
             Const(ImplItemConst { attrs, .. }) => attrs,
             Fn(ImplItemFn { attrs, .. }) => attrs,
@@ -129,7 +132,7 @@ impl ItemLike for ImplItem {
                 return Err(Error::new_spanned(
                     other,
                     "this kind of item doesn't have attrs",
-                ))
+                ));
             }
         };
         Ok(attrs)
@@ -137,8 +140,8 @@ impl ItemLike for ImplItem {
 
     fn function_or_method(&self) -> Result<&dyn FunctionLike> {
         match self {
-            ImplItem::Fn(f @ syn::ImplItemFn { .. }) => Ok(f),
-            other => Err(syn::Error::new_spanned(
+            ImplItem::Fn(f @ nanocode_macro_support::ImplItemFn { .. }) => Ok(f),
+            other => Err(nanocode_macro_support::Error::new_spanned(
                 other,
                 "this item is not a function or method",
             )),
@@ -147,8 +150,11 @@ impl ItemLike for ImplItem {
 
     fn constant(&self) -> Result<&dyn ConstLike> {
         match self {
-            ImplItem::Const(c @ syn::ImplItemConst { .. }) => Ok(c),
-            other => Err(syn::Error::new_spanned(other, "this item is not a const")),
+            ImplItem::Const(c @ nanocode_macro_support::ImplItemConst { .. }) => Ok(c),
+            other => Err(nanocode_macro_support::Error::new_spanned(
+                other,
+                "this item is not a const",
+            )),
         }
     }
 
@@ -162,8 +168,8 @@ impl ItemLike for ImplItem {
 
 impl ItemLike for TraitItem {
     fn attrs(&self) -> Result<&[Attribute]> {
-        use syn::TraitItem::*;
-        use syn::*;
+        use nanocode_macro_support::TraitItem::*;
+        use nanocode_macro_support::*;
         let attrs = match self {
             Const(TraitItemConst { attrs, .. }) => attrs,
             Fn(TraitItemFn { attrs, .. }) => attrs,
@@ -173,15 +179,15 @@ impl ItemLike for TraitItem {
                 return Err(Error::new_spanned(
                     other,
                     "this kind of item doesn't have attrs",
-                ))
+                ));
             }
         };
         Ok(attrs)
     }
 
     fn attrs_mut(&mut self) -> Result<&mut Vec<Attribute>> {
-        use syn::TraitItem::*;
-        use syn::*;
+        use nanocode_macro_support::TraitItem::*;
+        use nanocode_macro_support::*;
         let attrs = match self {
             Const(TraitItemConst { attrs, .. }) => attrs,
             Fn(TraitItemFn { attrs, .. }) => attrs,
@@ -191,7 +197,7 @@ impl ItemLike for TraitItem {
                 return Err(Error::new_spanned(
                     other,
                     "this kind of impl item doesn't have attrs",
-                ))
+                ));
             }
         };
         Ok(attrs)
@@ -199,8 +205,8 @@ impl ItemLike for TraitItem {
 
     fn function_or_method(&self) -> Result<&dyn FunctionLike> {
         match self {
-            TraitItem::Fn(f @ syn::TraitItemFn { .. }) => Ok(f),
-            other => Err(syn::Error::new_spanned(
+            TraitItem::Fn(f @ nanocode_macro_support::TraitItemFn { .. }) => Ok(f),
+            other => Err(nanocode_macro_support::Error::new_spanned(
                 other,
                 "this item is not a function or method",
             )),
@@ -209,8 +215,11 @@ impl ItemLike for TraitItem {
 
     fn constant(&self) -> Result<&dyn ConstLike> {
         match self {
-            TraitItem::Const(c @ syn::TraitItemConst { .. }) => Ok(c),
-            other => Err(syn::Error::new_spanned(other, "this item is not a const")),
+            TraitItem::Const(c @ nanocode_macro_support::TraitItemConst { .. }) => Ok(c),
+            other => Err(nanocode_macro_support::Error::new_spanned(
+                other,
+                "this item is not a const",
+            )),
         }
     }
 
@@ -266,9 +275,9 @@ impl ItemModExt for ItemMod {
 
 impl GetIdent for Item {
     fn get_ident(&self) -> Option<&Ident> {
-        use syn::Item::*;
-        use syn::UseTree::*;
-        use syn::*;
+        use nanocode_macro_support::Item::*;
+        use nanocode_macro_support::UseTree::*;
+        use nanocode_macro_support::*;
         #[allow(clippy::collapsible_match)]
         let attrs = match self {
             Const(ItemConst { ident, .. }) => ident,
@@ -296,14 +305,14 @@ impl GetIdent for Item {
 
 impl GetIdent for ImplItem {
     fn get_ident(&self) -> Option<&Ident> {
-        use syn::ImplItem::*;
-        use syn::*;
+        use nanocode_macro_support::ImplItem::*;
+        use nanocode_macro_support::*;
         let ident = match self {
             Const(ImplItemConst { ident, .. }) => ident,
             Fn(ImplItemFn { sig, .. }) => &sig.ident,
             Type(ImplItemType { ident, .. }) => ident,
             Macro(ImplItemMacro {
-                mac: syn::Macro { path, .. },
+                mac: nanocode_macro_support::Macro { path, .. },
                 ..
             }) => return path.get_ident(),
             _ => return None,
@@ -314,14 +323,14 @@ impl GetIdent for ImplItem {
 
 impl GetIdent for TraitItem {
     fn get_ident(&self) -> Option<&Ident> {
-        use syn::TraitItem::*;
-        use syn::*;
+        use nanocode_macro_support::TraitItem::*;
+        use nanocode_macro_support::*;
         let ident = match self {
             Const(TraitItemConst { ident, .. }) => ident,
             Fn(TraitItemFn { sig, .. }) => &sig.ident,
             Type(TraitItemType { ident, .. }) => ident,
             Macro(TraitItemMacro {
-                mac: syn::Macro { path, .. },
+                mac: nanocode_macro_support::Macro { path, .. },
                 ..
             }) => return path.get_ident(),
             _ => return None,
@@ -333,10 +342,10 @@ impl GetIdent for TraitItem {
 pub trait FunctionLike: Spanned {
     fn attrs(&self) -> &[Attribute];
     fn attrs_mut(&mut self) -> &mut Vec<Attribute>;
-    fn vis(&self) -> &syn::Visibility;
+    fn vis(&self) -> &nanocode_macro_support::Visibility;
 
-    fn sig(&self) -> &syn::Signature;
-    fn block(&self) -> Option<&syn::Block>;
+    fn sig(&self) -> &nanocode_macro_support::Signature;
+    fn block(&self) -> Option<&nanocode_macro_support::Block>;
 }
 
 impl FunctionLike for ItemFn {
@@ -346,13 +355,13 @@ impl FunctionLike for ItemFn {
     fn attrs_mut(&mut self) -> &mut Vec<Attribute> {
         &mut self.attrs
     }
-    fn vis(&self) -> &syn::Visibility {
+    fn vis(&self) -> &nanocode_macro_support::Visibility {
         &self.vis
     }
-    fn sig(&self) -> &syn::Signature {
+    fn sig(&self) -> &nanocode_macro_support::Signature {
         &self.sig
     }
-    fn block(&self) -> Option<&syn::Block> {
+    fn block(&self) -> Option<&nanocode_macro_support::Block> {
         Some(&self.block)
     }
 }
@@ -364,13 +373,13 @@ impl FunctionLike for ImplItemFn {
     fn attrs_mut(&mut self) -> &mut Vec<Attribute> {
         &mut self.attrs
     }
-    fn vis(&self) -> &syn::Visibility {
+    fn vis(&self) -> &nanocode_macro_support::Visibility {
         &self.vis
     }
-    fn sig(&self) -> &syn::Signature {
+    fn sig(&self) -> &nanocode_macro_support::Signature {
         &self.sig
     }
-    fn block(&self) -> Option<&syn::Block> {
+    fn block(&self) -> Option<&nanocode_macro_support::Block> {
         Some(&self.block)
     }
 }
@@ -382,13 +391,13 @@ impl FunctionLike for TraitItemFn {
     fn attrs_mut(&mut self) -> &mut Vec<Attribute> {
         &mut self.attrs
     }
-    fn vis(&self) -> &syn::Visibility {
-        &syn::Visibility::Inherited
+    fn vis(&self) -> &nanocode_macro_support::Visibility {
+        &nanocode_macro_support::Visibility::Inherited
     }
-    fn sig(&self) -> &syn::Signature {
+    fn sig(&self) -> &nanocode_macro_support::Signature {
         &self.sig
     }
-    fn block(&self) -> Option<&syn::Block> {
+    fn block(&self) -> Option<&nanocode_macro_support::Block> {
         self.default.as_ref()
     }
 }
@@ -396,82 +405,81 @@ impl FunctionLike for TraitItemFn {
 pub trait ConstLike: Spanned {
     fn attrs(&self) -> &[Attribute];
     fn attrs_mut(&mut self) -> &mut Vec<Attribute>;
-    fn vis(&self) -> &syn::Visibility;
-    fn const_token(&self) -> &syn::token::Const;
-    fn ident(&self) -> &syn::Ident;
-    fn colon_token(&self) -> &syn::token::Colon;
-    fn ty(&self) -> &syn::Type;
+    fn vis(&self) -> &nanocode_macro_support::Visibility;
+    fn const_token(&self) -> &nanocode_macro_support::Ident;
+    fn ident(&self) -> &nanocode_macro_support::Ident;
+    fn colon_token(&self) -> &nanocode_macro_support::token::Colon;
+    fn ty(&self) -> &nanocode_macro_support::Type;
 }
 
-impl ConstLike for syn::ItemConst {
+impl ConstLike for nanocode_macro_support::ItemConst {
     fn attrs(&self) -> &[Attribute] {
         &self.attrs
     }
     fn attrs_mut(&mut self) -> &mut Vec<Attribute> {
         &mut self.attrs
     }
-    fn vis(&self) -> &syn::Visibility {
+    fn vis(&self) -> &nanocode_macro_support::Visibility {
         &self.vis
     }
-    fn const_token(&self) -> &syn::token::Const {
+    fn const_token(&self) -> &nanocode_macro_support::Ident {
         &self.const_token
     }
-    fn ident(&self) -> &syn::Ident {
+    fn ident(&self) -> &nanocode_macro_support::Ident {
         &self.ident
     }
-    fn colon_token(&self) -> &syn::token::Colon {
+    fn colon_token(&self) -> &nanocode_macro_support::token::Colon {
         &self.colon_token
     }
-    fn ty(&self) -> &syn::Type {
+    fn ty(&self) -> &nanocode_macro_support::Type {
         &self.ty
     }
 }
 
-impl ConstLike for syn::ImplItemConst {
+impl ConstLike for nanocode_macro_support::ImplItemConst {
     fn attrs(&self) -> &[Attribute] {
         &self.attrs
     }
     fn attrs_mut(&mut self) -> &mut Vec<Attribute> {
         &mut self.attrs
     }
-    fn vis(&self) -> &syn::Visibility {
+    fn vis(&self) -> &nanocode_macro_support::Visibility {
         &self.vis
     }
-    fn const_token(&self) -> &syn::token::Const {
+    fn const_token(&self) -> &nanocode_macro_support::Ident {
         &self.const_token
     }
-    fn ident(&self) -> &syn::Ident {
+    fn ident(&self) -> &nanocode_macro_support::Ident {
         &self.ident
     }
-    fn colon_token(&self) -> &syn::token::Colon {
+    fn colon_token(&self) -> &nanocode_macro_support::token::Colon {
         &self.colon_token
     }
-    fn ty(&self) -> &syn::Type {
+    fn ty(&self) -> &nanocode_macro_support::Type {
         &self.ty
     }
 }
 
-impl ConstLike for syn::TraitItemConst {
+impl ConstLike for nanocode_macro_support::TraitItemConst {
     fn attrs(&self) -> &[Attribute] {
         &self.attrs
     }
     fn attrs_mut(&mut self) -> &mut Vec<Attribute> {
         &mut self.attrs
     }
-    fn vis(&self) -> &syn::Visibility {
-        &syn::Visibility::Inherited
+    fn vis(&self) -> &nanocode_macro_support::Visibility {
+        &nanocode_macro_support::Visibility::Inherited
     }
-    fn const_token(&self) -> &syn::token::Const {
+    fn const_token(&self) -> &nanocode_macro_support::Ident {
         &self.const_token
     }
-    fn ident(&self) -> &syn::Ident {
+    fn ident(&self) -> &nanocode_macro_support::Ident {
         &self.ident
     }
-    fn colon_token(&self) -> &syn::token::Colon {
+    fn colon_token(&self) -> &nanocode_macro_support::token::Colon {
         &self.colon_token
     }
-    fn ty(&self) -> &syn::Type {
+    fn ty(&self) -> &nanocode_macro_support::Type {
         &self.ty
     }
 }
-

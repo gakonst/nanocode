@@ -38,8 +38,8 @@ version = "0.6.0"
 [dependencies.rustpython-derive-impl]
 version = "0.6.0"
 
-[dependencies.syn]
-version = "2"
+[dependencies.nanocode-macro-support]
+path = "../../core/macro-support"
 
 [lints.clippy]
 alloc_instead_of_core = "warn"

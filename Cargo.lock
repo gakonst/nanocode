@@ -1009,9 +1009,7 @@ dependencies = [
 name = "nanocode-tools-macros"
 version = "0.7.0"
 dependencies = [
- "proc-macro2",
- "quote",
- "syn",
+ "nanocode-macro-support",
 ]
 
 [[package]]
@@ -1132,15 +1130,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
-name = "proc-macro2"
-version = "1.0.106"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8fd00f0bb2e90d81d1044c2b32617f68fcb9fa3bb7640c23e9c748e53fb30934"
-dependencies = [
- "unicode-ident",
-]
-
-[[package]]
 name = "psh"
 version = "0.0.0"
 dependencies = [
@@ -1209,15 +1198,6 @@ version = "0.2.0"
 dependencies = [
  "libc",
  "nanocode-numeric",
-]
-
-[[package]]
-name = "quote"
-version = "1.0.46"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dfbc457d0c7a0759a614551b11a6409e5951f6c7537be1f1b7682b9ae9230368"
-dependencies = [
- "proc-macro2",
 ]
 
 [[package]]
@@ -1313,20 +1293,18 @@ dependencies = [
 name = "rustpython-derive"
 version = "0.6.0"
 dependencies = [
+ "nanocode-macro-support",
  "rustpython-compiler",
  "rustpython-derive-impl",
- "syn",
 ]
 
 [[package]]
 name = "rustpython-derive-impl"
 version = "0.6.0"
 dependencies = [
- "proc-macro2",
- "quote",
+ "nanocode-macro-support",
  "rustpython-compiler-core",
  "rustpython-doc",
- "syn",
 ]
 
 [[package]]
@@ -1530,17 +1508,6 @@ checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
 dependencies = [
  "libc",
  "windows-sys",
-]
-
-[[package]]
-name = "syn"
-version = "2.0.119"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "872831b642d1a07999a962a351ed35b955ea2cfc8f3862091e2a240a84f17297"
-dependencies = [
- "proc-macro2",
- "quote",
- "unicode-ident",
 ]
 
 [[package]]

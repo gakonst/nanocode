@@ -317,9 +317,7 @@ impl OneLog {
 
     pub async fn journals(self: &Arc<Self>) -> Result<CellJournals, StoreError> {
         let journals = CellJournals::with_sink(self.sink());
-        for (session_id, cells) in self.cells(None).await? {
-            journals.restore(&session_id, cells, None, HashMap::new());
-        }
+        journals.restore_sessions(self.cells(None).await?);
         Ok(journals)
     }
 
@@ -330,6 +328,7 @@ impl OneLog {
         self.log
             .read(|fold| {
                 let mut sessions: BTreeMap<String, Vec<CellJournal>> = BTreeMap::new();
+                let mut catalogs: HashMap<String, Arc<[Value]>> = HashMap::new();
                 for (session, _, updates) in fold.cells() {
                     if only.is_some_and(|only| only != session) {
                         continue;
@@ -342,12 +341,23 @@ impl OneLog {
                             && let [Value::Object(mark)] = &*header.tools
                             && let Some(digest) = mark.get(TOOLS_MARK).and_then(Value::as_str)
                         {
-                            let catalog = fold
-                                .stored(&stored_key(TOOLS_MARK, digest))
-                                .ok_or_else(|| invalid(format!("tool catalog {digest}")))?;
-                            header.tools = serde_json::from_str::<Vec<Value>>(catalog)
-                                .map_err(|error| invalid(format!("tool catalog: {error}")))?
-                                .into();
+                            let tools = match catalogs.get(digest) {
+                                Some(tools) => Arc::clone(tools),
+                                None => {
+                                    let catalog = fold
+                                        .stored(&stored_key(TOOLS_MARK, digest))
+                                        .ok_or_else(|| invalid(format!("tool catalog {digest}")))?;
+                                    let tools: Arc<[Value]> =
+                                        serde_json::from_str::<Vec<Value>>(catalog)
+                                            .map_err(|error| {
+                                                invalid(format!("tool catalog: {error}"))
+                                            })?
+                                            .into();
+                                    catalogs.insert(digest.to_owned(), Arc::clone(&tools));
+                                    tools
+                                }
+                            };
+                            header.tools = tools;
                         }
                         decoded.push(update);
                     }

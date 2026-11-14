@@ -716,7 +716,7 @@ impl CodeModeRuntime {
             host_context: context.host_context.clone(),
         };
         let stored = journal.stored_values();
-        let metadata: Arc<[Value]> = journal.tools.into();
+        let metadata = journal.tools;
         let catalog = match self.cell_tools(&metadata) {
             Ok(catalog) => catalog,
             Err(error) => {

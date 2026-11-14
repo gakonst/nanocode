@@ -29,7 +29,7 @@ pub struct CellJournal {
     #[serde(default)]
     pub observer_since_ms: Option<u64>,
     pub script: String,
-    pub tools: Vec<Value>,
+    pub tools: Arc<[Value]>,
     #[serde(default)]
     pub stored: BTreeMap<String, Value>,
     #[serde(default)]
@@ -151,7 +151,7 @@ impl CellJournal {
             observer_yield_ms: None,
             observer_since_ms: None,
             script: header.script,
-            tools: header.tools.to_vec(),
+            tools: header.tools,
             stored: header.stored,
             started_at_ms: header.started_at_ms,
             prelude: header.prelude,
@@ -563,6 +563,31 @@ impl CellJournals {
         });
         self.0.restored.update(|map| {
             map.insert(session_id.to_owned(), Arc::clone(&restored));
+        });
+    }
+
+    pub fn restore_sessions(&self, sessions: impl IntoIterator<Item = (String, Vec<CellJournal>)>) {
+        let restored = sessions
+            .into_iter()
+            .filter(|(_, cells)| !cells.is_empty())
+            .map(|(session_id, cells)| {
+                let restored = Restored {
+                    cells,
+                    fallback: None,
+                    outcomes: HashMap::new(),
+                };
+                (session_id, Arc::new(restored))
+            })
+            .collect::<Vec<_>>();
+        if restored.is_empty() {
+            return;
+        }
+        self.0.restored.update(|map| {
+            map.extend(
+                restored
+                    .iter()
+                    .map(|(session_id, restored)| (session_id.clone(), Arc::clone(restored))),
+            );
         });
     }
 
@@ -1121,7 +1146,7 @@ impl CellRecord {
             observer_yield_ms: status.observer_yield_ms,
             observer_since_ms: status.observer_since_ms,
             script: self.script.clone(),
-            tools: self.tools.to_vec(),
+            tools: Arc::clone(&self.tools),
             stored: self
                 .stored
                 .iter()

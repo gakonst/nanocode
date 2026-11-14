@@ -138,7 +138,15 @@ The two n = 19 cells each lost one sample to the model answering a different wor
 
 nanocode wins every Claude p50, by 0.7 to 1.4 s on turn 1 and 30 to 500 ms on later turns. It loses these p99 cells: haiku turn 1 +643 and +96 ms, haiku turn 2 +343 ms (9a9e5d038; e4779d26f wins it by 2 ms), sonnet turn 2 +573 ms, sonnet turn 3 +42 ms, opus turn 3 +113 and +60 ms. Each lost p99 is one slow sample out of 20 while Claude Code's slowest is lower in that cell; the nanocode outliers are 1.6 to 2.7 s against medians of 0.7 to 1.4 s. nanocode's sonnet median moved from 0.7 s to 1.35 s between the two runs (about 04:10 and 05:05 UTC) while Claude Code's did not; an interleaved A/B of the two builds in the later window (12 sessions each) gives e4779d26f 1,376 / 1,343 / 1,334 ms and 9a9e5d038 1,287 / 1,300 / 1,317 ms (p50, turns 1 to 3), so the move is the provider's time for nanocode's sonnet requests in that window, not the build. Request bodies of both builds are byte-identical in length (37,509 bytes) with the same adaptive thinking, high effort and betas.
 
-<<<<<<< a2ece5cc7c87874a64b1ef30eb91a370b4041eb3
+Rerun on nanocode master 00c215b02 against Codex CLI 0.166.0, dev-georgios, 2026-11-14 06:10 to 06:24 UTC, 20 sessions x 3 turns, interleaved, Enter to first token drawn, p50 / p99 ms for turns 1, 2 and 3 (one to two nanocode samples per model missed the reply word and are left out):
+
+| model | nanocode 00c215b02 | Codex CLI 0.166.0 |
+|---|---|---|
+| gpt-6-luna | 990 / 2,088, 1,015 / 4,537, 993 / 5,481 | 1,814 / 4,461, 1,521 / 2,933, 1,377 / 2,438 |
+| gpt-6.1-sol | 1,616 / 2,539, 1,703 / 4,864, 1,593 / 3,538 | 2,259 / 3,682, 1,839 / 4,724, 1,921 / 3,052 |
+
+nanocode wins every p50 (by 236 to 824 ms) and turn 1 p99, and loses p99 on turns 2 and 3: by 1.6 and 3.0 s on gpt-6-luna and 0.1 and 0.5 s on gpt-6.1-sol. Traces of the same lanes show nanocode spends 0.9 to 1.6 ms from Enter to the WebSocket send on later turns and sends the same incremental previous_response_id request as Codex. The tails come from sessions the backend keeps slow on every turn, which a raw-WebSocket replay of nanocode's requests reproduces with any request shape.
+
 2026-11-14, live open models through the metered Tempo Gateway route: hosted Hand (AMD EPYC 9554, 5 cores, load under 1), each client pointed at a local metering proxy that forwards to gateway.tempo-dev.workers.dev, nanocode 77765bb, Claude Code 2.1.325, Codex CLI 0.166.0, PTY 120x40, 12 sessions of 3 turns per client, every prompt unique, lanes interleaved, Enter to the first token of the reply drawn, p50 / p99 ms (n 12 per cell; p99 of 12 is the slowest sample). DeepSeek is `vercel/deepseek/deepseek-v4.1-flash-1017` at low effort. GLM is `boundless/z-ai/glm-5.3-flash` at high effort: `@cf/zai-org/glm-5.3-flash` answered "3021: rate limiting: inference request per min rate reached" and payment 500s while a GLM eval ran on the same account. Messages pairs nanocode `--harness claude` (`NANOCODE_ANTHROPIC_BASE_URL`) with Claude Code. Responses pairs nanocode `--harness codex` (`NANOCODE_OPENAI_BASE_URL`) with Codex CLI. The first token is the reply's, not reasoning: each client draws reasoning before the reply (nanocode `∴`, Claude Code `● Thinking…`, Codex its status header), and a match there would be 0.1 to 6 s early. **Bold** marks a cell nanocode does not win in its pair.
 
 | model | turn | nanocode (Messages) | Claude Code | nanocode (Responses) | Codex CLI |
@@ -151,16 +159,6 @@ nanocode wins every Claude p50, by 0.7 to 1.4 s on turn 1 and 30 to 500 ms on la
 | | 3 | **6,302 / 17,671** | 5,985 / 17,096 | 2,743 / **20,529** | 3,672 / 11,569 |
 
 The provider's time dominates: a one-word reply spends 1 to 24 s at the provider, and nanocode's slowest samples are provider requests that took that long by themselves (its DeepSeek p99s are session 0, 5.4 to 10.9 s for 80 to 105 output tokens; its GLM Responses p99s are 15 to 24 s for 6 to 45 tokens on Boundless). With 12 samples a cell, the p50 gaps of 0.3 to 1.6 s on GLM are within the provider's spread (1.3 to 24 s). nanocode's own difference is the request: it reaches the proxy 3 to 6 ms after Enter p50 (11 ms at worst), against 75 to 136 ms for Claude Code and 57 to 101 ms for Codex CLI. nanocode wins 8 of the 12 p50 cells. Ready: nanocode 51 to 53 ms on Messages and 253 to 272 ms on Responses, where it lists `/v1/models` before the composer opens; Claude Code 455 to 466 ms; Codex CLI 67 to 68 ms with its app-server daemon already running.
-=======
-Rerun on nanocode master 00c215b02 against Codex CLI 0.166.0, dev-georgios, 2026-11-14 06:10 to 06:24 UTC, 20 sessions x 3 turns, interleaved, Enter to first token drawn, p50 / p99 ms for turns 1, 2 and 3 (one to two nanocode samples per model missed the reply word and are left out):
-
-| model | nanocode 00c215b02 | Codex CLI 0.166.0 |
-|---|---|---|
-| gpt-6-luna | 990 / 2,088, 1,015 / 4,537, 993 / 5,481 | 1,814 / 4,461, 1,521 / 2,933, 1,377 / 2,438 |
-| gpt-6.1-sol | 1,616 / 2,539, 1,703 / 4,864, 1,593 / 3,538 | 2,259 / 3,682, 1,839 / 4,724, 1,921 / 3,052 |
-
-nanocode wins every p50 (by 236 to 824 ms) and turn 1 p99, and loses p99 on turns 2 and 3: by 1.6 and 3.0 s on gpt-6-luna and 0.1 and 0.5 s on gpt-6.1-sol. Traces of the same lanes show nanocode spends 0.9 to 1.6 ms from Enter to the WebSocket send on later turns and sends the same incremental previous_response_id request as Codex. The tails come from sessions the backend keeps slow on every turn, which a raw-WebSocket replay of nanocode's requests reproduces with any request shape.
->>>>>>> 5591eadcfdf347143a33d2eb261cd573ea4e5048
 
 ## Not measured yet
 

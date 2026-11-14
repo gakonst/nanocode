@@ -2091,6 +2091,19 @@ async fn observe_updates(
                 );
             }
             Some(CellUpdate::Terminated) => {
+                let abandoned = abandoned_calls(
+                    observation,
+                    "the script was terminated",
+                    "Check what each did before calling it again.",
+                );
+                if !abandoned.is_empty() {
+                    observation
+                        .buffered
+                        .content
+                        .push(ToolOutputContent::InputText {
+                            text: abandoned.trim_start().to_owned(),
+                        });
+                }
                 if terminating {
                     let text = terminated_output(&observation.buffered.content);
                     stream_output(&cell.origin_call_id, observation, observer);

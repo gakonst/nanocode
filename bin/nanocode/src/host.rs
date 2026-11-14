@@ -19,6 +19,19 @@ pub type Result<T> = std::result::Result<T, Error>;
 type WarmUp = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>;
 pub(crate) type Answer = std::sync::Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
 pub(crate) type Notices = std::pin::Pin<Box<dyn nanocode_sync::Stream<Item = String> + Send>>;
+pub(crate) type Listing =
+    std::sync::Arc<nanocode_sync::SetOnce<std::result::Result<Listed, String>>>;
+
+pub(crate) struct Listed {
+    pub(crate) models: Vec<Model>,
+    pub(crate) windows: Vec<(Model, u64)>,
+}
+
+#[derive(Clone)]
+enum Served {
+    Fixed(std::sync::Arc<[Model]>),
+    Listed(String, Listing),
+}
 
 #[derive(Clone, Default)]
 pub struct ModelClients {
@@ -31,9 +44,8 @@ pub struct ModelClients {
     panel: Option<PanelSource>,
     tool_environment: Vec<(String, String)>,
     mcp_servers: Vec<(String, nanocode::tools::mcp::McpServer)>,
-    models: Option<std::sync::Arc<[Model]>>,
+    models: Option<Served>,
     unlisted: Option<nanocode::HarnessFamily>,
-    context_windows: std::sync::Arc<[(Model, u64)]>,
     tempo: Option<Tempo>,
 }
 
@@ -275,8 +287,26 @@ impl ModelClients {
 
     #[must_use]
     pub fn models(mut self, models: impl IntoIterator<Item = Model>) -> Self {
-        self.models = Some(models.into_iter().collect());
+        self.models = Some(Served::Fixed(models.into_iter().collect()));
         self
+    }
+
+    #[must_use]
+    pub(crate) fn listing(mut self, url: String, listing: Listing) -> Self {
+        self.models = Some(Served::Listed(url, listing));
+        self
+    }
+
+    pub(crate) async fn listed(&self) -> Result<()> {
+        match &self.models {
+            Some(Served::Listed(_, listing)) => listing
+                .wait()
+                .await
+                .as_ref()
+                .map(drop)
+                .map_err(|error| error.clone().into()),
+            _ => Ok(()),
+        }
     }
 
     #[must_use]
@@ -285,26 +315,39 @@ impl ModelClients {
         self
     }
 
-    #[must_use]
-    pub(crate) fn context_windows(
-        mut self,
-        windows: impl IntoIterator<Item = (Model, u64)>,
-    ) -> Self {
-        self.context_windows = windows.into_iter().collect();
-        self
+    pub(crate) fn codex_models(&self) -> Option<std::result::Result<&[Model], String>> {
+        Some(match self.models.as_ref()? {
+            Served::Fixed(models) => Ok(models),
+            Served::Listed(url, listing) => match listing.get() {
+                None => Err(format!("listing models from {url}…")),
+                Some(Err(error)) => Err(error.clone()),
+                Some(Ok(listed)) => Ok(&listed.models),
+            },
+        })
     }
 
-    pub(crate) fn codex_models(&self) -> Option<&[Model]> {
-        self.models.as_deref()
-    }
-
-    pub(crate) fn default_model(&self, family: &nanocode::HarnessFamily) -> ModelSelection {
-        match self.models.as_deref().and_then(<[_]>::first) {
-            Some(model) if *family == nanocode::HarnessFamily::Codex => {
-                ModelSelection::Codex(*model)
-            }
-            _ => family.default_model(),
+    fn listing_windows(&self) -> Option<Listing> {
+        match &self.models {
+            Some(Served::Listed(_, listing)) => Some(std::sync::Arc::clone(listing)),
+            _ => None,
         }
+    }
+
+    pub(crate) fn default_model(
+        &self,
+        family: &nanocode::HarnessFamily,
+    ) -> std::result::Result<ModelSelection, String> {
+        Ok(
+            match self
+                .codex_models()
+                .filter(|_| *family == nanocode::HarnessFamily::Codex)
+                .transpose()?
+                .and_then(<[_]>::first)
+            {
+                Some(model) => ModelSelection::Codex(*model),
+                None => family.default_model(),
+            },
+        )
     }
 
     #[must_use]
@@ -358,8 +401,11 @@ impl ModelClients {
 
     pub fn parse_model(&self, value: &str) -> Result<ModelSelection> {
         let listed = self.listed_model(value);
+        let decided = self.codex_models().is_none_or(|served| served.is_ok())
+            || (self.unlisted == Some(nanocode::HarnessFamily::Codex)
+                && value.trim().parse::<ClaudeModel>().is_err());
         match &self.unlisted {
-            Some(family) if listed.is_err() && !value.trim().is_empty() => {
+            Some(family) if listed.is_err() && decided && !value.trim().is_empty() => {
                 Ok(ModelSelection::new(family.clone(), value.trim()))
             }
             _ => listed,
@@ -367,8 +413,9 @@ impl ModelClients {
     }
 
     fn listed_model(&self, value: &str) -> Result<ModelSelection> {
-        let Some(served) = &self.models else {
-            return parse_model(value);
+        let served = match self.codex_models() {
+            None => return parse_model(value),
+            Some(served) => served?,
         };
         let value = value.trim();
         if let Some(model) = served
@@ -691,7 +738,7 @@ impl Host {
             Route::of(request.options.selected_provider()).ok()
         };
         let context_window = config.context_window;
-        let listed = std::sync::Arc::clone(&config.clients.context_windows);
+        let listed = config.clients.listing_windows();
         let max_output = config.max_output_tokens;
         if let (Some(tokens), Some(maximum)) = (
             context_window,
@@ -717,7 +764,7 @@ impl Host {
             .direct_subagents(config.subagents == Subagents::AllModels)
             .configure(move |builder| {
                 let window = context_window
-                    .or_else(|| listed_window(&listed, builder.selected_model().as_str()));
+                    .or_else(|| listed_window(listed.as_ref(), builder.selected_model().as_str()));
                 let builder = match window {
                     Some(tokens) => builder.context_window_tokens(tokens),
                     None => builder,
@@ -728,7 +775,7 @@ impl Host {
                 })
             });
         let described = std::sync::Arc::clone(&hand);
-        let listed = std::sync::Arc::clone(&config.clients.context_windows);
+        let listed = config.clients.listing_windows();
         let claude = ClaudeHarness::new(identified(
             config
                 .clients
@@ -751,7 +798,7 @@ impl Host {
                 None => builder.max_tokens(Tempo::OUTPUT_TOKENS),
             };
             let window =
-                context_window.or_else(|| listed_window(&listed, builder.selected_model()));
+                context_window.or_else(|| listed_window(listed.as_ref(), builder.selected_model()));
             let builder = match window {
                 Some(tokens) => builder.context_window_tokens(tokens),
                 None => builder,
@@ -820,6 +867,7 @@ impl Host {
         thinking: Thinking,
         route: Route,
     ) -> Result<(Agent, AgentEvents)> {
+        self.config.clients.listed().await?;
         self.replacement_hand().await;
         let spawn = match route.provider() {
             Some(provider) => self.runtime.spawn().provider(provider),
@@ -837,13 +885,18 @@ impl Host {
         store: &SessionStore,
         stored: &nanocode::durability::StoredSession,
     ) -> Result<(Agent, AgentEvents)> {
+        self.config.clients.listed().await?;
         self.replacement_hand().await;
         Ok(self.runtime.open_loaded(store, stored).await?)
     }
 }
 
-fn listed_window(windows: &[(Model, u64)], model: &str) -> Option<u64> {
-    windows
+fn listed_window(listing: Option<&Listing>, model: &str) -> Option<u64> {
+    listing?
+        .get()?
+        .as_ref()
+        .ok()?
+        .windows
         .iter()
         .find(|(listed, _)| listed.as_str() == model)
         .map(|(_, tokens)| *tokens)

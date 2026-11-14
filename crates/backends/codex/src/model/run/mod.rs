@@ -35,7 +35,9 @@ use crate::client::{
         ContentItem, FunctionOutputBody, MessageRole, RequestProfile, ResponseHistory,
         ResponseItem, ToolDefinition, Usage,
     },
-    tower::{CodeCall, CodeCallKind, GenerationOutput as TurnResult, ResponsesOutput},
+    tower::{
+        CodeCall, CodeCallKind, GenerationOutput as TurnResult, ResponsesOutput, STREAM_MAX_RETRIES,
+    },
     transport::{ResponsesError, ResponsesTransport, TransportStats, TransportStatsSnapshot},
 };
 use nanocode_platform::{Duration, Instant, UNIX_EPOCH};

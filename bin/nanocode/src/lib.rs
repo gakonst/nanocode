@@ -338,6 +338,13 @@ async fn prepare(
     if gateway.is_some() && clients.supplies_openai() {
         return Err("this binary supplies its own Codex client; --gateway is unavailable".into());
     }
+    if args
+        .model
+        .as_deref()
+        .is_none_or(|model| clients.resolve(model).is_err())
+    {
+        clients.listed().await?;
+    }
     let (route, model) = match (&args.model, args.harness) {
         (Some(model), harness) => {
             let (route, model) = clients.resolve(model)?;
@@ -361,7 +368,7 @@ async fn prepare(
         }
         (None, harness) => {
             let requested = harness.map(family);
-            let model = match clients.codex_models().and_then(<[_]>::first) {
+            let model = match clients.codex_models().transpose()?.and_then(<[_]>::first) {
                 Some(model)
                     if requested
                         .as_ref()
@@ -781,6 +788,7 @@ async fn print_models(clients: &ModelClients) -> Result<()> {
     if let Some(tempo) = clients.tempo_models() {
         tempo.load().await;
     }
+    clients.listed().await?;
     let groups = models::catalog(clients);
     let width = groups
         .iter()

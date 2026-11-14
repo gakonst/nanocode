@@ -2516,8 +2516,8 @@ impl App {
             }
             "harness" if argument.is_empty() => {
                 let picker = models::harness_picker(&self.model.family(), |family| {
-                    let (route, model) = self.harness_model(family);
-                    route.label(&model)
+                    self.harness_model(family)
+                        .map_or_else(|error| error, |(route, model)| route.label(&model))
                 });
                 self.overlay = Some(Overlay::Picker(PickerPurpose::Harness, picker));
             }
@@ -2960,15 +2960,18 @@ impl App {
         }
     }
 
-    fn harness_model(&self, family: &nanocode::HarnessFamily) -> (Route, ModelSelection) {
-        match self.route {
+    fn harness_model(
+        &self,
+        family: &nanocode::HarnessFamily,
+    ) -> std::result::Result<(Route, ModelSelection), String> {
+        Ok(match self.route {
             _ if *family == self.model.family() => (self.route, self.model.clone()),
             Route::Tempo => (Route::Tempo, crate::host::on_harness(&self.model, family)),
             Route::Native | Route::Boundless => (
                 Route::Native,
-                self.host.config.clients.default_model(family),
+                self.host.config.clients.default_model(family)?,
             ),
-        }
+        })
     }
 
     fn choose_harness(&mut self, family: &nanocode::HarnessFamily) {
@@ -2976,7 +2979,13 @@ impl App {
             self.flash(format!("already on the {} harness", family_label(family)));
             return;
         }
-        let (route, model) = self.harness_model(family);
+        let (route, model) = match self.harness_model(family) {
+            Ok(chosen) => chosen,
+            Err(error) => {
+                self.notice(NoticeLevel::Error, error);
+                return;
+            }
+        };
         let capabilities = model.capabilities(nanocode::ModelTransport::Native);
         let thinking = capabilities.normalize_thinking(self.thinking);
         let tier = capabilities.normalize_service_tier(self.tier);

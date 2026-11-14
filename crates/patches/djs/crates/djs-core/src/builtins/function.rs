@@ -28,7 +28,7 @@ pub(crate) fn bound_function_create(
 
 /// The source text of a function, as `Function.prototype.toString` returns it: the
 /// source slice for JS functions (D009), `function name() {\n    [native code]\n}` (as
-/// qjs prints it) for builtins, host and bound functions.
+/// qjs prints it) for builtins and host functions, without the name for bound functions.
 pub(crate) fn to_string(heap: &mut Heap, f: Value) -> Result<Str, Fault> {
     let Some(o) = f.as_object().filter(|&o| heap.is_callable(o)) else {
         return type_error("not a function");
@@ -39,12 +39,15 @@ pub(crate) fn to_string(heap: &mut Heap, f: Value) -> Result<Str, Fault> {
     {
         return Ok(heap.alloc_str(&src)?);
     }
-    let name = heap
-        .get_own_property(o, atoms::NAME)
-        .and_then(|p| p.value())
-        .and_then(|v| v.as_string())
-        .map(|s| heap.str_to_string(s))
-        .unwrap_or_default();
+    let name = if heap.object_class(o) == ObjectClass::BoundFunction {
+        String::new()
+    } else {
+        heap.get_own_property(o, atoms::NAME)
+            .and_then(|p| p.value())
+            .and_then(|v| v.as_string())
+            .map(|s| heap.str_to_string(s))
+            .unwrap_or_default()
+    };
     Ok(heap.alloc_str(&crate::text::cat!(
         "function ",
         name,

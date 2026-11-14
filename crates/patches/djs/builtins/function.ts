@@ -89,10 +89,7 @@ function FunctionPrototypeBind(this: Value, thisArg?: Value, ...args: Value[]): 
  */
 function FunctionPrototypeToString(this: Value): Str {
   if (IsProxy(this) && IsCallable(this)) {
-    // A proxy has no source text; qjs names it by [[Get]] of `name` (a trap call).
-    const name: Value = Get(AsObj(this), "name");
-    const s: Str = name === undefined ? "" : ToString(name);
-    return "function " + s + "() {\n    [native code]\n}";
+    return "function () {\n    [native code]\n}";
   }
   return FunctionToString(this);
 }

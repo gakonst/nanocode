@@ -1355,29 +1355,27 @@ FunctionPrototypeBind: reentrant (Function.prototype.bind)
   builtins/function.ts:80:23  Get (intrinsic)
   builtins/function.ts:82:3  DefineDataPropertyOrThrow (intrinsic)
 
-FunctionPrototypeToString: reentrant (Function.prototype.toString)
-  builtins/function.ts:93:25  Get (intrinsic)
-  builtins/function.ts:94:46  ToString (builtin)
+FunctionPrototypeToString: leaf (Function.prototype.toString)
 
 FunctionConstructor: reentrant (constructor Function)
-  builtins/function.ts:106:10  CreateDynamicFunction (builtin)
+  builtins/function.ts:103:10  CreateDynamicFunction (builtin)
 
 OrdinaryHasInstance: reentrant
-  builtins/function.ts:116:12  InstanceofOperator (builtin)
-  builtins/function.ts:121:20  Get (intrinsic)
-  builtins/function.ts:125:18  GetPrototypeOf (intrinsic)
-  builtins/function.ts:130:9  GetPrototypeOf (intrinsic)
+  builtins/function.ts:113:12  InstanceofOperator (builtin)
+  builtins/function.ts:118:20  Get (intrinsic)
+  builtins/function.ts:122:18  GetPrototypeOf (intrinsic)
+  builtins/function.ts:127:9  GetPrototypeOf (intrinsic)
 
 InstanceofOperator: reentrant (%InstanceofOperator)
-  builtins/function.ts:144:32  GetMethod (builtin)
-  builtins/function.ts:146:22  Call (intrinsic)
-  builtins/function.ts:151:10  OrdinaryHasInstance (builtin)
+  builtins/function.ts:141:32  GetMethod (builtin)
+  builtins/function.ts:143:22  Call (intrinsic)
+  builtins/function.ts:148:10  OrdinaryHasInstance (builtin)
 
 ClassHeritage: reentrant (%ClassHeritage)
-  builtins/function.ts:167:30  Get (intrinsic)
+  builtins/function.ts:164:30  Get (intrinsic)
 
 FunctionPrototypeHasInstance: reentrant (Function.prototype[Symbol.hasInstance])
-  builtins/function.ts:180:10  OrdinaryHasInstance (builtin)
+  builtins/function.ts:177:10  OrdinaryHasInstance (builtin)
 
 ThrowTypeError: leaf (get Function.prototype.caller, set Function.prototype.caller, get Function.prototype.arguments, set Function.prototype.arguments, %ThrowTypeError)
 

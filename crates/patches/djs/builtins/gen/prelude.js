@@ -3914,19 +3914,17 @@ function FunctionPrototypeBind(thisArg, ...args) {
 // builtins/function.ts:90 Function.prototype.toString
 function FunctionPrototypeToString() {
   if (%IsProxy(this) && %IsCallable(this)) {
-    const name = %Get(%AsObj(this), "name");
-    const s = name === undefined ? "" : ToString(name);
-    return "function " + s + "() {\n    [native code]\n}";
+    return "function () {\n    [native code]\n}";
   }
   return %FunctionToString(this);
 }
 
-// builtins/function.ts:105 constructor Function
+// builtins/function.ts:102 constructor Function
 function FunctionConstructor(...args) {
   return CreateDynamicFunction(new.target, 0, "FunctionPrototype", args);
 }
 
-// builtins/function.ts:110
+// builtins/function.ts:107
 function OrdinaryHasInstance(c, o) {
   if (!%IsCallable(c)) {
     return false;
@@ -3952,7 +3950,7 @@ function OrdinaryHasInstance(c, o) {
   return false;
 }
 
-// builtins/function.ts:140 %InstanceofOperator
+// builtins/function.ts:137 %InstanceofOperator
 function InstanceofOperator(v, target) {
   if (!%IsObject(target)) {
     throw %NewTypeError("invalid 'instanceof' right operand");
@@ -3967,7 +3965,7 @@ function InstanceofOperator(v, target) {
   return OrdinaryHasInstance(target, v);
 }
 
-// builtins/function.ts:160 %ClassHeritage
+// builtins/function.ts:157 %ClassHeritage
 function ClassHeritage(parent) {
   if (parent === null) {
     return null;
@@ -3982,27 +3980,27 @@ function ClassHeritage(parent) {
   return protoParent;
 }
 
-// builtins/function.ts:179 Function.prototype[Symbol.hasInstance]
+// builtins/function.ts:176 Function.prototype[Symbol.hasInstance]
 function FunctionPrototypeHasInstance(v) {
   return OrdinaryHasInstance(this, v);
 }
 
-// builtins/function.ts:192 get Function.prototype.caller set Function.prototype.caller get Function.prototype.arguments set Function.prototype.arguments %ThrowTypeError
+// builtins/function.ts:189 get Function.prototype.caller set Function.prototype.caller get Function.prototype.arguments set Function.prototype.arguments %ThrowTypeError
 function ThrowTypeError(v) {
   throw %NewTypeError("invalid property access");
 }
 
-// builtins/function.ts:201 %FunctionPrototypeBehavior
+// builtins/function.ts:198 %FunctionPrototypeBehavior
 function FunctionPrototypeBehavior() {
   return;
 }
 
-// builtins/function.ts:210 value Function.prototype.length
+// builtins/function.ts:207 value Function.prototype.length
 function FunctionPrototypeLength() {
   return 0;
 }
 
-// builtins/function.ts:219 value Function.prototype.name
+// builtins/function.ts:216 value Function.prototype.name
 function FunctionPrototypeName() {
   return "";
 }
